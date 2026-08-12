@@ -365,17 +365,11 @@ pub(in crate::ui::app) fn switch_accent_color() -> u32 {
     accent_color()
 }
 
-pub(in crate::ui::app) fn read_win32_priority_separation() -> Option<u32> {
-    read_registry_dword_root(
-        HKEY_LOCAL_MACHINE,
-        WIN32_PRIORITY_CONTROL_SUB_KEY,
-        WIN32_PRIORITY_SEPARATION_VALUE,
-    )
-}
-
-pub(in crate::ui::app) fn read_win32_priority_separation_with_status() -> (Option<u32>, String) {
-    match read_win32_priority_separation() {
-        Some(value) => (
+pub(in crate::ui::app) fn win32_priority_separation_snapshot_state(
+    snapshot: Win32PrioritySeparationSnapshot,
+) -> (Option<u32>, Option<u32>, String) {
+    let (current, mut status) = match snapshot.current {
+        Ok(Some(value)) => (
             Some(value),
             t!(
                 "settings.win32_priority_separation_loaded",
@@ -383,37 +377,25 @@ pub(in crate::ui::app) fn read_win32_priority_separation_with_status() -> (Optio
             )
             .to_string(),
         ),
-        None => (
+        Ok(None) | Err(_) => (
             None,
             t!("settings.win32_priority_separation_load_failed").to_string(),
         ),
-    }
-}
-
-pub(in crate::ui::app) fn write_win32_priority_separation(value: u32) -> Result<(), String> {
-    write_registry_dword_root(
-        HKEY_LOCAL_MACHINE,
-        WIN32_PRIORITY_CONTROL_SUB_KEY,
-        WIN32_PRIORITY_SEPARATION_VALUE,
-        value,
-    )
-}
-
-pub(in crate::ui::app) fn read_win32_priority_separation_backup() -> Option<u32> {
-    read_registry_dword_root(
-        HKEY_CURRENT_USER,
-        WINDERUST_REGISTRY_SUB_KEY,
-        WIN32_PRIORITY_SEPARATION_BACKUP_VALUE,
-    )
-}
-
-pub(in crate::ui::app) fn write_win32_priority_separation_backup(value: u32) -> Result<(), String> {
-    write_registry_dword_create_root(
-        HKEY_CURRENT_USER,
-        WINDERUST_REGISTRY_SUB_KEY,
-        WIN32_PRIORITY_SEPARATION_BACKUP_VALUE,
-        value,
-    )
+    };
+    let backup = match snapshot.backup {
+        Ok(backup) => backup,
+        Err(error) => {
+            if current.is_some() {
+                status = t!(
+                    "settings.win32_priority_separation_backup_failed",
+                    error = error
+                )
+                .to_string();
+            }
+            None
+        }
+    };
+    (current, backup, status)
 }
 
 pub(in crate::ui::app) fn format_win32_priority_separation(value: u32) -> String {

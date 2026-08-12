@@ -32,7 +32,7 @@ impl WinderustApp {
             })
             .read(cx)
             .clone();
-        let refresh_in_progress = self.process_refresh_in_progress;
+        let refresh_in_progress = self.process_list.refresh_in_progress;
         let search_focused = self
             .inputs
             .process_list_search
@@ -55,21 +55,21 @@ impl WinderustApp {
         let hide_inaccessible = checkbox(
             "hide-inaccessible-processes",
             t!("process_list.hide_inaccessible_processes").to_string(),
-            self.hide_inaccessible_processes,
+            self.process_list.hide_inaccessible,
             cx.listener(|app, checked, _, cx| {
-                app.hide_inaccessible_processes = *checked;
+                app.process_list.hide_inaccessible = *checked;
                 cx.notify();
             }),
         );
         let header = process_list_scroll_content(table_width).child(process_list_header_row(
             &self.settings,
             &column_layout,
-            self.process_list_sort,
+            self.process_list.sort,
             cx,
         ));
         let rows = if rendered_rows.is_empty() {
             let message = if search_query.trim().is_empty() {
-                process_load_state_message(&self.running_process_load_state)
+                process_load_state_message(&self.process_list.load_state)
                     .unwrap_or_else(|| t!("common.no_running_apps_loaded").to_string())
             } else {
                 t!("process_list.no_matches").to_string()
@@ -105,7 +105,8 @@ impl WinderustApp {
         };
 
         let details_modal = self
-            .process_details
+            .process_list
+            .details
             .as_ref()
             .map(|_| self.render_process_details_modal(window, cx));
 
@@ -213,13 +214,15 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let details = self
-            .process_details
+            .process_list
+            .details
             .as_ref()
             .expect("details view requires a draft");
         let path = details.executable_path.clone();
         let summary = process_policy_summary(&self.settings, &self.plans, &path);
         let icon = self
-            .process_icon_cache
+            .process_catalog
+            .icon_cache
             .get(Path::new(&path))
             .and_then(Option::as_ref);
         let groups = [
@@ -704,6 +707,7 @@ fn process_list_context_menu(
     window: &mut Window,
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    let selected_process_ids = process_ids.clone();
     let target =
         capture_process_action_target(process_id, Path::new(&executable_path), allow_cross_session);
     let targets = process_ids
@@ -716,6 +720,20 @@ fn process_list_context_menu(
             )
         })
         .collect::<Vec<_>>();
+    let suspend = !suspended;
+    let suspension_targets = if suspend {
+        targets.clone()
+    } else {
+        selected_process_ids
+            .iter()
+            .map(|process_id| {
+                capture_process_action_target_for_owned_release(
+                    *process_id,
+                    Path::new(&executable_path),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
     let action_disabled = |access| {
         target.as_ref().map_or(true, |target| {
             ensure_process_action_target_access(target, access).is_err()
@@ -727,16 +745,12 @@ fn process_list_context_menu(
             ensure_process_action_target_access(target, ProcessActionAccess::Terminate).is_ok()
         })
     });
-    let suspend = !suspended;
-    let suspension_access = if suspend {
-        ProcessActionAccess::AssignToJob
-    } else {
-        ProcessActionAccess::SafetyOnly
-    };
-    let suspension_disabled = !targets.iter().any(|target| {
+    let suspension_disabled = !suspension_targets.iter().any(|target| {
         target.as_ref().is_ok_and(|target| {
-            ensure_process_action_target_access(target, suspension_access).is_ok()
-                && (!suspend || app_suspension::process_is_suspendable(target))
+            !suspend
+                || (ensure_process_action_target_access(target, ProcessActionAccess::AssignToJob)
+                    .is_ok()
+                    && app_suspension::process_is_suspendable(target))
         })
     });
     let efficiency_disabled = !targets.iter().any(|target| {
@@ -763,7 +777,7 @@ fn process_list_context_menu(
         let app_entity = app_entity.clone();
         let process_name = process_name.clone();
         let target = target.clone();
-        let targets = targets.clone();
+        let tree_root_targets = targets.clone();
         let disabled = if tree {
             tree_termination_disabled
         } else {
@@ -777,6 +791,7 @@ fn process_list_context_menu(
             )
             .disabled(disabled)
             .on_click(move |_, window, cx| {
+                let action = t!(label_key).to_string();
                 let description = t!(
                     if tree {
                         "process_list.stop_tree_confirm"
@@ -800,36 +815,64 @@ fn process_list_context_menu(
                 let app_entity = app_entity.clone();
                 let process_name = process_name.clone();
                 let target = target.clone();
-                let targets = targets.clone();
+                let tree_root_targets = tree_root_targets.clone();
+                let action = action.clone();
+                let background_executor = cx.background_executor().clone();
                 cx.spawn(async move |cx| {
                     if answer.await != Ok(0) {
                         return;
                     }
-                    let _ = app_entity.update(cx, |app, cx| {
-                        let result = if tree {
-                            targets
+                    let receiver = match app_entity.update(cx, |app, cx| {
+                        let targets = if tree {
+                            tree_root_targets
                                 .into_iter()
                                 .collect::<Result<Vec<_>, _>>()
                                 .map_err(|error| error.to_string())
-                                .and_then(|targets| {
-                                    terminate_process_trees(
-                                        &targets,
-                                        &app.running_processes,
-                                        allow_cross_session,
+                                .and_then(|captured_roots| {
+                                    process_tree_action_targets(
+                                        &captured_roots,
+                                        &app.process_list.processes,
                                     )
-                                    .map(|_| ())
                                 })
                         } else {
                             target
                                 .map_err(|error| error.to_string())
-                                .and_then(|target| terminate_process(&target))
+                                .map(|target| vec![target])
                         };
-                        app.finish_process_quick_action(
-                            &process_name,
-                            t!(label_key).as_ref(),
-                            result,
-                            cx,
-                        );
+                        match targets.and_then(|targets| {
+                            app.runtime_handle
+                                .request_process_termination(targets)
+                                .map_err(|error| error.to_string())
+                        }) {
+                            Ok(receiver) => Some(receiver),
+                            Err(error) => {
+                                app.finish_process_quick_action(
+                                    &process_name,
+                                    &action,
+                                    Err(error),
+                                    cx,
+                                );
+                                None
+                            }
+                        }
+                    }) {
+                        Ok(Some(receiver)) => receiver,
+                        Ok(None) | Err(_) => return,
+                    };
+                    let result = background_executor
+                        .spawn(async move {
+                            receiver
+                                .recv()
+                                .map_err(|_| {
+                                    "The process termination worker stopped before replying."
+                                        .to_owned()
+                                })?
+                                .map_err(|error| error.to_string())?
+                                .into_process_list_result()
+                        })
+                        .await;
+                    let _ = app_entity.update(cx, |app, cx| {
+                        app.finish_process_quick_action(&process_name, &action, result, cx);
                     });
                 })
                 .detach();
@@ -840,7 +883,7 @@ fn process_list_context_menu(
     if advanced_controls_enabled {
         let app_entity = app_entity.clone();
         let process_name = process_name.clone();
-        let targets = targets.clone();
+        let targets = suspension_targets.clone();
         let label_key = if suspend {
             "process_list.suspend_process"
         } else {
@@ -858,24 +901,52 @@ fn process_list_context_menu(
             )
             .disabled(suspension_disabled)
             .on_click(move |_, _, cx| {
-                app_entity.update(cx, |app, cx| {
-                    let result = apply_process_list_targets(&targets, |target| {
-                        ensure_process_action_target_access(target, suspension_access)
-                            .map_err(|error| error.to_string())?;
-                        if suspend && !app_suspension::process_is_suspendable(target) {
-                            return Err("Process is protected from App Suspension.".to_owned());
+                let app_entity = app_entity.clone();
+                let process_name = process_name.clone();
+                let targets = targets.clone();
+                let background_executor = cx.background_executor().clone();
+                cx.spawn(async move |cx| {
+                    let receiver = match app_entity.update(cx, |app, cx| {
+                        match app
+                            .runtime_handle
+                            .request_app_suspension_process_action(targets, suspend)
+                        {
+                            Ok(receiver) => Some(receiver),
+                            Err(error) => {
+                                app.finish_process_quick_action(
+                                    &process_name,
+                                    t!(label_key).as_ref(),
+                                    Err(error.to_string()),
+                                    cx,
+                                );
+                                None
+                            }
                         }
-                        app.background_automation
-                            .request_app_suspension_process_action(target.clone(), suspend);
-                        Ok(())
+                    }) {
+                        Ok(Some(receiver)) => receiver,
+                        Ok(None) | Err(_) => return,
+                    };
+                    let result = background_executor
+                        .spawn(async move {
+                            receiver
+                                .recv()
+                                .map_err(|_| {
+                                    "The App Suspension worker stopped before replying.".to_owned()
+                                })?
+                                .map_err(|error| error.to_string())?
+                                .into_process_list_result()
+                        })
+                        .await;
+                    let _ = app_entity.update(cx, |app, cx| {
+                        app.finish_process_quick_action(
+                            &process_name,
+                            t!(label_key).as_ref(),
+                            result,
+                            cx,
+                        );
                     });
-                    app.finish_process_quick_action(
-                        &process_name,
-                        t!(label_key).as_ref(),
-                        result,
-                        cx,
-                    );
-                });
+                })
+                .detach();
             }),
         );
     }
@@ -883,19 +954,11 @@ fn process_list_context_menu(
     let efficiency_states = targets
         .iter()
         .filter_map(|target| target.as_ref().ok())
-        .filter_map(|target| background_efficiency::current_efficiency_mode(target).ok())
+        .filter_map(|target| current_efficiency_mode(target, allow_cross_session).ok())
         .collect::<Vec<_>>();
     let queried_efficiency =
         (!efficiency_states.is_empty()).then(|| efficiency_states.iter().all(|enabled| *enabled));
-    let cached_efficiency = target.as_ref().ok().and_then(|target| {
-        app_entity
-            .read(menu_cx)
-            .process_efficiency_mode_overrides
-            .get(&target.id)
-            .filter(|process| process.target.creation_time == target.creation_time)
-            .map(|process| process.enabled)
-    });
-    let efficiency_enabled = queried_efficiency.or(cached_efficiency).unwrap_or(false);
+    let efficiency_enabled = queried_efficiency.unwrap_or(false);
     menu = menu.item({
         let app_entity = app_entity.clone();
         let process_name = process_name.clone();
@@ -911,67 +974,46 @@ fn process_list_context_menu(
         )
         .disabled(efficiency_disabled)
         .on_click(move |_, _, cx| {
-            app_entity.update(cx, |app, cx| {
-                let enabled = !efficiency_enabled;
-                let result = apply_process_list_targets(&targets, |target| {
-                    let previous_priority = app
-                        .process_efficiency_mode_overrides
-                        .get(&target.id)
-                        .filter(|process| process.target.creation_time == target.creation_time)
-                        .and_then(|process| process.original_priority);
-                    let original_enabled = app
-                        .process_efficiency_mode_overrides
-                        .get(&target.id)
-                        .filter(|process| process.target.creation_time == target.creation_time)
-                        .map(|process| process.original_enabled)
-                        .map(Ok)
-                        .unwrap_or_else(|| {
-                            background_efficiency::current_efficiency_mode(target)
-                        })?;
-                    let first_change = !app.process_quick_action_restore_keys.contains(&(
-                        target.id,
-                        target.creation_time,
-                        "background-efficiency",
-                    ));
-                    let result = background_efficiency::apply_efficiency_mode_once(
-                        target,
-                        enabled,
-                        previous_priority,
-                    );
-                    if let Ok(original_priority) = result {
-                        if first_change {
-                            let restore_target = target.clone();
-                            app.track_process_quick_action_restore(
-                                "background-efficiency",
-                                target,
-                                move || {
-                                    let _ = background_efficiency::apply_efficiency_mode_once(
-                                        &restore_target,
-                                        original_enabled,
-                                        original_priority,
-                                    );
-                                },
-                            );
-                        }
-                        app.process_efficiency_mode_overrides.insert(
-                            target.id,
-                            ProcessEfficiencyModeOverride {
-                                target: target.clone(),
-                                original_enabled,
-                                enabled,
-                                original_priority: previous_priority.or(original_priority),
-                            },
-                        );
-                    }
-                    result.map(|_| ())
-                });
-                app.finish_process_quick_action(
-                    &process_name,
-                    t!("process_list.efficiency_mode").as_ref(),
-                    result,
-                    cx,
-                );
+            let enabled = !efficiency_enabled;
+            let result_app_entity = app_entity.clone();
+            let result_process_name = process_name.clone();
+            let request_result = app_entity.update(cx, |app, _| {
+                app.runtime_handle
+                    .request_efficiency_mode_action(targets.clone(), enabled)
             });
+            let receiver = match request_result {
+                Ok(receiver) => receiver,
+                Err(error) => {
+                    app_entity.update(cx, |app, cx| {
+                        app.finish_process_quick_action(
+                            &process_name,
+                            t!("process_list.efficiency_mode").as_ref(),
+                            Err(error.to_string()),
+                            cx,
+                        );
+                    });
+                    return;
+                }
+            };
+            let result = cx.background_executor().spawn(async move {
+                receiver
+                    .recv()
+                    .map_err(|_| "The process control worker stopped before replying.".to_owned())?
+                    .map_err(|error| error.to_string())?
+                    .into_process_list_result()
+            });
+            cx.spawn(async move |cx| {
+                let result = result.await;
+                let _ = result_app_entity.update(cx, |app, cx| {
+                    app.finish_process_quick_action(
+                        &result_process_name,
+                        t!("process_list.efficiency_mode").as_ref(),
+                        result,
+                        cx,
+                    );
+                });
+            })
+            .detach();
         })
     });
 
@@ -980,6 +1022,7 @@ fn process_list_context_menu(
         app_entity.clone(),
         process_name.clone(),
         targets.clone(),
+        allow_cross_session,
         expose_all_priorities,
         window,
         menu_cx,
@@ -992,11 +1035,16 @@ fn process_list_context_menu(
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "submenu construction needs the selected process context"
+)]
 fn process_list_priority_controls_submenu(
     menu: PopupMenu,
     app_entity: Entity<WinderustApp>,
     process_name: String,
     targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+    allow_cross_session: bool,
     expose_all_priorities: bool,
     window: &mut Window,
     menu_cx: &mut Context<PopupMenu>,
@@ -1020,15 +1068,16 @@ fn process_list_priority_controls_submenu(
         window,
         menu_cx,
         move |menu, window, menu_cx| {
-            let representative = targets.iter().find_map(|target| target.as_ref().ok());
             let can_set_information = targets.iter().any(|target| {
                 target.as_ref().is_ok_and(|target| {
                     ensure_process_action_target_access(target, ProcessActionAccess::SetInformation)
                         .is_ok()
                 })
             });
-            let current_process =
-                representative.and_then(|target| process_priority::current_priority(target).ok());
+            let current_process = targets
+                .iter()
+                .filter_map(|target| target.as_ref().ok())
+                .find_map(|target| current_process_priority(target, allow_cross_session).ok());
             let process_priority_available = can_set_information
                 && current_process.is_some()
                 && current_process != Some(ProcessPrioritySetting::Realtime);
@@ -1041,7 +1090,7 @@ fn process_list_priority_controls_submenu(
             .copied()
             .filter(|priority| *priority != ProcessPrioritySetting::Default)
             .collect();
-            let menu = process_list_priority_value_submenu(
+            let menu = process_list_runtime_priority_submenu(
                 menu,
                 t!("process_list.process_priority").to_string(),
                 process_options,
@@ -1052,15 +1101,17 @@ fn process_list_priority_controls_submenu(
                 process_name.clone(),
                 targets.clone(),
                 process_priority_setting_label,
-                quick_apply_process_priority,
-                current_process_priority,
-                "process-priority",
+                RuntimeHandle::request_process_priority_action,
                 window,
                 menu_cx,
             );
 
-            let current_thread =
-                representative.and_then(|target| thread_priority::current_priority(target).ok());
+            let current_thread = targets
+                .iter()
+                .filter_map(|target| target.as_ref().ok())
+                .find_map(|target| {
+                    current_process_thread_priority(target, allow_cross_session).ok()
+                });
             let thread_priority_available = current_thread.is_some();
             let current_thread = current_thread.flatten();
             let thread_options = if expose_all_priorities {
@@ -1072,46 +1123,49 @@ fn process_list_priority_controls_submenu(
             .copied()
             .filter(|priority| *priority != ProcessThreadPrioritySetting::Default)
             .collect();
-            let menu = process_list_priority_value_submenu(
+            let menu = process_list_runtime_priority_submenu(
                 menu,
                 t!("process_list.thread_priority").to_string(),
                 thread_options,
                 current_thread,
                 thread_priority_available,
-                process_list_priority_option_available,
+                always_available,
                 app_entity.clone(),
                 process_name.clone(),
                 targets.clone(),
                 process_thread_priority_setting_label,
-                quick_apply_thread_priority,
-                thread_priority::current_priority,
-                "thread-priority",
+                RuntimeHandle::request_thread_priority_action,
                 window,
                 menu_cx,
             );
 
-            let current_boost = representative
-                .and_then(|target| dynamic_priority_boost::current_boost_disabled(target).ok());
-            let menu = process_list_priority_value_submenu(
+            let current_boost = targets
+                .iter()
+                .filter_map(|target| target.as_ref().ok())
+                .find_map(|target| current_dynamic_priority_boost_state(target).ok());
+            let menu = process_list_runtime_priority_submenu(
                 menu,
                 t!("process_list.dynamic_priority_boost").to_string(),
-                vec![false, true],
+                vec![
+                    DynamicPriorityBoostState::Enabled,
+                    DynamicPriorityBoostState::Disabled,
+                ],
                 current_boost,
                 can_set_information && current_boost.is_some(),
-                process_list_priority_option_available,
+                always_available,
                 app_entity.clone(),
                 process_name.clone(),
                 targets.clone(),
                 dynamic_boost_quick_label,
-                dynamic_priority_boost::apply_once,
-                current_dynamic_priority_boost,
-                "dynamic-priority-boost",
+                RuntimeHandle::request_dynamic_priority_boost_action,
                 window,
                 menu_cx,
             );
 
-            let current_io =
-                representative.and_then(|target| io_priority::current_priority(target).ok());
+            let current_io = targets
+                .iter()
+                .filter_map(|target| target.as_ref().ok())
+                .find_map(|target| current_process_io_priority(target, allow_cross_session).ok());
             let io_options = if expose_all_priorities {
                 &ProcessIoPrioritySetting::ADVANCED_ALL[..]
             } else {
@@ -1120,26 +1174,26 @@ fn process_list_priority_controls_submenu(
             .iter()
             .filter_map(|priority| priority.priority())
             .collect();
-            let menu = process_list_priority_value_submenu(
+            let menu = process_list_runtime_priority_submenu(
                 menu,
                 t!("process_list.io_priority").to_string(),
                 io_options,
                 current_io,
-                can_set_information && current_io.is_some(),
-                process_list_priority_option_available,
+                current_io.is_some(),
+                always_available,
                 app_entity.clone(),
                 process_name.clone(),
                 targets.clone(),
                 io_priority_quick_label,
-                io_priority::apply_once,
-                current_io_priority,
-                "io-priority",
+                RuntimeHandle::request_io_priority_action,
                 window,
                 menu_cx,
             );
 
-            let current_gpu =
-                representative.and_then(|target| gpu_priority::current_priority(target).ok());
+            let current_gpu = targets
+                .iter()
+                .filter_map(|target| target.as_ref().ok())
+                .find_map(|target| current_process_gpu_priority(target, allow_cross_session).ok());
             let gpu_options = if expose_all_priorities {
                 &ProcessGpuPrioritySetting::ADVANCED_ALL[..]
             } else {
@@ -1148,44 +1202,40 @@ fn process_list_priority_controls_submenu(
             .iter()
             .filter_map(|priority| priority.priority())
             .collect();
-            let menu = process_list_priority_value_submenu(
+            let menu = process_list_runtime_priority_submenu(
                 menu,
                 t!("process_list.gpu_priority").to_string(),
                 gpu_options,
                 current_gpu,
-                can_set_information && current_gpu.is_some(),
-                process_list_priority_option_available,
+                current_gpu.is_some(),
+                always_available,
                 app_entity.clone(),
                 process_name.clone(),
                 targets.clone(),
                 gpu_priority_quick_label,
-                gpu_priority::apply_once,
-                current_gpu_priority,
-                "gpu-priority",
+                RuntimeHandle::request_gpu_priority_action,
                 window,
                 menu_cx,
             );
 
-            let current_memory =
-                representative.and_then(|target| memory_priority::current_priority(target).ok());
-            let memory_options = ProcessMemoryPrioritySetting::ALL
-                .into_iter()
-                .filter(|priority| *priority != ProcessMemoryPrioritySetting::Default)
-                .collect();
-            process_list_priority_value_submenu(
+            let current_memory = targets
+                .iter()
+                .filter_map(|target| target.as_ref().ok())
+                .find_map(|target| {
+                    current_process_memory_priority(target, allow_cross_session).ok()
+                });
+            process_list_runtime_priority_submenu(
                 menu,
                 t!("process_list.memory_priority").to_string(),
-                memory_options,
+                ProcessMemoryPriority::ALL.to_vec(),
                 current_memory,
-                can_set_information && current_memory.is_some(),
-                process_list_priority_option_available,
+                current_memory.is_some(),
+                always_available,
                 app_entity.clone(),
                 process_name.clone(),
                 targets.clone(),
-                process_memory_priority_setting_label,
-                quick_apply_memory_priority,
-                current_memory_priority,
-                "memory-priority",
+                memory_priority_quick_label,
+                RuntimeHandle::request_memory_priority_action,
                 window,
                 menu_cx,
             )
@@ -1202,7 +1252,7 @@ fn process_list_rule_details_menu_item(
     PopupMenuItem::new(t!("process_list.open_rule_details").to_string()).on_click(
         move |_, _, cx| {
             app_entity.update(cx, |app, cx| {
-                app.selected_process_id = process_id;
+                app.process_list.selected_process_id = process_id;
                 app.open_process_details(process_name.clone(), executable_path.clone(), cx);
             });
         },
@@ -1232,11 +1282,18 @@ fn process_list_open_location_menu_item(
     })
 }
 
+type ProcessListRuntimePriorityRequest<T> =
+    fn(
+        &RuntimeHandle,
+        Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        T,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError>;
+
 #[expect(
     clippy::too_many_arguments,
     reason = "submenu items need live process action context"
 )]
-fn process_list_priority_value_submenu<T: Copy + PartialEq + 'static>(
+fn process_list_runtime_priority_submenu<T: Copy + PartialEq + 'static>(
     menu: PopupMenu,
     title: String,
     options: Vec<T>,
@@ -1247,9 +1304,7 @@ fn process_list_priority_value_submenu<T: Copy + PartialEq + 'static>(
     process_name: String,
     targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
     label: fn(T) -> String,
-    apply: fn(&ProcessActionTarget, T) -> Result<(), String>,
-    current_for_target: fn(&ProcessActionTarget) -> Result<Option<T>, String>,
-    restore_key: &'static str,
+    request: ProcessListRuntimePriorityRequest<T>,
     window: &mut Window,
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -1273,35 +1328,42 @@ fn process_list_priority_value_submenu<T: Copy + PartialEq + 'static>(
                 )
                 .disabled(disabled)
                 .on_click(move |_, _, cx| {
-                    app_entity.update(cx, |app, cx| {
-                        let result = apply_process_list_targets(&targets, |target| {
-                            let first_change = !app.process_quick_action_restore_keys.contains(&(
-                                target.id,
-                                target.creation_time,
-                                restore_key,
-                            ));
-                            let original = if first_change {
-                                Some(current_for_target(target)?.ok_or_else(|| {
-                                    "The original process state could not be preserved.".to_owned()
-                                })?)
-                            } else {
-                                None
-                            };
-                            apply(target, option)?;
-                            if let Some(original) = original {
-                                let restore_target = target.clone();
-                                app.track_process_quick_action_restore(
-                                    restore_key,
-                                    target,
-                                    move || {
-                                        let _ = apply(&restore_target, original);
-                                    },
+                    let targets = targets.clone();
+                    let result_app_entity = app_entity.clone();
+                    let process_name = process_name.clone();
+                    let action = action.clone();
+                    let request_result = app_entity
+                        .update(cx, |app, _| request(&app.runtime_handle, targets, option));
+                    let receiver = match request_result {
+                        Ok(receiver) => receiver,
+                        Err(error) => {
+                            app_entity.update(cx, |app, cx| {
+                                app.finish_process_quick_action(
+                                    &process_name,
+                                    &action,
+                                    Err(error.to_string()),
+                                    cx,
                                 );
-                            }
-                            Ok(())
-                        });
-                        app.finish_process_quick_action(&process_name, &action, result, cx);
+                            });
+                            return;
+                        }
+                    };
+                    let result = cx.background_executor().spawn(async move {
+                        receiver
+                            .recv()
+                            .map_err(|_| {
+                                "The process control worker stopped before replying.".to_owned()
+                            })?
+                            .map_err(|error| error.to_string())?
+                            .into_process_list_result()
                     });
+                    cx.spawn(async move |cx| {
+                        let result = result.await;
+                        let _ = result_app_entity.update(cx, |app, cx| {
+                            app.finish_process_quick_action(&process_name, &action, result, cx);
+                        });
+                    })
+                    .detach();
                 }),
             );
         }
@@ -1309,40 +1371,9 @@ fn process_list_priority_value_submenu<T: Copy + PartialEq + 'static>(
     })
 }
 
-fn apply_process_list_targets(
-    targets: &[Result<ProcessActionTarget, ProcessActionTargetError>],
-    mut apply: impl FnMut(&ProcessActionTarget) -> Result<(), String>,
-) -> Result<(), String> {
-    let mut failure_count = 0;
-    let mut first_error = None;
-    for target in targets {
-        let result = target
-            .as_ref()
-            .map_err(ToString::to_string)
-            .and_then(&mut apply);
-        if let Err(error) = result {
-            failure_count += 1;
-            first_error.get_or_insert(error);
-        }
-    }
-    if failure_count == 0 && !targets.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{failure_count} of {} process actions failed: {}",
-            targets.len(),
-            first_error.unwrap_or_else(|| "No process targets were available.".to_owned())
-        ))
-    }
-}
-
 fn process_list_stop_action_visibility(nested: bool, has_children: bool) -> (bool, bool) {
     (true, nested || has_children)
 }
-fn process_list_priority_option_available<T>(_: T) -> bool {
-    true
-}
-
 #[derive(Clone, Copy)]
 enum ProcessListMenuItemTone {
     Default,
@@ -1376,58 +1407,15 @@ fn process_list_value_menu_item(
     })
 }
 
-fn quick_apply_process_priority(
-    target: &ProcessActionTarget,
-    priority: ProcessPrioritySetting,
-) -> Result<(), String> {
-    process_priority::apply_once(target, priority).map(|_| ())
+fn always_available<T>(_: T) -> bool {
+    true
 }
 
-fn current_process_priority(
-    target: &ProcessActionTarget,
-) -> Result<Option<ProcessPrioritySetting>, String> {
-    process_priority::current_priority(target).map(Some)
-}
-
-fn quick_apply_thread_priority(
-    target: &ProcessActionTarget,
-    priority: ProcessThreadPrioritySetting,
-) -> Result<(), String> {
-    thread_priority::apply_once(target, priority).map(|_| ())
-}
-
-fn current_dynamic_priority_boost(target: &ProcessActionTarget) -> Result<Option<bool>, String> {
-    dynamic_priority_boost::current_boost_disabled(target).map(Some)
-}
-
-fn current_io_priority(target: &ProcessActionTarget) -> Result<Option<ProcessIoPriority>, String> {
-    io_priority::current_priority(target).map(Some)
-}
-
-fn current_gpu_priority(
-    target: &ProcessActionTarget,
-) -> Result<Option<ProcessGpuPriority>, String> {
-    gpu_priority::current_priority(target).map(Some)
-}
-
-fn quick_apply_memory_priority(
-    target: &ProcessActionTarget,
-    priority: ProcessMemoryPrioritySetting,
-) -> Result<(), String> {
-    memory_priority::apply_once(target, priority).map(|_| ())
-}
-
-fn current_memory_priority(
-    target: &ProcessActionTarget,
-) -> Result<Option<ProcessMemoryPrioritySetting>, String> {
-    memory_priority::current_priority(target).map(Some)
-}
-
-fn dynamic_boost_quick_label(disabled: bool) -> String {
-    if disabled {
-        t!("common.disabled").to_string()
-    } else {
+fn dynamic_boost_quick_label(state: DynamicPriorityBoostState) -> String {
+    if state == DynamicPriorityBoostState::Enabled {
         t!("common.enabled").to_string()
+    } else {
+        t!("common.disabled").to_string()
     }
 }
 
@@ -1437,6 +1425,10 @@ fn io_priority_quick_label(priority: ProcessIoPriority) -> String {
 
 fn gpu_priority_quick_label(priority: ProcessGpuPriority) -> String {
     process_gpu_priority_label(priority)
+}
+
+fn memory_priority_quick_label(priority: ProcessMemoryPriority) -> String {
+    process_memory_priority_setting_label(priority.into())
 }
 
 pub(in crate::ui::app) fn process_list_entry_row(
@@ -1457,13 +1449,14 @@ pub(in crate::ui::app) fn process_list_entry_row(
         .map(|path| path.to_string_lossy().into_owned());
     let details_name = process_name.clone();
     let details_path = executable_path.clone();
-    let selected = edit_context.app.selected_process_id == Some(process_id);
+    let selected = edit_context.app.process_list.selected_process_id == Some(process_id);
     let app_entity = cx.entity();
     let limited_access = executable_path.is_none() || !process.can_set_information;
     let protected = process_list_process_is_protected(process);
     let suspended = edit_context
         .app
-        .app_suspension_status
+        .feature_status
+        .app_suspension
         .suspended_process_ids
         .contains(&process_id);
 
@@ -1480,7 +1473,8 @@ pub(in crate::ui::app) fn process_list_entry_row(
         .allow_cross_session_process_control;
     let has_children = edit_context
         .app
-        .running_processes
+        .process_list
+        .processes
         .iter()
         .any(|candidate| candidate.parent_id == Some(process.id));
     let (show_stop_process, show_stop_process_tree) =
@@ -1520,7 +1514,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
             row.hover(|style| style.bg(rgb(settings_card_hover_color())))
                 .cursor_pointer()
                 .on_click(cx.listener(move |app, _, _, cx| {
-                    app.selected_process_id = Some(process_id);
+                    app.process_list.selected_process_id = Some(process_id);
                     let Some(executable_path) = details_path.clone() else {
                         return;
                     };
@@ -1574,18 +1568,23 @@ pub(in crate::ui::app) fn process_list_entry_row(
         } else {
             t!("process_list.status_administrator_required").to_string()
         };
-    } else if let Some(usage) = edit_context.app.process_resource_usage.get(&process.id) {
+    } else if let Some(usage) = edit_context
+        .app
+        .process_list
+        .resource_usage
+        .get(&process.id)
+    {
         process_summary.cpu_percent = usage.cpu_percent;
         process_summary.memory_bytes = usage.working_set_bytes;
         process_summary.status = process_list_status_label(
-            &edit_context.app.app_suspension_status,
+            &edit_context.app.feature_status.app_suspension,
             Some(process.id),
             executable_path.as_deref().unwrap_or_default(),
             usage.efficiency_mode == Some(true),
         );
     } else {
         process_summary.status = process_list_status_label(
-            &edit_context.app.app_suspension_status,
+            &edit_context.app.feature_status.app_suspension,
             Some(process.id),
             executable_path.as_deref().unwrap_or_default(),
             false,
@@ -1633,7 +1632,8 @@ pub(in crate::ui::app) fn process_list_group_row(
     let suspended = data.process_ids.iter().all(|process_id| {
         edit_context
             .app
-            .app_suspension_status
+            .feature_status
+            .app_suspension
             .suspended_process_ids
             .contains(process_id)
     });
@@ -2665,8 +2665,9 @@ pub(in crate::ui::app) fn process_list_toolbar_label(
     app: &WinderustApp,
     process_count: usize,
 ) -> String {
-    let Some(process) = app.selected_process_id.and_then(|id| {
-        app.running_processes
+    let Some(process) = app.process_list.selected_process_id.and_then(|id| {
+        app.process_list
+            .processes
             .iter()
             .find(|process| process.id == id)
     }) else {

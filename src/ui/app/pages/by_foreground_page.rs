@@ -62,10 +62,8 @@ impl WinderustApp {
                                 cx,
                             );
                             if can_add_foreground_process(&app.settings.by_foreground, &process) {
-                                app.settings
-                                    .by_foreground
-                                    .rules
-                                    .push(app.new_foreground_rule(&process));
+                                let rule = app.new_foreground_rule(&process);
+                                app.settings.by_foreground.rules.push(rule);
                                 app.inputs.ensure_for_settings(window, cx, &app.settings);
                                 clear_input(&app.inputs.foreground_process, window, cx);
                             }

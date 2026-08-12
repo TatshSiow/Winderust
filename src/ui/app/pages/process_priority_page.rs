@@ -255,7 +255,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_process_priority_status_card(&self) -> gpui::Div {
-        let status = &self.process_priority_status;
+        let status = &self.feature_status.process_priority;
         let message = if status.message.is_empty() {
             t!("process_priority.not_checked").to_string()
         } else {

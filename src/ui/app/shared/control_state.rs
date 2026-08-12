@@ -674,7 +674,7 @@ impl WinderustApp {
         self.editing_numeric = None;
         self.expanded_rule_cards.clear();
         self.pending_list_item_removals.clear();
-        self.selected_process_paths.clear();
+        self.process_catalog.selected_paths.clear();
         self.inputs = UiInputs::new(window, cx, &settings, processor_power_values);
         self.rebuild_rule_title_input_subscriptions(window, cx);
         self.rebuild_process_picker_input_subscriptions(window, cx);
@@ -701,12 +701,15 @@ impl WinderustApp {
                     move |app, input, event: &InputEvent, _, cx| {
                         if matches!(event, InputEvent::Change) {
                             let display_name = input.read(cx).value();
-                            let selection_still_matches =
-                                app.selected_process_paths.get(&target).is_some_and(|path| {
+                            let selection_still_matches = app
+                                .process_catalog
+                                .selected_paths
+                                .get(&target)
+                                .is_some_and(|path| {
                                     process_path_matches_display_name(path, display_name.as_ref())
                                 });
                             if !selection_still_matches {
-                                app.selected_process_paths.remove(&target);
+                                app.process_catalog.selected_paths.remove(&target);
                             }
                             cx.notify();
                         }
@@ -1308,11 +1311,13 @@ impl WinderustApp {
             }
             NumericField::TimerResolutionRule(index) => {
                 let minimum_100ns = self
-                    .timer_resolution_status
+                    .feature_status
+                    .timer_resolution
                     .minimum_100ns
                     .unwrap_or((TIMER_RESOLUTION_INPUT_MIN_MS * 10_000.0).round() as u32);
                 let maximum_100ns = self
-                    .timer_resolution_status
+                    .feature_status
+                    .timer_resolution
                     .maximum_100ns
                     .unwrap_or((TIMER_RESOLUTION_INPUT_MAX_MS * 10_000.0).round() as u32);
                 if let (Some(rule), Some(value)) = (

@@ -115,7 +115,7 @@ impl WinderustApp {
         let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self.settings.core_limiter.rules.iter().enumerate() {
             let process = rule.executable_path.clone();
-            let indicator = core_limiter_indicator(&self.core_limiter_status, &process);
+            let indicator = core_limiter_indicator(&self.feature_status.core_limiter, &process);
             let card_target = RuleCardTarget::CoreLimiter(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(

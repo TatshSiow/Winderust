@@ -45,7 +45,7 @@ impl WinderustApp {
                     .label(t!("action_log.clear").to_string())
                     .disabled(self.action_log_entries.is_empty())
                     .on_click(cx.listener(|app, _, _, cx| {
-                        app.background_automation.clear_action_log();
+                        app.runtime_handle.clear_action_log();
                         app.action_log_entries = Arc::new(Vec::new());
                         app.action_log_page = 0;
                         cx.notify();

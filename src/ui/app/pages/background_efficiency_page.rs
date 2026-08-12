@@ -109,7 +109,7 @@ impl WinderustApp {
     }
 
     fn render_background_efficiency_status_card(&self, cx: &mut Context<Self>) -> AnyElement {
-        let status = &self.background_efficiency_status;
+        let status = &self.feature_status.background_efficiency;
         v_flex()
             .gap_2()
             .child(stat_grid(vec![

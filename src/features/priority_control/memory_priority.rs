@@ -1,32 +1,24 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::{collections::BTreeSet, path::PathBuf};
 
-use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
-    System::Threading::{
-        GetCurrentProcessId, GetProcessInformation, OpenProcess,
-        ProcessMemoryPriority as ProcessMemoryPriorityClass, SetProcessInformation,
-        MEMORY_PRIORITY_BELOW_NORMAL, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_LOW,
-        MEMORY_PRIORITY_MEDIUM, MEMORY_PRIORITY_NORMAL, MEMORY_PRIORITY_VERY_LOW,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-    },
-};
-
-use crate::win_util::{last_error, WinHandle};
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{MemoryPrioritySettings, ProcessMemoryPriority, ProcessMemoryPrioritySetting},
+    control::{
+        memory_priority::{
+            MemoryPriorityApplyOutcome, MemoryPriorityClaim, MemoryPriorityController,
+            MemoryPriorityPreservation, MemoryPriorityReleaseSummary,
+        },
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+    },
     foreground::{
-        contains_process_name, ensure_process_action_target_access, is_foreground_process,
-        list_processes, process_count_label, process_executable_path, process_failure_key,
-        process_handle_matches_executable_path, process_session_id, same_process_name,
-        unique_app_names, visible_window_process_ids, ProcessActionAccess, ProcessActionTarget,
-        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, is_foreground_process, process_count_label, process_executable_path,
+        process_failure_key, process_session_id, unique_app_names, ProtectedProcesses,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    runtime::observations::CycleObservations,
 };
 
 use super::PriorityProcessTier;
@@ -44,7 +36,6 @@ pub struct MemoryPrioritySnapshot {
 
 #[derive(Default)]
 pub struct MemoryPriorityManager {
-    adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: ExecutionFailureTracker,
 }
 
@@ -53,6 +44,7 @@ pub struct MemoryPriorityTarget {
     pub process_id: u32,
     pub process_name: String,
     pub executable_path: String,
+    pub creation_time: u64,
     pub priority: ProcessMemoryPriority,
     pub foreground: bool,
     pub visible_window: bool,
@@ -61,125 +53,93 @@ pub struct MemoryPriorityTarget {
     pub preserve_background_priority: bool,
 }
 
-#[derive(Clone)]
-struct AdjustedProcess {
-    process_name: String,
-    executable_path: String,
-    creation_time: u64,
-    previous_priority: ProcessMemoryPriority,
-    applied_priority: ProcessMemoryPriority,
-}
-
-#[derive(Debug)]
-enum MemoryPriorityError {
-    AccessDenied,
-    ProcessExited,
-    Failed(String),
-}
-
 impl MemoryPriorityManager {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the policy boundary receives the shared runtime observations and controller"
+    )]
     pub fn update_rules(
         &mut self,
+        controller: &mut MemoryPriorityController,
         settings: &MemoryPrioritySettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> MemoryPrioritySnapshot {
         if !automation_enabled {
-            let failures = self.clear_all(
+            return self.disabled_snapshot(
+                controller,
+                ControlOwner::MemoryPriority,
                 ActionLogFeature::MemoryPriority,
                 action_log,
                 "automation disabled",
             );
-            self.failure_suppression.clear();
-            return MemoryPrioritySnapshot {
-                enabled: false,
-                failed_processes: failures.count,
-                last_error: failures.last_error,
-                ..Default::default()
-            };
         }
 
         if !settings.enabled {
-            let failures = self.clear_all(
+            return self.disabled_snapshot(
+                controller,
+                ControlOwner::MemoryPriority,
                 ActionLogFeature::MemoryPriority,
                 action_log,
                 "memory priority defaults disabled",
             );
-            self.failure_suppression.clear();
-            return MemoryPrioritySnapshot {
-                enabled: false,
-                failed_processes: failures.count,
-                last_error: failures.last_error,
-                ..Default::default()
-            };
         }
 
         let foreground_sensitive = settings.foreground_detection_enabled
             && settings.foreground_priority != settings.background_priority;
         if foreground_sensitive && foreground_process_id.is_none() {
-            let failures = self.clear_all(
+            return self.paused_snapshot(
+                controller,
+                ControlOwner::MemoryPriority,
                 ActionLogFeature::MemoryPriority,
                 action_log,
                 "foreground app is unknown",
+                None,
             );
-            return MemoryPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                last_error: failures.last_error,
-                ..Default::default()
-            };
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failures = self.clear_all(
+            return self.paused_snapshot(
+                controller,
+                ControlOwner::MemoryPriority,
                 ActionLogFeature::MemoryPriority,
                 action_log,
                 "current Windows session is unknown",
+                None,
             );
-            return MemoryPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                last_error: failures.last_error,
-                ..Default::default()
-            };
         };
 
-        let processes = match list_processes() {
+        let processes = match observations.processes() {
             Ok(processes) => processes,
-            Err(err) => {
-                let failures = self.clear_all(
+            Err(error) => {
+                return self.paused_snapshot(
+                    controller,
+                    ControlOwner::MemoryPriority,
                     ActionLogFeature::MemoryPriority,
                     action_log,
                     "process list unavailable",
+                    Some(error),
                 );
-                return MemoryPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count + 1,
-                    last_error: Some(err),
-                    ..Default::default()
-                };
             }
         };
 
         let visible_processes = if settings.visible_window_detection_enabled {
-            let Some(process_ids) = visible_window_process_ids() else {
-                let failures = self.clear_all(
+            let Ok(process_ids) = observations.visible_window_process_ids() else {
+                return self.paused_snapshot(
+                    controller,
+                    ControlOwner::MemoryPriority,
                     ActionLogFeature::MemoryPriority,
                     action_log,
                     "visible windows are unavailable",
+                    Some("Paused: visible windows are unavailable.".to_owned()),
                 );
-                return MemoryPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    last_error: Some("Paused: visible windows are unavailable.".to_owned()),
-                    ..Default::default()
-                };
             };
-            ProtectedProcesses::capture(&processes, false, None, process_ids)
+            ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
             ProtectedProcesses::default()
         };
@@ -196,7 +156,7 @@ impl MemoryPriorityManager {
         };
 
         let targets = processes
-            .into_iter()
+            .iter()
             .filter_map(|process| {
                 if process.is_critical != Some(false)
                     || !process.can_set_information
@@ -211,7 +171,8 @@ impl MemoryPriorityManager {
                     return None;
                 }
 
-                let executable_path = process_executable_path(&process)?;
+                let executable_path = process_executable_path(process)?;
+                let creation_time = process.creation_time?;
                 let foreground = settings.foreground_detection_enabled
                     && is_foreground_process(
                         process.id,
@@ -239,8 +200,9 @@ impl MemoryPriorityManager {
 
                 priority.priority().map(|priority| MemoryPriorityTarget {
                     process_id: process.id,
-                    process_name: process.name,
+                    process_name: process.name.clone(),
                     executable_path: executable_path.to_string_lossy().into_owned(),
+                    creation_time,
                     priority,
                     foreground,
                     visible_window,
@@ -251,32 +213,46 @@ impl MemoryPriorityManager {
             })
             .collect();
 
-        let mut snapshot = self.update(targets, true, ActionLogFeature::MemoryPriority, action_log);
+        let mut snapshot = self.update(
+            controller,
+            ControlOwner::MemoryPriority,
+            targets,
+            true,
+            allow_cross_session_process_control,
+            ActionLogFeature::MemoryPriority,
+            action_log,
+        );
         snapshot.enabled = true;
         snapshot
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the policy manager keeps owner, access, and reporting context explicit"
+    )]
     pub fn update(
         &mut self,
+        controller: &mut MemoryPriorityController,
+        owner: ControlOwner,
         targets: Vec<MemoryPriorityTarget>,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
     ) -> MemoryPrioritySnapshot {
         if !automation_enabled {
-            let failures = self.clear_all(action_log_feature, action_log, "automation disabled");
-            self.failure_suppression.clear();
-            return MemoryPrioritySnapshot {
-                enabled: false,
-                failed_processes: failures.count,
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.disabled_snapshot(
+                controller,
+                owner,
+                action_log_feature,
+                action_log,
+                "automation disabled",
+            );
         }
 
-        let target_ids = targets
+        let active_targets = targets
             .iter()
-            .map(|target| target.process_id)
+            .map(memory_priority_target_key)
             .collect::<BTreeSet<_>>();
         let target_names = targets
             .iter()
@@ -284,11 +260,13 @@ impl MemoryPriorityManager {
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&target_names);
 
-        let mut failures = self.release_non_targets(
-            &target_ids,
+        let mut failures = MemoryPriorityFailures::default();
+        self.merge_release_summary(
+            controller.release_policy_except(owner, &active_targets),
             action_log_feature,
             action_log,
             "process no longer matches a memory priority target",
+            &mut failures,
         );
         let mut skipped_processes = 0;
         let mut applied_processes = 0;
@@ -307,36 +285,42 @@ impl MemoryPriorityManager {
                 continue;
             }
 
-            match self.apply_process(
-                (
-                    target.process_id,
-                    target.process_name.clone(),
-                    target.executable_path.clone(),
-                ),
-                target.priority,
-                PriorityProcessTier::from_flags(target.foreground, target.visible_window),
+            let tier = PriorityProcessTier::from_flags(target.foreground, target.visible_window);
+            let preservation = memory_priority_preservation(
+                tier,
                 target.preserve_foreground_priority,
                 target.preserve_visible_window_priority,
                 target.preserve_background_priority,
-            ) {
-                Ok(ApplyOutcome::Applied { loggable }) => {
-                    if loggable {
-                        applied_processes += 1;
-                    }
+            );
+            let claim = MemoryPriorityClaim {
+                target: ProcessControlTarget::automatic(
+                    target.process_id,
+                    target.process_name.clone(),
+                    PathBuf::from(&target.executable_path),
+                    target.creation_time,
+                ),
+                owner,
+                priority: target.priority,
+                preservation,
+            };
+            match controller.apply_policy_claim(claim, allow_cross_session_process_control) {
+                Ok(MemoryPriorityApplyOutcome::Applied) => {
+                    applied_processes += 1;
                     self.clear_process_failure(&target.executable_path);
                 }
-                Ok(ApplyOutcome::AlreadyApplied) => {
+                Ok(
+                    MemoryPriorityApplyOutcome::Unchanged | MemoryPriorityApplyOutcome::Shadowed,
+                ) => {
                     self.clear_process_failure(&target.executable_path);
                 }
-                Ok(ApplyOutcome::Preserved) => {
+                Ok(MemoryPriorityApplyOutcome::Preserved) => {
                     skipped_processes += 1;
                     self.clear_process_failure(&target.executable_path);
                 }
-                Err(MemoryPriorityError::ProcessExited) => {
+                Err(ProcessControlError::ProcessExited) => {
                     skipped_processes += 1;
-                    self.adjusted.remove(&target.process_id);
                 }
-                Err(MemoryPriorityError::AccessDenied) => {
+                Err(ProcessControlError::AccessDenied(message)) => {
                     skipped_processes += 1;
                     self.failure_suppression
                         .suppress_process_failure(&target.executable_path);
@@ -345,16 +329,16 @@ impl MemoryPriorityManager {
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because Windows denied memory priority access to the process.",
+                        message,
                     );
                 }
-                Err(err) => {
+                Err(error) => {
                     self.record_process_failure(&target.executable_path);
                     failures.record(
                         "Apply",
                         target.process_id,
                         &target.process_name,
-                        err,
+                        error,
                         action_log_feature,
                         action_log,
                     );
@@ -371,179 +355,114 @@ impl MemoryPriorityManager {
             );
         }
 
+        let adjusted_apps = unique_app_names(
+            controller
+                .policy_managed_process_names(owner)
+                .iter()
+                .map(String::as_str),
+        );
         MemoryPrioritySnapshot {
             enabled: true,
-            adjusted_processes: self.adjusted.len(),
+            adjusted_processes: controller.policy_managed_process_count(owner),
             skipped_processes,
             failed_processes: failures.count,
-            adjusted_apps: unique_app_names(
-                self.adjusted
-                    .values()
-                    .map(|process| process.process_name.as_str()),
-            ),
+            adjusted_apps,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             last_error: failures.last_error,
         }
     }
 
-    fn apply_process(
+    fn disabled_snapshot(
         &mut self,
-        (process_id, process_name, executable_path): (u32, String, String),
-        priority: ProcessMemoryPriority,
-        tier: PriorityProcessTier,
-        preserve_foreground: bool,
-        preserve_visible_window: bool,
-        preserve_background: bool,
-    ) -> Result<ApplyOutcome, MemoryPriorityError> {
-        let process = ProcessHandle::open(process_id)?;
-        if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
-            return Err(MemoryPriorityError::ProcessExited);
-        }
-        let creation_time = process
-            .0
-            .process_creation_time()
-            .ok_or(MemoryPriorityError::ProcessExited)?;
-        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
-            adjusted.creation_time == creation_time
-                && same_process_name(&adjusted.process_name, &process_name)
-        });
-        let current_priority = process.memory_priority()?;
-
-        let baseline_priority = reusable_existing
-            .map(|adjusted| adjusted.previous_priority)
-            .unwrap_or(current_priority);
-        if should_preserve_priority(
-            tier,
-            preserve_foreground,
-            preserve_visible_window,
-            preserve_background,
-            memory_priority_raw(baseline_priority),
-            memory_priority_raw(priority),
-        ) {
-            if let Some(adjusted) = reusable_existing.cloned() {
-                process.set_memory_priority(adjusted.previous_priority)?;
-                self.adjusted.remove(&process_id);
-            }
-            return Ok(ApplyOutcome::Preserved);
-        }
-
-        if reusable_existing.is_some_and(|adjusted| {
-            adjusted.applied_priority == priority && current_priority == priority
-        }) {
-            return Ok(ApplyOutcome::AlreadyApplied);
-        }
-
-        if current_priority != priority {
-            process.set_memory_priority(priority)?;
-            let refreshed_priority = process.memory_priority()?;
-            if refreshed_priority != priority {
-                return Err(MemoryPriorityError::Failed(format!(
-                    "Memory priority remained {} after requesting {}.",
-                    memory_priority_label(refreshed_priority),
-                    memory_priority_label(priority)
-                )));
-            }
-        }
-
-        self.adjusted.insert(
-            process_id,
-            AdjustedProcess {
-                process_name,
-                executable_path,
-                creation_time,
-                previous_priority: baseline_priority,
-                applied_priority: priority,
-            },
-        );
-        Ok(ApplyOutcome::Applied {
-            loggable: current_priority != priority,
-        })
-    }
-
-    fn release_non_targets(
-        &mut self,
-        target_ids: &BTreeSet<u32>,
+        controller: &mut MemoryPriorityController,
+        owner: ControlOwner,
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> MemoryPriorityFailures {
-        let process_ids = self
-            .adjusted
-            .keys()
-            .copied()
-            .filter(|process_id| !target_ids.contains(process_id))
-            .collect::<Vec<_>>();
-        self.release_processes(&process_ids, action_log_feature, action_log, reason)
-    }
-
-    fn clear_all(
-        &mut self,
-        action_log_feature: ActionLogFeature,
-        action_log: &mut ActionLog,
-        reason: &str,
-    ) -> MemoryPriorityFailures {
-        let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, action_log_feature, action_log, reason)
-    }
-
-    fn release_processes(
-        &mut self,
-        process_ids: &[u32],
-        action_log_feature: ActionLogFeature,
-        action_log: &mut ActionLog,
-        reason: &str,
-    ) -> MemoryPriorityFailures {
+    ) -> MemoryPrioritySnapshot {
         let mut failures = MemoryPriorityFailures::default();
-        let mut restored_processes = 0;
-        for process_id in process_ids {
-            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
-                continue;
-            };
-            let log_name = process_state.process_name.clone();
-            match restore_process(*process_id, &process_state) {
-                Ok(()) => {
-                    self.adjusted.remove(process_id);
-                    self.clear_process_failure(&process_state.executable_path);
-                    restored_processes += 1;
-                }
-                Err(MemoryPriorityError::ProcessExited) => {
-                    self.adjusted.remove(process_id);
-                }
-                Err(MemoryPriorityError::AccessDenied) => {
-                    self.record_process_failure(&process_state.executable_path);
-                    action_log.record(
-                        action_log_feature,
-                        Some(*process_id),
-                        log_name,
-                        ActionLogResult::Skipped,
-                        format!(
-                            "Skipped restoring previous memory priority because Windows denied access: {reason}."
-                        ),
-                    );
-                }
-                Err(err) => {
-                    self.record_process_failure(&process_state.executable_path);
-                    failures.record(
-                        "Restore",
-                        *process_id,
-                        &log_name,
-                        err,
-                        action_log_feature,
-                        action_log,
-                    );
-                }
-            }
+        self.merge_release_summary(
+            controller.release_all_policy(owner),
+            action_log_feature,
+            action_log,
+            reason,
+            &mut failures,
+        );
+        self.failure_suppression.clear();
+        MemoryPrioritySnapshot {
+            enabled: false,
+            failed_processes: failures.count,
+            last_error: failures.last_error,
+            ..Default::default()
         }
-        if restored_processes > 0 {
+    }
+
+    fn paused_snapshot(
+        &mut self,
+        controller: &mut MemoryPriorityController,
+        owner: ControlOwner,
+        action_log_feature: ActionLogFeature,
+        action_log: &mut ActionLog,
+        reason: &str,
+        error: Option<String>,
+    ) -> MemoryPrioritySnapshot {
+        let mut failures = MemoryPriorityFailures::default();
+        self.merge_release_summary(
+            controller.release_all_policy(owner),
+            action_log_feature,
+            action_log,
+            reason,
+            &mut failures,
+        );
+        if let Some(error) = error {
+            failures.count += 1;
+            failures.last_error.get_or_insert(error);
+        }
+        MemoryPrioritySnapshot {
+            enabled: true,
+            failed_processes: failures.count,
+            last_error: failures.last_error,
+            ..Default::default()
+        }
+    }
+
+    fn merge_release_summary(
+        &mut self,
+        summary: MemoryPriorityReleaseSummary,
+        action_log_feature: ActionLogFeature,
+        action_log: &mut ActionLog,
+        reason: &str,
+        failures: &mut MemoryPriorityFailures,
+    ) {
+        if summary.restored_processes > 0 {
             action_log.record(
                 action_log_feature,
                 None,
                 memory_priority_summary_process_name(action_log_feature),
                 ActionLogResult::Restored,
-                memory_priority_restore_summary_message(restored_processes, reason),
+                memory_priority_restore_summary_message(summary.restored_processes, reason),
             );
         }
-        failures
+        for failure in summary.failures {
+            self.record_process_failure(&failure.executable_path);
+            match failure.error {
+                ProcessControlError::AccessDenied(message) => action_log.record(
+                    action_log_feature,
+                    Some(failure.process_id),
+                    failure.process_name,
+                    ActionLogResult::Skipped,
+                    format!("{message} Previous Memory Priority could not be restored: {reason}."),
+                ),
+                error => failures.record(
+                    "Restore",
+                    failure.process_id,
+                    &failure.process_name,
+                    error,
+                    action_log_feature,
+                    action_log,
+                ),
+            }
+        }
     }
 
     fn is_executable_path_suppressed(
@@ -575,7 +494,6 @@ impl MemoryPriorityManager {
                 ),
             );
         }
-
         true
     }
 
@@ -608,12 +526,6 @@ impl MemoryPriorityManager {
     }
 }
 
-enum ApplyOutcome {
-    Applied { loggable: bool },
-    AlreadyApplied,
-    Preserved,
-}
-
 #[derive(Default)]
 struct MemoryPriorityFailures {
     count: usize,
@@ -626,11 +538,11 @@ impl MemoryPriorityFailures {
         action: &str,
         process_id: u32,
         process_name: &str,
-        error: MemoryPriorityError,
+        error: ProcessControlError,
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
     ) {
-        let message = memory_priority_error_message(error);
+        let message = error.to_string();
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -645,216 +557,35 @@ impl MemoryPriorityFailures {
     }
 }
 
-impl Drop for MemoryPriorityManager {
-    fn drop(&mut self) {
-        let mut action_log = ActionLog::new(1);
-        self.clear_all(
-            ActionLogFeature::MemoryPriority,
-            &mut action_log,
-            stringify!(MemoryPriorityManager),
-        );
-    }
+fn memory_priority_target_key(
+    target: &MemoryPriorityTarget,
+) -> crate::control::process::ProcessTargetKey {
+    ProcessControlTarget::automatic(
+        target.process_id,
+        target.process_name.clone(),
+        PathBuf::from(&target.executable_path),
+        target.creation_time,
+    )
+    .key()
 }
 
-struct ProcessHandle(WinHandle);
-
-impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, MemoryPriorityError> {
-        // SAFETY: process_id came from the current process snapshot and no inherited handle is
-        // requested.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-                0,
-                process_id,
-            )
-        };
-        if !handle.is_null() {
-            Ok(Self(WinHandle::new(handle)))
-        } else {
-            Err(process_error(
-                &format!("OpenProcess({process_id})"),
-                last_error(),
-            ))
-        }
-    }
-
-    fn memory_priority(&self) -> Result<ProcessMemoryPriority, MemoryPriorityError> {
-        let mut priority = MEMORY_PRIORITY_INFORMATION::default();
-        // SAFETY: self owns a live process handle and priority is writable for exactly the
-        // structure size supplied.
-        let ok = unsafe {
-            GetProcessInformation(
-                self.0.raw(),
-                ProcessMemoryPriorityClass,
-                (&mut priority as *mut MEMORY_PRIORITY_INFORMATION).cast(),
-                std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
-            )
-        };
-        if ok == 0 {
-            Err(process_error("GetProcessInformation", last_error()))
-        } else {
-            Ok(memory_priority_from_raw(priority.MemoryPriority))
-        }
-    }
-
-    fn set_memory_priority(
-        &self,
-        priority: ProcessMemoryPriority,
-    ) -> Result<(), MemoryPriorityError> {
-        let recovery = crate::crash_recovery::record_process_change(
-            self.0.raw(),
-            crate::crash_recovery::ProcessValue::MemoryPriority(memory_priority_raw(
-                self.memory_priority()?,
-            )),
-            crate::crash_recovery::ProcessValue::MemoryPriority(memory_priority_raw(priority)),
-        )
-        .map_err(MemoryPriorityError::Failed)?;
-        let info = MEMORY_PRIORITY_INFORMATION {
-            MemoryPriority: memory_priority_raw(priority),
-        };
-        // SAFETY: self owns a live process handle and info is fully initialized for exactly the
-        // structure size supplied.
-        let ok = unsafe {
-            SetProcessInformation(
-                self.0.raw(),
-                ProcessMemoryPriorityClass,
-                (&info as *const MEMORY_PRIORITY_INFORMATION).cast(),
-                std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
-            )
-        };
-        if ok == 0 {
-            Err(process_error("SetProcessInformation", last_error()))
-        } else {
-            recovery.commit().map_err(MemoryPriorityError::Failed)?;
-            Ok(())
-        }
-    }
-}
-
-pub(crate) fn apply_once(
-    target: &ProcessActionTarget,
-    priority: ProcessMemoryPrioritySetting,
-) -> Result<&'static str, String> {
-    let priority = priority
-        .priority()
-        .ok_or_else(|| "This memory priority is not available as a quick action.".to_owned())?;
-    ensure_process_action_target_access(target, ProcessActionAccess::SetInformation)?;
-    let process = ProcessHandle::open(target.id).map_err(memory_priority_error_message)?;
-    if process.0.process_creation_time() != Some(target.creation_time)
-        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
-    {
-        return Err("The selected process instance has changed.".to_owned());
-    }
-    process
-        .set_memory_priority(priority)
-        .map_err(memory_priority_error_message)?;
-    let applied = process
-        .memory_priority()
-        .map_err(memory_priority_error_message)?;
-    if applied != priority {
-        return Err(format!(
-            "Memory priority remained {}.",
-            memory_priority_label(applied)
-        ));
-    }
-    Ok(memory_priority_label(applied))
-}
-
-pub(crate) fn current_priority(
-    target: &ProcessActionTarget,
-) -> Result<ProcessMemoryPrioritySetting, String> {
-    let process = ProcessHandle::open(target.id).map_err(memory_priority_error_message)?;
-    if process.0.process_creation_time() != Some(target.creation_time)
-        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
-    {
-        return Err("The selected process instance has changed.".to_owned());
-    }
-    process
-        .memory_priority()
-        .map_err(memory_priority_error_message)
-        .map(|priority| match priority {
-            ProcessMemoryPriority::VeryLow => ProcessMemoryPrioritySetting::VeryLow,
-            ProcessMemoryPriority::Low => ProcessMemoryPrioritySetting::Low,
-            ProcessMemoryPriority::Medium => ProcessMemoryPrioritySetting::Medium,
-            ProcessMemoryPriority::BelowNormal => ProcessMemoryPrioritySetting::BelowNormal,
-            ProcessMemoryPriority::Normal => ProcessMemoryPrioritySetting::Normal,
-        })
-}
-
-fn restore_process(
-    process_id: u32,
-    process_state: &AdjustedProcess,
-) -> Result<(), MemoryPriorityError> {
-    let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time) {
-        return Err(MemoryPriorityError::ProcessExited);
-    }
-    process.set_memory_priority(process_state.previous_priority)?;
-    let refreshed_priority = process.memory_priority()?;
-    if refreshed_priority == process_state.previous_priority {
-        Ok(())
-    } else {
-        Err(MemoryPriorityError::Failed(format!(
-            "Memory priority remained {} after restoring {}.",
-            memory_priority_label(refreshed_priority),
-            memory_priority_label(process_state.previous_priority)
-        )))
-    }
-}
-
-fn process_error(operation: &str, error: u32) -> MemoryPriorityError {
-    match error {
-        ERROR_ACCESS_DENIED => MemoryPriorityError::AccessDenied,
-        ERROR_INVALID_PARAMETER => MemoryPriorityError::ProcessExited,
-        _ => MemoryPriorityError::Failed(format!("{operation} failed with error {error}.")),
-    }
-}
-
-fn memory_priority_raw(priority: ProcessMemoryPriority) -> u32 {
-    match priority {
-        ProcessMemoryPriority::VeryLow => MEMORY_PRIORITY_VERY_LOW,
-        ProcessMemoryPriority::Low => MEMORY_PRIORITY_LOW,
-        ProcessMemoryPriority::Medium => MEMORY_PRIORITY_MEDIUM,
-        ProcessMemoryPriority::BelowNormal => MEMORY_PRIORITY_BELOW_NORMAL,
-        ProcessMemoryPriority::Normal => MEMORY_PRIORITY_NORMAL,
-    }
-}
-
-fn memory_priority_from_raw(priority: u32) -> ProcessMemoryPriority {
-    match priority {
-        MEMORY_PRIORITY_VERY_LOW => ProcessMemoryPriority::VeryLow,
-        MEMORY_PRIORITY_LOW => ProcessMemoryPriority::Low,
-        MEMORY_PRIORITY_MEDIUM => ProcessMemoryPriority::Medium,
-        MEMORY_PRIORITY_BELOW_NORMAL => ProcessMemoryPriority::BelowNormal,
-        _ => ProcessMemoryPriority::Normal,
-    }
-}
-
-fn should_preserve_priority(
+fn memory_priority_preservation(
     tier: PriorityProcessTier,
     preserve_foreground: bool,
     preserve_visible_window: bool,
     preserve_background: bool,
-    current_rank: u32,
-    desired_rank: u32,
-) -> bool {
+) -> MemoryPriorityPreservation {
     match tier {
-        PriorityProcessTier::Foreground => preserve_foreground && current_rank >= desired_rank,
-        PriorityProcessTier::VisibleWindow => {
-            preserve_visible_window && current_rank >= desired_rank
+        PriorityProcessTier::Foreground if preserve_foreground => {
+            MemoryPriorityPreservation::PreserveHigher
         }
-        PriorityProcessTier::Background => preserve_background && current_rank <= desired_rank,
-    }
-}
-
-pub fn memory_priority_label(priority: ProcessMemoryPriority) -> &'static str {
-    match priority {
-        ProcessMemoryPriority::VeryLow => "Very Low",
-        ProcessMemoryPriority::Low => "Low",
-        ProcessMemoryPriority::Medium => "Medium",
-        ProcessMemoryPriority::BelowNormal => "Below Normal",
-        ProcessMemoryPriority::Normal => "Normal",
+        PriorityProcessTier::VisibleWindow if preserve_visible_window => {
+            MemoryPriorityPreservation::PreserveHigher
+        }
+        PriorityProcessTier::Background if preserve_background => {
+            MemoryPriorityPreservation::PreserveLower
+        }
+        _ => MemoryPriorityPreservation::Exact,
     }
 }
 
@@ -874,14 +605,6 @@ fn should_skip_process(
         || (!allow_cross_session_process_control
             && process_session_id(process_id) != Some(current_session_id))
         || is_builtin_excluded(process_name)
-}
-
-fn memory_priority_error_message(error: MemoryPriorityError) -> String {
-    match error {
-        MemoryPriorityError::AccessDenied => "Access denied.".to_owned(),
-        MemoryPriorityError::ProcessExited => "Process exited.".to_owned(),
-        MemoryPriorityError::Failed(message) => message,
-    }
 }
 
 fn memory_priority_apply_summary_message(count: usize) -> String {
@@ -907,26 +630,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_memory_priorities_round_trip() {
-        for priority in ProcessMemoryPriority::ALL {
-            assert_eq!(
-                memory_priority_from_raw(memory_priority_raw(priority)),
-                priority
-            );
-        }
-    }
-
-    #[test]
-    fn quick_apply_requires_a_concrete_memory_priority() {
+    fn quick_actions_require_a_concrete_memory_priority() {
         assert_eq!(ProcessMemoryPrioritySetting::Default.priority(), None);
         assert_eq!(ProcessMemoryPrioritySetting::Auto.priority(), None);
         assert_eq!(
             ProcessMemoryPrioritySetting::Low.priority(),
             Some(ProcessMemoryPriority::Low)
         );
+    }
+
+    #[test]
+    fn tier_preservation_matches_focus_visible_and_background_contract() {
         assert_eq!(
-            ProcessMemoryPrioritySetting::Normal.priority(),
-            Some(ProcessMemoryPriority::Normal)
+            memory_priority_preservation(PriorityProcessTier::Foreground, true, true, true),
+            MemoryPriorityPreservation::PreserveHigher
+        );
+        assert_eq!(
+            memory_priority_preservation(PriorityProcessTier::VisibleWindow, true, true, true),
+            MemoryPriorityPreservation::PreserveHigher
+        );
+        assert_eq!(
+            memory_priority_preservation(PriorityProcessTier::Background, true, true, true),
+            MemoryPriorityPreservation::PreserveLower
         );
     }
 
@@ -983,10 +708,6 @@ mod tests {
         assert_eq!(
             memory_priority_restore_summary_message(1, "foreground app is unknown"),
             "Restored previous memory priority for 1 process: foreground app is unknown."
-        );
-        assert_eq!(
-            memory_priority_restore_summary_message(5, "foreground app is unknown"),
-            "Restored previous memory priority for 5 processes: foreground app is unknown."
         );
     }
 

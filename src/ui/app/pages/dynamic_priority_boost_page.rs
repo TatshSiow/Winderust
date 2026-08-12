@@ -211,7 +211,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_dynamic_priority_boost_status_card(&self) -> gpui::Div {
-        let status = &self.dynamic_priority_boost_status;
+        let status = &self.feature_status.dynamic_priority_boost;
         let message = if status.message.is_empty() {
             t!("dynamic_priority_boost.not_checked").to_string()
         } else {

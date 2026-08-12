@@ -8,9 +8,10 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ByRunningAppRule, ByRunningAppSettings},
     foreground::{
-        contains_process_name, list_processes, process_matches_executable_path, process_session_id,
+        contains_process_name, process_matches_executable_path, process_session_id,
         same_process_name, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
+    runtime::observations::CycleObservations,
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
@@ -40,6 +41,7 @@ impl ByRunningAppManager {
         &mut self,
         settings: &ByRunningAppSettings,
         automation_enabled: bool,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> ByRunningAppSnapshot {
         if !automation_enabled {
@@ -59,7 +61,7 @@ impl ByRunningAppManager {
             return ByRunningAppSnapshot::default();
         };
 
-        let processes = match list_processes() {
+        let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(_) => {
                 self.release(action_log, "process list unavailable");
@@ -67,7 +69,7 @@ impl ByRunningAppManager {
             }
         };
         let eligible_processes = processes
-            .into_iter()
+            .iter()
             .filter(|process| {
                 process.id != 0
                     && process.is_critical == Some(false)
@@ -99,10 +101,6 @@ impl ByRunningAppManager {
         );
         self.active = Some(matched);
         self.snapshot()
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.active.is_some()
     }
 
     pub fn active_process_ids(&self) -> BTreeSet<u32> {
@@ -166,7 +164,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 
 fn matching_rule_process(
     settings: &ByRunningAppSettings,
-    processes: &[ProcessInfo],
+    processes: &[&ProcessInfo],
 ) -> Option<ActiveByRunningApp> {
     for rule in &settings.rules {
         if !rule.enabled || rule.executable_path.trim().is_empty() {
@@ -217,8 +215,9 @@ mod tests {
                 power_plan_guid: Some("custom-guid".to_owned()),
             }],
         };
-        let processes = vec![ProcessInfo {
+        let processes = [ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -228,6 +227,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
+        let processes = processes.iter().collect::<Vec<_>>();
 
         let matched = matching_rule_process(&settings, &processes).unwrap();
 
@@ -254,8 +254,9 @@ mod tests {
                 },
             ],
         };
-        let processes = vec![ProcessInfo {
+        let processes = [ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -265,6 +266,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
+        let processes = processes.iter().collect::<Vec<_>>();
 
         assert!(matching_rule_process(&settings, &processes).is_none());
     }
@@ -288,8 +290,9 @@ mod tests {
                 },
             ],
         };
-        let processes = vec![ProcessInfo {
+        let processes = [ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -299,6 +302,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
+        let processes = processes.iter().collect::<Vec<_>>();
 
         let matched = matching_rule_process(&settings, &processes).unwrap();
 

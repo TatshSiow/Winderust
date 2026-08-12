@@ -148,10 +148,6 @@ pub(in crate::ui::app) fn can_manual_freeze(status: &AppSuspensionSnapshot, proc
     status.enabled && !app_suspension::contains_process(&status.suspended_apps, process)
 }
 
-pub(in crate::ui::app) fn logical_core_count() -> usize {
-    cpu_allocation::logical_processors().len().clamp(1, 64)
-}
-
 pub(in crate::ui::app) fn action_log_mode_label(mode: ActionLogMode) -> String {
     match mode {
         ActionLogMode::Full => t!("settings.action_log_mode_full").to_string(),
@@ -182,18 +178,7 @@ pub(in crate::ui::app) fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -
 }
 
 pub(in crate::ui::app) fn default_affinity_mask() -> u64 {
-    let processors = cpu_allocation::logical_processors();
-    let mask = cpu_allocation_processors_mask(&processors);
-    if mask == 0 {
-        let core_count = logical_core_count();
-        if core_count >= 64 {
-            u64::MAX
-        } else {
-            (1_u64 << core_count) - 1
-        }
-    } else {
-        mask
-    }
+    cpu_allocation::default_cpu_mask()
 }
 
 pub(in crate::ui::app) fn affinity_mask_contains(mask: u64, core: usize) -> bool {

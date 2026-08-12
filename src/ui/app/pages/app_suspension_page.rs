@@ -275,7 +275,8 @@ impl WinderustApp {
     }
 
     fn app_suspension_candidate_suspendable(&self, process: &str) -> Option<bool> {
-        self.process_candidates
+        self.process_catalog
+            .candidates
             .iter()
             .find(|candidate| {
                 same_executable_path(&candidate.image_path, Path::new(process.trim()))
@@ -320,7 +321,7 @@ impl WinderustApp {
         {
             let process = rule.executable_path.clone();
             let indicator = app_suspension_indicator(
-                &self.app_suspension_status,
+                &self.feature_status.app_suspension,
                 &process,
                 self.app_suspension_candidate_suspendable(&process) == Some(false),
             );
@@ -429,19 +430,56 @@ impl WinderustApp {
                             .tooltip(t!("app_suspension.freeze").to_string())
                             .disabled(
                                 !rule_enabled
-                                    || !can_manual_freeze(&self.app_suspension_status, &process),
+                                    || !can_manual_freeze(
+                                        &self.feature_status.app_suspension,
+                                        &process,
+                                    ),
                             )
                             .on_click(cx.listener({
                                 let process = process.clone();
                                 move |app, _, _, cx| {
                                     cx.stop_propagation();
-                                    app.background_automation
-                                        .request_app_suspension_freeze(&process);
+                                    let receiver = match app
+                                        .runtime_handle
+                                        .request_app_suspension_freeze(&process)
+                                    {
+                                        Ok(receiver) => receiver,
+                                        Err(error) => {
+                                            app.status_message = error.to_string();
+                                            cx.notify();
+                                            return;
+                                        }
+                                    };
                                     app.status_message = t!(
                                         "app_suspension.manual_freeze_requested",
                                         process = process
                                     )
                                     .to_string();
+                                    let result = cx.background_executor().spawn(async move {
+                                        receiver
+                                            .recv()
+                                            .map_err(|_| {
+                                                "The App Suspension worker stopped before replying."
+                                                    .to_owned()
+                                            })?
+                                            .map_err(|error| error.to_string())
+                                    });
+                                    cx.spawn(async move |this, cx| {
+                                        let result = result.await;
+                                        let _ = this.update(cx, |app, cx| {
+                                            match result {
+                                                Ok(status) => {
+                                                    app.status_message =
+                                                        localized_runtime_status(&status.message);
+                                                    Arc::make_mut(&mut app.feature_status)
+                                                        .app_suspension = status;
+                                                }
+                                                Err(error) => app.status_message = error,
+                                            }
+                                            cx.notify();
+                                        });
+                                    })
+                                    .detach();
                                     cx.notify();
                                 }
                             })),

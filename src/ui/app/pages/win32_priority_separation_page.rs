@@ -229,13 +229,15 @@ impl WinderustApp {
             .into_any_element()
     }
     pub(in crate::ui::app) fn refresh_win32_priority_separation(&mut self) {
-        let (value, status) = read_win32_priority_separation_with_status();
+        let (value, backup, status) = win32_priority_separation_snapshot_state(
+            self.win32_priority_separation_service.snapshot(),
+        );
         self.win32_priority_separation_value = value;
         if let Some(value) = value {
             self.win32_priority_separation_edit_value =
                 normalize_win32_priority_separation_value(value);
         }
-        self.win32_priority_separation_backup = read_win32_priority_separation_backup();
+        self.win32_priority_separation_backup = backup;
         self.win32_priority_separation_status = status.clone();
         self.status_message = status;
     }
@@ -255,15 +257,8 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn save_win32_priority_separation_backup(&mut self) {
-        let Some(value) = read_win32_priority_separation() else {
-            self.win32_priority_separation_status =
-                t!("settings.win32_priority_separation_load_failed").to_string();
-            self.status_message = self.win32_priority_separation_status.clone();
-            return;
-        };
-
-        match write_win32_priority_separation_backup(value) {
-            Ok(()) => {
+        match self.win32_priority_separation_service.save_backup() {
+            Ok(value) => {
                 self.win32_priority_separation_backup = Some(value);
                 self.win32_priority_separation_status = t!(
                     "settings.win32_priority_separation_backup_saved",
@@ -271,10 +266,17 @@ impl WinderustApp {
                 )
                 .to_string();
             }
-            Err(err) => {
+            Err(
+                Win32PrioritySeparationError::ReadCurrent(_)
+                | Win32PrioritySeparationError::CurrentUnavailable,
+            ) => {
+                self.win32_priority_separation_status =
+                    t!("settings.win32_priority_separation_load_failed").to_string();
+            }
+            Err(error) => {
                 self.win32_priority_separation_status = t!(
                     "settings.win32_priority_separation_backup_failed",
-                    error = err
+                    error = error
                 )
                 .to_string();
             }
@@ -283,33 +285,28 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn apply_win32_priority_separation(&mut self, value: u32) {
-        let value = value.clamp(
-            WIN32_PRIORITY_SEPARATION_MIN as u32,
-            WIN32_PRIORITY_SEPARATION_MAX as u32,
-        );
-        if let Err(err) = self.ensure_win32_priority_separation_backup() {
-            self.win32_priority_separation_status = t!(
-                "settings.win32_priority_separation_backup_failed",
-                error = err
-            )
-            .to_string();
-            self.status_message = self.win32_priority_separation_status.clone();
-            return;
-        }
-        match write_win32_priority_separation(value) {
-            Ok(()) => {
-                self.win32_priority_separation_value = Some(value);
-                self.win32_priority_separation_edit_value = value;
+        match self.win32_priority_separation_service.apply(value) {
+            Ok(outcome) => {
+                self.win32_priority_separation_value = Some(outcome.value);
+                self.win32_priority_separation_edit_value = outcome.value;
+                self.win32_priority_separation_backup = Some(outcome.backup);
                 self.win32_priority_separation_status = t!(
                     "settings.win32_priority_separation_saved",
-                    value = format_win32_priority_separation_with_description(value)
+                    value = format_win32_priority_separation_with_description(outcome.value)
                 )
                 .to_string();
             }
-            Err(err) => {
+            Err(error @ Win32PrioritySeparationError::WriteCurrent(_)) => {
                 self.win32_priority_separation_status = t!(
                     "settings.win32_priority_separation_save_failed",
-                    error = err
+                    error = error
+                )
+                .to_string();
+            }
+            Err(error) => {
+                self.win32_priority_separation_status = t!(
+                    "settings.win32_priority_separation_backup_failed",
+                    error = error
                 )
                 .to_string();
             }
@@ -318,15 +315,8 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn restore_win32_priority_separation_backup(&mut self) {
-        let Some(value) = self.win32_priority_separation_backup else {
-            self.win32_priority_separation_status =
-                t!("settings.win32_priority_separation_no_backup").to_string();
-            self.status_message = self.win32_priority_separation_status.clone();
-            return;
-        };
-
-        match write_win32_priority_separation(value) {
-            Ok(()) => {
+        match self.win32_priority_separation_service.restore_backup() {
+            Ok(value) => {
                 self.win32_priority_separation_value = Some(value);
                 self.win32_priority_separation_edit_value = value;
                 self.win32_priority_separation_status = t!(
@@ -335,27 +325,19 @@ impl WinderustApp {
                 )
                 .to_string();
             }
-            Err(err) => {
+            Err(Win32PrioritySeparationError::BackupUnavailable) => {
+                self.win32_priority_separation_backup = None;
+                self.win32_priority_separation_status =
+                    t!("settings.win32_priority_separation_no_backup").to_string();
+            }
+            Err(error) => {
                 self.win32_priority_separation_status = t!(
                     "settings.win32_priority_separation_restore_failed",
-                    error = err
+                    error = error
                 )
                 .to_string();
             }
         }
         self.status_message = self.win32_priority_separation_status.clone();
-    }
-
-    pub(in crate::ui::app) fn ensure_win32_priority_separation_backup(
-        &mut self,
-    ) -> Result<(), String> {
-        if self.win32_priority_separation_backup.is_some() {
-            return Ok(());
-        }
-        let current = read_win32_priority_separation()
-            .ok_or_else(|| t!("settings.win32_priority_separation_load_failed").to_string())?;
-        write_win32_priority_separation_backup(current)?;
-        self.win32_priority_separation_backup = Some(current);
-        Ok(())
     }
 }

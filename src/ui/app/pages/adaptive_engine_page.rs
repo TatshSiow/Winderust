@@ -219,7 +219,9 @@ impl WinderustApp {
                 (
                     None,
                     t!("adaptive_engine.processor_policy").to_string(),
-                    if let Some(profile) = &self.workload_engine_status.adaptive_power_profile {
+                    if let Some(profile) =
+                        &self.feature_status.workload_engine.adaptive_power_profile
+                    {
                         t!(
                             "adaptive_engine.processor_policy_adaptive",
                             profile = adaptive_power_profile_label(profile)
@@ -244,7 +246,9 @@ impl WinderustApp {
                     if self.settings.background_efficiency.enabled {
                         format!(
                             "{} {}",
-                            self.background_efficiency_status.throttled_processes,
+                            self.feature_status
+                                .background_efficiency
+                                .throttled_processes,
                             t!("background_efficiency.throttled_processes")
                         )
                     } else {
@@ -256,10 +260,12 @@ impl WinderustApp {
                     t!("adaptive_engine.timer_ignored").to_string(),
                     format!(
                         "{} {}",
-                        self.background_efficiency_status
+                        self.feature_status
+                            .background_efficiency
                             .timer_resolution_ignored_processes
                             + self
-                                .workload_engine_status
+                                .feature_status
+                                .workload_engine
                                 .timer_resolution_ignored_processes,
                         t!("adaptive_engine.audio_guarded")
                     ),
@@ -272,7 +278,9 @@ impl WinderustApp {
                     {
                         format!(
                             "{} {}",
-                            self.workload_engine_status.background_adjusted_processes,
+                            self.feature_status
+                                .workload_engine
+                                .background_adjusted_processes,
                             t!("workload_engine.background_adjusted")
                         )
                     } else {
@@ -282,7 +290,9 @@ impl WinderustApp {
                 (
                     None,
                     t!("adaptive_engine.restrained").to_string(),
-                    localized_runtime_status(&self.workload_engine_status.workload_engine_message),
+                    localized_runtime_status(
+                        &self.feature_status.workload_engine.workload_engine_message,
+                    ),
                 ),
             ],
             None,

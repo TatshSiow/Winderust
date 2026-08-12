@@ -2,102 +2,65 @@ use crate::ui::app::*;
 
 impl WinderustApp {
     pub(in crate::ui::app) fn navigate_to(&mut self, page: Page, cx: &mut Context<Self>) {
-        if self.page == page {
+        if !self
+            .shell
+            .navigate_to(page, ui_animations_enabled(), Instant::now())
+        {
             return;
         }
 
         clear_page_hovered();
-        self.process_details = None;
-        Self::push_navigation_page(&mut self.back_stack, self.page);
-        self.begin_breadcrumb_transition(self.page, page);
-        self.page = page;
+        self.process_list.details = None;
         self.schedule_process_refresh_for_current_page();
-        self.forward_stack.clear();
         cx.notify();
     }
 
     pub(in crate::ui::app) fn navigate_back(&mut self, cx: &mut Context<Self>) {
-        let Some(page) = self.back_stack.pop() else {
+        if !self
+            .shell
+            .navigate_back(ui_animations_enabled(), Instant::now())
+        {
             return;
-        };
+        }
 
         clear_page_hovered();
-        self.process_details = None;
-        Self::push_navigation_page(&mut self.forward_stack, self.page);
-        self.begin_breadcrumb_transition(self.page, page);
-        self.page = page;
+        self.process_list.details = None;
         self.schedule_process_refresh_for_current_page();
         cx.notify();
     }
 
     pub(in crate::ui::app) fn navigate_forward(&mut self, cx: &mut Context<Self>) {
-        let Some(page) = self.forward_stack.pop() else {
+        if !self
+            .shell
+            .navigate_forward(ui_animations_enabled(), Instant::now())
+        {
             return;
-        };
+        }
 
         clear_page_hovered();
-        self.process_details = None;
-        Self::push_navigation_page(&mut self.back_stack, self.page);
-        self.begin_breadcrumb_transition(self.page, page);
-        self.page = page;
+        self.process_list.details = None;
         self.schedule_process_refresh_for_current_page();
         cx.notify();
     }
 
     fn schedule_process_refresh_for_current_page(&mut self) {
-        if self.page == Page::ProcessList
-            || (self.page_uses_process_candidates() && self.process_candidates.is_empty())
+        if self.shell.page == Page::ProcessList
+            || (self.page_uses_process_candidates() && self.process_catalog.candidates.is_empty())
         {
             self.next_process_refresh = Instant::now();
         }
     }
 
-    pub(in crate::ui::app) fn begin_breadcrumb_transition(
-        &mut self,
-        previous: Page,
-        current: Page,
-    ) {
-        if previous == current || !ui_animations_enabled() {
-            self.breadcrumb_transition = None;
-            return;
-        }
-
-        let previous = breadcrumb_trail(previous);
-        let current = breadcrumb_trail(current);
-        if previous == current {
-            self.breadcrumb_transition = None;
-            return;
-        }
-
-        self.page_transition_generation = self.page_transition_generation.wrapping_add(1);
-        self.breadcrumb_transition = Some(BreadcrumbTransition {
-            previous,
-            current,
-            started: Instant::now(),
-            generation: self.page_transition_generation,
-        });
-    }
-
     pub(in crate::ui::app) fn clear_finished_breadcrumb_transition(&mut self) {
-        if !ui_animations_enabled()
-            || self
-                .breadcrumb_transition
-                .as_ref()
-                .is_some_and(|transition| {
-                    transition.started.elapsed() >= Duration::from_secs_f64(MOTION_FAST_SECONDS)
-                })
-        {
-            self.breadcrumb_transition = None;
-        }
+        self.shell
+            .clear_finished_breadcrumb_transition(ui_animations_enabled(), Instant::now());
     }
 
     pub(in crate::ui::app) fn active_breadcrumb_transition(
         &self,
         page: Page,
     ) -> Option<&BreadcrumbTransition> {
-        self.breadcrumb_transition
-            .as_ref()
-            .filter(|transition| transition.current == breadcrumb_trail(page))
+        self.shell.active_breadcrumb_transition(page)
     }
 
     pub(in crate::ui::app) fn page_header(&self, page: Page, cx: &mut Context<Self>) -> gpui::Div {
@@ -118,16 +81,5 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn page_shell(&self, _page: Page, _cx: &mut Context<Self>) -> gpui::Div {
         page_body_shell()
-    }
-
-    pub(in crate::ui::app) fn push_navigation_page(stack: &mut Vec<Page>, page: Page) {
-        if stack.last().copied() == Some(page) {
-            return;
-        }
-
-        stack.push(page);
-        if stack.len() > NAV_HISTORY_LIMIT {
-            stack.remove(0);
-        }
     }
 }

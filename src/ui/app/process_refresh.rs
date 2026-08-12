@@ -71,21 +71,21 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.settings.advanced.pause_process_population {
-            let changed = self.process_candidate_load_state != ProcessLoadState::Paused;
-            self.process_candidate_load_state = ProcessLoadState::Paused;
+            let changed = self.process_catalog.load_state != ProcessLoadState::Paused;
+            self.process_catalog.load_state = ProcessLoadState::Paused;
             return changed;
         }
-        if self.process_refresh_in_progress {
+        if self.process_catalog.refresh_in_progress {
             return false;
         }
 
-        self.process_refresh_in_progress = true;
+        self.process_catalog.refresh_in_progress = true;
         self.next_process_refresh = Instant::now() + PROCESS_REFRESH_INTERVAL;
-        let show_loading = self.process_candidates.is_empty() || report_status;
+        let show_loading = self.process_catalog.candidates.is_empty() || report_status;
         if show_loading {
-            self.process_candidate_load_state = ProcessLoadState::Loading;
+            self.process_catalog.load_state = ProcessLoadState::Loading;
         }
-        let icon_cache = self.process_icon_cache.clone();
+        let icon_cache = self.process_catalog.icon_cache.clone();
         let scan = cx.background_executor().spawn(async move {
             list_process_candidates()
                 .map(|processes| process_candidates_with_icons(processes, icon_cache))
@@ -106,24 +106,24 @@ impl WinderustApp {
         result: Result<ProcessCandidateRefresh, String>,
         report_status: bool,
     ) {
-        self.process_refresh_in_progress = false;
+        self.process_catalog.refresh_in_progress = false;
         if self.settings.advanced.pause_process_population {
-            self.process_candidate_load_state = ProcessLoadState::Paused;
+            self.process_catalog.load_state = ProcessLoadState::Paused;
             return;
         }
         match result {
             Ok((processes, icon_cache)) => {
-                self.process_candidates = processes;
-                self.process_icon_cache = icon_cache;
-                self.process_candidate_load_state = ProcessLoadState::Loaded;
+                self.process_catalog.candidates = processes;
+                self.process_catalog.icon_cache = icon_cache;
+                self.process_catalog.load_state = ProcessLoadState::Loaded;
                 Self::retain_current_process_icons(
-                    &mut self.process_icon_cache,
-                    &self.process_candidates,
+                    &mut self.process_catalog.icon_cache,
+                    &self.process_catalog.candidates,
                 );
                 if report_status {
                     let message = t!(
                         "status.loaded_running_apps",
-                        count = self.process_candidates.len()
+                        count = self.process_catalog.candidates.len()
                     )
                     .to_string();
                     self.status_message = message;
@@ -132,7 +132,7 @@ impl WinderustApp {
             Err(err) => {
                 let load_state = ProcessLoadState::Failed(err.clone());
                 self.status_message = err;
-                self.process_candidate_load_state = load_state;
+                self.process_catalog.load_state = load_state;
             }
         }
     }
@@ -143,21 +143,21 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.settings.advanced.pause_process_population {
-            let changed = self.running_process_load_state != ProcessLoadState::Paused;
-            self.running_process_load_state = ProcessLoadState::Paused;
+            let changed = self.process_list.load_state != ProcessLoadState::Paused;
+            self.process_list.load_state = ProcessLoadState::Paused;
             return changed;
         }
-        if self.process_refresh_in_progress {
+        if self.process_list.refresh_in_progress {
             return false;
         }
 
-        self.process_refresh_in_progress = true;
+        self.process_list.refresh_in_progress = true;
         self.next_process_refresh = Instant::now() + PROCESS_LIST_REFRESH_INTERVAL;
-        let show_loading = self.running_processes.is_empty() || report_status;
+        let show_loading = self.process_list.processes.is_empty() || report_status;
         if show_loading {
-            self.running_process_load_state = ProcessLoadState::Loading;
+            self.process_list.load_state = ProcessLoadState::Loading;
         }
-        let icon_cache = self.process_icon_cache.clone();
+        let icon_cache = self.process_catalog.icon_cache.clone();
         let scan = cx.background_executor().spawn(async move {
             let processes = list_processes_with_paths()?;
             let candidate_info = process_candidates_from_processes(&processes);
@@ -182,24 +182,19 @@ impl WinderustApp {
         result: Result<RunningProcessRefresh, String>,
         report_status: bool,
     ) {
-        self.process_refresh_in_progress = false;
+        self.process_list.refresh_in_progress = false;
         if self.settings.advanced.pause_process_population {
-            self.running_process_load_state = ProcessLoadState::Paused;
+            self.process_list.load_state = ProcessLoadState::Paused;
             return;
         }
         match result {
             Ok((mut processes, candidates, icon_cache, resource_samples)) => {
-                self.process_efficiency_mode_overrides
-                    .retain(|process_id, process| {
-                        resource_samples.get(process_id).is_some_and(|sample| {
-                            sample.creation_time == process.target.creation_time
-                        })
-                    });
-                self.process_resource_usage = resource_samples
+                self.process_list.resource_usage = resource_samples
                     .iter()
                     .map(|(process_id, current)| {
                         let cpu_percent = self
-                            .process_resource_samples
+                            .process_list
+                            .resource_samples
                             .get(process_id)
                             .filter(|previous| previous.creation_time == current.creation_time)
                             .and_then(|previous| {
@@ -215,25 +210,26 @@ impl WinderustApp {
                         )
                     })
                     .collect();
-                self.process_resource_samples = resource_samples;
+                self.process_list.resource_samples = resource_samples;
                 processes.sort_by(|left, right| {
                     left.name
                         .cmp(&right.name)
                         .then_with(|| left.id.cmp(&right.id))
                 });
-                self.running_processes = processes;
-                self.running_process_load_state = ProcessLoadState::Loaded;
-                self.process_candidates = candidates;
-                self.process_candidate_load_state = ProcessLoadState::Loaded;
-                self.process_icon_cache = icon_cache;
+                self.process_list.processes = processes;
+                self.process_list.load_state = ProcessLoadState::Loaded;
+                self.process_catalog.candidates = candidates;
+                self.process_catalog.load_state = ProcessLoadState::Loaded;
+                self.process_catalog.icon_cache = icon_cache;
                 Self::retain_current_process_icons(
-                    &mut self.process_icon_cache,
-                    &self.process_candidates,
+                    &mut self.process_catalog.icon_cache,
+                    &self.process_catalog.candidates,
                 );
-                let expanded_group_count = self.expanded_process_list_groups.len();
+                let expanded_group_count = self.process_list.expanded_groups.len();
                 if expanded_group_count != 0 {
                     let active_group_keys = self
-                        .running_processes
+                        .process_list
+                        .processes
                         .iter()
                         .filter_map(|process| {
                             process
@@ -242,13 +238,14 @@ impl WinderustApp {
                                 .map(process_list_executable_path_group_key)
                         })
                         .collect::<HashSet<_>>();
-                    self.expanded_process_list_groups
+                    self.process_list
+                        .expanded_groups
                         .retain(|key| active_group_keys.contains(key));
                 }
                 if report_status {
                     let message = t!(
                         "status.loaded_running_processes",
-                        count = self.running_processes.len()
+                        count = self.process_list.processes.len()
                     )
                     .to_string();
                     self.status_message = message;
@@ -257,8 +254,7 @@ impl WinderustApp {
             Err(err) => {
                 let load_state = ProcessLoadState::Failed(err.clone());
                 self.status_message = err;
-                self.running_process_load_state = load_state.clone();
-                self.process_candidate_load_state = load_state;
+                self.process_list.load_state = load_state;
             }
         }
     }

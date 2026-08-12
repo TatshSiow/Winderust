@@ -32,7 +32,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) {
         self.active_power_plan_picker = None;
-        self.process_details = Some(ProcessDetailsDraft {
+        self.process_list.details = Some(ProcessDetailsDraft {
             display_name,
             executable_path,
         });
@@ -40,12 +40,12 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn save_process_details(&mut self, cx: &mut Context<Self>) {
-        let details = self.process_details.take();
+        let details = self.process_list.details.take();
         if details.is_none() {
             return;
         }
         if !self.save_settings() {
-            self.process_details = details;
+            self.process_list.details = details;
         }
         self.active_power_plan_picker = None;
         cx.notify();
@@ -56,7 +56,8 @@ impl WinderustApp {
         executable_path: &str,
     ) -> bool {
         !self
-            .expanded_process_list_groups
+            .process_list
+            .expanded_groups
             .contains(&process_list_executable_path_group_key(Path::new(
                 executable_path,
             )))
@@ -68,10 +69,10 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) {
         let key = process_list_executable_path_group_key(Path::new(&executable_path));
-        let expanded = if self.expanded_process_list_groups.remove(&key) {
+        let expanded = if self.process_list.expanded_groups.remove(&key) {
             false
         } else {
-            self.expanded_process_list_groups.insert(key.clone());
+            self.process_list.expanded_groups.insert(key.clone());
             true
         };
         begin_expandable_motion(format!("process-list-group-{key}"), expanded);
@@ -83,7 +84,7 @@ impl WinderustApp {
         column: ProcessListSortColumn,
         cx: &mut Context<Self>,
     ) {
-        self.process_list_sort = self.process_list_sort.toggled_for(column);
+        self.process_list.sort = self.process_list.sort.toggled_for(column);
         cx.notify();
     }
 

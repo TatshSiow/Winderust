@@ -487,14 +487,6 @@ pub(super) fn logical_indices_to_limited_mask(
     (mask != 0).then_some(mask)
 }
 
-pub const fn process_priority_class(priority: ProcessPriority) -> u32 {
-    match priority {
-        ProcessPriority::Normal => NORMAL_PRIORITY_CLASS,
-        ProcessPriority::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
-        ProcessPriority::Idle => IDLE_PRIORITY_CLASS,
-    }
-}
-
 pub fn foreground_boost_priority_class(
     priority: ForegroundBoostPriority,
     foreground_cpu_usage_percent: Option<f32>,

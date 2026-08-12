@@ -2,9 +2,13 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-04
+- Last refreshed: 2026-08-12
 - Primary product surfaces: Windows desktop app shell, process controls, automation settings, status dashboard, and Action Log.
-- Evidence reviewed: `.agents/memory/15-design-spec.md`, `src/ui.rs`, `src/ui/app/pages/`, `src/ui/app/shared/`, `locales/`, and the current CPU-control backends.
+- Evidence reviewed: `.agents/memory/15-design-spec.md`, `.agents/memory/20-project-scope.md`,
+  `src/application/`, `src/runtime/`, `src/control/`, `src/platform/windows/`,
+  `src/backend/automation.rs`, `src/backend/automation/runner.rs`,
+  `src/backend/crash_recovery.rs`, `src/ui/app.rs`, `src/ui/app/`, `locales/`, and the current
+  feature-policy modules.
 
 ## Brand
 - Personality: Calm, elegant, sleek, operational, and recognizably Winderust.
@@ -29,7 +33,11 @@
 
 ## Design principles
 - One owner per mechanism: A page and its settings own one Windows mechanism.
-- Explicit CPU allocation rules take precedence over Workload Engine CPU allocation for the same process.
+- CPU allocation uses one runtime coordinator for CPU Sets and affinity. Its order is CPU Sets
+  (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / Workload Engine.
+- Feature modules own discovery and policy state; only the coordinator owns Windows baselines,
+  mutations, compensation, arbitration, and restoration. Releasing one producer queues the exact
+  process key; the runtime re-resolves it once after every CPU producer has processed that pass.
 - Scope before detail: Show which applications are targeted before processor selection.
 - Safe by default: Present CPU Sets (Soft) as recommended; clearly warn that Processor Affinity (Hard) is strict.
 - Tradeoffs: Separate pages add one navigation item but remove mode ambiguity and conflicting ownership.
@@ -86,6 +94,58 @@
 - Performance constraints: Avoid duplicate process scans and overlapping managers.
 - Compatibility constraints: Public pre-release; do not add legacy settings aliases or migrations. Preserve process identity validation and restoration. CPU selection currently covers the first processor group and discloses that limit on multi-group systems.
 - Test/screenshot expectations: Keep settings round-trip, navigation, rule construction, manager lifecycle, and mask-selection tests aligned.
+
+## Architecture direction
+- Canonical refactor plan: `docs/architecture-refactor-plan.md`.
+- Use a mechanism-centered modular monolith: one external `RuntimeHandle`, one thin `RuntimeCore` lifecycle/composition root, and typed controllers that each own one coherent Windows mechanism.
+- Keep UI flow one-way: UI sends typed settings, overrides, or commands and consumes segmented, generation-based read models. Keep Process List enumeration, icons, grouping, sorting, and sample history in its separate read-side query.
+- Keep `SettingsEditor` as the sole settings draft/revision/persistence boundary. Apply runtime
+  auto-exclusions as narrow, idempotent patches without saving unrelated draft edits; startup
+  registration, Win32 Priority Separation, and Advanced Power Plan Tuning use typed application
+  services rather than runtime claims.
+- Collect process, foreground, visible-window, power, session, input, and topology observations at most once per requested domain in a reconciliation pass; do not create a permanent global process snapshot.
+- Preserve feature managers as policy owners for timers, hysteresis, cooldowns, scoring, target selection, failure suppression, and status. Typed mechanism controllers own baselines, active claims, raw setters, clean restoration, and recovery replication.
+- Process Priority/Power Throttling, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU
+  Priority, Memory Priority, CPU allocation, and App Suspension are complete mechanism boundaries.
+  Static policy, Adaptive/Workload policy, and Process List actions share their RuntimeCore-owned
+  controllers; feature managers retain target selection, timers, preservation, suppression,
+  status, and Action Log policy only.
+- Thread Priority uses per-thread baselines keyed by exact process identity, thread ID, and thread
+  creation time. Static, Adaptive, and Process List producers share `ThreadPriorityController` and
+  the bounded result-bearing process-control FIFO.
+- I/O Priority is process-instance bound and preserves the exact raw Windows baseline, including values outside Winderust's selectable range. Static, Adaptive, and Process List producers share `IoPriorityController`; feature code owns only tiering, rules, preservation policy, suppression, and reporting.
+- GPU Priority is process-instance bound and preserves the exact raw WDK scheduling-class baseline. Static, Adaptive, and Process List producers share `GpuPriorityController`; a missing GPU scheduling context is a typed pending condition rather than a permanent process failure.
+- Memory Priority is process-instance bound and preserves the exact raw Windows baseline. Static Memory Priority, Workload Engine Memory Priority, and Process List share `MemoryPriorityController`; static policy explicitly outranks an overlapping Workload Engine claim without disturbing non-overlapping Workload claims or the first pre-Winderust baseline.
+- Process Priority and process Power Throttling share
+  `PriorityEfficiencyController` because Efficiency Mode changes both as one
+  compensated transaction. Static Process Priority, Background Efficiency,
+  Workload Engine priority/Efficiency policy, foreground boost, and Process
+  List actions use deterministic owner precedence over property-specific exact
+  process baselines; feature managers retain policy and reporting only.
+- CPU Sets (Soft), Processor Affinity (Hard), Core Limiter, and Adaptive/Workload CPU allocation
+  submit claims to `CpuAllocationCoordinator`; it alone owns mutually exclusive live properties,
+  pass-end handoff/retry, exact baselines, recovery, and reverse restoration.
+- App Suspension policy submits exact targets to `SuspensionController`. The controller alone owns
+  named Job Objects, freeze/thaw transactions, cleanup retry, manual/automatic lifecycle, and
+  aggregate shutdown; the crash helper independently retains the job before freeze.
+- Automatic power-plan choices use `PowerPlanController`; explicit Advanced Power Plan Tuning uses
+  its application service. Both route native GUID/scheme/processor-setting calls through the same
+  narrow Windows adapter without sharing lifecycle or recovery ownership.
+- Timer Resolution and Winderust self-power are process-lifetime controllers with explicit clean
+  shutdown and no external journal. Irreversible Memory Trim and process termination use typed,
+  result-bearing commands and deliberately own no baseline or restore path.
+- Raw managed Windows calls live in mechanism-specific `src/platform/windows/` adapters. Typed
+  controllers own identity, arbitration, transactions, compensation, restoration, and recovery
+  intent; the crash helper remains the independent replay authority where its access contract
+  differs.
+- Define precedence per Windows property. Migrate every producer of a property together, including Adaptive Engine paths and Process List actions; mixed legacy/new ownership is never a valid shipped state.
+- Classify Windows writes before routing them: temporary externally persistent state uses typed control plus the recovery helper; process-lifetime requests use clean release; intentional persistent configuration uses application services; irreversible commands use validated command services.
+- Memory Trim and Stop Process / Stop Process Tree use the bounded runtime command FIFO and sole
+  typed adapters. The worker revalidates exact identity and current safety policy; tree termination
+  preflights the complete children-first batch and reports partial execution failures. Neither
+  command participates in recovery or restoration.
+- Preserve identity validation, access and protected-process policy, original-state capture, synchronous watchdog acknowledgement, expected-state verification, reverse compensation, and conservative restoration.
+- Migrate through independently revertible, mechanism-complete phases. Do not mix product redesign, preset tuning, or speculative frameworks into the architecture refactor.
 
 ## Open questions
 - None for the approved CPU Sets (Soft) and Processor Affinity (Hard) split.

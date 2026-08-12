@@ -2,9 +2,11 @@ use crate::ui::app::*;
 
 impl WinderustApp {
     fn refresh_processor_power_target_plan_personality(&mut self) -> bool {
-        let personality = self
-            .processor_power_target_plan()
-            .and_then(|plan| read_plan_personality(&plan.guid).ok());
+        let personality = self.processor_power_target_plan().and_then(|plan| {
+            self.advanced_power_plan_tuning_service
+                .read_personality(&plan.guid)
+                .ok()
+        });
         if self.processor_power_target_plan_personality == personality {
             return false;
         }
@@ -79,15 +81,18 @@ impl WinderustApp {
             return true;
         }
 
-        match read_processor_power_values(&plan.guid) {
+        match self
+            .advanced_power_plan_tuning_service
+            .read_values(&plan.guid)
+        {
             Ok(values) => {
                 self.set_processor_power_values(values.normalized());
                 self.processor_power_loaded_plan_guid = Some(plan.guid);
                 self.processor_power_dirty = false;
                 true
             }
-            Err(err) => {
-                self.status_message = err;
+            Err(error) => {
+                self.status_message = error.to_string();
                 false
             }
         }
@@ -321,15 +326,25 @@ impl WinderustApp {
         let values = self.processor_power_values();
         self.set_processor_power_values(values);
 
-        match apply_processor_power_values(&plan.guid, values.normalized()) {
-            Ok(()) => {
-                self.processor_power_loaded_plan_guid = Some(plan.guid.clone());
+        let outcome = self
+            .advanced_power_plan_tuning_service
+            .apply_values(&plan.guid, values);
+        if let Some(actual_values) = outcome.actual_values {
+            self.set_processor_power_values(actual_values);
+            self.processor_power_loaded_plan_guid = Some(plan.guid.clone());
+            self.processor_power_dirty = false;
+        }
+
+        match outcome.error {
+            None => {
                 self.processor_power_dirty = false;
                 self.status_message =
                     t!("processor_power.applied_custom", plan = plan.display_name()).to_string();
-                self.refresh_active_plan();
             }
-            Err(err) => self.status_message = err,
+            Some(error) => self.status_message = error.to_string(),
+        }
+        if outcome.applied {
+            self.refresh_active_plan();
         }
     }
 }

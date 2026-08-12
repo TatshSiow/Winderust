@@ -104,8 +104,9 @@ mod tests {
         PowerPlanSettings, PriorityRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
         ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
         ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
-        ProcessPrioritySetting, ProcessPrioritySettings, TimerResolutionRule,
-        TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
+        ProcessPrioritySetting, ProcessPrioritySettings, ProcessThreadPrioritySetting,
+        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+        WorkloadEngineSettings,
     };
 
     #[test]
@@ -510,6 +511,94 @@ mod tests {
         assert_eq!(
             parsed.memory_priority.foreground_priority,
             ProcessMemoryPrioritySetting::Default
+        );
+    }
+
+    #[test]
+    fn process_custom_priority_overrides_round_trip_with_their_semantics() {
+        let rule = ProcessExclusionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".to_owned(),
+            process_foreground_priority: Some(ProcessPrioritySetting::AboveNormal),
+            process_background_priority: Some(ProcessPrioritySetting::BelowNormal),
+            thread_foreground_priority: Some(ProcessThreadPrioritySetting::Highest),
+            thread_background_priority: Some(ProcessThreadPrioritySetting::Lowest),
+            dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Enabled),
+            dynamic_priority_boost_background: Some(ProcessDynamicPriorityBoostSetting::Disabled),
+            io_foreground_priority: Some(ProcessIoPrioritySetting::Normal),
+            io_background_priority: Some(ProcessIoPrioritySetting::VeryLow),
+            gpu_foreground_priority: Some(ProcessGpuPrioritySetting::AboveNormal),
+            gpu_background_priority: Some(ProcessGpuPrioritySetting::Idle),
+            memory_foreground_priority: Some(ProcessMemoryPrioritySetting::Normal),
+            memory_background_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
+        };
+        let settings = Settings {
+            process_priority: ProcessPrioritySettings {
+                exclusions: vec![rule.clone()],
+                ..Default::default()
+            },
+            thread_priority: ThreadPrioritySettings {
+                exclusions: vec![rule.clone()],
+                ..Default::default()
+            },
+            dynamic_priority_boost: DynamicPriorityBoostSettings {
+                exclusions: vec![rule.clone()],
+                ..Default::default()
+            },
+            io_priority: IoPrioritySettings {
+                exclusions: vec![rule.clone()],
+                ..Default::default()
+            },
+            gpu_priority: GpuPrioritySettings {
+                exclusions: vec![rule.clone()],
+                ..Default::default()
+            },
+            memory_priority: MemoryPrioritySettings {
+                exclusions: vec![rule],
+                ..Default::default()
+            },
+            ..Settings::default()
+        };
+
+        let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
+        let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
+
+        assert_eq!(parsed, settings);
+        assert_eq!(
+            parsed
+                .process_priority
+                .override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessPrioritySetting::AboveNormal))
+        );
+        assert_eq!(
+            parsed
+                .thread_priority
+                .override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessThreadPrioritySetting::Lowest))
+        );
+        assert_eq!(
+            parsed
+                .dynamic_priority_boost
+                .override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessDynamicPriorityBoostSetting::Enabled))
+        );
+        assert_eq!(
+            parsed
+                .io_priority
+                .override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessIoPrioritySetting::VeryLow))
+        );
+        assert_eq!(
+            parsed
+                .gpu_priority
+                .override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessGpuPrioritySetting::AboveNormal))
+        );
+        assert_eq!(
+            parsed
+                .memory_priority
+                .override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessMemoryPrioritySetting::VeryLow))
         );
     }
 

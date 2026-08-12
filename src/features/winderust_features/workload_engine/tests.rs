@@ -1,5 +1,9 @@
 use super::*;
 use crate::config::{ProcessExclusionRule, ProcessMemoryPrioritySetting, WorkloadEngineSettings};
+use windows_sys::Win32::System::Threading::{
+    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
+    NORMAL_PRIORITY_CLASS,
+};
 
 #[test]
 fn broad_background_targets_respect_workload_engine_exclusions() {
@@ -17,93 +21,33 @@ fn broad_background_targets_respect_workload_engine_exclusions() {
         &mut targets,
         &settings,
         42,
-        (
-            "excluded.exe".to_owned(),
-            r"C:\Apps\excluded.exe".to_owned(),
-            ProcessPriority::BelowNormal,
-            PriorityTargetSource::BackgroundPolicy,
-            true,
-            true,
-        ),
+        PriorityTarget {
+            process_name: "excluded.exe".to_owned(),
+            executable_path: r"C:\Apps\excluded.exe".to_owned(),
+            creation_time: 1,
+            priority: ProcessPriority::BelowNormal,
+            source: PriorityTargetSource::BackgroundPolicy,
+            apply_priority_class: true,
+            apply_background_efficiency: true,
+        },
     );
     insert_background_target(
         &mut targets,
         &settings,
         43,
-        (
-            "allowed.exe".to_owned(),
-            r"C:\Apps\allowed.exe".to_owned(),
-            ProcessPriority::BelowNormal,
-            PriorityTargetSource::BackgroundPolicy,
-            true,
-            true,
-        ),
+        PriorityTarget {
+            process_name: "allowed.exe".to_owned(),
+            executable_path: r"C:\Apps\allowed.exe".to_owned(),
+            creation_time: 2,
+            priority: ProcessPriority::BelowNormal,
+            source: PriorityTargetSource::BackgroundPolicy,
+            apply_priority_class: true,
+            apply_background_efficiency: true,
+        },
     );
 
     assert!(!targets.contains_key(&42));
     assert!(targets.contains_key(&43));
-}
-
-#[test]
-fn unavailable_efficiency_state_does_not_block_live_process_priority() {
-    let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
-        .join("System32")
-        .join("ping.exe");
-    let mut child = std::process::Command::new(&ping)
-        .args(["-n", "30", "127.0.0.1"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn priority test process");
-
-    let result = (|| -> Result<(), String> {
-        let process =
-            ProcessHandle::open(child.id()).map_err(|error| priority_error_message(&error))?;
-        let original = process
-            .priority_class()
-            .map_err(|error| priority_error_message(&error))?;
-        let mut log = ActionLog::new(8);
-        let outcome = apply_priority(
-            ApplyPriorityRequest {
-                process_id: child.id(),
-                process_name: "ping.exe".to_owned(),
-                executable_path: ping.to_string_lossy().as_ref(),
-                priority_class: BELOW_NORMAL_PRIORITY_CLASS,
-                existing: None,
-                source: PriorityTargetSource::WorkloadEngine,
-                apply_priority_class: true,
-                apply_background_efficiency: true,
-                ignore_timer_resolution: false,
-                disable_dynamic_priority_boost: false,
-                log_success: false,
-            },
-            &mut log,
-        )
-        .map_err(|error| priority_error_message(&error))?;
-        let adjusted = outcome
-            .adjusted
-            .ok_or_else(|| "live process was not tracked for restoration".to_owned())?;
-        let observed = process
-            .priority_class()
-            .map_err(|error| priority_error_message(&error))?;
-        restore_adjusted_priority(child.id(), &adjusted)
-            .map_err(|error| priority_error_message(&error))?;
-        let restored = process
-            .priority_class()
-            .map_err(|error| priority_error_message(&error))?;
-        if observed != BELOW_NORMAL_PRIORITY_CLASS {
-            return Err(format!(
-                "expected Below Normal priority, observed {observed:#x}"
-            ));
-        }
-        (restored == original).then_some(()).ok_or_else(|| {
-            format!("expected restored priority {original:#x}, observed {restored:#x}")
-        })
-    })();
-
-    let _ = child.kill();
-    let _ = child.wait();
-    assert!(result.is_ok(), "{}", result.unwrap_err());
 }
 
 #[test]
@@ -146,15 +90,15 @@ fn repeated_failures_suppress_future_workload_engine_attempts_once() {
 #[test]
 fn priority_mapping_uses_safe_classes() {
     assert_eq!(
-        process_priority_class(ProcessPriority::Normal),
+        workload_priority_value(ProcessPriority::Normal).raw(),
         NORMAL_PRIORITY_CLASS
     );
     assert_eq!(
-        process_priority_class(ProcessPriority::BelowNormal),
+        workload_priority_value(ProcessPriority::BelowNormal).raw(),
         BELOW_NORMAL_PRIORITY_CLASS
     );
     assert_eq!(
-        process_priority_class(ProcessPriority::Idle),
+        workload_priority_value(ProcessPriority::Idle).raw(),
         IDLE_PRIORITY_CLASS
     );
     assert_eq!(
@@ -232,22 +176,6 @@ fn background_apply_summary_message_uses_process_count() {
 }
 
 #[test]
-fn workload_engine_restore_summary_messages_use_process_count() {
-    assert_eq!(
-            background_priority_restore_summary_message(1, "process no longer matches a Workload Engine rule"),
-            "Restored background priority for 1 process: process no longer matches a Workload Engine rule."
-        );
-    assert_eq!(
-            background_priority_restore_summary_message(20, "process no longer matches a Workload Engine rule"),
-            "Restored background priority for 20 processes: process no longer matches a Workload Engine rule."
-        );
-    assert_eq!(
-            foreground_boost_restore_summary_message(17, "foreground app changed before stability delay"),
-            "Restored foreground boost for 17 processes: foreground app changed before stability delay."
-        );
-}
-
-#[test]
 fn background_apply_summary_log_is_rate_limited() {
     let now = Instant::now();
 
@@ -309,6 +237,7 @@ fn matching_rule_is_case_insensitive() {
 
     let worker = ProcessInfo {
         id: 1,
+        creation_time: Some(1),
         parent_id: None,
         session_id: None,
         user_name: None,
@@ -320,6 +249,7 @@ fn matching_rule_is_case_insensitive() {
     };
     let other = ProcessInfo {
         id: 2,
+        creation_time: Some(1),
         parent_id: None,
         session_id: None,
         user_name: None,
@@ -365,6 +295,7 @@ fn foreground_group_includes_child_processes() {
     let processes = vec![
         ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -376,6 +307,7 @@ fn foreground_group_includes_child_processes() {
         },
         ProcessInfo {
             id: 99,
+            creation_time: Some(1),
             parent_id: Some(42),
             session_id: None,
             user_name: None,
@@ -387,6 +319,7 @@ fn foreground_group_includes_child_processes() {
         },
         ProcessInfo {
             id: 100,
+            creation_time: Some(1),
             parent_id: Some(99),
             session_id: None,
             user_name: None,
@@ -398,6 +331,7 @@ fn foreground_group_includes_child_processes() {
         },
         ProcessInfo {
             id: 101,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -872,34 +806,6 @@ fn load_aware_core_mask_prefers_efficiency_processors() {
 }
 
 #[test]
-fn release_processes_skips_restore_when_process_identity_is_unknown() {
-    let mut manager = WorkloadEngineManager::default();
-    manager.adjusted.insert(
-        0,
-        AdjustedProcess {
-            process_name: "exited.exe".to_owned(),
-            executable_path: r"C:\Apps\exited.exe".to_owned(),
-            creation_time: 0,
-            previous_priority: NORMAL_PRIORITY_CLASS,
-            applied_priority: BELOW_NORMAL_PRIORITY_CLASS,
-            previous_dynamic_priority_boost_disabled: None,
-            applied_dynamic_priority_boost_disabled: false,
-            previous_efficiency_state: None,
-            applied_background_efficiency: false,
-            background_efficiency_unavailable: false,
-            applied_ignore_timer_resolution: false,
-        },
-    );
-    let mut log = ActionLog::new(8);
-
-    let failures = manager.release_processes(&[0], &mut log, "test");
-
-    assert_eq!(failures.count, 0);
-    assert!(log.entries().is_empty());
-    assert!(manager.adjusted.is_empty());
-}
-
-#[test]
 fn process_cpu_demand_percent_uses_one_logical_processor_capacity() {
     let now = Instant::now();
     let previous = ProcessCpuSample {
@@ -914,27 +820,4 @@ fn process_cpu_demand_percent_uses_one_logical_processor_capacity() {
     let usage = process_cpu_demand_percent(previous, current).unwrap();
 
     assert_eq!(usage, 100.0);
-}
-
-#[test]
-fn power_throttling_state_sets_timer_ignore_only_when_allowed() {
-    let allowed = power_throttling_enabled_state(None, true);
-    assert_ne!(
-        allowed.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        0
-    );
-    assert_ne!(
-        allowed.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-        0
-    );
-
-    let blocked = power_throttling_enabled_state(None, false);
-    assert_ne!(
-        blocked.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        0
-    );
-    assert_eq!(
-        blocked.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-        0
-    );
 }

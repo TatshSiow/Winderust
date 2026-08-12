@@ -372,7 +372,8 @@ impl WinderustApp {
         let id = id.into();
         let query = query.trim().to_ascii_lowercase();
         let mut matches = self
-            .process_candidates
+            .process_catalog
+            .candidates
             .iter()
             .filter(|process| {
                 query.is_empty()
@@ -392,15 +393,13 @@ impl WinderustApp {
         let mut suggestions = dropdown_surface(cx, max_height);
         if matches.is_empty() {
             suggestions = suggestions.child(dropdown_empty_row(
-                process_load_state_message(&self.process_candidate_load_state).unwrap_or_else(
-                    || {
-                        if self.process_candidates.is_empty() {
-                            t!("common.no_running_apps_loaded").to_string()
-                        } else {
-                            t!("common.no_matching_apps").to_string()
-                        }
-                    },
-                ),
+                process_load_state_message(&self.process_catalog.load_state).unwrap_or_else(|| {
+                    if self.process_catalog.candidates.is_empty() {
+                        t!("common.no_running_apps_loaded").to_string()
+                    } else {
+                        t!("common.no_matching_apps").to_string()
+                    }
+                }),
                 cx,
             ));
         }
@@ -434,7 +433,8 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn process_icon_for_path(&self, process: &str) -> Option<&Arc<Image>> {
         let process = Path::new(process.trim());
-        self.process_candidates
+        self.process_catalog
+            .candidates
             .iter()
             .find(|candidate| same_executable_path(&candidate.image_path, process))
             .and_then(|candidate| candidate.icon.as_ref())
@@ -451,18 +451,18 @@ impl WinderustApp {
             .unwrap_or(process)
             .to_owned();
         let status_id = SharedString::from(format!("process-rule-status-{process}"));
-        let running_count =
-            (self.running_process_load_state == ProcessLoadState::Loaded).then(|| {
-                self.running_processes
-                    .iter()
-                    .filter(|running| {
-                        running
-                            .image_path
-                            .as_deref()
-                            .is_some_and(|path| same_executable_path(path, Path::new(process)))
-                    })
-                    .count()
-            });
+        let running_count = (self.process_list.load_state == ProcessLoadState::Loaded).then(|| {
+            self.process_list
+                .processes
+                .iter()
+                .filter(|running| {
+                    running
+                        .image_path
+                        .as_deref()
+                        .is_some_and(|path| same_executable_path(path, Path::new(process)))
+                })
+                .count()
+        });
         h_flex()
             .flex_1()
             .min_w(px(0.0))
@@ -539,7 +539,8 @@ impl WinderustApp {
         };
         let normalized_query = query.trim().to_ascii_lowercase();
         let suggestion_count = self
-            .process_candidates
+            .process_catalog
+            .candidates
             .iter()
             .filter(|process| {
                 normalized_query.is_empty()
@@ -560,7 +561,7 @@ impl WinderustApp {
         let input_detail = if !selected_path.is_empty() {
             Some(selected_path)
         } else {
-            process_load_state_message(&self.process_candidate_load_state)
+            process_load_state_message(&self.process_catalog.load_state)
         };
         let placement =
             self.dropdown_placement(&id, dropdown_list_height(suggestion_count), window);
@@ -612,7 +613,8 @@ impl WinderustApp {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(process);
-        self.selected_process_paths
+        self.process_catalog
+            .selected_paths
             .insert(target, process.to_owned());
         let input = target.input(&self.inputs).clone();
         clear_input_to(&input, display_name, window, cx);
@@ -625,7 +627,8 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> String {
         let display_name = input.read(cx).value();
-        self.selected_process_paths
+        self.process_catalog
+            .selected_paths
             .get(&target)
             .filter(|path| process_path_matches_display_name(path, display_name.as_ref()))
             .cloned()

@@ -15,6 +15,33 @@ pub(super) fn automation_refresh_interval(
     }
 }
 
+pub(super) fn input_hook_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && (activity_input_hook_required(settings) || app_suspension_input_hook_required(settings))
+}
+
+pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
+    let app_suspension = app_suspension_input_hook_required(settings);
+    InputHookConfig {
+        keyboard: settings.by_activity.input_detection.keyboard || app_suspension,
+        mouse: settings.by_activity.input_detection.mouse || app_suspension,
+    }
+}
+
+fn app_suspension_input_hook_required(settings: &Settings) -> bool {
+    settings.app_suspension.enabled
+}
+
+fn activity_input_hook_required(settings: &Settings) -> bool {
+    settings.by_activity.enabled
+        && settings.by_activity.switch_to_performance_on_resume
+        && settings
+            .by_activity
+            .input_detection
+            .keyboard_or_mouse_enabled()
+        && settings.by_activity.power_plans.performance_guid.is_some()
+}
+
 pub(super) fn workload_refresh_interval(
     settings: &Settings,
     hidden_to_tray: bool,
@@ -29,23 +56,6 @@ pub(super) fn workload_refresh_interval(
             WORKLOAD_ENGINE_REFRESH_INTERVAL,
         )
     }
-}
-
-pub(super) fn workload_engine_fast_refresh_deadline(
-    settings: &Settings,
-    now: Instant,
-) -> Option<Instant> {
-    feature_refresh_required(settings, workload_engine_required(settings))
-        .then_some(now + WORKLOAD_ENGINE_FAST_REFRESH_WINDOW)
-}
-
-pub(super) fn workload_engine_fast_refresh_active(
-    settings: &Settings,
-    fast_until: Option<Instant>,
-    now: Instant,
-) -> bool {
-    feature_refresh_required(settings, workload_engine_required(settings))
-        && fast_until.is_some_and(|until| now < until)
 }
 
 pub(super) fn feature_refresh_required(settings: &Settings, feature_enabled: bool) -> bool {
@@ -159,16 +169,33 @@ pub(super) fn effective_io_priority_settings(
     workload_engine_active: bool,
 ) -> crate::config::IoPrioritySettings {
     let mut io_priority = settings.io_priority.clone();
-    if workload_engine_active {
+    if adaptive_io_priority_active(settings, workload_engine_active) {
         let auto_io_priority = workload_engine_io_priority_settings(settings);
-        if auto_io_priority.enabled {
-            io_priority = auto_io_priority;
-            io_priority
-                .exclusions
-                .extend(settings.workload_engine.workload_engine_exclusions.clone());
-        }
+        io_priority = auto_io_priority;
+        io_priority
+            .exclusions
+            .extend(settings.workload_engine.workload_engine_exclusions.clone());
     }
     io_priority
+}
+
+pub(super) fn io_priority_control_owner(
+    settings: &Settings,
+    workload_engine_active: bool,
+) -> ControlOwner {
+    if adaptive_io_priority_active(settings, workload_engine_active) {
+        ControlOwner::AdaptiveEngine
+    } else {
+        ControlOwner::IoPriority
+    }
+}
+
+fn adaptive_io_priority_active(settings: &Settings, workload_engine_active: bool) -> bool {
+    workload_engine_active
+        && (settings.workload_engine.workload_engine_io_priority.enabled
+            || settings
+                .workload_engine
+                .lower_background_io_priority_enabled)
 }
 
 pub(super) fn workload_engine_io_priority_settings(
@@ -198,13 +225,7 @@ pub(super) fn effective_thread_priority_settings(
     workload_engine_active: bool,
 ) -> crate::config::ThreadPrioritySettings {
     let mut thread_priority = settings.thread_priority.clone();
-    if workload_engine_active
-        && workload_engine_priority_assist_required(settings)
-        && settings
-            .workload_engine
-            .workload_engine_thread_priority
-            .enabled
-    {
+    if adaptive_thread_priority_active(settings, workload_engine_active) {
         thread_priority = settings
             .workload_engine
             .workload_engine_thread_priority
@@ -221,18 +242,32 @@ pub(super) fn effective_thread_priority_settings(
     thread_priority
 }
 
+pub(super) fn thread_priority_control_owner(
+    settings: &Settings,
+    workload_engine_active: bool,
+) -> ControlOwner {
+    if adaptive_thread_priority_active(settings, workload_engine_active) {
+        ControlOwner::AdaptiveEngine
+    } else {
+        ControlOwner::ThreadPriority
+    }
+}
+
+fn adaptive_thread_priority_active(settings: &Settings, workload_engine_active: bool) -> bool {
+    workload_engine_active
+        && workload_engine_priority_assist_required(settings)
+        && settings
+            .workload_engine
+            .workload_engine_thread_priority
+            .enabled
+}
+
 pub(super) fn effective_dynamic_priority_boost_settings(
     settings: &Settings,
     workload_engine_active: bool,
 ) -> crate::config::DynamicPriorityBoostSettings {
     let mut dynamic_priority_boost = settings.dynamic_priority_boost.clone();
-    if workload_engine_active
-        && workload_engine_priority_assist_required(settings)
-        && settings
-            .workload_engine
-            .workload_engine_dynamic_priority_boost
-            .enabled
-    {
+    if adaptive_dynamic_priority_boost_active(settings, workload_engine_active) {
         dynamic_priority_boost = settings
             .workload_engine
             .workload_engine_dynamic_priority_boost
@@ -246,18 +281,35 @@ pub(super) fn effective_dynamic_priority_boost_settings(
     dynamic_priority_boost
 }
 
+pub(super) fn dynamic_priority_boost_control_owner(
+    settings: &Settings,
+    workload_engine_active: bool,
+) -> ControlOwner {
+    if adaptive_dynamic_priority_boost_active(settings, workload_engine_active) {
+        ControlOwner::AdaptiveEngine
+    } else {
+        ControlOwner::DynamicPriorityBoost
+    }
+}
+
+fn adaptive_dynamic_priority_boost_active(
+    settings: &Settings,
+    workload_engine_active: bool,
+) -> bool {
+    workload_engine_active
+        && workload_engine_priority_assist_required(settings)
+        && settings
+            .workload_engine
+            .workload_engine_dynamic_priority_boost
+            .enabled
+}
+
 pub(super) fn effective_gpu_priority_settings(
     settings: &Settings,
     workload_engine_active: bool,
 ) -> crate::config::GpuPrioritySettings {
     let mut gpu_priority = settings.gpu_priority.clone();
-    if workload_engine_active
-        && workload_engine_priority_assist_required(settings)
-        && settings
-            .workload_engine
-            .workload_engine_gpu_priority
-            .enabled
-    {
+    if adaptive_gpu_priority_active(settings, workload_engine_active) {
         gpu_priority = settings
             .workload_engine
             .workload_engine_gpu_priority
@@ -272,6 +324,26 @@ pub(super) fn effective_gpu_priority_settings(
             .extend(settings.workload_engine.workload_engine_exclusions.clone());
     }
     gpu_priority
+}
+
+pub(super) fn gpu_priority_control_owner(
+    settings: &Settings,
+    workload_engine_active: bool,
+) -> ControlOwner {
+    if adaptive_gpu_priority_active(settings, workload_engine_active) {
+        ControlOwner::AdaptiveEngine
+    } else {
+        ControlOwner::GpuPriority
+    }
+}
+
+fn adaptive_gpu_priority_active(settings: &Settings, workload_engine_active: bool) -> bool {
+    workload_engine_active
+        && workload_engine_priority_assist_required(settings)
+        && settings
+            .workload_engine
+            .workload_engine_gpu_priority
+            .enabled
 }
 
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
@@ -378,7 +450,7 @@ pub(super) fn by_foreground_required(settings: &Settings) -> bool {
         }))
 }
 
-pub(crate) fn foreground_lookup_required(settings: &Settings) -> bool {
+pub(super) fn foreground_lookup_required(settings: &Settings) -> bool {
     by_foreground_required(settings)
 }
 
@@ -425,7 +497,7 @@ pub(super) fn configured_check_interval(settings: &Settings) -> Duration {
     )
 }
 
-pub(super) fn hidden_power_plan_check_delay(
+pub(super) fn power_plan_check_delay(
     settings: &Settings,
     windows_event_watcher_active: bool,
 ) -> Option<Duration> {

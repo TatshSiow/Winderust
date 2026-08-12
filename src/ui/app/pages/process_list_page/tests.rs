@@ -40,6 +40,7 @@ fn inaccessible_process_uses_dash_for_unavailable_metrics() {
 fn inaccessible_process_filter_matches_process_action_safety() {
     let accessible = ProcessInfo {
         id: u32::MAX,
+        creation_time: Some(1),
         parent_id: None,
         session_id: Some(1),
         user_name: Some("User".to_owned()),
@@ -74,6 +75,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: Some(0),
             user_name: Some("SYSTEM".to_owned()),
@@ -85,6 +87,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: Some(1),
             user_name: Some("User".to_owned()),
@@ -173,6 +176,7 @@ fn process_list_column_layout_fits_headers_and_values() {
     let processes = vec![
         ProcessInfo {
             id: 1234,
+            creation_time: Some(1234),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -184,6 +188,7 @@ fn process_list_column_layout_fits_headers_and_values() {
         },
         ProcessInfo {
             id: 12345,
+            creation_time: Some(12345),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -231,6 +236,7 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
     let executable_path = PathBuf::from(r"C:\Apps\MixedCase\Editor.EXE");
     let processes = vec![ProcessInfo {
         id: 1,
+        creation_time: Some(1),
         parent_id: None,
         session_id: None,
         user_name: None,
@@ -280,6 +286,7 @@ fn process_list_group_actions_target_the_root_process() {
     let processes = vec![
         ProcessInfo {
             id: 10,
+            creation_time: Some(10),
             parent_id: Some(20),
             session_id: None,
             user_name: None,
@@ -291,6 +298,7 @@ fn process_list_group_actions_target_the_root_process() {
         },
         ProcessInfo {
             id: 20,
+            creation_time: Some(20),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -321,33 +329,6 @@ fn process_list_group_actions_target_the_root_process() {
 }
 
 #[test]
-fn stacked_process_actions_attempt_every_available_target() {
-    let target = |id| ProcessActionTarget {
-        id,
-        name: "editor.exe".to_owned(),
-        executable_path: PathBuf::from(r"C:\Apps\Editor\editor.exe"),
-        creation_time: u64::from(id),
-        session_id: Some(1),
-        is_service_account: Some(false),
-    };
-    let targets = vec![
-        Ok(target(10)),
-        Err(ProcessActionTargetError::ProcessUnavailable(5)),
-        Ok(target(20)),
-    ];
-    let mut applied = Vec::new();
-
-    let error = apply_process_list_targets(&targets, |target| {
-        applied.push(target.id);
-        Ok(())
-    })
-    .expect_err("one unavailable process should be reported");
-
-    assert_eq!(applied, [10, 20]);
-    assert!(error.starts_with("1 of 3 process actions failed:"));
-}
-
-#[test]
 fn stop_action_visibility_matches_process_row_shape() {
     assert_eq!(
         process_list_stop_action_visibility(true, false),
@@ -367,6 +348,7 @@ fn stop_action_visibility_matches_process_row_shape() {
 fn process_list_search_matches_name_pid_and_path() {
     let process = ProcessInfo {
         id: 4242,
+        creation_time: Some(4242),
         parent_id: None,
         session_id: None,
         user_name: None,
@@ -388,6 +370,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -399,6 +382,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -432,6 +416,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -443,6 +428,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -481,6 +467,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
     let processes = vec![
         ProcessInfo {
             id: 30,
+            creation_time: Some(30),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -492,6 +479,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
         },
         ProcessInfo {
             id: 10,
+            creation_time: Some(10),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -503,6 +491,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
         },
         ProcessInfo {
             id: 20,
+            creation_time: Some(20),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -557,6 +546,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -568,6 +558,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: None,
             user_name: None,

@@ -2620,4 +2620,152 @@ mod tests {
         assert!(!settings.audio_wake_enabled_for("chat.exe"));
         assert_eq!(settings.network_wake_thresholds_for("chat.exe"), None);
     }
+
+    #[test]
+    fn process_custom_rules_use_first_enabled_exact_path_override_for_every_priority_property() {
+        let disabled = ProcessExclusionRule {
+            enabled: false,
+            executable_path: r"C:\Apps\worker.exe".to_owned(),
+            process_foreground_priority: Some(ProcessPrioritySetting::Idle),
+            thread_foreground_priority: Some(ProcessThreadPrioritySetting::Idle),
+            dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Disabled),
+            io_foreground_priority: Some(ProcessIoPrioritySetting::VeryLow),
+            gpu_foreground_priority: Some(ProcessGpuPrioritySetting::Idle),
+            memory_foreground_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
+            ..Default::default()
+        };
+        let expected = ProcessExclusionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".to_owned(),
+            process_foreground_priority: Some(ProcessPrioritySetting::AboveNormal),
+            process_background_priority: Some(ProcessPrioritySetting::BelowNormal),
+            thread_foreground_priority: Some(ProcessThreadPrioritySetting::Highest),
+            thread_background_priority: Some(ProcessThreadPrioritySetting::Lowest),
+            dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Enabled),
+            dynamic_priority_boost_background: Some(ProcessDynamicPriorityBoostSetting::Disabled),
+            io_foreground_priority: Some(ProcessIoPrioritySetting::Normal),
+            io_background_priority: Some(ProcessIoPrioritySetting::VeryLow),
+            gpu_foreground_priority: Some(ProcessGpuPrioritySetting::AboveNormal),
+            gpu_background_priority: Some(ProcessGpuPrioritySetting::Idle),
+            memory_foreground_priority: Some(ProcessMemoryPrioritySetting::Normal),
+            memory_background_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
+        };
+        let later_duplicate = ProcessExclusionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".to_owned(),
+            process_foreground_priority: Some(ProcessPrioritySetting::High),
+            thread_foreground_priority: Some(ProcessThreadPrioritySetting::TimeCritical),
+            dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Disabled),
+            io_foreground_priority: Some(ProcessIoPrioritySetting::Low),
+            gpu_foreground_priority: Some(ProcessGpuPrioritySetting::Normal),
+            memory_foreground_priority: Some(ProcessMemoryPrioritySetting::Medium),
+            ..Default::default()
+        };
+        let exclusion = ProcessExclusionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\excluded.exe".to_owned(),
+            ..Default::default()
+        };
+        let rules = vec![disabled, expected, later_duplicate, exclusion];
+
+        let process = ProcessPrioritySettings {
+            exclusions: rules.clone(),
+            ..Default::default()
+        };
+        let thread = ThreadPrioritySettings {
+            exclusions: rules.clone(),
+            ..Default::default()
+        };
+        let boost = DynamicPriorityBoostSettings {
+            exclusions: rules.clone(),
+            ..Default::default()
+        };
+        let io = IoPrioritySettings {
+            exclusions: rules.clone(),
+            ..Default::default()
+        };
+        let gpu = GpuPrioritySettings {
+            exclusions: rules.clone(),
+            ..Default::default()
+        };
+        let memory = MemoryPrioritySettings {
+            exclusions: rules,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            process.override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessPrioritySetting::AboveNormal))
+        );
+        assert_eq!(
+            process.override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessPrioritySetting::BelowNormal))
+        );
+        assert_eq!(
+            thread.override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessThreadPrioritySetting::Highest))
+        );
+        assert_eq!(
+            thread.override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessThreadPrioritySetting::Lowest))
+        );
+        assert_eq!(
+            boost.override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessDynamicPriorityBoostSetting::Enabled))
+        );
+        assert_eq!(
+            boost.override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessDynamicPriorityBoostSetting::Disabled))
+        );
+        assert_eq!(
+            io.override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessIoPrioritySetting::Normal))
+        );
+        assert_eq!(
+            io.override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessIoPrioritySetting::VeryLow))
+        );
+        assert_eq!(
+            gpu.override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessGpuPrioritySetting::AboveNormal))
+        );
+        assert_eq!(
+            gpu.override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessGpuPrioritySetting::Idle))
+        );
+        assert_eq!(
+            memory.override_for(r"c:/apps/WORKER.exe", true),
+            Some(Some(ProcessMemoryPrioritySetting::Normal))
+        );
+        assert_eq!(
+            memory.override_for(r"c:/apps/WORKER.exe", false),
+            Some(Some(ProcessMemoryPrioritySetting::VeryLow))
+        );
+
+        assert_eq!(
+            process.override_for(r"C:\Apps\excluded.exe", true),
+            Some(None)
+        );
+        assert_eq!(
+            thread.override_for(r"C:\Apps\excluded.exe", true),
+            Some(None)
+        );
+        assert_eq!(
+            boost.override_for(r"C:\Apps\excluded.exe", true),
+            Some(None)
+        );
+        assert_eq!(io.override_for(r"C:\Apps\excluded.exe", true), Some(None));
+        assert_eq!(gpu.override_for(r"C:\Apps\excluded.exe", true), Some(None));
+        assert_eq!(
+            memory.override_for(r"C:\Apps\excluded.exe", true),
+            Some(None)
+        );
+
+        assert_eq!(process.override_for(r"C:\Other\worker.exe", true), None);
+        assert_eq!(thread.override_for(r"C:\Other\worker.exe", true), None);
+        assert_eq!(boost.override_for(r"C:\Other\worker.exe", true), None);
+        assert_eq!(io.override_for(r"C:\Other\worker.exe", true), None);
+        assert_eq!(gpu.override_for(r"C:\Other\worker.exe", true), None);
+        assert_eq!(memory.override_for(r"C:\Other\worker.exe", true), None);
+    }
 }

@@ -7,18 +7,25 @@ compile_error!("Winderust is a Windows-only application.");
 
 mod action_log;
 mod activity;
+mod application;
 mod backend;
 mod config;
+mod control;
 mod cpu;
 mod features;
 mod foreground;
+mod platform;
 mod power;
 mod rules;
+mod runtime;
 mod ui;
 
+use application::SettingsEditor;
+#[cfg(feature = "architecture-diagnostics")]
+use backend::architecture_diagnostics;
 use backend::{
     audio_activity, automation, crash_recovery, dashboard_metrics, file_dialog, power_source,
-    privilege, process_icon, self_power, startup, tray, update_checker, win_registry, win_util,
+    privilege, process_icon, self_power, tray, update_checker, win_registry, win_util,
     windows_events,
 };
 use features::{
@@ -48,11 +55,31 @@ fn main() {
         return;
     };
 
-    crash_recovery::initialize();
+    let (mut settings, settings_load_error) = match SettingsEditor::load() {
+        Ok((settings, outcome)) => (
+            settings,
+            outcome
+                .startup_registration_error()
+                .map(|error| format!("Startup registration reconciliation failed: {error}")),
+        ),
+        Err(error) => (
+            SettingsEditor::with_settings(config::Settings::default()),
+            Some(error.to_string()),
+        ),
+    };
+    #[cfg(feature = "architecture-diagnostics")]
+    architecture_diagnostics::initialize();
+    let mut recovery_client = crash_recovery::RecoveryClient::start();
+    let adaptive_plan_recovery_error = power::restore_stale_adaptive_plans()
+        .err()
+        .map(|error| format!("Adaptive power plan recovery failed: {error}"));
+    let settings_load_error = settings_load_error.or(adaptive_plan_recovery_error);
+    let runtime_settings = settings.runtime_settings_snapshot();
+    let runtime_handle = automation::RuntimeHandle::start(&runtime_settings);
 
     Application::new()
         .with_assets(assets::Assets)
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
             gpui_component::init(cx);
 
             let bounds = Bounds::centered(None, size(px(1120.0), px(760.0)), cx);
@@ -65,15 +92,29 @@ fn main() {
                     window_decorations: Some(WindowDecorations::Client),
                     ..Default::default()
                 },
-                |window, cx| {
+                move |window, cx| {
                     window.set_window_title("Winderust");
-                    let view = cx.new(|cx| app::WinderustApp::new(window, cx));
+                    let view = cx.new(|cx| {
+                        app::WinderustApp::new(
+                            window,
+                            cx,
+                            settings,
+                            settings_load_error,
+                            runtime_handle,
+                        )
+                    });
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
                 },
             )
             .expect("failed to open Winderust window");
         });
-    crash_recovery::finish_clean_shutdown();
+    if let Err(error) = recovery_client.finish() {
+        eprintln!("{error}");
+    }
+    #[cfg(feature = "architecture-diagnostics")]
+    if let Err(error) = architecture_diagnostics::finish() {
+        eprintln!("{error}");
+    }
 }
 
 struct SingleInstanceGuard {
@@ -147,5 +188,47 @@ mod tests {
     #[test]
     fn executable_path_hash_preserves_non_unicode_units() {
         assert_ne!(fnv1a64([0xD800]), fnv1a64([0xFFFD]));
+    }
+
+    #[test]
+    fn application_lifecycle_orders_settings_recovery_runtime_and_helper_finish() {
+        let source = include_str!("main.rs");
+        let main_body = source
+            .split_once("fn main()")
+            .expect("main function")
+            .1
+            .split_once("struct SingleInstanceGuard")
+            .expect("main function end")
+            .0;
+        let helper_mode = main_body
+            .find("run_watchdog_if_requested")
+            .expect("helper mode");
+        let single_instance = main_body
+            .find("SingleInstanceGuard::acquire")
+            .expect("single-instance guard");
+        let settings = main_body
+            .find("SettingsEditor::load")
+            .expect("settings load");
+        let recovery = main_body
+            .find("RecoveryClient::start")
+            .expect("RecoveryClient startup");
+        let stale_plan_recovery = main_body
+            .find("restore_stale_adaptive_plans")
+            .expect("stale adaptive-plan recovery");
+        let application = main_body.find("Application::new").expect("GPUI startup");
+        let runtime = main_body
+            .find("RuntimeHandle::start")
+            .expect("runtime startup");
+        let finish = main_body
+            .find("recovery_client.finish")
+            .expect("RecoveryClient finish");
+
+        assert!(helper_mode < single_instance);
+        assert!(single_instance < settings);
+        assert!(settings < recovery);
+        assert!(recovery < stale_plan_recovery);
+        assert!(stale_plan_recovery < runtime);
+        assert!(runtime < application);
+        assert!(application < finish);
     }
 }

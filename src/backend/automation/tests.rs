@@ -1,11 +1,33 @@
 use super::*;
 use chrono::{Datelike, Duration as ChronoDuration, Local};
+use std::sync::Arc;
 
+use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
     AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CoreLimiterRule,
     CpuAllocationRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
     ProcessGpuPrioritySetting, ProcessThreadPrioritySetting, TimerResolutionRule, WeekdaySetting,
 };
+
+fn runtime_settings(snapshot: Settings) -> RuntimeSettingsSnapshot {
+    runtime_settings_with_runtime_and_persisted_revisions(
+        snapshot,
+        SettingsRevision::initial(),
+        SettingsRevision::initial(),
+    )
+}
+
+fn runtime_settings_with_runtime_and_persisted_revisions(
+    snapshot: Settings,
+    runtime_revision: SettingsRevision,
+    persisted_revision: SettingsRevision,
+) -> RuntimeSettingsSnapshot {
+    RuntimeSettingsSnapshot {
+        runtime_revision,
+        persisted_revision,
+        value: Arc::new(snapshot),
+    }
+}
 
 fn app_suspension_rule(executable_path: &str) -> AppSuspensionRule {
     AppSuspensionRule {
@@ -17,6 +39,35 @@ fn app_suspension_rule(executable_path: &str) -> AppSuspensionRule {
         network_download_threshold_unit: Default::default(),
         network_upload_threshold_bytes: 0,
         network_upload_threshold_unit: Default::default(),
+    }
+}
+
+// Phase 0 keeps production scheduling untouched. These scoped source assertions lock the current
+// monolithic worker order/invalidation until Phase 2 introduces a directly testable scheduler.
+fn source_scope<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    let body_start = source
+        .find(start)
+        .expect("characterized function body should have its start marker");
+    let body = &source[body_start..];
+    let body_end = body
+        .find(end)
+        .expect("characterized function body should have its end marker");
+    &body[..body_end]
+}
+
+fn assert_source_call_order(source: &str, start: &str, end: &str, calls: &[&str]) {
+    let body = source_scope(source, start, end);
+
+    let mut previous = 0;
+    for call in calls {
+        let index = body
+            .find(call)
+            .unwrap_or_else(|| panic!("characterized function body should call {call}"));
+        assert!(
+            index >= previous,
+            "{call} should follow the preceding feature operation"
+        );
+        previous = index;
     }
 }
 
@@ -43,33 +94,14 @@ fn process_appearance_detector_reports_new_process_ids() {
 }
 
 #[test]
-fn repeated_power_plan_switch_failures_suppress_future_attempts() {
-    let mut runner = HiddenAutomationRunner::default();
-
-    runner.record_switch_failure("PLAN-GUID");
-    runner.record_switch_failure("plan-guid");
-    assert!(!runner.is_switch_suppressed("plan-guid"));
-
-    runner.record_switch_failure("plan-guid");
-    assert!(runner.is_switch_suppressed("plan-guid"));
-
-    runner.clear_switch_failure("PLAN-GUID");
-    assert!(!runner.is_switch_suppressed("plan-guid"));
-}
-
-#[test]
-fn adaptive_plan_setup_error_preserves_cleanup_failure() {
-    assert_eq!(
-        adaptive_plan_setup_error(
-            "Applying the adaptive plan failed.".to_owned(),
-            Err("Deleting the adaptive plan failed.".to_owned()),
-        ),
-        "Applying the adaptive plan failed. Adaptive plan cleanup also failed: Deleting the adaptive plan failed."
-    );
-    assert_eq!(
-        adaptive_plan_setup_error("Applying the adaptive plan failed.".to_owned(), Ok(())),
-        "Applying the adaptive plan failed."
-    );
+fn automation_event_deadline_invalidations_are_characterized() {
+    let source = include_str!("../automation.rs");
+    assert!(source.contains("RefreshScheduler::new"));
+    assert!(source.contains("SchedulerEvent::SettingsChanged"));
+    assert!(source.contains("SchedulerEvent::ForegroundChanged"));
+    assert!(source.contains("SchedulerEvent::WindowCreated"));
+    assert!(source.contains("SchedulerEvent::ProcessAppeared"));
+    assert!(!source.contains("let mut next_"));
 }
 
 #[test]
@@ -85,7 +117,7 @@ fn poisoned_automation_mutex_is_recovered() {
 
 #[test]
 fn automation_worker_error_is_delivered_once() {
-    let automation = BackgroundAutomation::start(&Settings::default());
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     update_worker_error(
         &automation.shared,
         Some("Background automation worker stopped unexpectedly.".to_owned()),
@@ -105,6 +137,558 @@ fn automation_worker_error_is_delivered_once() {
     assert!(automation
         .status_snapshot_since(snapshot.generation)
         .is_none());
+}
+
+#[test]
+fn power_plan_status_is_published_as_an_independent_runtime_segment() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let status = PowerPlanStatus {
+        owner: Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation),
+        current_guid: Some("current".to_owned()),
+        target_guid: Some("target".to_owned()),
+        decision_state: Some(crate::rules::DecisionState::ByTime),
+        reason: Some("test".to_owned()),
+    };
+
+    update_power_plan_status(&automation.shared, status.clone());
+
+    let snapshot = automation
+        .status_snapshot_since(1)
+        .expect("power-plan status advances the status generation");
+    assert_eq!(snapshot.power_plan_status.as_ref(), &status);
+}
+
+#[test]
+fn runtime_handle_shutdown_is_idempotent() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    assert!(automation.shutdown().is_ok());
+    assert!(automation.shutdown().is_ok());
+}
+
+#[test]
+fn runtime_handle_default_settings_start_no_worker() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    assert!(lock_unpoisoned(&automation.thread).is_none());
+}
+
+#[test]
+fn runtime_handle_rejects_commands_after_shutdown_starts() {
+    let baseline = runtime_settings(Settings::default());
+    let automation = RuntimeHandle::start(&baseline);
+    automation.shutdown().expect("shutdown");
+
+    let memory_trim_error = automation.request_memory_trim_now().err();
+    let app_suspension_error = automation
+        .request_app_suspension_freeze(r"C:\Apps\worker.exe")
+        .err();
+    let app_suspension_process_error = automation
+        .request_app_suspension_process_action(Vec::new(), true)
+        .err();
+    let replacement = runtime_settings_with_runtime_and_persisted_revisions(
+        Settings::default(),
+        baseline.runtime_revision.next(),
+        baseline.persisted_revision.next(),
+    );
+    automation.replace_settings(&replacement);
+    automation.sync_worker(&replacement, true);
+    let dynamic_priority_boost_error = automation
+        .request_dynamic_priority_boost_action(Vec::new(), DynamicPriorityBoostState::Enabled)
+        .err();
+    let termination_error = automation.request_process_termination(Vec::new()).err();
+
+    let state = lock_unpoisoned(&automation.shared.state);
+    assert_eq!(state.runtime_revision, baseline.runtime_revision);
+    drop(state);
+    assert_eq!(
+        dynamic_priority_boost_error,
+        Some(RuntimeCommandError::RuntimeStopped)
+    );
+    assert_eq!(memory_trim_error, Some(RuntimeCommandError::RuntimeStopped));
+    assert_eq!(
+        app_suspension_error,
+        Some(RuntimeCommandError::RuntimeStopped)
+    );
+    assert_eq!(
+        app_suspension_process_error,
+        Some(RuntimeCommandError::RuntimeStopped)
+    );
+    assert_eq!(termination_error, Some(RuntimeCommandError::RuntimeStopped));
+    assert!(lock_unpoisoned(&automation.thread).is_none());
+}
+
+#[test]
+fn manual_memory_trim_request_starts_worker_and_always_replies() {
+    let mut settings = Settings::default();
+    settings.general.enabled = false;
+    settings.memory_trim.enabled = true;
+    let automation = RuntimeHandle::start(&runtime_settings(settings));
+    assert!(lock_unpoisoned(&automation.thread).is_none());
+
+    let receiver = automation
+        .request_memory_trim_now()
+        .expect("request should queue");
+    let status = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the request");
+
+    assert!(!status.enabled);
+    assert_eq!(status.message, "Automation disabled.");
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn process_termination_request_starts_worker_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_process_termination(Vec::new())
+        .expect("request should queue");
+    let outcome = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the request");
+
+    assert_eq!(
+        outcome.into_process_list_result().unwrap_err(),
+        "No process targets were available."
+    );
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_dynamic_priority_boost_request_starts_worker_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_dynamic_priority_boost_action(Vec::new(), DynamicPriorityBoostState::Enabled)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_process_priority_request_uses_the_shared_worker_queue_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_process_priority_action(Vec::new(), ProcessPrioritySetting::Normal)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_efficiency_mode_request_uses_the_shared_worker_queue_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_efficiency_mode_action(Vec::new(), true)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_thread_priority_request_uses_the_shared_worker_queue_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_thread_priority_action(Vec::new(), ProcessThreadPrioritySetting::Normal)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_io_priority_request_uses_the_shared_worker_queue_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_io_priority_action(Vec::new(), ProcessIoPriority::Normal)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_gpu_priority_request_uses_the_shared_worker_queue_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_gpu_priority_action(Vec::new(), ProcessGpuPriority::Normal)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_memory_priority_request_uses_the_shared_worker_queue_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_memory_priority_action(Vec::new(), ProcessMemoryPriority::Normal)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn manual_app_suspension_request_uses_the_shared_worker_queue_and_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+
+    let receiver = automation
+        .request_app_suspension_process_action(Vec::new(), true)
+        .expect("request should queue");
+    let batch = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worker should reply")
+        .expect("runtime should process the batch");
+
+    assert!(batch.into_process_list_result().is_err());
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn process_control_batch_summary_preserves_first_failure() {
+    let result = ProcessControlBatchResult {
+        results: vec![
+            Ok(()),
+            Err("first failure".to_owned()),
+            Err("second failure".to_owned()),
+        ],
+    }
+    .into_process_list_result()
+    .expect_err("partial failure should be reported");
+
+    assert_eq!(result, "2 of 3 process actions failed: first failure");
+}
+
+#[test]
+fn process_control_command_queue_is_bounded_and_drained_on_shutdown() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let mut receivers = Vec::new();
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        for _ in 0..PROCESS_CONTROL_COMMAND_QUEUE_CAPACITY {
+            let (result, receiver) = sync_channel(1);
+            state
+                .process_control_commands
+                .push_back(ProcessControlCommand::DynamicPriorityBoost {
+                    targets: Vec::new(),
+                    state: DynamicPriorityBoostState::Enabled,
+                    result,
+                });
+            receivers.push(receiver);
+        }
+    }
+
+    assert_eq!(
+        automation
+            .request_dynamic_priority_boost_action(Vec::new(), DynamicPriorityBoostState::Enabled,)
+            .err(),
+        Some(RuntimeCommandError::QueueFull)
+    );
+    automation.shutdown().expect("shutdown");
+    for receiver in receivers {
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(Err(RuntimeCommandError::RuntimeStopped))
+        ));
+    }
+}
+
+#[test]
+fn process_control_queue_preserves_cross_property_fifo_order() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let (priority_result, _priority_receiver) = sync_channel(1);
+    let (efficiency_result, _efficiency_receiver) = sync_channel(1);
+    let (boost_result, _boost_receiver) = sync_channel(1);
+    let (thread_result, _thread_receiver) = sync_channel(1);
+    let (io_result, _io_receiver) = sync_channel(1);
+    let (gpu_result, _gpu_receiver) = sync_channel(1);
+    let (memory_result, _memory_receiver) = sync_channel(1);
+    let (app_suspension_result, _app_suspension_receiver) = sync_channel(1);
+    let (app_suspension_path_result, _app_suspension_path_receiver) = sync_channel(1);
+    let (memory_trim_result, _memory_trim_receiver) = sync_channel(1);
+    let (termination_result, _termination_receiver) = sync_channel(1);
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::ProcessPriority {
+                targets: Vec::new(),
+                priority: ProcessPrioritySetting::Normal,
+                result: priority_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::EfficiencyMode {
+                targets: Vec::new(),
+                enabled: true,
+                result: efficiency_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::DynamicPriorityBoost {
+                targets: Vec::new(),
+                state: DynamicPriorityBoostState::Enabled,
+                result: boost_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::ThreadPriority {
+                targets: Vec::new(),
+                priority: ProcessThreadPrioritySetting::Normal,
+                result: thread_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::IoPriority {
+                targets: Vec::new(),
+                priority: ProcessIoPriority::Normal,
+                result: io_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::GpuPriority {
+                targets: Vec::new(),
+                priority: ProcessGpuPriority::Normal,
+                result: gpu_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::MemoryPriority {
+                targets: Vec::new(),
+                priority: ProcessMemoryPriority::Normal,
+                result: memory_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::AppSuspension {
+                targets: Vec::new(),
+                suspend: true,
+                result: app_suspension_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::AppSuspensionFreezePath {
+                executable_path: r"C:\Apps\app.exe".to_owned(),
+                result: app_suspension_path_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::MemoryTrim {
+                result: memory_trim_result,
+            });
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::StopProcesses {
+                targets: Vec::new(),
+                result: termination_result,
+            });
+    }
+
+    let snapshot = automation_snapshot(&automation.shared).expect("runtime should be active");
+    let commands = snapshot
+        .process_control_commands
+        .into_iter()
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        commands.first(),
+        Some(ProcessControlCommand::ProcessPriority { .. })
+    ));
+    assert!(matches!(
+        commands.get(1),
+        Some(ProcessControlCommand::EfficiencyMode { .. })
+    ));
+    assert!(matches!(
+        commands.get(2),
+        Some(ProcessControlCommand::DynamicPriorityBoost { .. })
+    ));
+    assert!(matches!(
+        commands.get(3),
+        Some(ProcessControlCommand::ThreadPriority { .. })
+    ));
+    assert!(matches!(
+        commands.get(4),
+        Some(ProcessControlCommand::IoPriority { .. })
+    ));
+    assert!(matches!(
+        commands.get(5),
+        Some(ProcessControlCommand::GpuPriority { .. })
+    ));
+    assert!(matches!(
+        commands.get(6),
+        Some(ProcessControlCommand::MemoryPriority { .. })
+    ));
+    assert!(matches!(
+        commands.get(7),
+        Some(ProcessControlCommand::AppSuspension { .. })
+    ));
+    assert!(matches!(
+        commands.get(8),
+        Some(ProcessControlCommand::AppSuspensionFreezePath { .. })
+    ));
+    assert!(matches!(
+        commands.get(9),
+        Some(ProcessControlCommand::MemoryTrim { .. })
+    ));
+    assert!(matches!(
+        commands.get(10),
+        Some(ProcessControlCommand::StopProcesses { .. })
+    ));
+    automation.shutdown().expect("shutdown");
+}
+
+#[test]
+fn managed_process_state_keeps_an_otherwise_idle_worker_alive() {
+    assert!(!automation_worker_can_exit(None, false, true));
+    assert!(automation_worker_can_exit(None, false, false));
+    assert!(!automation_worker_can_exit(
+        Some(Duration::from_secs(1)),
+        false,
+        false,
+    ));
+    assert!(!automation_worker_can_exit(None, true, false));
+}
+
+#[test]
+fn cpu_allocation_reconciliation_retry_backoff_is_bounded() {
+    let mut interval = CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
+    for expected in [2, 4, 8, 16, 32, 60, 60] {
+        interval = next_cpu_allocation_reconciliation_retry_interval(interval);
+        assert_eq!(interval, Duration::from_secs(expected));
+    }
+}
+
+#[test]
+fn worker_exit_commit_yields_to_a_concurrent_request_generation() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let original_generation = {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.worker_accepting_work = true;
+        let generation = state.change_generation;
+        state.change_generation = state.change_generation.wrapping_add(1);
+        generation
+    };
+
+    assert!(!commit_worker_exit(&automation.shared, original_generation));
+    assert!(lock_unpoisoned(&automation.shared.state).worker_accepting_work);
+    let current_generation = lock_unpoisoned(&automation.shared.state).change_generation;
+    assert!(commit_worker_exit(&automation.shared, current_generation));
+    assert!(!lock_unpoisoned(&automation.shared.state).worker_accepting_work);
+}
+
+#[test]
+fn unexpected_worker_exit_rejects_queued_commands() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let (result, receiver) = sync_channel(1);
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.worker_accepting_work = true;
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::DynamicPriorityBoost {
+                targets: Vec::new(),
+                state: DynamicPriorityBoostState::Enabled,
+                result,
+            });
+    }
+
+    drop(AutomationWorkerExitGuard {
+        shared: &automation.shared,
+    });
+
+    assert!(!lock_unpoisoned(&automation.shared.state).worker_accepting_work);
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(1)),
+        Ok(Err(RuntimeCommandError::WorkerExited))
+    ));
+}
+
+#[test]
+fn committed_worker_exit_leaves_newer_commands_for_the_replacement() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let (result, receiver) = sync_channel(1);
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.worker_accepting_work = false;
+        state
+            .process_control_commands
+            .push_back(ProcessControlCommand::ThreadPriority {
+                targets: Vec::new(),
+                priority: ProcessThreadPrioritySetting::Normal,
+                result,
+            });
+    }
+
+    drop(AutomationWorkerExitGuard {
+        shared: &automation.shared,
+    });
+
+    assert_eq!(
+        lock_unpoisoned(&automation.shared.state)
+            .process_control_commands
+            .len(),
+        1
+    );
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn runtime_handle_shutdown_surfaces_thread_panic() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    {
+        let mut thread = lock_unpoisoned(&automation.thread);
+        *thread = Some(std::thread::spawn(|| -> Result<(), String> {
+            panic!("simulated worker panic");
+        }));
+    }
+
+    let error = automation
+        .shutdown()
+        .expect_err("worker panic should surface on shutdown");
+    assert!(error.contains("panicked during shutdown"));
 }
 
 #[test]
@@ -354,7 +938,7 @@ fn adaptive_engine_uses_low_power_refresh_cadence() {
 
 #[test]
 fn status_snapshot_since_skips_unchanged_status() {
-    let automation = BackgroundAutomation::start(&Settings::default());
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let snapshot = automation
         .status_snapshot_since(0)
         .expect("initial status snapshot should be visible");
@@ -365,12 +949,47 @@ fn status_snapshot_since_skips_unchanged_status() {
 }
 
 #[test]
+fn runtime_settings_snapshot_revision_noop_update_does_not_bump_worker_settings() {
+    let settings = Settings::default();
+    let base = runtime_settings(settings.clone());
+    let mut settings_v2 = settings.clone();
+    settings_v2.general.check_interval_ms = 4_200;
+    let revisioned = runtime_settings_with_runtime_and_persisted_revisions(
+        settings_v2,
+        base.runtime_revision.next(),
+        base.persisted_revision,
+    );
+
+    let automation = RuntimeHandle::start(&base);
+    let generation = {
+        let state = lock_unpoisoned(&automation.shared.state);
+        state.change_generation
+    };
+    automation.replace_settings(&base);
+
+    let same_generation = {
+        let state = lock_unpoisoned(&automation.shared.state);
+        state.change_generation
+    };
+    assert_eq!(same_generation, generation);
+
+    automation.replace_settings(&revisioned);
+    let changed = {
+        let state = lock_unpoisoned(&automation.shared.state);
+        state.change_generation != generation
+            && state.runtime_revision == revisioned.runtime_revision
+            && state.settings.as_ref() == revisioned.value.as_ref()
+    };
+    assert!(changed);
+}
+
+#[test]
 fn pending_auto_exclusions_are_taken_only_after_generation_change() {
-    let automation = BackgroundAutomation::start(&Settings::default());
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let mut generation = 0;
 
     assert!(automation
-        .take_pending_auto_exclusions_since(&mut generation)
+        .take_auto_exclusion_patch_since(&mut generation)
         .is_none());
 
     update_cpu_sets_soft_status(
@@ -382,17 +1001,225 @@ fn pending_auto_exclusions_are_taken_only_after_generation_change() {
     );
 
     let pending = automation
-        .take_pending_auto_exclusions_since(&mut generation)
+        .take_auto_exclusion_patch_since(&mut generation)
         .expect("new pending affinity exclusions should be visible");
+    assert_eq!(pending.base_revision, SettingsRevision::initial());
     assert_eq!(pending.cpu_sets_soft, vec![r"D:\Games\Game.exe"]);
     assert!(automation
-        .take_pending_auto_exclusions_since(&mut generation)
+        .take_auto_exclusion_patch_since(&mut generation)
         .is_none());
 }
 
 #[test]
+fn pending_auto_exclusion_patch_keeps_base_revision_for_coalesced_paths() {
+    let mut baseline_settings = Settings::default();
+    baseline_settings.app_suspension.enabled = true;
+    baseline_settings
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(r"C:\Apps\watch.exe"));
+    let base = runtime_settings_with_runtime_and_persisted_revisions(
+        baseline_settings.clone(),
+        SettingsRevision::initial(),
+        SettingsRevision::initial(),
+    );
+    let mut stale = baseline_settings.clone();
+    stale.app_suspension.suspendable_apps[0].enabled = false;
+    let revisioned = runtime_settings_with_runtime_and_persisted_revisions(
+        stale,
+        base.runtime_revision.next(),
+        base.persisted_revision.next(),
+    );
+
+    let automation = RuntimeHandle::start(&base);
+    automation.replace_settings(&revisioned);
+
+    update_process_priority_status(
+        &automation.shared,
+        ProcessPrioritySnapshot {
+            auto_excluded_processes: vec![r"C:\Apps\first.exe".to_owned()],
+            ..ProcessPrioritySnapshot::default()
+        },
+    );
+
+    update_app_suspension_status(
+        &automation.shared,
+        AppSuspensionSnapshot {
+            auto_excluded_processes: vec![r"C:\Apps\second.exe".to_owned()],
+            ..AppSuspensionSnapshot::default()
+        },
+    );
+
+    let mut patch_generation = 0;
+    let patch = automation
+        .take_auto_exclusion_patch_since(&mut patch_generation)
+        .expect("pending exclusions should combine paths");
+    assert_eq!(patch.base_revision, base.persisted_revision.next());
+    assert_eq!(patch.app_suspension, vec![r"C:\Apps\second.exe"]);
+    assert_eq!(patch.process_priority, vec![r"C:\Apps\first.exe"]);
+}
+
+#[test]
+fn pending_auto_exclusion_patch_rebases_when_persisted_settings_advance() {
+    let persisted_revision = SettingsRevision::initial().next();
+    let base = runtime_settings_with_runtime_and_persisted_revisions(
+        Settings::default(),
+        SettingsRevision::initial(),
+        persisted_revision,
+    );
+    let automation = RuntimeHandle::start(&base);
+    update_process_priority_status(
+        &automation.shared,
+        ProcessPrioritySnapshot {
+            auto_excluded_processes: vec![r"C:\Apps\worker.exe".to_owned()],
+            ..ProcessPrioritySnapshot::default()
+        },
+    );
+
+    let next = runtime_settings_with_runtime_and_persisted_revisions(
+        Settings::default(),
+        base.runtime_revision,
+        persisted_revision.next(),
+    );
+    automation.replace_settings(&next);
+
+    let mut generation = 0;
+    let patch = automation
+        .take_auto_exclusion_patch_since(&mut generation)
+        .expect("pending exclusion should remain queued");
+    assert_eq!(patch.base_revision, next.persisted_revision);
+    assert_eq!(patch.process_priority, vec![r"C:\Apps\worker.exe"]);
+}
+
+#[test]
+fn failed_auto_exclusion_delivery_is_requeued_with_bounded_retry() {
+    let base = runtime_settings_with_runtime_and_persisted_revisions(
+        Settings::default(),
+        SettingsRevision::initial(),
+        SettingsRevision::initial().next(),
+    );
+    let automation = RuntimeHandle::start(&base);
+    update_process_priority_status(
+        &automation.shared,
+        ProcessPrioritySnapshot {
+            auto_excluded_processes: vec![r"C:\Apps\worker.exe".to_owned()],
+            ..ProcessPrioritySnapshot::default()
+        },
+    );
+
+    let mut generation = 0;
+    let patch = automation
+        .take_auto_exclusion_patch_since(&mut generation)
+        .expect("first delivery");
+    automation.requeue_auto_exclusion_patch(patch);
+
+    assert!(automation
+        .take_auto_exclusion_patch_since(&mut generation)
+        .is_none());
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.pending_auto_exclusions_retry_at = Some(Instant::now());
+    }
+
+    let retry = automation
+        .take_auto_exclusion_patch_since(&mut generation)
+        .expect("delivery after retry deadline");
+    assert_eq!(retry.base_revision, base.persisted_revision);
+    assert_eq!(retry.process_priority, vec![r"C:\Apps\worker.exe"]);
+}
+
+#[test]
+fn status_feature_status_arc_is_stable_when_feature_updates_are_no_op() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let snapshot = automation
+        .status_snapshot_since(0)
+        .expect("initial status snapshot should be visible");
+
+    let snapshot_ptr = Arc::as_ptr(&snapshot.feature_status);
+
+    update_cpu_sets_soft_status(
+        &automation.shared,
+        CpuAllocationSnapshot {
+            auto_excluded_processes: vec![r"D:\Apps\game.exe".to_owned()],
+            ..CpuAllocationSnapshot::default()
+        },
+    );
+
+    let changed = automation
+        .status_snapshot_since(snapshot.generation)
+        .expect("feature changes should advance generation");
+    let changed_ptr = Arc::as_ptr(&changed.feature_status);
+    assert_ne!(snapshot_ptr, changed_ptr);
+
+    update_cpu_sets_soft_status(
+        &automation.shared,
+        CpuAllocationSnapshot {
+            auto_excluded_processes: vec![r"D:\Apps\game.exe".to_owned()],
+            ..CpuAllocationSnapshot::default()
+        },
+    );
+    let same = automation
+        .status_snapshot_since(changed.generation)
+        .is_none();
+    assert!(same);
+    let retained_ptr = {
+        let state = lock_unpoisoned(&automation.shared.state);
+        Arc::as_ptr(&state.status.feature_status)
+    };
+    assert_eq!(retained_ptr, changed_ptr);
+}
+
+#[test]
+fn runtime_status_snapshot_default_dormancy() {
+    let snapshot = RuntimeStatusSnapshot::default();
+    assert_eq!(snapshot.generation, 0);
+    assert_eq!(snapshot.appearance_change_generation, 0);
+    assert_eq!(snapshot.worker_error, None);
+    assert!(snapshot.action_log_entries.is_empty());
+    assert!(snapshot.feature_status.as_ref() == &RuntimeFeatureStatus::default());
+}
+
+#[test]
+fn runtime_settings_update_noop_uses_runtime_revision_only() {
+    let settings = Settings::default();
+    let baseline = runtime_settings_with_runtime_and_persisted_revisions(
+        settings.clone(),
+        SettingsRevision::initial(),
+        SettingsRevision::initial(),
+    );
+    let runtime_unchanged_persisted_updated = runtime_settings_with_runtime_and_persisted_revisions(
+        settings,
+        baseline.runtime_revision,
+        baseline.persisted_revision.next(),
+    );
+
+    let automation = RuntimeHandle::start(&baseline);
+    let generation = {
+        let state = lock_unpoisoned(&automation.shared.state);
+        state.change_generation
+    };
+
+    automation.replace_settings(&runtime_unchanged_persisted_updated);
+
+    let after = {
+        let state = lock_unpoisoned(&automation.shared.state);
+        (
+            state.change_generation,
+            state.persisted_revision,
+            state.runtime_revision,
+        )
+    };
+    assert_eq!(after.0, generation);
+    assert_eq!(
+        after.1,
+        runtime_unchanged_persisted_updated.persisted_revision
+    );
+    assert_eq!(after.2, baseline.runtime_revision);
+}
+
+#[test]
 fn pending_auto_exclusions_keep_same_named_executable_paths_distinct() {
-    let automation = BackgroundAutomation::start(&Settings::default());
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let mut generation = 0;
 
     update_process_priority_status(
@@ -407,7 +1234,7 @@ fn pending_auto_exclusions_keep_same_named_executable_paths_distinct() {
     );
 
     let pending = automation
-        .take_pending_auto_exclusions_since(&mut generation)
+        .take_auto_exclusion_patch_since(&mut generation)
         .expect("absolute executable paths should reach the pending queue");
     assert_eq!(
         pending.process_priority,
@@ -416,29 +1243,28 @@ fn pending_auto_exclusions_keep_same_named_executable_paths_distinct() {
 }
 
 #[test]
-fn app_suspension_freeze_queue_preserves_and_deduplicates_executable_paths() {
-    let automation = BackgroundAutomation::start(&Settings::default());
+fn app_suspension_freeze_rejects_relative_paths_and_always_replies() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
 
-    automation.request_app_suspension_freeze("Editor.exe");
-    automation.request_app_suspension_freeze(r"C:/Apps/Editor.exe");
-    automation.request_app_suspension_freeze(r"C:\Apps\Editor.exe");
-
-    let state = automation
-        .shared
-        .state
-        .lock()
-        .expect("automation state should remain available");
-    assert_eq!(
-        state.app_suspension_freeze_requests,
-        vec![r"C:\Apps\Editor.exe"]
-    );
+    assert!(matches!(
+        automation.request_app_suspension_freeze("Editor.exe"),
+        Err(RuntimeCommandError::InvalidRequest(_))
+    ));
+    let receiver = automation
+        .request_app_suspension_freeze(r"C:/Apps/Editor.exe")
+        .expect("absolute path should be queued");
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(2)),
+        Ok(Err(RuntimeCommandError::CommandFailed(_)))
+    ));
+    automation.shutdown().expect("shutdown");
 }
 
 #[test]
 fn manual_app_suspension_request_starts_worker_without_automatic_rules() {
     let mut settings = Settings::default();
     settings.app_suspension.enabled = true;
-    let automation = BackgroundAutomation::start(&settings);
+    let automation = RuntimeHandle::start(&runtime_settings(settings));
 
     assert!(automation
         .thread
@@ -446,7 +1272,9 @@ fn manual_app_suspension_request_starts_worker_without_automatic_rules() {
         .expect("automation thread state should remain available")
         .is_none());
 
-    automation.request_app_suspension_freeze(r"C:\Apps\Editor.exe");
+    let _receiver = automation
+        .request_app_suspension_freeze(r"C:\Apps\Editor.exe")
+        .expect("request should be queued");
 
     assert!(automation
         .thread
@@ -475,33 +1303,20 @@ fn automation_worker_runs_for_enabled_memory_trim() {
 fn workload_engine_fast_refresh_requires_enabled_feature() {
     let now = Instant::now();
     let mut settings = Settings::default();
+    let mut scheduler = RefreshScheduler::new(now);
 
-    assert!(workload_engine_fast_refresh_deadline(&settings, now).is_none());
-    assert!(!workload_engine_fast_refresh_active(
-        &settings,
-        Some(now + WORKLOAD_ENGINE_FAST_REFRESH_WINDOW),
-        now,
-    ));
+    let enabled = feature_refresh_required(&settings, workload_engine_required(&settings));
+    scheduler.extend_workload_fast_window(now, enabled, WORKLOAD_ENGINE_FAST_REFRESH_WINDOW);
+    assert!(!scheduler.workload_fast_refresh_active(now, enabled));
 
     settings.general.enabled = true;
     settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
-    let deadline = workload_engine_fast_refresh_deadline(&settings, now)
-        .expect("Workload Engine should enable fast refresh");
-    assert_eq!(
-        deadline.duration_since(now),
-        WORKLOAD_ENGINE_FAST_REFRESH_WINDOW
-    );
-    assert!(workload_engine_fast_refresh_active(
-        &settings,
-        Some(deadline),
-        now,
-    ));
-    assert!(!workload_engine_fast_refresh_active(
-        &settings,
-        Some(deadline),
-        deadline,
-    ));
+    let enabled = feature_refresh_required(&settings, workload_engine_required(&settings));
+    scheduler.extend_workload_fast_window(now, enabled, WORKLOAD_ENGINE_FAST_REFRESH_WINDOW);
+    assert!(scheduler.workload_fast_refresh_active(now, enabled));
+    assert!(!scheduler
+        .workload_fast_refresh_active(now + WORKLOAD_ENGINE_FAST_REFRESH_WINDOW, enabled,));
 }
 
 #[test]
@@ -519,6 +1334,14 @@ fn workload_engine_io_assist_waits_for_pressure() {
     let io_priority = effective_io_priority_settings(&settings, true);
 
     assert!(io_priority.enabled);
+    assert_eq!(
+        io_priority_control_owner(&settings, true),
+        ControlOwner::AdaptiveEngine
+    );
+    assert_eq!(
+        io_priority_control_owner(&settings, false),
+        ControlOwner::IoPriority
+    );
     assert!(io_priority.foreground_detection_enabled);
     assert_eq!(
         io_priority.foreground_priority.priority(),
@@ -593,6 +1416,14 @@ fn workload_engine_pressure_feeds_priority_defaults() {
     assert!(thread_priority_required(&settings));
     assert!(dynamic_priority_boost_required(&settings));
     assert!(gpu_priority_required(&settings));
+    assert_eq!(
+        thread_priority_control_owner(&settings, true),
+        ControlOwner::AdaptiveEngine
+    );
+    assert_eq!(
+        thread_priority_control_owner(&settings, false),
+        ControlOwner::ThreadPriority
+    );
 
     let thread_priority = effective_thread_priority_settings(&settings, true);
     assert!(thread_priority.enabled);
@@ -620,6 +1451,10 @@ fn workload_engine_pressure_feeds_priority_defaults() {
 
     let io_priority = effective_io_priority_settings(&settings, true);
     assert_eq!(
+        io_priority_control_owner(&settings, true),
+        ControlOwner::AdaptiveEngine
+    );
+    assert_eq!(
         io_priority.background_priority.priority(),
         Some(ProcessIoPriority::Low)
     );
@@ -629,6 +1464,14 @@ fn workload_engine_pressure_feeds_priority_defaults() {
     assert!(io_priority.contains_exclusion("game.exe"));
 
     let gpu_priority = effective_gpu_priority_settings(&settings, true);
+    assert_eq!(
+        gpu_priority_control_owner(&settings, true),
+        ControlOwner::AdaptiveEngine
+    );
+    assert_eq!(
+        gpu_priority_control_owner(&settings, false),
+        ControlOwner::GpuPriority
+    );
     assert!(gpu_priority.enabled);
     assert!(gpu_priority.foreground_detection_enabled);
     assert!(gpu_priority.preserve_foreground_priority);
@@ -693,8 +1536,16 @@ fn workload_engine_priority_assist_temporarily_overrides_global_priority_default
         ProcessDynamicPriorityBoostSetting::Disabled
     );
     assert_eq!(
+        dynamic_priority_boost_control_owner(&settings, true),
+        ControlOwner::AdaptiveEngine
+    );
+    assert_eq!(
         effective_gpu_priority_settings(&settings, true).background_priority,
         ProcessGpuPrioritySetting::BelowNormal
+    );
+    assert_eq!(
+        gpu_priority_control_owner(&settings, true),
+        ControlOwner::AdaptiveEngine
     );
     assert_eq!(
         effective_thread_priority_settings(&settings, false).background_priority,
@@ -705,8 +1556,16 @@ fn workload_engine_priority_assist_temporarily_overrides_global_priority_default
         ProcessDynamicPriorityBoostSetting::Enabled
     );
     assert_eq!(
+        dynamic_priority_boost_control_owner(&settings, false),
+        ControlOwner::DynamicPriorityBoost
+    );
+    assert_eq!(
         effective_gpu_priority_settings(&settings, false).background_priority,
         ProcessGpuPrioritySetting::Idle
+    );
+    assert_eq!(
+        gpu_priority_control_owner(&settings, false),
+        ControlOwner::GpuPriority
     );
 }
 
@@ -726,6 +1585,84 @@ fn default_settings_do_not_poll_power_plans_without_plan_targets() {
     let settings = Settings::default();
 
     assert!(!power_plan_checks_required(&settings));
+}
+
+#[test]
+fn input_hook_is_needed_for_activity_input_or_app_suspension() {
+    let mut settings = Settings::default();
+
+    assert!(!input_hook_required(&settings));
+
+    settings.by_activity.enabled = true;
+    settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
+    assert!(input_hook_required(&settings));
+
+    settings.by_activity.enabled = false;
+    assert!(!input_hook_required(&settings));
+
+    settings.by_activity.enabled = true;
+    settings.general.enabled = false;
+    assert!(!input_hook_required(&settings));
+
+    settings.general.enabled = true;
+    settings.by_activity.switch_to_performance_on_resume = false;
+    assert!(!input_hook_required(&settings));
+
+    settings.by_activity.switch_to_performance_on_resume = true;
+    settings.by_activity.input_detection.keyboard = false;
+    settings.by_activity.input_detection.mouse = false;
+    settings.by_activity.input_detection.controller = true;
+    assert!(!input_hook_required(&settings));
+
+    settings.app_suspension.enabled = true;
+    assert!(input_hook_required(&settings));
+
+    settings.general.enabled = false;
+    assert!(!input_hook_required(&settings));
+}
+
+#[test]
+fn input_hook_config_tracks_enabled_input_devices() {
+    let mut settings = Settings::default();
+
+    settings.by_activity.input_detection.keyboard = true;
+    settings.by_activity.input_detection.mouse = false;
+    assert_eq!(
+        input_hook_config(&settings),
+        InputHookConfig {
+            keyboard: true,
+            mouse: false,
+        }
+    );
+
+    settings.by_activity.input_detection.keyboard = false;
+    settings.by_activity.input_detection.mouse = true;
+    assert_eq!(
+        input_hook_config(&settings),
+        InputHookConfig {
+            keyboard: false,
+            mouse: true,
+        }
+    );
+
+    settings.by_activity.input_detection.mouse = false;
+    settings.by_activity.input_detection.controller = true;
+    assert_eq!(
+        input_hook_config(&settings),
+        InputHookConfig {
+            keyboard: false,
+            mouse: false,
+        }
+    );
+
+    settings.app_suspension.enabled = true;
+    assert_eq!(
+        input_hook_config(&settings),
+        InputHookConfig {
+            keyboard: true,
+            mouse: true,
+        }
+    );
 }
 
 #[test]
@@ -833,20 +1770,20 @@ fn event_driven_power_checks_drop_idle_polling_for_foreground_only_rules() {
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(hidden_power_plan_check_delay(&settings, true).is_none());
-    assert!(hidden_power_plan_check_delay(&settings, false).is_some());
+    assert!(power_plan_check_delay(&settings, true).is_none());
+    assert!(power_plan_check_delay(&settings, false).is_some());
 }
 
 #[test]
-fn hidden_activity_input_resume_waits_for_hook_event() {
+fn activity_input_resume_waits_for_hook_event() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = true;
     settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(hidden_power_plan_check_delay(&settings, true).is_none());
-    assert!(hidden_power_plan_check_delay(&settings, false).is_some());
+    assert!(power_plan_check_delay(&settings, true).is_none());
+    assert!(power_plan_check_delay(&settings, false).is_some());
 }
 
 #[test]
@@ -866,7 +1803,7 @@ fn configured_check_interval_clamps_imported_values() {
 }
 
 #[test]
-fn hidden_schedule_checks_sleep_until_next_time_boundary() {
+fn schedule_checks_sleep_until_next_time_boundary() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
     settings.by_time.enabled = true;
@@ -881,14 +1818,14 @@ fn hidden_schedule_checks_sleep_until_next_time_boundary() {
         power_plan_guid: Some("scheduled-guid".to_owned()),
     }];
 
-    let delay = hidden_power_plan_check_delay(&settings, true).unwrap();
+    let delay = power_plan_check_delay(&settings, true).unwrap();
 
     assert!(delay > configured_check_interval(&settings));
     assert!(delay <= Duration::from_secs(180));
 }
 
 #[test]
-fn hidden_schedule_checks_cap_long_sleeps() {
+fn schedule_checks_cap_long_sleeps() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
     settings.by_time.enabled = true;
@@ -904,7 +1841,7 @@ fn hidden_schedule_checks_cap_long_sleeps() {
     }];
 
     assert_eq!(
-        hidden_power_plan_check_delay(&settings, true),
+        power_plan_check_delay(&settings, true),
         Some(SCHEDULE_RULE_MAX_SLEEP)
     );
 }
@@ -1037,4 +1974,154 @@ fn power_plan_checks_sleep_when_decision_features_are_off() {
     settings.by_running_app.enabled = false;
 
     assert!(!power_plan_checks_required(&settings));
+}
+
+#[test]
+fn automation_feature_execution_order_is_characterized() {
+    assert_source_call_order(
+        include_str!("../automation.rs"),
+        "if background_efficiency_refresh_required",
+        "runner.publish_action_log_if_changed(&shared);",
+        &[
+            "runner.run_background_efficiency_update(",
+            "runner.run_workload_engine_update(",
+            "runner.run_io_priority_update(",
+            "runner.run_process_priority_update(",
+            "runner.run_thread_priority_update(",
+            "runner.run_dynamic_priority_boost_update(",
+            "runner.run_gpu_priority_update(",
+            "runner.run_memory_priority_update(",
+            "runner.run_process_control_commands(",
+            "runner.run_app_suspension_update(",
+            "runner.run_cpu_sets_soft_update(",
+            "runner.run_processor_affinity_hard_update(",
+            "runner.run_core_limiter_update(",
+            "runner.run_cpu_allocation_reconciliation(",
+            "runner.run_by_running_app_update(",
+            "runner.run_memory_trim_",
+            "runner.run_timer_resolution_update(",
+        ],
+    );
+}
+
+#[test]
+fn cpu_allocation_handoffs_bypass_release_retry_deadlines() {
+    let source = include_str!("../automation.rs");
+    let route = source_scope(
+        source,
+        "let immediate_cpu_allocation_reconciliation =",
+        "if by_running_app_refresh_required",
+    );
+    assert!(route.contains("runner.cpu_allocation_immediate_reconciliation_pending()"));
+    assert!(route.contains("cpu_allocation_release_retry_pending_at_pass_start"));
+    assert!(route.contains("cpu_allocation_release_retry_due"));
+    assert!(route.contains(
+        "runner.run_cpu_allocation_reconciliation(&settings, cpu_allocation_release_retry_due)"
+    ));
+}
+
+#[test]
+fn shared_property_precedence_inputs_are_characterized() {
+    let source = include_str!("runner.rs");
+    let workload = source_scope(
+        source,
+        "pub(super) fn run_workload_engine_update",
+        "pub(super) fn sync_processor_power_policy",
+    );
+    assert!(workload.contains("priority_efficiency_controller"));
+    assert!(workload.contains("ControlOwner::BackgroundEfficiency"));
+    assert!(workload.contains("by_running_app_manager.active_process_ids()"));
+    assert!(workload.contains("explicit_cpu_allocation_paths(settings)"));
+
+    let process_priority = source_scope(
+        source,
+        "pub(super) fn run_process_priority_update",
+        "pub(super) fn run_thread_priority_update",
+    );
+    assert!(process_priority.contains("priority_efficiency_controller"));
+    assert!(process_priority.contains("ControlOwner::BackgroundEfficiency"));
+    assert!(process_priority.contains("ControlOwner::AdaptiveEngine"));
+    assert!(process_priority.contains("ControlOwner::WorkloadForegroundBoost"));
+
+    let core_limiter = source_scope(
+        source,
+        "pub(super) fn run_core_limiter_update",
+        "pub(super) fn run_by_running_app_update",
+    );
+    assert!(core_limiter.contains("cpu_allocation_coordinator"));
+    assert!(!core_limiter.contains("allocated_process_ids"));
+
+    let cpu_allocation = include_str!("../../control/cpu_allocation.rs");
+    assert_source_call_order(
+        cpu_allocation,
+        "fn cpu_allocation_owner_precedence()",
+        "fn validate_owner(",
+        &[
+            "ControlOwner::CpuSetsSoft",
+            "ControlOwner::ProcessorAffinityHard",
+            "ControlOwner::CoreLimiter",
+            "ControlOwner::AdaptiveEngine",
+        ],
+    );
+}
+
+#[test]
+fn power_plan_decisions_have_one_visibility_independent_runtime_route() {
+    let ui_source = include_str!("../../ui/app/runtime.rs");
+    assert!(!ui_source.contains("decide("));
+    assert!(!ui_source.contains("record_power_plan_change"));
+    assert!(!ui_source.contains("set_active("));
+
+    let runner_source = include_str!("runner.rs");
+    let runtime_decision = source_scope(
+        runner_source,
+        "pub(super) fn run_check",
+        "pub(super) fn refresh_active_plan",
+    );
+    assert!(runtime_decision.contains("process_is_critical"));
+    assert!(runtime_decision.contains("reconcile_ordinary"));
+
+    let worker_source = include_str!("../automation.rs");
+    let power_route = source_scope(
+        worker_source,
+        "let wait_now = Instant::now();",
+        "wait_for = scheduler.minimum_wait",
+    );
+    assert!(power_route.contains("runner.run_check"));
+    assert!(power_route.contains("power_plan_check_delay"));
+    assert!(!power_route.contains("hidden_to_tray"));
+    assert!(!power_route.contains("by_running_app_manager.is_active"));
+}
+
+#[test]
+fn automation_shutdown_restores_reversible_features_in_reverse_order() {
+    assert_source_call_order(
+        include_str!("runner.rs"),
+        "pub(super) fn shutdown(&mut self)",
+        "pub(super) fn note_settings",
+        &[
+            "self.run_timer_resolution_update(",
+            "self.run_by_running_app_update(",
+            "self.run_core_limiter_update(",
+            "self.run_processor_affinity_hard_update(",
+            "self.run_cpu_sets_soft_update(",
+            "self.run_app_suspension_update(",
+            "self.run_memory_priority_update(",
+            "self.memory_priority_controller.shutdown(",
+            "self.run_gpu_priority_update(",
+            "self.gpu_priority_controller.shutdown(",
+            "self.run_dynamic_priority_boost_update(",
+            "self.dynamic_priority_boost_controller.shutdown(",
+            "self.run_thread_priority_update(",
+            "self.thread_priority_controller.shutdown(",
+            "self.run_process_priority_update(",
+            "self.run_io_priority_update(",
+            "self.io_priority_controller.shutdown(",
+            "self.run_workload_engine_update(",
+            "self.cpu_allocation_coordinator.shutdown(",
+            "self.run_background_efficiency_update(",
+            "self.priority_efficiency_controller.shutdown(",
+            "self.power_plan_controller.shutdown(",
+        ],
+    );
 }

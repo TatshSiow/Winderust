@@ -144,7 +144,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_timer_resolution_status_card(&self) -> gpui::Div {
-        let status = &self.timer_resolution_status;
+        let status = &self.feature_status.timer_resolution;
         let requested = status
             .requested_100ns
             .map(timer_resolution::format_resolution_ms)

@@ -255,7 +255,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_thread_priority_status_card(&self) -> gpui::Div {
-        let status = &self.thread_priority_status;
+        let status = &self.feature_status.thread_priority;
         let message = if status.message.is_empty() {
             t!("thread_priority.not_checked").to_string()
         } else {

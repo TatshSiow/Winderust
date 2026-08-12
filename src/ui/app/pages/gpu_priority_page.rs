@@ -244,7 +244,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_gpu_priority_status_card(&self) -> gpui::Div {
-        let status = &self.gpu_priority_status;
+        let status = &self.feature_status.gpu_priority;
         let message = if status.message.is_empty() {
             t!("gpu_priority.not_checked").to_string()
         } else {

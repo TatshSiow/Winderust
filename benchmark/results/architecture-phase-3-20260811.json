@@ -1,0 +1,1307 @@
+{
+    "schema_version":  1,
+    "purpose":  "Phase 0 behavior-preserving architecture performance baseline.",
+    "recorded_at_utc":  "2026-08-11T01:41:38.7892447Z",
+    "winderust_version":  "0.5.0-alpha",
+    "build":  {
+                  "profile":  "release",
+                  "cargo_feature":  "architecture-diagnostics",
+                  "executable_sha256":  "f1b76f11a78e59762fd5419207f143cb1cad01034ad9b5a899d282d2e797d17a"
+              },
+    "host":  {
+                 "cpu_name":  "Intel(R) Core(TM) 5 210H",
+                 "logical_processors":  12,
+                 "memory_gb":  15.61,
+                 "os_caption":  "Microsoft Windows 11 家用版",
+                 "os_version":  "10.0.26200"
+             },
+    "methodology":  {
+                        "measurement_seconds_per_case":  30,
+                        "sample_interval_ms":  500,
+                        "cpu_definition":  "Sum of Winderust main/helper TotalProcessorTime deltas divided by wall time and logical processor count.",
+                        "memory_definition":  "Sum across the isolated Winderust main process and crash helper.",
+                        "action_latency_definition":  "Wall time from normalizing a new owned hidden System32 PING.EXE process to Normal until its PriorityClass is observed as BelowNormal; the runner refuses pre-existing ping.exe processes.",
+                        "clean_release_definition":  "The retained target returns to its original Normal priority after a graceful Winderust shutdown."
+                    },
+    "cases":  [
+                  {
+                      "name":  "ui_idle",
+                      "model":  "Release build with all automatic features disabled.",
+                      "footprint":  {
+                                        "sample_count":  60,
+                                        "interval_ms":  500,
+                                        "cpu_percent_total_capacity":  {
+                                                                           "minimum":  0,
+                                                                           "median":  0,
+                                                                           "p95":  0.253,
+                                                                           "maximum":  0.4927,
+                                                                           "mean":  0.0918
+                                                                       },
+                                        "working_set_mb":  {
+                                                               "minimum":  82.3867,
+                                                               "median":  82.418,
+                                                               "p95":  82.5156,
+                                                               "maximum":  82.5156,
+                                                               "mean":  82.4513
+                                                           },
+                                        "private_memory_mb":  {
+                                                                  "minimum":  125.4688,
+                                                                  "median":  125.4688,
+                                                                  "p95":  125.4922,
+                                                                  "maximum":  125.5,
+                                                                  "mean":  125.4724
+                                                              },
+                                        "thread_count":  {
+                                                             "minimum":  38,
+                                                             "median":  38,
+                                                             "p95":  39,
+                                                             "maximum":  39,
+                                                             "mean":  38.1333
+                                                         },
+                                        "handle_count":  {
+                                                             "minimum":  751,
+                                                             "median":  751,
+                                                             "p95":  752,
+                                                             "maximum":  753,
+                                                             "mean":  751.1833
+                                                         },
+                                        "samples":  [
+                                                        {
+                                                            "elapsed_ms":  500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5,
+                                                            "private_memory_mb":  125.5,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  1000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  1500,
+                                                            "cpu_percent_total_capacity":  0.251,
+                                                            "working_set_mb":  82.5,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  2000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5039,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  2500,
+                                                            "cpu_percent_total_capacity":  0.2494,
+                                                            "working_set_mb":  82.5078,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  3000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  3500,
+                                                            "cpu_percent_total_capacity":  0.2498,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  4000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  4500,
+                                                            "cpu_percent_total_capacity":  0.2506,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  5000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  5500,
+                                                            "cpu_percent_total_capacity":  0.2474,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  6000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  6500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  7000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  7500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  8000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  8500,
+                                                            "cpu_percent_total_capacity":  0.2511,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  9000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  9500,
+                                                            "cpu_percent_total_capacity":  0.2537,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  10000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  10500,
+                                                            "cpu_percent_total_capacity":  0.253,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  11000,
+                                                            "cpu_percent_total_capacity":  0.2496,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  11500,
+                                                            "cpu_percent_total_capacity":  0.2508,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  12000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  12500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.5156,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  13000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.4688,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  13500,
+                                                            "cpu_percent_total_capacity":  0.2485,
+                                                            "working_set_mb":  82.4688,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  14000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.4688,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  14500,
+                                                            "cpu_percent_total_capacity":  0.2509,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  15000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  15500,
+                                                            "cpu_percent_total_capacity":  0.2527,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  16000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  16500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  17000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  17500,
+                                                            "cpu_percent_total_capacity":  0.2529,
+                                                            "working_set_mb":  82.4023,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  18000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.4023,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  18500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  19000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  19500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  20000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  20500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  21000,
+                                                            "cpu_percent_total_capacity":  0.2531,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  21500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  22000,
+                                                            "cpu_percent_total_capacity":  0.2509,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  22500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  23000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  23500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  24000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  24500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  25000,
+                                                            "cpu_percent_total_capacity":  0.2509,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  25500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3867,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  26000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.3906,
+                                                            "private_memory_mb":  125.4688,
+                                                            "thread_count":  38,
+                                                            "handle_count":  753,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  26500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  27000,
+                                                            "cpu_percent_total_capacity":  0.2496,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  27500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  28000,
+                                                            "cpu_percent_total_capacity":  0.246,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  28500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  29000,
+                                                            "cpu_percent_total_capacity":  0.4927,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  29500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  30000,
+                                                            "cpu_percent_total_capacity":  0.2525,
+                                                            "working_set_mb":  82.418,
+                                                            "private_memory_mb":  125.4922,
+                                                            "thread_count":  39,
+                                                            "handle_count":  752,
+                                                            "process_count":  2
+                                                        }
+                                                    ]
+                                    },
+                      "diagnostics":  {
+                                          "schema_version":  1,
+                                          "purpose":  "Phase 0 behavior-preserving architecture baseline diagnostics",
+                                          "winderust_version":  "0.5.0-alpha",
+                                          "started_at_utc":  "2026-08-11T01:40:22.686075+00:00",
+                                          "finished_at_utc":  "2026-08-11T01:40:57.012476800+00:00",
+                                          "duration_ms":  34326,
+                                          "worker":  {
+                                                         "reconciliation_passes":  0,
+                                                         "signal_wakes":  0,
+                                                         "timeout_wakes":  0,
+                                                         "total_wakes":  0,
+                                                         "wake_frequency_hz":  0.0
+                                                     },
+                                          "inventory":  {
+                                                            "process_snapshot_scans":  0,
+                                                            "process_path_enrichment_scans":  0,
+                                                            "foreground_process_queries":  0,
+                                                            "visible_window_scans":  0,
+                                                            "top_level_window_scans":  0
+                                                        },
+                                          "accepted_events":  {
+                                                                  "foreground_changed":  0,
+                                                                  "window_created":  0,
+                                                                  "power_changed":  0,
+                                                                  "session_changed":  0,
+                                                                  "appearance_changed":  0,
+                                                                  "input_notifications":  0
+                                                              },
+                                          "process_priority":  {
+                                                                   "cycles":  0,
+                                                                   "scanned_process_observations":  0,
+                                                                   "selected_target_observations":  0,
+                                                                   "applied_changes":  0,
+                                                                   "already_applied_observations":  0,
+                                                                   "preserved_observations":  0,
+                                                                   "process_exit_failures":  0,
+                                                                   "access_denied_failures":  0,
+                                                                   "other_failures":  0
+                                                               }
+                                      }
+                  },
+                  {
+                      "name":  "process_priority_reconciliation",
+                      "model":  "Release build with Process Priority and visible-window observation enabled, global values set to Default, and one exact-path Below Normal rule.",
+                      "footprint":  {
+                                        "sample_count":  60,
+                                        "interval_ms":  500,
+                                        "cpu_percent_total_capacity":  {
+                                                                           "minimum":  0,
+                                                                           "median":  0.241,
+                                                                           "p95":  0.504,
+                                                                           "maximum":  0.7621,
+                                                                           "mean":  0.1668
+                                                                       },
+                                        "working_set_mb":  {
+                                                               "minimum":  84.125,
+                                                               "median":  84.125,
+                                                               "p95":  84.1523,
+                                                               "maximum":  84.1523,
+                                                               "mean":  84.1336
+                                                           },
+                                        "private_memory_mb":  {
+                                                                  "minimum":  126.1055,
+                                                                  "median":  126.1055,
+                                                                  "p95":  126.125,
+                                                                  "maximum":  126.125,
+                                                                  "mean":  126.1117
+                                                              },
+                                        "thread_count":  {
+                                                             "minimum":  40,
+                                                             "median":  40,
+                                                             "p95":  41,
+                                                             "maximum":  41,
+                                                             "mean":  40.3167
+                                                         },
+                                        "handle_count":  {
+                                                             "minimum":  750,
+                                                             "median":  750,
+                                                             "p95":  751,
+                                                             "maximum":  751,
+                                                             "mean":  750.3333
+                                                         },
+                                        "samples":  [
+                                                        {
+                                                            "elapsed_ms":  500,
+                                                            "cpu_percent_total_capacity":  0.7621,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  1000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  1500,
+                                                            "cpu_percent_total_capacity":  0.239,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  2000,
+                                                            "cpu_percent_total_capacity":  0.4973,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  2500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  3000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  3500,
+                                                            "cpu_percent_total_capacity":  0.2508,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  4000,
+                                                            "cpu_percent_total_capacity":  0.2533,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  4500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  5000,
+                                                            "cpu_percent_total_capacity":  0.2538,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  5500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  6000,
+                                                            "cpu_percent_total_capacity":  0.2503,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  6500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  7000,
+                                                            "cpu_percent_total_capacity":  0.2475,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  7500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  8000,
+                                                            "cpu_percent_total_capacity":  0.2462,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  8500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  9000,
+                                                            "cpu_percent_total_capacity":  0.2479,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  9500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  10000,
+                                                            "cpu_percent_total_capacity":  0.2501,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  10500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  11000,
+                                                            "cpu_percent_total_capacity":  0.2507,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  11500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  12000,
+                                                            "cpu_percent_total_capacity":  0.504,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  12500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  13000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  13500,
+                                                            "cpu_percent_total_capacity":  0.2515,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  14000,
+                                                            "cpu_percent_total_capacity":  0.2538,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  14500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  15000,
+                                                            "cpu_percent_total_capacity":  0.4905,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  15500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  16000,
+                                                            "cpu_percent_total_capacity":  0.2525,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  16500,
+                                                            "cpu_percent_total_capacity":  0.2517,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  17000,
+                                                            "cpu_percent_total_capacity":  0.241,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  17500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  18000,
+                                                            "cpu_percent_total_capacity":  0.5053,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  18500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  19000,
+                                                            "cpu_percent_total_capacity":  0.251,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  19500,
+                                                            "cpu_percent_total_capacity":  0.2472,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  20000,
+                                                            "cpu_percent_total_capacity":  0.248,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  20500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.125,
+                                                            "private_memory_mb":  126.1055,
+                                                            "thread_count":  40,
+                                                            "handle_count":  750,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  21000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  21500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  22000,
+                                                            "cpu_percent_total_capacity":  0.2495,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  22500,
+                                                            "cpu_percent_total_capacity":  0.2531,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  23000,
+                                                            "cpu_percent_total_capacity":  0.2452,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  23500,
+                                                            "cpu_percent_total_capacity":  0.2525,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  24000,
+                                                            "cpu_percent_total_capacity":  0.2489,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  24500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  25000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  25500,
+                                                            "cpu_percent_total_capacity":  0.2522,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  26000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  26500,
+                                                            "cpu_percent_total_capacity":  0.5047,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  27000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  27500,
+                                                            "cpu_percent_total_capacity":  0.2513,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  28000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  28500,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  29000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  29500,
+                                                            "cpu_percent_total_capacity":  0.5021,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        },
+                                                        {
+                                                            "elapsed_ms":  30000,
+                                                            "cpu_percent_total_capacity":  0,
+                                                            "working_set_mb":  84.1523,
+                                                            "private_memory_mb":  126.125,
+                                                            "thread_count":  41,
+                                                            "handle_count":  751,
+                                                            "process_count":  2
+                                                        }
+                                                    ]
+                                    },
+                      "process_appearance_to_action_latency_ms":  {
+                                                                      "trials":  5,
+                                                                      "median":  69.652,
+                                                                      "p95":  86.4457,
+                                                                      "minimum":  57.4927,
+                                                                      "maximum":  86.4457,
+                                                                      "values":  [
+                                                                                     74.8605,
+                                                                                     86.4457,
+                                                                                     69.652,
+                                                                                     57.4927,
+                                                                                     59.2963
+                                                                                 ]
+                                                                  },
+                      "clean_release_restored_normal_priority":  true,
+                      "diagnostics":  {
+                                          "schema_version":  1,
+                                          "purpose":  "Phase 0 behavior-preserving architecture baseline diagnostics",
+                                          "winderust_version":  "0.5.0-alpha",
+                                          "started_at_utc":  "2026-08-11T01:40:57.177733600+00:00",
+                                          "finished_at_utc":  "2026-08-11T01:41:37.042394900+00:00",
+                                          "duration_ms":  39864,
+                                          "worker":  {
+                                                         "reconciliation_passes":  42,
+                                                         "signal_wakes":  23,
+                                                         "timeout_wakes":  18,
+                                                         "total_wakes":  41,
+                                                         "wake_frequency_hz":  1.0284798435522617
+                                                     },
+                                          "inventory":  {
+                                                            "process_snapshot_scans":  41,
+                                                            "process_path_enrichment_scans":  0,
+                                                            "foreground_process_queries":  21,
+                                                            "visible_window_scans":  20,
+                                                            "top_level_window_scans":  0
+                                                        },
+                                          "accepted_events":  {
+                                                                  "foreground_changed":  0,
+                                                                  "window_created":  25,
+                                                                  "power_changed":  0,
+                                                                  "session_changed":  0,
+                                                                  "appearance_changed":  0,
+                                                                  "input_notifications":  0
+                                                              },
+                                          "process_priority":  {
+                                                                   "cycles":  20,
+                                                                   "scanned_process_observations":  4459,
+                                                                   "selected_target_observations":  6,
+                                                                   "applied_changes":  6,
+                                                                   "already_applied_observations":  0,
+                                                                   "preserved_observations":  0,
+                                                                   "process_exit_failures":  0,
+                                                                   "access_denied_failures":  0,
+                                                                   "other_failures":  0
+                                                               }
+                                      }
+                  }
+              ],
+    "validation":  {
+                       "passed":  true,
+                       "idle_worker_dormant":  true,
+                       "active_worker_observed":  true,
+                       "process_scans_observed":  true,
+                       "visible_window_scans_observed":  true,
+                       "all_action_trials_observed":  true,
+                       "clean_release_restored":  true,
+                       "expected_process_priority_changes":  6,
+                       "observed_process_priority_changes":  6,
+                       "process_priority_failures":  0
+                   }
+}

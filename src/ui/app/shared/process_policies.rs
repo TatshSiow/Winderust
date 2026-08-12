@@ -615,16 +615,6 @@ pub(in crate::ui::app) fn new_by_running_app_rule(
     }
 }
 
-pub(in crate::ui::app) fn by_running_app_decision(
-    status: &ByRunningAppSnapshot,
-) -> Option<ByRunningAppDecision> {
-    Some(ByRunningAppDecision {
-        rule_name: status.active_rule.clone()?,
-        process_name: status.active_process.clone()?,
-        power_plan_guid: status.target_guid.clone()?,
-    })
-}
-
 pub(in crate::ui::app) fn process_policy_summary(
     settings: &Settings,
     plans: &[PowerPlan],

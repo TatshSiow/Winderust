@@ -42,11 +42,18 @@ use crate::{
     action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult},
     activity::{
         merge_activity_snapshot, ActivitySnapshot, ActivityState, ControllerActivityDetector,
-        IdleDetector, InputHook, InputHookConfig,
+        IdleDetector,
     },
     app_suspension::{self, AppSuspensionSnapshot},
-    automation::{foreground_lookup_required, BackgroundAutomation},
-    background_efficiency::{self, BackgroundEfficiencySnapshot},
+    application::{
+        AdvancedPowerPlanTuningService, NavigationCollapsedPatch, SettingsEditor,
+        Win32PrioritySeparationError, Win32PrioritySeparationService,
+        Win32PrioritySeparationSnapshot,
+    },
+    automation::{
+        ProcessControlActionReceiver, RuntimeCommandError, RuntimeFeatureStatus, RuntimeHandle,
+    },
+    background_efficiency,
     config::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
         AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
@@ -62,6 +69,14 @@ use crate::{
         ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, UpdateChannel,
         WeekdaySetting, WorkloadEngineSettings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
+    control::{
+        dynamic_priority_boost::{current_dynamic_priority_boost_state, DynamicPriorityBoostState},
+        gpu_priority::current_process_gpu_priority,
+        io_priority::current_process_io_priority,
+        memory_priority::current_process_memory_priority,
+        priority_efficiency::{current_efficiency_mode, current_process_priority},
+        thread_priority::current_process_thread_priority,
+    },
     core_limiter::{self, CoreLimiterSnapshot},
     cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
     cpu_allocation::{self, CpuAllocationSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
@@ -70,68 +85,64 @@ use crate::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
         NetworkUsageMonitor, NetworkUsageSnapshot,
     },
-    dynamic_priority_boost::{self, DynamicPriorityBoostSnapshot},
-    features::power_plan_control::by_running_app::ByRunningAppSnapshot,
-    features::power_plan_control::{
-        current_by_time_decision, next_by_time_switch_label, ByCpuLoadScheduler,
-    },
+    dynamic_priority_boost,
+    features::power_plan_control::next_by_time_switch_label,
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
-        capture_process_action_target, contains_process_name, ensure_process_action_target_access,
-        executable_path_key, foreground_process, list_process_candidates,
-        list_processes_with_paths, open_process_location, process_candidates_from_processes,
-        same_executable_path, sample_process_resources, terminate_process, terminate_process_trees,
-        ProcessActionAccess, ProcessActionTarget, ProcessActionTargetError, ProcessCandidateInfo,
-        ProcessInfo, ProcessResourceSample, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        capture_process_action_target, capture_process_action_target_for_owned_release,
+        contains_process_name, ensure_process_action_target_access, executable_path_key,
+        list_process_candidates, list_processes_with_paths, open_process_location,
+        process_candidates_from_processes, process_tree_action_targets, same_executable_path,
+        sample_process_resources, ProcessActionAccess, ProcessActionTarget,
+        ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
-    gpu_priority::{self, GpuPrioritySnapshot},
-    io_priority::{self, IoPrioritySnapshot},
-    memory_priority::{self, MemoryPrioritySnapshot},
-    memory_trim::{self, MemoryTrimSnapshot},
+    gpu_priority, io_priority, memory_priority, memory_trim,
     power::{
-        active_plan, apply_processor_power_values, list_plans, read_plan_personality,
-        read_processor_power_values, restore_stale_adaptive_plans, set_active, EffectivePowerMode,
-        EffectivePowerModeMonitor, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
-        ProcessorPowerAcDcValues, ProcessorPowerPreset, ProcessorPowerValues,
+        active_plan, list_plans, EffectivePowerMode, EffectivePowerModeMonitor, PowerPlan,
+        PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerPreset,
+        ProcessorPowerValues,
     },
-    power_source, privilege,
+    privilege,
     process_icon::load_process_icon,
-    process_priority::{self, ProcessPrioritySnapshot},
+    process_priority,
     rules::{
-        decide, ByRunningAppDecision, DecisionInput, DecisionOutcome, DecisionState,
         MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
-    self_power, startup,
-    thread_priority::{self, ThreadPrioritySnapshot},
-    timer_resolution::{self, TimerResolutionSnapshot},
+    thread_priority, timer_resolution,
     tray::{self, TrayIcon},
     ui::{self, Page},
     update_checker::{self, AvailableUpdate},
-    win_registry::{
-        read_registry_binary_root, read_registry_dword_root, write_registry_dword_create_root,
-        write_registry_dword_root,
-    },
-    workload_engine::{self, WorkloadEngineSnapshot},
+    win_registry::{read_registry_binary_root, read_registry_dword_root},
+    workload_engine,
 };
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
 };
 
+mod dashboard_model;
 mod list_removal;
 mod navigation_state;
 mod pages;
+mod process_models;
 mod process_refresh;
 pub(in crate::ui::app) use process_refresh::process_load_state_message;
 mod runtime;
 mod settings_io;
 mod shared;
+mod shell_model;
 mod tray_state;
 mod update_check;
+mod update_model;
 
+use dashboard_model::DashboardModel;
 use pages::*;
+use process_models::{ProcessCatalogModel, ProcessListModel};
 use shared::*;
+use shell_model::ShellModel;
+use update_model::{UpdateModalDismissal, UpdateModel};
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -204,7 +215,6 @@ const DROPDOWN_SURFACE_VERTICAL_PADDING: f32 = 16.0;
 const DROPDOWN_OPTION_GAP: f32 = 4.0;
 const DROPDOWN_MENU_OFFSET: f32 = 34.0;
 const DROPDOWN_VIEWPORT_MARGIN: f32 = 12.0;
-const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
 const ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS: u64 = 1;
 const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
@@ -217,13 +227,7 @@ const WORKLOAD_ENGINE_SECONDS_MIN: u64 = 1;
 const WORKLOAD_ENGINE_SECONDS_MAX: u64 = 3_600;
 const WORKLOAD_ENGINE_TARGET_LIMIT_MIN: u64 = 1;
 const WORKLOAD_ENGINE_TARGET_LIMIT_MAX: u64 = 64;
-const WIN32_PRIORITY_SEPARATION_MIN: u64 = 0;
-const WIN32_PRIORITY_SEPARATION_MAX: u64 = 63;
 const WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT: u32 = 0x26;
-const WIN32_PRIORITY_CONTROL_SUB_KEY: &str = "SYSTEM\\CurrentControlSet\\Control\\PriorityControl";
-const WIN32_PRIORITY_SEPARATION_VALUE: &str = "Win32PrioritySeparation";
-const WINDERUST_REGISTRY_SUB_KEY: &str = "Software\\Winderust";
-const WIN32_PRIORITY_SEPARATION_BACKUP_VALUE: &str = "Win32PrioritySeparationBackup";
 const DWM_REGISTRY_SUB_KEY: &str = "Software\\Microsoft\\Windows\\DWM";
 const DWM_ACCENT_COLOR_VALUE: &str = "AccentColor";
 const EXPLORER_ACCENT_REGISTRY_SUB_KEY: &str =
@@ -403,47 +407,20 @@ struct ProcessResourceUsage {
 }
 
 pub struct WinderustApp {
-    settings: Settings,
-    saved_settings: Settings,
-    last_background_settings: Arc<Settings>,
-    page: Page,
-    back_stack: Vec<Page>,
-    forward_stack: Vec<Page>,
+    settings: SettingsEditor,
+    shell: ShellModel,
     plans: Vec<PowerPlan>,
     current_plan: Option<PowerPlan>,
     activity: ActivitySnapshot,
-    cpu_usage: CpuUsageSnapshot,
-    cpu_usage_history: VecDeque<CpuUsageHistorySample>,
-    memory_usage: MemoryUsageSnapshot,
-    memory_usage_history: VecDeque<MemoryUsageHistorySample>,
-    io_usage: IoUsageSnapshot,
-    io_usage_history: VecDeque<IoUsageHistorySample>,
-    network_usage: NetworkUsageSnapshot,
-    network_usage_history: VecDeque<NetworkUsageHistorySample>,
-    background_efficiency_status: BackgroundEfficiencySnapshot,
-    app_suspension_status: AppSuspensionSnapshot,
-    core_limiter_status: CoreLimiterSnapshot,
-    cpu_sets_soft_status: CpuAllocationSnapshot,
-    processor_affinity_hard_status: CpuAllocationSnapshot,
-    by_running_app_status: ByRunningAppSnapshot,
-    workload_engine_status: WorkloadEngineSnapshot,
-    process_priority_status: ProcessPrioritySnapshot,
-    thread_priority_status: ThreadPrioritySnapshot,
-    dynamic_priority_boost_status: DynamicPriorityBoostSnapshot,
-    io_priority_status: IoPrioritySnapshot,
-    gpu_priority_status: GpuPrioritySnapshot,
-    memory_priority_status: MemoryPrioritySnapshot,
-    memory_trim_status: MemoryTrimSnapshot,
-    timer_resolution_status: TimerResolutionSnapshot,
+    dashboard: DashboardModel,
+    feature_status: Arc<RuntimeFeatureStatus>,
     action_log_entries: Arc<Vec<ActionLogEntry>>,
     last_appearance_change_generation: u64,
-    last_background_status_generation: u64,
-    last_pending_auto_exclusions_generation: u64,
+    last_runtime_status_generation: u64,
+    last_auto_exclusion_patch_generation: u64,
     action_log_result_filter: ActionLogResultFilter,
     action_log_feature_filter: ActionLogFeatureFilter,
     action_log_page: usize,
-    foreground_app: Option<String>,
-    decision: DecisionOutcome,
     next_schedule: String,
     next_check: Instant,
     next_active_plan_refresh: Instant,
@@ -451,36 +428,23 @@ pub struct WinderustApp {
     next_dashboard_io_refresh: Instant,
     next_timer_resolution_status_refresh: Instant,
     next_process_refresh: Instant,
-    last_switch_attempt: Option<(String, Instant)>,
     effective_power_mode_monitor: Option<EffectivePowerModeMonitor>,
     effective_power_mode: EffectivePowerMode,
-    background_automation: BackgroundAutomation,
+    runtime_handle: RuntimeHandle,
     cpu_monitor: CpuUsageMonitor,
     io_monitor: IoUsageMonitor,
     network_monitor: NetworkUsageMonitor,
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
-    input_hook: Option<InputHook>,
     tray_hide_on_close: bool,
-    by_cpu_load_scheduler: ByCpuLoadScheduler,
     hwnd: Option<HWND>,
     tray_icon: Option<TrayIcon>,
     status_message: String,
-    process_candidates: Vec<ProcessCandidate>,
-    process_candidate_load_state: ProcessLoadState,
-    selected_process_paths: HashMap<SuggestionTarget, String>,
-    running_processes: Vec<ProcessInfo>,
-    process_resource_samples: BTreeMap<u32, ProcessResourceSample>,
-    process_resource_usage: HashMap<u32, ProcessResourceUsage>,
-    process_efficiency_mode_overrides: HashMap<u32, ProcessEfficiencyModeOverride>,
-    process_quick_action_restore_keys: HashSet<(u32, u64, &'static str)>,
-    process_quick_action_restores: Vec<Box<dyn Fn()>>,
-    hide_inaccessible_processes: bool,
-    running_process_load_state: ProcessLoadState,
-    process_refresh_in_progress: bool,
+    process_catalog: ProcessCatalogModel,
+    process_list: ProcessListModel,
     app_icon: Option<Arc<Image>>,
-    process_icon_cache: HashMap<PathBuf, Option<Arc<Image>>>,
     active_power_plan_picker: Option<String>,
+    advanced_power_plan_tuning_service: AdvancedPowerPlanTuningService,
     processor_power_ac_core_parking_min: u64,
     processor_power_ac_performance_min: u64,
     processor_power_ac_performance_max: u64,
@@ -496,6 +460,7 @@ pub struct WinderustApp {
     processor_power_target_plan_personality: Option<PowerPlanPersonality>,
     processor_power_link_ac_dc: bool,
     processor_power_dirty: bool,
+    win32_priority_separation_service: Win32PrioritySeparationService,
     win32_priority_separation_value: Option<u32>,
     win32_priority_separation_edit_value: u32,
     win32_priority_separation_backup: Option<u32>,
@@ -505,18 +470,7 @@ pub struct WinderustApp {
     editing_numeric: Option<NumericField>,
     expanded_rule_cards: HashSet<RuleCardTarget>,
     expanded_setting_groups: HashSet<SettingGroupTarget>,
-    expanded_process_list_groups: HashSet<String>,
-    process_list_sort: ProcessListSort,
-    selected_process_id: Option<u32>,
-    process_details: Option<ProcessDetailsDraft>,
-    breadcrumb_transition: Option<BreadcrumbTransition>,
-    page_transition_generation: u64,
-    available_update: Option<AvailableUpdate>,
-    latest_version: Option<String>,
-    update_check_in_progress: bool,
-    update_check_message: Option<String>,
-    startup_update_modal_visible: bool,
-    startup_update_modal_closing: bool,
+    update: UpdateModel,
     about_updates_focus_handle: FocusHandle,
     about_page_scroll_handle: ScrollHandle,
     about_updates_scroll_anchor: ScrollAnchor,
@@ -536,6 +490,8 @@ pub struct WinderustApp {
     _activity_slider_subscriptions: Vec<Subscription>,
     _accent_color_picker_subscription: Subscription,
     _window_activation_subscription: Subscription,
+    _shutdown_subscription: Option<Subscription>,
+    shutdown_started: bool,
     inputs: UiInputs,
     _tick_task: Task<()>,
 }
@@ -757,7 +713,9 @@ fn default_processor_power_values() -> ProcessorPowerAcDcValues {
     .normalized()
 }
 
-fn load_initial_processor_power_state() -> InitialProcessorPowerState {
+fn load_initial_processor_power_state(
+    service: &AdvancedPowerPlanTuningService,
+) -> InitialProcessorPowerState {
     let fallback_values = default_processor_power_values();
 
     match list_plans() {
@@ -767,12 +725,12 @@ fn load_initial_processor_power_state() -> InitialProcessorPowerState {
             let status_loaded = t!("status.loaded_power_plans", count = plans.len()).to_string();
             let target_plan_personality = target_plan
                 .as_ref()
-                .and_then(|plan| read_plan_personality(&plan.guid).ok());
+                .and_then(|plan| service.read_personality(&plan.guid).ok());
 
             let (values, loaded_plan_guid, status_message) = match target_plan.as_ref() {
-                Some(plan) => match read_processor_power_values(&plan.guid) {
+                Some(plan) => match service.read_values(&plan.guid) {
                     Ok(values) => (values.normalized(), Some(plan.guid.clone()), status_loaded),
-                    Err(err) => (fallback_values, None, err),
+                    Err(error) => (fallback_values, None, error.to_string()),
                 },
                 None => (fallback_values, None, status_loaded),
             };
@@ -800,20 +758,20 @@ fn load_initial_processor_power_state() -> InitialProcessorPowerState {
 }
 
 impl WinderustApp {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        settings: SettingsEditor,
+        settings_load_error: Option<String>,
+        runtime_handle: RuntimeHandle,
+    ) -> Self {
         let hwnd = tray::hwnd_from_window(window);
-        let (settings, settings_load_error) = match config::storage::load() {
-            Ok(settings) => (settings, None),
-            Err(error) => (Settings::default(), Some(error)),
-        };
         let window_activation_subscription =
             cx.observe_window_activation(window, |app, window, cx| {
                 if window.is_window_active() && tray::take_restore_requested() {
                     app.refresh_after_tray_restore(window, cx);
                 }
             });
-        let adaptive_plan_recovery_error = restore_stale_adaptive_plans().err();
-        let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
         let effective_power_mode_monitor = EffectivePowerModeMonitor::new().ok();
@@ -821,11 +779,9 @@ impl WinderustApp {
             .as_ref()
             .map(EffectivePowerModeMonitor::snapshot)
             .unwrap_or(EffectivePowerMode::Unknown);
-        let mut initial_processor_power = load_initial_processor_power_state();
-        if let Some(error) = adaptive_plan_recovery_error {
-            initial_processor_power.status_message =
-                t!("status.adaptive_power_plan_recovery_failed", error = error).to_string();
-        }
+        let advanced_power_plan_tuning_service = AdvancedPowerPlanTuningService::default();
+        let mut initial_processor_power =
+            load_initial_processor_power_state(&advanced_power_plan_tuning_service);
         if let Some(error) = settings_load_error {
             initial_processor_power.status_message = error;
         }
@@ -838,12 +794,15 @@ impl WinderustApp {
         } else {
             ProcessLoadState::Loading
         };
-        let (win32_priority_separation_value, win32_priority_separation_status) =
-            read_win32_priority_separation_with_status();
+        let win32_priority_separation_service = Win32PrioritySeparationService::default();
+        let (
+            win32_priority_separation_value,
+            win32_priority_separation_backup,
+            win32_priority_separation_status,
+        ) = win32_priority_separation_snapshot_state(win32_priority_separation_service.snapshot());
         let win32_priority_separation_edit_value = win32_priority_separation_value
             .map(normalize_win32_priority_separation_value)
             .unwrap_or(WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT);
-        let win32_priority_separation_backup = read_win32_priority_separation_backup();
         let initial_timer_resolution_status =
             timer_resolution::query_snapshot(settings.timer_resolution.enabled);
         let app_icon = std::env::current_exe()
@@ -877,54 +836,26 @@ impl WinderustApp {
         let about_updates_scroll_anchor =
             ScrollAnchor::for_handle(about_page_scroll_handle.clone());
         let mut app = Self {
-            saved_settings: settings.clone(),
-            last_background_settings: Arc::new(settings.clone()),
             settings,
-            page: Page::Home,
-            back_stack: Vec::new(),
-            forward_stack: Vec::new(),
+            shell: ShellModel::new(Page::Home),
             plans: initial_processor_power.plans,
             current_plan: initial_processor_power.current_plan,
             activity: ActivitySnapshot {
                 state: ActivityState::Unknown,
                 idle_for: None,
             },
-            cpu_usage: CpuUsageSnapshot::default(),
-            cpu_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
-            memory_usage: MemoryUsageSnapshot::default(),
-            memory_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
-            io_usage: IoUsageSnapshot::default(),
-            io_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
-            network_usage: NetworkUsageSnapshot::default(),
-            network_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
-            background_efficiency_status: BackgroundEfficiencySnapshot::default(),
-            app_suspension_status: AppSuspensionSnapshot::default(),
-            core_limiter_status: CoreLimiterSnapshot::default(),
-            cpu_sets_soft_status: CpuAllocationSnapshot::default(),
-            processor_affinity_hard_status: CpuAllocationSnapshot::default(),
-            by_running_app_status: ByRunningAppSnapshot::default(),
-            workload_engine_status: WorkloadEngineSnapshot::default(),
-            process_priority_status: ProcessPrioritySnapshot::default(),
-            thread_priority_status: ThreadPrioritySnapshot::default(),
-            dynamic_priority_boost_status: DynamicPriorityBoostSnapshot::default(),
-            io_priority_status: IoPrioritySnapshot::default(),
-            gpu_priority_status: GpuPrioritySnapshot::default(),
-            memory_priority_status: MemoryPrioritySnapshot::default(),
-            memory_trim_status: MemoryTrimSnapshot::default(),
-            timer_resolution_status: initial_timer_resolution_status,
+            dashboard: DashboardModel::new(),
+            feature_status: Arc::new(RuntimeFeatureStatus {
+                timer_resolution: initial_timer_resolution_status,
+                ..Default::default()
+            }),
             action_log_entries: Arc::new(Vec::new()),
             last_appearance_change_generation: 0,
-            last_background_status_generation: 0,
-            last_pending_auto_exclusions_generation: 0,
+            last_runtime_status_generation: 0,
+            last_auto_exclusion_patch_generation: 0,
             action_log_result_filter: ActionLogResultFilter::All,
             action_log_feature_filter: ActionLogFeatureFilter::All,
             action_log_page: 0,
-            foreground_app: None,
-            decision: DecisionOutcome {
-                power_plan_guid: None,
-                state: DecisionState::NoPowerPlanSelected,
-                reason: t!("status.waiting_first_check").to_string(),
-            },
             next_schedule: t!("status.no_active_time_rules").to_string(),
             next_check: Instant::now(),
             next_active_plan_refresh: Instant::now(),
@@ -932,36 +863,23 @@ impl WinderustApp {
             next_dashboard_io_refresh: Instant::now(),
             next_timer_resolution_status_refresh: Instant::now(),
             next_process_refresh: Instant::now(),
-            last_switch_attempt: None,
             effective_power_mode_monitor,
             effective_power_mode,
-            background_automation,
+            runtime_handle,
             cpu_monitor: CpuUsageMonitor::default(),
             io_monitor: IoUsageMonitor::default(),
             network_monitor: NetworkUsageMonitor::default(),
             idle_detector: IdleDetector,
             controller_activity_detector: ControllerActivityDetector::default(),
-            input_hook: None,
             tray_hide_on_close: false,
-            by_cpu_load_scheduler: ByCpuLoadScheduler::default(),
             hwnd,
             tray_icon: None,
             status_message: initial_processor_power.status_message,
-            process_candidates: Vec::new(),
-            process_candidate_load_state: initial_process_load_state.clone(),
-            selected_process_paths: HashMap::new(),
-            running_processes: Vec::new(),
-            process_resource_samples: BTreeMap::new(),
-            process_resource_usage: HashMap::new(),
-            process_efficiency_mode_overrides: HashMap::new(),
-            process_quick_action_restore_keys: HashSet::new(),
-            process_quick_action_restores: Vec::new(),
-            hide_inaccessible_processes: true,
-            running_process_load_state: initial_process_load_state,
-            process_refresh_in_progress: false,
+            process_catalog: ProcessCatalogModel::new(initial_process_load_state.clone()),
+            process_list: ProcessListModel::new(initial_process_load_state),
             app_icon,
-            process_icon_cache: HashMap::new(),
             active_power_plan_picker: None,
+            advanced_power_plan_tuning_service,
             processor_power_ac_core_parking_min: initial_processor_power.values.ac.core_parking_min
                 as u64,
             processor_power_ac_performance_min: initial_processor_power.values.ac.performance_min
@@ -985,6 +903,7 @@ impl WinderustApp {
             processor_power_link_ac_dc: initial_processor_power.values.ac
                 == initial_processor_power.values.dc,
             processor_power_dirty: false,
+            win32_priority_separation_service,
             win32_priority_separation_value,
             win32_priority_separation_edit_value,
             win32_priority_separation_backup,
@@ -994,18 +913,7 @@ impl WinderustApp {
             editing_numeric: None,
             expanded_rule_cards: HashSet::new(),
             expanded_setting_groups: HashSet::new(),
-            expanded_process_list_groups: HashSet::new(),
-            process_list_sort: ProcessListSort::default(),
-            selected_process_id: None,
-            process_details: None,
-            breadcrumb_transition: None,
-            page_transition_generation: 0,
-            available_update: None,
-            latest_version: None,
-            update_check_in_progress: false,
-            update_check_message: None,
-            startup_update_modal_visible: false,
-            startup_update_modal_closing: false,
+            update: UpdateModel::new(),
             about_updates_focus_handle: cx.focus_handle(),
             about_page_scroll_handle,
             about_updates_scroll_anchor,
@@ -1025,10 +933,18 @@ impl WinderustApp {
             _activity_slider_subscriptions: Vec::new(),
             _accent_color_picker_subscription: accent_color_picker_subscription,
             _window_activation_subscription: window_activation_subscription,
+            _shutdown_subscription: None,
+            shutdown_started: false,
             inputs,
             _tick_task: Task::ready(()),
         };
 
+        app._shutdown_subscription = Some(cx.on_app_quit(|app, _| {
+            if let Err(error) = app.shutdown() {
+                app.status_message = error;
+            }
+            async {}
+        }));
         app.rebuild_rule_title_input_subscriptions(window, cx);
         app.rebuild_process_picker_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
@@ -1039,12 +955,9 @@ impl WinderustApp {
         app.subscribe_to_activity_sliders(window, cx);
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
-        let startup_settings = app.saved_settings.clone();
-        app.sync_adaptive_engine(&startup_settings);
-        app.run_check(false, Instant::now());
+        app.run_check(Instant::now());
         app.sync_processor_power_slider_states(window, cx);
-        app.sync_input_hook();
-        if app.saved_settings.general.check_for_updates {
+        if app.settings.persisted().general.check_for_updates {
             app.check_for_updates(false, cx);
         }
         app.schedule_tick(window, cx);
@@ -1053,80 +966,19 @@ impl WinderustApp {
 }
 impl Drop for WinderustApp {
     fn drop(&mut self) {
-        restore_process_quick_actions(&mut self.process_quick_action_restores);
-        let _ = self_power::disable_adaptive_engine();
-    }
-}
-
-fn restore_process_quick_actions(restores: &mut Vec<Box<dyn Fn()>>) {
-    while let Some(restore) = restores.pop() {
-        restore();
+        let _ = self.shutdown();
     }
 }
 
 impl WinderustApp {
-    fn track_process_quick_action_restore(
-        &mut self,
-        feature: &'static str,
-        target: &ProcessActionTarget,
-        restore: impl Fn() + 'static,
-    ) {
-        if self
-            .process_quick_action_restore_keys
-            .insert((target.id, target.creation_time, feature))
-        {
-            self.process_quick_action_restores.push(Box::new(restore));
+    fn shutdown(&mut self) -> Result<(), String> {
+        if self.shutdown_started {
+            return Ok(());
         }
+        self.shutdown_started = true;
+
+        self.runtime_handle.shutdown()
     }
-}
-
-struct ProcessEfficiencyModeOverride {
-    target: ProcessActionTarget,
-    original_enabled: bool,
-    enabled: bool,
-    original_priority: Option<u32>,
-}
-
-fn runtime_settings_from(current: &Settings, saved: &Settings) -> Settings {
-    let mut settings = saved.clone();
-    settings.general = current.general.clone();
-    settings.general.enabled = saved.general.enabled;
-    settings.advanced = current.advanced.clone();
-    settings
-}
-
-fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Settings) -> bool {
-    settings.general.enabled == saved.general.enabled
-        && settings.general.startup_with_windows == current.general.startup_with_windows
-        && settings.general.start_minimized == current.general.start_minimized
-        && settings.general.hide_to_tray == current.general.hide_to_tray
-        && settings.general.check_for_updates == current.general.check_for_updates
-        && settings.general.update_channel == current.general.update_channel
-        && settings.general.theme_mode == current.general.theme_mode
-        && settings.general.accent == current.general.accent
-        && settings.general.language == current.general.language
-        && settings.general.animation_mode == current.general.animation_mode
-        && settings.general.pause_power_plan_switching_while_plugged_in
-            == current.general.pause_power_plan_switching_while_plugged_in
-        && settings.general.check_interval_ms == current.general.check_interval_ms
-        && settings.advanced == current.advanced
-        && settings.adaptive_engine == saved.adaptive_engine
-        && settings.by_activity == saved.by_activity
-        && settings.by_foreground == saved.by_foreground
-        && settings.by_time == saved.by_time
-        && settings.by_cpu_load == saved.by_cpu_load
-        && settings.background_efficiency == saved.background_efficiency
-        && settings.app_suspension == saved.app_suspension
-        && settings.cpu_sets_soft == saved.cpu_sets_soft
-        && settings.processor_affinity_hard == saved.processor_affinity_hard
-        && settings.core_limiter == saved.core_limiter
-        && settings.by_running_app == saved.by_running_app
-        && settings.workload_engine == saved.workload_engine
-        && settings.io_priority == saved.io_priority
-        && settings.gpu_priority == saved.gpu_priority
-        && settings.memory_priority == saved.memory_priority
-        && settings.memory_trim == saved.memory_trim
-        && settings.timer_resolution == saved.timer_resolution
 }
 
 impl Render for WinderustApp {
@@ -1151,17 +1003,17 @@ impl Render for WinderustApp {
         let page_header = if search_active {
             search_results_page_header(cx).into_any_element()
         } else {
-            self.page_header(self.page, cx).into_any_element()
+            self.page_header(self.shell.page, cx).into_any_element()
         };
-        let page_uses_inner_scroll = !search_active && self.page == Page::ProcessList;
-        let unsaved = self.settings != self.saved_settings;
+        let page_uses_inner_scroll = !search_active && self.shell.page == Page::ProcessList;
+        let unsaved = self.settings.has_unsaved_changes();
         let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
         let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
         let show_admin_rights_prompt = self.admin_rights_prompt_visible;
         let admin_rights_prompt_bottom = if show_unsaved_popup { 190.0 } else { 54.0 };
         let page_content = animated_page_content_frame(
             page_content_frame(page_header, page_body, page_uses_inner_scroll),
-            self.active_breadcrumb_transition(self.page),
+            self.active_breadcrumb_transition(self.shell.page),
         );
         let page_scroll_area = if page_uses_inner_scroll {
             v_flex()
@@ -1172,7 +1024,7 @@ impl Render for WinderustApp {
                 .overflow_hidden()
                 .child(page_content)
                 .into_any_element()
-        } else if self.page == Page::About {
+        } else if self.shell.page == Page::About {
             v_flex()
                 .id("about-page-scroll")
                 .flex_1()
@@ -1207,9 +1059,9 @@ impl Render for WinderustApp {
                 handle_navigation_mouse_button(app, event.button, cx);
             }))
             .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
-                if app.startup_update_modal_visible {
+                if app.update.startup_modal_visible {
                     app.dismiss_startup_update_modal(cx);
-                } else if app.process_details.is_some() {
+                } else if app.process_list.details.is_some() {
                     app.save_process_details(cx);
                 } else {
                     clear_input(&app.inputs.dashboard_search, window, cx);
@@ -1264,7 +1116,7 @@ impl Render for WinderustApp {
             } else {
                 div().into_any_element()
             })
-            .child(if self.startup_update_modal_visible {
+            .child(if self.update.startup_modal_visible {
                 self.render_update_available_modal(cx)
             } else {
                 div().into_any_element()
@@ -1285,20 +1137,6 @@ mod tests {
             NAV_PANE_COMPACT_WIDTH
         );
         assert_eq!(navigation_pane_width_at_progress(1.0), NAV_PANE_WIDTH);
-    }
-
-    #[test]
-    fn process_quick_actions_restore_in_reverse_application_order() {
-        let restored = Rc::new(RefCell::new(Vec::new()));
-        let mut restores: Vec<Box<dyn Fn()>> = Vec::new();
-        for value in [1, 2] {
-            let restored = Rc::clone(&restored);
-            restores.push(Box::new(move || restored.borrow_mut().push(value)));
-        }
-
-        restore_process_quick_actions(&mut restores);
-
-        assert_eq!(*restored.borrow(), vec![2, 1]);
     }
 
     #[test]
@@ -1828,151 +1666,5 @@ mod tests {
 
         assert_eq!(active_plan_guid(&plans), Some("saver"));
         assert_eq!(active_plan_guid(&[]), None);
-    }
-
-    #[test]
-    fn runtime_settings_gates_feature_sections_until_save() {
-        let mut current = Settings::default();
-        let mut saved = Settings::default();
-
-        current.general.enabled = false;
-        saved.general.enabled = true;
-        current.general.check_interval_ms = 1_234;
-        saved.general.check_interval_ms = 5_678;
-        current.advanced.action_log_mode = ActionLogMode::Off;
-        saved.advanced.action_log_mode = ActionLogMode::Full;
-        current.by_activity.power_plans.performance_guid = Some("current".to_owned());
-        saved.by_activity.power_plans.performance_guid = Some("saved".to_owned());
-        current.processor_affinity_hard.enabled = true;
-        saved.processor_affinity_hard.enabled = false;
-        current.io_priority.enabled = true;
-        saved.io_priority.enabled = false;
-        current.timer_resolution.enabled = true;
-        saved.timer_resolution.enabled = false;
-        current.memory_trim.enabled = false;
-        saved.memory_trim.enabled = true;
-
-        let settings = runtime_settings_from(&current, &saved);
-
-        assert!(settings.general.enabled);
-        assert_eq!(settings.general.check_interval_ms, 1_234);
-        assert_eq!(settings.advanced.action_log_mode, ActionLogMode::Off);
-        assert_eq!(
-            settings.by_activity.power_plans.performance_guid.as_deref(),
-            Some("saved")
-        );
-        assert!(!settings.processor_affinity_hard.enabled);
-        assert!(!settings.io_priority.enabled);
-        assert!(!settings.timer_resolution.enabled);
-        assert!(settings.memory_trim.enabled);
-        assert!(runtime_settings_matches(&settings, &current, &saved));
-
-        let mut stale_saved_section = settings.clone();
-        stale_saved_section.memory_trim.enabled = false;
-        assert!(!runtime_settings_matches(
-            &stale_saved_section,
-            &current,
-            &saved
-        ));
-
-        let mut stale_saved_section = settings;
-        stale_saved_section.timer_resolution.enabled = true;
-        assert!(!runtime_settings_matches(
-            &stale_saved_section,
-            &current,
-            &saved
-        ));
-    }
-
-    #[test]
-    fn input_hook_is_needed_for_activity_input_or_app_suspension() {
-        let mut settings = Settings::default();
-
-        assert!(!input_hook_required(&settings));
-
-        settings.by_activity.enabled = true;
-        settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
-        assert!(input_hook_required(&settings));
-
-        settings.by_activity.enabled = false;
-        assert!(!input_hook_required(&settings));
-
-        settings.by_activity.enabled = true;
-        settings.general.enabled = false;
-        assert!(!input_hook_required(&settings));
-
-        settings.general.enabled = true;
-        settings.by_activity.switch_to_performance_on_resume = false;
-        assert!(!input_hook_required(&settings));
-
-        settings.by_activity.switch_to_performance_on_resume = true;
-        settings.by_activity.input_detection.keyboard = false;
-        settings.by_activity.input_detection.mouse = false;
-        settings.by_activity.input_detection.controller = true;
-        assert!(!input_hook_required(&settings));
-
-        settings.app_suspension.enabled = true;
-        assert!(input_hook_required(&settings));
-
-        settings.adaptive_engine.enabled = true;
-        assert!(input_hook_required(&settings));
-
-        settings.adaptive_engine.enabled = false;
-        settings.general.enabled = false;
-        assert!(!input_hook_required(&settings));
-    }
-
-    #[test]
-    fn input_hook_config_tracks_enabled_input_devices() {
-        let mut settings = Settings::default();
-
-        settings.by_activity.input_detection.keyboard = true;
-        settings.by_activity.input_detection.mouse = false;
-        assert_eq!(
-            input_hook_config(&settings),
-            InputHookConfig {
-                keyboard: true,
-                mouse: false,
-            }
-        );
-
-        settings.by_activity.input_detection.keyboard = false;
-        settings.by_activity.input_detection.mouse = true;
-        assert_eq!(
-            input_hook_config(&settings),
-            InputHookConfig {
-                keyboard: false,
-                mouse: true,
-            }
-        );
-
-        settings.by_activity.input_detection.keyboard = false;
-        settings.by_activity.input_detection.mouse = false;
-        settings.by_activity.input_detection.controller = true;
-        assert_eq!(
-            input_hook_config(&settings),
-            InputHookConfig {
-                keyboard: false,
-                mouse: false,
-            }
-        );
-
-        settings.app_suspension.enabled = true;
-        assert_eq!(
-            input_hook_config(&settings),
-            InputHookConfig {
-                keyboard: true,
-                mouse: true,
-            }
-        );
-
-        settings.adaptive_engine.enabled = true;
-        assert_eq!(
-            input_hook_config(&settings),
-            InputHookConfig {
-                keyboard: true,
-                mouse: true,
-            }
-        );
     }
 }

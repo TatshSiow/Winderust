@@ -1,288 +1,24 @@
-use super::*;
+use std::{collections::BTreeSet, path::Path, time::Duration, time::Instant};
 
-pub(super) struct ApplyPriorityOutcome {
-    pub(super) adjusted: Option<AdjustedProcess>,
-    pub(super) skipped: bool,
-    pub(super) changed: bool,
-}
+use windows_sys::Win32::{
+    Foundation::FILETIME,
+    System::{
+        SystemInformation::GetSystemTimeAsFileTime,
+        Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    },
+};
 
-pub(super) fn apply_priority(
-    request: ApplyPriorityRequest<'_>,
-    action_log: &mut ActionLog,
-) -> Result<ApplyPriorityOutcome, PriorityError> {
-    let ApplyPriorityRequest {
-        process_id,
-        process_name,
-        executable_path,
-        priority_class,
-        existing,
-        source,
-        apply_priority_class,
-        apply_background_efficiency,
-        ignore_timer_resolution,
-        disable_dynamic_priority_boost,
-        log_success,
-    } = request;
-    let mut changed = false;
-    let process = ProcessHandle::open(process_id)?;
-    if !process.matches_executable_path(executable_path) {
-        return Err(PriorityError::ProcessExited);
-    }
-    let creation_time = process.creation_time_100ns()?;
-    let reusable_existing = existing
-        .filter(|adjusted| adjusted.creation_time == creation_time)
-        .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name))
-        .filter(|adjusted| {
-            same_executable_path(
-                Path::new(&adjusted.executable_path),
-                Path::new(executable_path),
-            )
-        });
+use crate::{
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
+    control::process::ProcessControlError,
+    cpu::ProcessCpuSample,
+    foreground::process_handle_matches_executable_path,
+    win_util::{filetime_to_u64, WinHandle},
+};
 
-    if let Some(adjusted) = existing {
-        if adjusted.creation_time == creation_time && reusable_existing.is_none() {
-            restore_adjusted_process(&process, adjusted)?;
-            action_log.record(
-                ActionLogFeature::WorkloadEngine,
-                Some(process_id),
-                adjusted.process_name.clone(),
-                ActionLogResult::Restored,
-                "PID now belongs to a different process: restored previous priority.",
-            );
-        }
-    }
+use super::{PriorityTargetSource, BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL};
 
-    let current_priority = process.priority_class()?;
-    if current_priority == HIGH_PRIORITY_CLASS || current_priority == REALTIME_PRIORITY_CLASS {
-        return Ok(ApplyPriorityOutcome {
-            adjusted: None,
-            skipped: true,
-            changed,
-        });
-    }
-    let previous_dynamic_priority_boost_disabled = if disable_dynamic_priority_boost {
-        let current_disabled = process.dynamic_priority_boost_disabled().ok();
-        if current_disabled == Some(false) {
-            process.set_dynamic_priority_boost_disabled(true)?;
-            changed = true;
-            if log_success {
-                action_log.record(
-                    ActionLogFeature::WorkloadEngine,
-                    Some(process_id),
-                    process_name.clone(),
-                    ActionLogResult::Applied,
-                    "Disabled Windows dynamic priority boost for Workload Engine.",
-                );
-            }
-        }
-        reusable_existing
-            .and_then(|adjusted| adjusted.previous_dynamic_priority_boost_disabled)
-            .or(current_disabled)
-    } else {
-        if let Some(adjusted) =
-            reusable_existing.filter(|adjusted| adjusted.applied_dynamic_priority_boost_disabled)
-        {
-            if let Some(previous_disabled) = adjusted.previous_dynamic_priority_boost_disabled {
-                process.set_dynamic_priority_boost_disabled(previous_disabled)?;
-                changed = true;
-            }
-        }
-        reusable_existing.and_then(|adjusted| adjusted.previous_dynamic_priority_boost_disabled)
-    };
-    let mut background_efficiency_unavailable = apply_background_efficiency
-        && reusable_existing.is_some_and(|adjusted| adjusted.background_efficiency_unavailable);
-    let mut applied_background_efficiency = false;
-    let previous_efficiency_state = if apply_background_efficiency
-        && !background_efficiency_unavailable
-    {
-        match process.power_throttling_state() {
-            Ok(current_state) => {
-                let previous_state = reusable_existing
-                    .and_then(|adjusted| adjusted.previous_efficiency_state)
-                    .or(Some(current_state));
-                let ignore_timer_resolution_changed = reusable_existing.is_none_or(|adjusted| {
-                    adjusted.applied_ignore_timer_resolution != ignore_timer_resolution
-                });
-                let ignore_timer_resolution_missing = ignore_timer_resolution
-                    && !power_throttling_ignore_timer_resolution_enabled(current_state);
-                if !power_throttling_execution_enabled(current_state)
-                    || ignore_timer_resolution_changed
-                    || ignore_timer_resolution_missing
-                {
-                    process.set_power_throttling_state(power_throttling_enabled_state(
-                        previous_state,
-                        ignore_timer_resolution,
-                    ))?;
-                    changed = true;
-                    if log_success {
-                        action_log.record(
-                            ActionLogFeature::WorkloadEngine,
-                            Some(process_id),
-                            process_name.clone(),
-                            ActionLogResult::Applied,
-                            "Applied Background Efficiency: enabled EcoQoS.",
-                        );
-                    }
-                }
-                applied_background_efficiency = true;
-                previous_state
-            }
-            Err(error) => {
-                background_efficiency_unavailable = true;
-                action_log.record(
-                    ActionLogFeature::WorkloadEngine,
-                    Some(process_id),
-                    process_name.clone(),
-                    ActionLogResult::Skipped,
-                    format!(
-                        "Skipped Background Efficiency because its original state is unavailable: {}",
-                        priority_error_message(&error)
-                    ),
-                );
-                reusable_existing.and_then(|adjusted| adjusted.previous_efficiency_state)
-            }
-        }
-    } else {
-        if let Some(adjusted) =
-            reusable_existing.filter(|adjusted| adjusted.applied_background_efficiency)
-        {
-            let state = adjusted
-                .previous_efficiency_state
-                .unwrap_or_else(power_throttling_disabled_state);
-            process.set_power_throttling_state(state)?;
-            changed = true;
-        }
-        reusable_existing.and_then(|adjusted| adjusted.previous_efficiency_state)
-    };
-    let mut applied_priority = current_priority;
-    let mut priority_already_applied = true;
-    if apply_priority_class {
-        applied_priority = priority_class;
-        priority_already_applied = current_priority == priority_class;
-    } else if let Some(adjusted) = reusable_existing {
-        if current_priority == adjusted.applied_priority
-            && current_priority != adjusted.previous_priority
-        {
-            process.set_priority_class(adjusted.previous_priority)?;
-            changed = true;
-        }
-        applied_priority = adjusted.previous_priority;
-    }
-    if reusable_existing.is_some_and(|adjusted| {
-        adjusted.applied_priority == applied_priority
-            && priority_already_applied
-            && adjusted.applied_background_efficiency == applied_background_efficiency
-            && adjusted.background_efficiency_unavailable == background_efficiency_unavailable
-            && adjusted.applied_ignore_timer_resolution
-                == (applied_background_efficiency && ignore_timer_resolution)
-            && adjusted.applied_dynamic_priority_boost_disabled == disable_dynamic_priority_boost
-    }) {
-        return Ok(ApplyPriorityOutcome {
-            adjusted: existing.cloned(),
-            skipped: false,
-            changed,
-        });
-    }
-
-    if apply_priority_class && current_priority != priority_class {
-        process.set_priority_class(priority_class)?;
-        changed = true;
-        if log_success {
-            action_log.record(
-                ActionLogFeature::WorkloadEngine,
-                Some(process_id),
-                process_name.clone(),
-                ActionLogResult::Applied,
-                format!(
-                    "{} set background priority to {}.",
-                    priority_source_label(source),
-                    priority_class_label(priority_class)
-                ),
-            );
-        }
-    }
-
-    let previous_priority = reusable_existing
-        .map(|adjusted| adjusted.previous_priority)
-        .unwrap_or(current_priority);
-
-    Ok(ApplyPriorityOutcome {
-        adjusted: Some(AdjustedProcess {
-            process_name,
-            executable_path: executable_path.to_owned(),
-            creation_time,
-            previous_priority,
-            applied_priority,
-            previous_dynamic_priority_boost_disabled,
-            applied_dynamic_priority_boost_disabled: disable_dynamic_priority_boost,
-            previous_efficiency_state,
-            applied_background_efficiency,
-            background_efficiency_unavailable,
-            applied_ignore_timer_resolution: applied_background_efficiency
-                && ignore_timer_resolution,
-        }),
-        skipped: background_efficiency_unavailable,
-        changed,
-    })
-}
-
-pub(super) fn restore_adjusted_priority(
-    process_id: u32,
-    process_state: &AdjustedProcess,
-) -> Result<(), PriorityError> {
-    let process = ProcessHandle::open(process_id)?;
-    if process.creation_time_100ns()? != process_state.creation_time
-        || !process.matches_executable_path(&process_state.executable_path)
-    {
-        return Err(PriorityError::ProcessExited);
-    }
-    restore_adjusted_process(&process, process_state)
-}
-
-pub(super) fn restore_adjusted_process(
-    process: &ProcessHandle,
-    process_state: &AdjustedProcess,
-) -> Result<(), PriorityError> {
-    let mut last_error = None;
-    if process_state.applied_background_efficiency {
-        let state = process_state
-            .previous_efficiency_state
-            .unwrap_or_else(power_throttling_disabled_state);
-        if let Err(err) = process.set_power_throttling_state(state) {
-            last_error = Some(err);
-        }
-    }
-    if process_state.applied_dynamic_priority_boost_disabled {
-        if let Err(err) = process.set_dynamic_priority_boost_disabled(
-            process_state
-                .previous_dynamic_priority_boost_disabled
-                .unwrap_or(false),
-        ) {
-            last_error = Some(err);
-        }
-    }
-    if let Err(err) = process.set_priority_class(process_state.previous_priority) {
-        last_error = Some(err);
-    }
-    match last_error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
-}
-
-pub(super) fn restore_boosted_priority(
-    process_state: &BoostedProcess,
-) -> Result<(), PriorityError> {
-    let process = ProcessHandle::open(process_state.process_id)?;
-    if process.creation_time_100ns()? != process_state.creation_time
-        || !process.matches_executable_path(&process_state.executable_path)
-    {
-        return Err(PriorityError::ProcessExited);
-    }
-    process.set_priority_class(process_state.previous_priority)
-}
-
-pub(super) fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, PriorityError> {
+pub(super) fn process_cpu_sample(process_id: u32) -> Option<ProcessCpuSample> {
     let process = ProcessHandle::open_query(process_id)?;
     process.cpu_sample()
 }
@@ -290,29 +26,18 @@ pub(super) fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, Pr
 pub(super) fn process_cpu_sample_with_identity(
     process_id: u32,
     executable_path: &str,
-) -> Result<(ProcessCpuSample, u64), PriorityError> {
+) -> Option<(ProcessCpuSample, u64)> {
     let process = ProcessHandle::open_query(process_id)?;
     if !process.matches_executable_path(executable_path) {
-        return Err(PriorityError::ProcessExited);
+        return None;
     }
     let creation_time = process.creation_time_100ns()?;
-    Ok((process.cpu_sample()?, creation_time))
-}
-
-pub(super) fn process_identity(
-    process_id: u32,
-    executable_path: &str,
-) -> Result<u64, PriorityError> {
-    let process = ProcessHandle::open_query(process_id)?;
-    if !process.matches_executable_path(executable_path) {
-        return Err(PriorityError::ProcessExited);
-    }
-    process.creation_time_100ns()
+    Some((process.cpu_sample()?, creation_time))
 }
 
 pub(super) fn process_age(process_id: u32) -> Option<Duration> {
-    let process = ProcessHandle::open_query(process_id).ok()?;
-    let creation_time_100ns = process.creation_time_100ns().ok()?;
+    let process = ProcessHandle::open_query(process_id)?;
+    let creation_time_100ns = process.creation_time_100ns()?;
     let mut now = FILETIME::default();
     // SAFETY: now is writable FILETIME storage for the duration of the call.
     unsafe {
@@ -327,10 +52,8 @@ pub(super) fn process_group_cpu_sample(process_ids: &BTreeSet<u32>) -> Option<Pr
     let mut cpu_time_100ns = 0u64;
     let mut sampled_any = false;
     for process_id in process_ids {
-        let sample = match process_cpu_sample(*process_id) {
-            Ok(sample) => sample,
-            Err(PriorityError::ProcessExited) => continue,
-            Err(PriorityError::AccessDenied | PriorityError::Failed(_)) => continue,
+        let Some(sample) = process_cpu_sample(*process_id) else {
+            continue;
         };
         cpu_time_100ns = cpu_time_100ns.saturating_add(sample.cpu_time_100ns);
         sampled_any = true;
@@ -342,63 +65,11 @@ pub(super) fn process_group_cpu_sample(process_ids: &BTreeSet<u32>) -> Option<Pr
     })
 }
 
-pub(super) fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
-    PROCESS_POWER_THROTTLING_STATE {
-        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        StateMask: 0,
-    }
-}
-
-pub(super) fn power_throttling_enabled_state(
-    previous: Option<PROCESS_POWER_THROTTLING_STATE>,
-    ignore_timer_resolution: bool,
-) -> PROCESS_POWER_THROTTLING_STATE {
-    let previous_ignore_timer_resolution = previous.is_some_and(|state| {
-        (state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION) != 0
-    });
-    let mut state = previous.unwrap_or_else(power_throttling_disabled_state);
-    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    state.ControlMask |=
-        PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
-    state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    if ignore_timer_resolution || previous_ignore_timer_resolution {
-        state.StateMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
-    } else {
-        state.StateMask &= !PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
-    }
-    state
-}
-
-pub(super) fn power_throttling_execution_enabled(state: PROCESS_POWER_THROTTLING_STATE) -> bool {
-    (state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) != 0
-}
-
-pub(super) fn power_throttling_ignore_timer_resolution_enabled(
-    state: PROCESS_POWER_THROTTLING_STATE,
-) -> bool {
-    (state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION) != 0
-}
-
 pub(super) fn ignore_timer_resolution_allowed(
     process_id: u32,
     active_audio_process_ids: Option<&BTreeSet<u32>>,
 ) -> bool {
     active_audio_process_ids.is_some_and(|ids| !ids.contains(&process_id))
-}
-
-pub(super) enum PriorityError {
-    AccessDenied,
-    ProcessExited,
-    Failed(String),
-}
-
-pub(super) fn priority_error_message(error: &PriorityError) -> String {
-    match error {
-        PriorityError::AccessDenied => "Access denied.".to_owned(),
-        PriorityError::ProcessExited => "Process exited.".to_owned(),
-        PriorityError::Failed(message) => message.clone(),
-    }
 }
 
 #[derive(Default)]
@@ -415,20 +86,24 @@ impl PriorityFailures {
         }
     }
 
-    pub(super) fn record_error(
+    pub(super) fn record_control_error(
         &mut self,
         action: &str,
         process_id: u32,
         process_name: &str,
-        error: PriorityError,
+        error: ProcessControlError,
         action_log: &mut ActionLog,
     ) {
-        let message = match error {
-            PriorityError::AccessDenied => "Access denied.".to_owned(),
-            PriorityError::ProcessExited => return,
-            PriorityError::Failed(message) => message,
-        };
-        self.record_message(action, process_id, process_name, message, action_log);
+        if error == ProcessControlError::ProcessExited {
+            return;
+        }
+        self.record_message(
+            action,
+            process_id,
+            process_name,
+            error.to_string(),
+            action_log,
+        );
     }
 
     pub(super) fn record_message(
@@ -489,20 +164,6 @@ pub(super) fn background_apply_summary_message(count: usize) -> String {
     }
 }
 
-pub(super) fn background_priority_restore_summary_message(count: usize, reason: &str) -> String {
-    format!(
-        "Restored background priority for {}: {reason}.",
-        process_count_label(count)
-    )
-}
-
-pub(super) fn foreground_boost_restore_summary_message(count: usize, reason: &str) -> String {
-    format!(
-        "Restored foreground boost for {}: {reason}.",
-        process_count_label(count)
-    )
-}
-
 pub(super) fn background_apply_summary_log_due(
     last_logged_at: Option<Instant>,
     now: Instant,
@@ -511,183 +172,25 @@ pub(super) fn background_apply_summary_log_due(
         .is_none_or(|last| now.duration_since(last) >= BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL)
 }
 
-pub(super) fn priority_class_label(priority_class: u32) -> &'static str {
-    match priority_class {
-        NORMAL_PRIORITY_CLASS => "Normal",
-        BELOW_NORMAL_PRIORITY_CLASS => "Below Normal",
-        IDLE_PRIORITY_CLASS => "Idle",
-        ABOVE_NORMAL_PRIORITY_CLASS => "Above Normal",
-        HIGH_PRIORITY_CLASS => "High",
-        REALTIME_PRIORITY_CLASS => "Realtime",
-        _ => "Unknown",
-    }
-}
-
-pub(super) struct ProcessHandle(WinHandle);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
-    pub(super) fn open(process_id: u32) -> Result<Self, PriorityError> {
-        // SAFETY: process_id came from the current process snapshot and no inherited handle is
-        // requested.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-                0,
-                process_id,
-            )
-        };
-        if !handle.is_null() {
-            Ok(Self(WinHandle::new(handle)))
-        } else {
-            Err(open_process_error(process_id, last_error()))
-        }
-    }
-
-    pub(super) fn open_query(process_id: u32) -> Result<Self, PriorityError> {
+    fn open_query(process_id: u32) -> Option<Self> {
         // SAFETY: process_id came from the current process snapshot and no inherited handle is
         // requested.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
         if !handle.is_null() {
-            Ok(Self(WinHandle::new(handle)))
+            Some(Self(WinHandle::new(handle)))
         } else {
-            Err(open_process_error(process_id, last_error()))
+            None
         }
     }
 
-    pub(super) fn matches_executable_path(&self, expected: &str) -> bool {
+    fn matches_executable_path(&self, expected: &str) -> bool {
         process_handle_matches_executable_path(&self.0, Path::new(expected))
     }
 
-    pub(super) fn priority_class(&self) -> Result<u32, PriorityError> {
-        // SAFETY: self owns a live process handle.
-        let priority = unsafe { GetPriorityClass(self.0.raw()) };
-        if priority == 0 {
-            Err(PriorityError::Failed(format!(
-                "GetPriorityClass failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(priority)
-        }
-    }
-
-    pub(super) fn set_priority_class(&self, priority_class: u32) -> Result<(), PriorityError> {
-        let recovery = crate::crash_recovery::record_process_change(
-            self.0.raw(),
-            crate::crash_recovery::ProcessValue::PriorityClass(self.priority_class()?),
-            crate::crash_recovery::ProcessValue::PriorityClass(priority_class),
-        )
-        .map_err(PriorityError::Failed)?;
-        // SAFETY: self owns a live process handle and priority_class is a documented class or a
-        // previously read value.
-        let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
-        if ok == 0 {
-            Err(PriorityError::Failed(format!(
-                "SetPriorityClass failed with error {}.",
-                last_error()
-            )))
-        } else {
-            recovery.commit().map_err(PriorityError::Failed)?;
-            Ok(())
-        }
-    }
-
-    pub(super) fn dynamic_priority_boost_disabled(&self) -> Result<bool, PriorityError> {
-        let mut disabled = 0;
-        // SAFETY: self owns a live process handle and disabled is writable for the call.
-        let ok = unsafe { GetProcessPriorityBoost(self.0.raw(), &mut disabled) };
-        if ok == 0 {
-            Err(PriorityError::Failed(format!(
-                "GetProcessPriorityBoost failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(disabled != 0)
-        }
-    }
-
-    pub(super) fn set_dynamic_priority_boost_disabled(
-        &self,
-        disabled: bool,
-    ) -> Result<(), PriorityError> {
-        let recovery = crate::crash_recovery::record_process_change(
-            self.0.raw(),
-            crate::crash_recovery::ProcessValue::DynamicPriorityBoostDisabled(
-                self.dynamic_priority_boost_disabled()?,
-            ),
-            crate::crash_recovery::ProcessValue::DynamicPriorityBoostDisabled(disabled),
-        )
-        .map_err(PriorityError::Failed)?;
-        // SAFETY: self owns a live process handle and disabled is converted to the documented BOOL
-        // representation.
-        let ok = unsafe { SetProcessPriorityBoost(self.0.raw(), i32::from(disabled)) };
-        if ok == 0 {
-            Err(PriorityError::Failed(format!(
-                "SetProcessPriorityBoost failed with error {}.",
-                last_error()
-            )))
-        } else {
-            recovery.commit().map_err(PriorityError::Failed)?;
-            Ok(())
-        }
-    }
-
-    pub(super) fn power_throttling_state(
-        &self,
-    ) -> Result<PROCESS_POWER_THROTTLING_STATE, PriorityError> {
-        let mut state = PROCESS_POWER_THROTTLING_STATE::default();
-        // SAFETY: self owns a live process handle and state is writable for exactly the supplied
-        // structure size.
-        let ok = unsafe {
-            GetProcessInformation(
-                self.0.raw(),
-                ProcessPowerThrottling,
-                &mut state as *mut _ as *mut c_void,
-                std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-            )
-        };
-        if ok == 0 {
-            Err(PriorityError::Failed(format!(
-                "GetProcessInformation ProcessPowerThrottling failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(state)
-        }
-    }
-
-    pub(super) fn set_power_throttling_state(
-        &self,
-        state: PROCESS_POWER_THROTTLING_STATE,
-    ) -> Result<(), PriorityError> {
-        let recovery = crate::crash_recovery::record_process_change(
-            self.0.raw(),
-            crate::crash_recovery::ProcessValue::power_throttling(self.power_throttling_state()?),
-            crate::crash_recovery::ProcessValue::power_throttling(state),
-        )
-        .map_err(PriorityError::Failed)?;
-        // SAFETY: self owns a live process handle and state is fully initialized for exactly the
-        // supplied structure size.
-        let ok = unsafe {
-            SetProcessInformation(
-                self.0.raw(),
-                ProcessPowerThrottling,
-                &state as *const _ as *const c_void,
-                std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-            )
-        };
-        if ok == 0 {
-            Err(PriorityError::Failed(format!(
-                "SetProcessInformation ProcessPowerThrottling failed with error {}.",
-                last_error()
-            )))
-        } else {
-            recovery.commit().map_err(PriorityError::Failed)?;
-            Ok(())
-        }
-    }
-
-    pub(super) fn cpu_sample(&self) -> Result<ProcessCpuSample, PriorityError> {
+    fn cpu_sample(&self) -> Option<ProcessCpuSample> {
         let mut creation = FILETIME::default();
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
@@ -704,19 +207,16 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(PriorityError::Failed(format!(
-                "GetProcessTimes failed with error {}.",
-                last_error()
-            )))
+            None
         } else {
-            Ok(ProcessCpuSample {
+            Some(ProcessCpuSample {
                 cpu_time_100ns: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
                 sampled_at: Instant::now(),
             })
         }
     }
 
-    pub(super) fn creation_time_100ns(&self) -> Result<u64, PriorityError> {
+    fn creation_time_100ns(&self) -> Option<u64> {
         let mut creation = FILETIME::default();
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
@@ -733,22 +233,9 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(PriorityError::Failed(format!(
-                "GetProcessTimes failed with error {}.",
-                last_error()
-            )))
+            None
         } else {
-            Ok(filetime_to_u64(creation))
+            Some(filetime_to_u64(creation))
         }
-    }
-}
-
-pub(super) fn open_process_error(process_id: u32, error: u32) -> PriorityError {
-    match error {
-        ERROR_ACCESS_DENIED => PriorityError::AccessDenied,
-        ERROR_INVALID_PARAMETER => PriorityError::ProcessExited,
-        _ => PriorityError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
     }
 }

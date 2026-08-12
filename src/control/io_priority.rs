@@ -1,0 +1,1355 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::{
+    backend::crash_recovery::{
+        forget_io_priority_change, record_process_change, ProcessValue, RecoveryIntent,
+    },
+    config::ProcessIoPriority,
+    foreground::ProcessActionTarget,
+    platform::windows::io_priority::{self as windows_io_priority, IoPriorityError},
+    win_util::WinHandle,
+};
+
+use super::process::{
+    open_process_for_set_information, ControlOwner, ProcessControlError, ProcessControlTarget,
+    ProcessIdentity, ProcessTargetKey,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IoPriorityPreservation {
+    Exact,
+    PreserveHigher,
+    PreserveLower,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IoPriorityClaim {
+    pub(crate) target: ProcessControlTarget,
+    pub(crate) owner: ControlOwner,
+    pub(crate) priority: ProcessIoPriority,
+    pub(crate) preservation: IoPriorityPreservation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IoPriorityApplyOutcome {
+    Applied,
+    Unchanged,
+    Preserved,
+}
+
+#[derive(Debug)]
+pub(crate) struct IoPriorityReleaseFailure {
+    pub(crate) process_id: u32,
+    pub(crate) process_name: String,
+    pub(crate) executable_path: String,
+    pub(crate) error: ProcessControlError,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct IoPriorityReleaseSummary {
+    pub(crate) restored_processes: usize,
+    pub(crate) failures: Vec<IoPriorityReleaseFailure>,
+}
+
+struct ManagedIoPriority {
+    baseline: u32,
+    expected: u32,
+    owner: ControlOwner,
+    apply_sequence: u64,
+}
+
+pub(crate) trait IoPriorityRecoveryIntent {
+    fn commit(self) -> Result<(), String>;
+}
+
+impl IoPriorityRecoveryIntent for RecoveryIntent {
+    fn commit(self) -> Result<(), String> {
+        RecoveryIntent::commit(self)
+    }
+}
+
+pub(crate) trait IoPriorityPlatform {
+    type Process;
+    type RecoveryIntent: IoPriorityRecoveryIntent;
+
+    fn open(
+        &mut self,
+        target: &ProcessControlTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError>;
+    fn query(&mut self, process: &Self::Process) -> Result<u32, ProcessControlError>;
+    fn begin_change(
+        &mut self,
+        process: &Self::Process,
+        original: u32,
+        expected: u32,
+    ) -> Result<Self::RecoveryIntent, ProcessControlError>;
+    fn apply(&mut self, process: &Self::Process, priority: u32) -> Result<(), ProcessControlError>;
+    fn relinquish(&mut self, identity: &ProcessIdentity) -> Result<(), ProcessControlError>;
+}
+
+#[derive(Default)]
+pub(crate) struct WindowsIoPriorityPlatform;
+
+impl IoPriorityPlatform for WindowsIoPriorityPlatform {
+    type Process = WinHandle;
+    type RecoveryIntent = RecoveryIntent;
+
+    fn open(
+        &mut self,
+        target: &ProcessControlTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
+        open_process_for_set_information(target, allow_cross_session_process_control)
+    }
+
+    fn query(&mut self, process: &Self::Process) -> Result<u32, ProcessControlError> {
+        windows_io_priority::query(process).map_err(io_priority_error)
+    }
+
+    fn begin_change(
+        &mut self,
+        process: &Self::Process,
+        original: u32,
+        expected: u32,
+    ) -> Result<Self::RecoveryIntent, ProcessControlError> {
+        record_process_change(
+            process.raw(),
+            ProcessValue::IoPriority(original),
+            ProcessValue::IoPriority(expected),
+        )
+        .map_err(ProcessControlError::Failed)
+    }
+
+    fn apply(&mut self, process: &Self::Process, priority: u32) -> Result<(), ProcessControlError> {
+        windows_io_priority::set(process, priority).map_err(io_priority_error)
+    }
+
+    fn relinquish(&mut self, identity: &ProcessIdentity) -> Result<(), ProcessControlError> {
+        forget_io_priority_change(identity.id, identity.creation_time)
+            .map_err(ProcessControlError::Failed)
+    }
+}
+
+pub(crate) struct IoPriorityController<P: IoPriorityPlatform = WindowsIoPriorityPlatform> {
+    platform: P,
+    managed: BTreeMap<ProcessIdentity, ManagedIoPriority>,
+    next_apply_sequence: u64,
+}
+
+impl Default for IoPriorityController {
+    fn default() -> Self {
+        Self::with_platform(WindowsIoPriorityPlatform)
+    }
+}
+
+impl<P: IoPriorityPlatform> IoPriorityController<P> {
+    fn with_platform(platform: P) -> Self {
+        Self {
+            platform,
+            managed: BTreeMap::new(),
+            next_apply_sequence: 1,
+        }
+    }
+
+    pub(crate) fn apply_policy_claim(
+        &mut self,
+        claim: IoPriorityClaim,
+        allow_cross_session_process_control: bool,
+    ) -> Result<IoPriorityApplyOutcome, ProcessControlError> {
+        if !matches!(
+            claim.owner,
+            ControlOwner::IoPriority | ControlOwner::AdaptiveEngine
+        ) {
+            return Err(ProcessControlError::Failed(
+                "This owner cannot control I/O Priority policy.".to_owned(),
+            ));
+        }
+        self.apply_claim(claim, allow_cross_session_process_control)
+    }
+
+    pub(crate) fn apply_process_list_action(
+        &mut self,
+        target: &ProcessActionTarget,
+        priority: ProcessIoPriority,
+        allow_cross_session_process_control: bool,
+    ) -> Result<IoPriorityApplyOutcome, ProcessControlError> {
+        self.apply_claim(
+            IoPriorityClaim {
+                target: ProcessControlTarget::from_action_target(target),
+                owner: ControlOwner::ProcessList,
+                priority,
+                preservation: IoPriorityPreservation::Exact,
+            },
+            allow_cross_session_process_control,
+        )
+    }
+
+    fn apply_claim(
+        &mut self,
+        claim: IoPriorityClaim,
+        allow_cross_session_process_control: bool,
+    ) -> Result<IoPriorityApplyOutcome, ProcessControlError> {
+        let (identity, process) = self
+            .platform
+            .open(&claim.target, allow_cross_session_process_control)?;
+        let stale_identities = self
+            .managed
+            .keys()
+            .filter(|managed_identity| {
+                managed_identity.id == identity.id && **managed_identity != identity
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for stale_identity in stale_identities {
+            self.platform.relinquish(&stale_identity)?;
+            self.managed.remove(&stale_identity);
+        }
+
+        let mut managed = self.managed.remove(&identity);
+        let current = match self.platform.query(&process) {
+            Ok(current) => current,
+            Err(error) => {
+                if let Some(managed) = managed {
+                    self.managed.insert(identity, managed);
+                }
+                return Err(error);
+            }
+        };
+        if managed
+            .as_ref()
+            .is_some_and(|managed| managed.expected != current)
+        {
+            if let Err(error) = self.platform.relinquish(&identity) {
+                if let Some(managed) = managed {
+                    self.managed.insert(identity, managed);
+                }
+                return Err(error);
+            }
+            managed = None;
+        }
+
+        let desired = io_priority_raw(claim.priority);
+        let baseline = managed.as_ref().map_or(current, |managed| managed.baseline);
+        if priority_is_preserved(claim.preservation, baseline, desired) {
+            if let Some(managed) = managed {
+                self.managed.insert(identity.clone(), managed);
+                self.release_identity(&identity)?;
+                self.managed.remove(&identity);
+            }
+            return Ok(IoPriorityApplyOutcome::Preserved);
+        }
+
+        if current == desired {
+            if let Some(mut managed) = managed {
+                if claim.owner.is_automatic() || managed.owner == ControlOwner::ProcessList {
+                    managed.owner = claim.owner;
+                }
+                managed.expected = current;
+                self.managed.insert(identity, managed);
+            }
+            return Ok(IoPriorityApplyOutcome::Unchanged);
+        }
+
+        let sequence = self.next_apply_sequence;
+        self.next_apply_sequence = self.next_apply_sequence.wrapping_add(1).max(1);
+        match apply_transition(
+            &mut self.platform,
+            &process,
+            current,
+            desired,
+            CommitFailureBehavior::Compensate,
+        ) {
+            Ok(()) => {
+                self.managed.insert(
+                    identity,
+                    ManagedIoPriority {
+                        baseline,
+                        expected: desired,
+                        owner: claim.owner,
+                        apply_sequence: sequence,
+                    },
+                );
+                Ok(IoPriorityApplyOutcome::Applied)
+            }
+            Err(mut failure) => {
+                if failure.relinquish_recovery {
+                    if let Err(error) = self.platform.relinquish(&identity) {
+                        failure
+                            .message
+                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.uncertain = true;
+                    }
+                }
+                if failure.uncertain {
+                    self.managed.insert(
+                        identity,
+                        ManagedIoPriority {
+                            baseline,
+                            expected: desired,
+                            owner: claim.owner,
+                            apply_sequence: sequence,
+                        },
+                    );
+                } else if let Some(managed) = managed {
+                    self.managed.insert(identity, managed);
+                }
+                Err(ProcessControlError::Failed(failure.message))
+            }
+        }
+    }
+
+    pub(crate) fn release_policy_except(
+        &mut self,
+        active_targets: &BTreeSet<ProcessTargetKey>,
+    ) -> IoPriorityReleaseSummary {
+        let identities = self
+            .managed
+            .iter()
+            .filter(|(identity, managed)| {
+                managed.owner.is_automatic() && !active_targets.contains(&identity.key())
+            })
+            .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
+            .collect::<Vec<_>>();
+        self.release_identities(identities)
+    }
+
+    pub(crate) fn release_all_policy(&mut self) -> IoPriorityReleaseSummary {
+        self.release_policy_except(&BTreeSet::new())
+    }
+
+    pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        let identities = self
+            .managed
+            .iter()
+            .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
+            .collect::<Vec<_>>();
+        let summary = self.release_identities(identities);
+        if summary.failures.is_empty() {
+            Ok(())
+        } else {
+            Err(summary
+                .failures
+                .into_iter()
+                .map(|failure| {
+                    format!(
+                        "{} ({}): {}",
+                        failure.process_name, failure.process_id, failure.error
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "))
+        }
+    }
+
+    fn release_identities(
+        &mut self,
+        mut identities: Vec<(u64, ProcessIdentity)>,
+    ) -> IoPriorityReleaseSummary {
+        identities.sort_by(|left, right| right.0.cmp(&left.0));
+        let mut summary = IoPriorityReleaseSummary::default();
+        for (_, identity) in identities {
+            match self.release_identity(&identity) {
+                Ok(restored) => {
+                    summary.restored_processes += usize::from(restored);
+                    self.managed.remove(&identity);
+                }
+                Err(ProcessControlError::ProcessExited) => {
+                    match self.platform.relinquish(&identity) {
+                        Ok(()) => {
+                            self.managed.remove(&identity);
+                        }
+                        Err(error) => summary.failures.push(IoPriorityReleaseFailure {
+                            process_id: identity.id,
+                            process_name: identity.name.clone(),
+                            executable_path: identity
+                                .executable_path
+                                .to_string_lossy()
+                                .into_owned(),
+                            error,
+                        }),
+                    }
+                }
+                Err(error) => summary.failures.push(IoPriorityReleaseFailure {
+                    process_id: identity.id,
+                    process_name: identity.name.clone(),
+                    executable_path: identity.executable_path.to_string_lossy().into_owned(),
+                    error,
+                }),
+            }
+        }
+        summary
+    }
+
+    fn release_identity(
+        &mut self,
+        identity: &ProcessIdentity,
+    ) -> Result<bool, ProcessControlError> {
+        let Some(managed) = self.managed.get(identity) else {
+            return Ok(false);
+        };
+        let target = identity.target();
+        let (_, process) = self.platform.open(&target, true)?;
+        let current = self.platform.query(&process)?;
+        if current != managed.expected || current == managed.baseline {
+            self.platform.relinquish(identity)?;
+            return Ok(false);
+        }
+        let baseline = managed.baseline;
+        match apply_transition(
+            &mut self.platform,
+            &process,
+            current,
+            baseline,
+            CommitFailureBehavior::KeepExpected,
+        ) {
+            Ok(()) => Ok(true),
+            Err(failure) if failure.expected_preserved => {
+                match self.platform.relinquish(identity) {
+                    Ok(()) => Ok(true),
+                    Err(error) => {
+                        if let Some(managed) = self.managed.get_mut(identity) {
+                            managed.expected = baseline;
+                        }
+                        Err(ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.message
+                        )))
+                    }
+                }
+            }
+            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+        }
+    }
+
+    pub(crate) fn policy_managed_process_names(&self) -> Vec<String> {
+        self.managed
+            .iter()
+            .filter(|(_, managed)| managed.owner.is_automatic())
+            .map(|(identity, _)| identity.name.clone())
+            .collect()
+    }
+
+    pub(crate) fn has_managed_state(&self) -> bool {
+        !self.managed.is_empty()
+    }
+}
+
+impl<P: IoPriorityPlatform> Drop for IoPriorityController<P> {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+struct TransitionFailure {
+    message: String,
+    uncertain: bool,
+    relinquish_recovery: bool,
+    expected_preserved: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CommitFailureBehavior {
+    Compensate,
+    KeepExpected,
+}
+
+fn apply_transition<P: IoPriorityPlatform>(
+    platform: &mut P,
+    process: &P::Process,
+    original: u32,
+    expected: u32,
+    commit_failure_behavior: CommitFailureBehavior,
+) -> Result<(), TransitionFailure> {
+    let intent = platform
+        .begin_change(process, original, expected)
+        .map_err(|error| TransitionFailure {
+            message: error.to_string(),
+            uncertain: false,
+            relinquish_recovery: false,
+            expected_preserved: false,
+        })?;
+    if let Err(error) = platform.apply(process, expected) {
+        return Err(compensate_with_intent(
+            platform,
+            process,
+            original,
+            intent,
+            error.to_string(),
+        ));
+    }
+    match platform.query(process) {
+        Ok(actual) if actual == expected => {}
+        Ok(actual) => {
+            return Err(compensate_with_intent(
+                platform,
+                process,
+                original,
+                intent,
+                format!("I/O Priority verification returned {actual}, expected {expected}."),
+            ));
+        }
+        Err(error) => {
+            return Err(compensate_with_intent(
+                platform,
+                process,
+                original,
+                intent,
+                format!("I/O Priority verification failed: {error}"),
+            ));
+        }
+    }
+
+    if let Err(error) = intent.commit() {
+        let message = format!("Crash recovery commit failed: {error}");
+        return match commit_failure_behavior {
+            CommitFailureBehavior::Compensate => Err(compensate_without_intent(
+                platform, process, original, message,
+            )),
+            CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
+                message,
+                uncertain: false,
+                relinquish_recovery: true,
+                expected_preserved: true,
+            }),
+        };
+    }
+    Ok(())
+}
+
+fn compensate_with_intent<P: IoPriorityPlatform>(
+    platform: &mut P,
+    process: &P::Process,
+    original: u32,
+    intent: P::RecoveryIntent,
+    primary_error: String,
+) -> TransitionFailure {
+    match restore_and_verify(platform, process, original) {
+        Ok(()) => TransitionFailure {
+            message: primary_error,
+            uncertain: false,
+            relinquish_recovery: false,
+            expected_preserved: false,
+        },
+        Err(compensation_error) => {
+            let recovery_error = intent.commit().err();
+            TransitionFailure {
+                message: transition_failure_message(
+                    primary_error,
+                    compensation_error.to_string(),
+                    recovery_error,
+                ),
+                uncertain: true,
+                relinquish_recovery: false,
+                expected_preserved: false,
+            }
+        }
+    }
+}
+
+fn compensate_without_intent<P: IoPriorityPlatform>(
+    platform: &mut P,
+    process: &P::Process,
+    original: u32,
+    primary_error: String,
+) -> TransitionFailure {
+    match restore_and_verify(platform, process, original) {
+        Ok(()) => TransitionFailure {
+            message: primary_error,
+            uncertain: false,
+            relinquish_recovery: true,
+            expected_preserved: false,
+        },
+        Err(compensation_error) => TransitionFailure {
+            message: transition_failure_message(
+                primary_error,
+                compensation_error.to_string(),
+                None,
+            ),
+            uncertain: true,
+            relinquish_recovery: false,
+            expected_preserved: false,
+        },
+    }
+}
+
+fn restore_and_verify<P: IoPriorityPlatform>(
+    platform: &mut P,
+    process: &P::Process,
+    original: u32,
+) -> Result<(), ProcessControlError> {
+    platform.apply(process, original)?;
+    let actual = platform.query(process)?;
+    if actual == original {
+        Ok(())
+    } else {
+        Err(ProcessControlError::Failed(format!(
+            "Compensation returned {actual}, expected {original}."
+        )))
+    }
+}
+
+fn transition_failure_message(
+    primary_error: String,
+    compensation_error: String,
+    recovery_error: Option<String>,
+) -> String {
+    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
+    if let Some(recovery_error) = recovery_error {
+        message.push_str(&format!(" Recovery commit also failed: {recovery_error}."));
+    }
+    message
+}
+
+fn priority_is_preserved(
+    preservation: IoPriorityPreservation,
+    baseline: u32,
+    desired: u32,
+) -> bool {
+    match preservation {
+        IoPriorityPreservation::Exact => false,
+        IoPriorityPreservation::PreserveHigher => baseline >= desired,
+        IoPriorityPreservation::PreserveLower => baseline <= desired,
+    }
+}
+
+pub(crate) const fn io_priority_raw(priority: ProcessIoPriority) -> u32 {
+    match priority {
+        ProcessIoPriority::VeryLow => 0,
+        ProcessIoPriority::Low => 1,
+        ProcessIoPriority::Normal => 2,
+        ProcessIoPriority::High => 3,
+        ProcessIoPriority::Critical => 4,
+    }
+}
+
+fn io_priority_from_raw(priority: u32) -> Option<ProcessIoPriority> {
+    match priority {
+        0 => Some(ProcessIoPriority::VeryLow),
+        1 => Some(ProcessIoPriority::Low),
+        2 => Some(ProcessIoPriority::Normal),
+        3 => Some(ProcessIoPriority::High),
+        4 => Some(ProcessIoPriority::Critical),
+        _ => None,
+    }
+}
+
+pub(crate) fn current_process_io_priority(
+    target: &ProcessActionTarget,
+    allow_cross_session_process_control: bool,
+) -> Result<ProcessIoPriority, String> {
+    let mut platform = WindowsIoPriorityPlatform;
+    let (_, process) = platform
+        .open(
+            &ProcessControlTarget::from_action_target(target),
+            allow_cross_session_process_control,
+        )
+        .map_err(|error| error.to_string())?;
+    let raw = platform
+        .query(&process)
+        .map_err(|error| error.to_string())?;
+    io_priority_from_raw(raw)
+        .ok_or_else(|| format!("Windows returned unsupported I/O priority value {raw}."))
+}
+
+fn io_priority_error(error: IoPriorityError) -> ProcessControlError {
+    match error {
+        IoPriorityError::ProcessExited => ProcessControlError::ProcessExited,
+        IoPriorityError::NtStatus(status) => {
+            ProcessControlError::Failed(format!("NTSTATUS 0x{status:08X}."))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        path::PathBuf,
+        process::{Child, Command},
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FakeFailure {
+        Open,
+        Verify,
+        Begin,
+        Apply,
+        Commit,
+        Relinquish,
+    }
+
+    struct FakeRecoveryIntent {
+        fail: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl IoPriorityRecoveryIntent for FakeRecoveryIntent {
+        fn commit(self) -> Result<(), String> {
+            self.events.lock().unwrap().push("commit".to_owned());
+            if self.fail {
+                Err("commit failed".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeProcess {
+        identity: ProcessIdentity,
+        priority: u32,
+    }
+
+    struct FakePlatform {
+        processes: BTreeMap<u32, FakeProcess>,
+        failures: VecDeque<FakeFailure>,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FakePlatform {
+        fn new(priority: u32) -> Self {
+            Self::with_processes(&[(42, 7, priority)])
+        }
+
+        fn with_processes(processes: &[(u32, u64, u32)]) -> Self {
+            Self {
+                processes: processes
+                    .iter()
+                    .map(|(id, creation_time, priority)| {
+                        (
+                            *id,
+                            FakeProcess {
+                                identity: identity(*id, *creation_time),
+                                priority: *priority,
+                            },
+                        )
+                    })
+                    .collect(),
+                failures: VecDeque::new(),
+                events: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn fail_next(&mut self, failure: FakeFailure) {
+            self.failures.push_back(failure);
+        }
+
+        fn take_failure(&mut self, failure: FakeFailure) -> bool {
+            if self.failures.front() == Some(&failure) {
+                self.failures.pop_front();
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    impl IoPriorityPlatform for FakePlatform {
+        type Process = u32;
+        type RecoveryIntent = FakeRecoveryIntent;
+
+        fn open(
+            &mut self,
+            target: &ProcessControlTarget,
+            _: bool,
+        ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
+            self.events.lock().unwrap().push("open".to_owned());
+            if self.take_failure(FakeFailure::Open) {
+                return Err(ProcessControlError::AccessDenied("denied".to_owned()));
+            }
+            let process = self
+                .processes
+                .get(&target.id)
+                .ok_or(ProcessControlError::ProcessExited)?;
+            if target.creation_time != process.identity.creation_time {
+                return Err(ProcessControlError::ProcessExited);
+            }
+            Ok((process.identity.clone(), target.id))
+        }
+
+        fn query(&mut self, process: &Self::Process) -> Result<u32, ProcessControlError> {
+            let follows_apply = self
+                .events
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|event| event.starts_with("apply:"));
+            self.events.lock().unwrap().push("query".to_owned());
+            if follows_apply && self.take_failure(FakeFailure::Verify) {
+                return Err(ProcessControlError::Failed("query failed".to_owned()));
+            }
+            self.processes
+                .get(process)
+                .map(|process| process.priority)
+                .ok_or(ProcessControlError::ProcessExited)
+        }
+
+        fn begin_change(
+            &mut self,
+            _: &Self::Process,
+            _: u32,
+            _: u32,
+        ) -> Result<Self::RecoveryIntent, ProcessControlError> {
+            self.events.lock().unwrap().push("begin".to_owned());
+            if self.take_failure(FakeFailure::Begin) {
+                return Err(ProcessControlError::Failed("begin failed".to_owned()));
+            }
+            let fail = self.take_failure(FakeFailure::Commit);
+            Ok(FakeRecoveryIntent {
+                fail,
+                events: Arc::clone(&self.events),
+            })
+        }
+
+        fn apply(
+            &mut self,
+            process: &Self::Process,
+            priority: u32,
+        ) -> Result<(), ProcessControlError> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("apply:{process}:{priority}"));
+            if self.take_failure(FakeFailure::Apply) {
+                return Err(ProcessControlError::Failed("apply failed".to_owned()));
+            }
+            self.processes
+                .get_mut(process)
+                .ok_or(ProcessControlError::ProcessExited)?
+                .priority = priority;
+            Ok(())
+        }
+
+        fn relinquish(&mut self, identity: &ProcessIdentity) -> Result<(), ProcessControlError> {
+            self.events.lock().unwrap().push(format!(
+                "relinquish:{}:{}",
+                identity.id, identity.creation_time
+            ));
+            if self.take_failure(FakeFailure::Relinquish) {
+                Err(ProcessControlError::Failed("relinquish failed".to_owned()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn identity(id: u32, creation_time: u64) -> ProcessIdentity {
+        ProcessIdentity::new(
+            id,
+            format!("app-{id}.exe"),
+            PathBuf::from(format!(r"C:\Apps\app-{id}.exe")),
+            creation_time,
+            Some(1),
+        )
+    }
+
+    fn target(id: u32, creation_time: u64) -> ProcessControlTarget {
+        identity(id, creation_time).target()
+    }
+
+    fn claim(
+        owner: ControlOwner,
+        priority: ProcessIoPriority,
+        preservation: IoPriorityPreservation,
+    ) -> IoPriorityClaim {
+        IoPriorityClaim {
+            target: target(42, 7),
+            owner,
+            priority,
+            preservation,
+        }
+    }
+
+    fn action_target() -> ProcessActionTarget {
+        let target = target(42, 7);
+        ProcessActionTarget {
+            id: target.id,
+            name: target.name,
+            executable_path: target.executable_path,
+            creation_time: target.creation_time,
+            session_id: Some(1),
+            is_service_account: Some(false),
+        }
+    }
+
+    #[test]
+    fn raw_values_match_windows_priority_hint_order_and_unknown_values_fail_closed() {
+        assert_eq!(io_priority_raw(ProcessIoPriority::VeryLow), 0);
+        assert_eq!(io_priority_raw(ProcessIoPriority::Low), 1);
+        assert_eq!(io_priority_raw(ProcessIoPriority::Normal), 2);
+        assert_eq!(io_priority_raw(ProcessIoPriority::High), 3);
+        assert_eq!(io_priority_raw(ProcessIoPriority::Critical), 4);
+        assert_eq!(io_priority_from_raw(5), None);
+    }
+
+    #[test]
+    fn unmanaged_matching_state_is_not_adopted() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+
+        assert_eq!(
+            controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::IoPriority,
+                        ProcessIoPriority::Normal,
+                        IoPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .unwrap(),
+            IoPriorityApplyOutcome::Unchanged
+        );
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn process_list_action_is_superseded_without_losing_the_first_baseline() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_process_list_action(&action_target(), ProcessIoPriority::Low, true)
+            .unwrap();
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::VeryLow,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+
+        let managed = controller.managed.values().next().unwrap();
+        assert_eq!(managed.baseline, 2);
+        assert_eq!(managed.expected, 0);
+        assert_eq!(managed.owner, ControlOwner::IoPriority);
+    }
+
+    #[test]
+    fn static_to_adaptive_replacement_keeps_the_first_baseline() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::AdaptiveEngine,
+                    ProcessIoPriority::VeryLow,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+
+        let managed = controller.managed.values().next().unwrap();
+        assert_eq!(managed.baseline, 2);
+        assert_eq!(managed.owner, ControlOwner::AdaptiveEngine);
+    }
+
+    #[test]
+    fn identity_metadata_drift_preserves_the_existing_baseline() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        let claim = claim(
+            ControlOwner::IoPriority,
+            ProcessIoPriority::Low,
+            IoPriorityPreservation::Exact,
+        );
+        controller.apply_policy_claim(claim.clone(), true).unwrap();
+        let process = controller.platform.processes.get_mut(&42).unwrap();
+        process.identity = ProcessIdentity::new(
+            42,
+            "APP-42.EXE".to_owned(),
+            PathBuf::from(r"c:/apps/APP-42.exe"),
+            7,
+            None,
+        );
+        controller.apply_policy_claim(claim, true).unwrap();
+
+        assert_eq!(controller.managed.len(), 1);
+        assert_eq!(controller.managed.values().next().unwrap().baseline, 2);
+    }
+
+    #[test]
+    fn unknown_windows_baseline_is_restored_exactly() {
+        let platform = FakePlatform::new(5);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+
+        controller.shutdown().unwrap();
+        assert_eq!(controller.platform.processes[&42].priority, 5);
+    }
+
+    #[test]
+    fn preservation_uses_the_original_baseline_and_releases_managed_state() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::AdaptiveEngine,
+                        ProcessIoPriority::Low,
+                        IoPriorityPreservation::PreserveHigher,
+                    ),
+                    true,
+                )
+                .unwrap(),
+            IoPriorityApplyOutcome::Preserved
+        );
+        assert!(!controller.has_managed_state());
+        assert_eq!(controller.platform.processes[&42].priority, 2);
+
+        controller.platform.processes.get_mut(&42).unwrap().priority = 0;
+        assert_eq!(
+            controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::IoPriority,
+                        ProcessIoPriority::Low,
+                        IoPriorityPreservation::PreserveLower,
+                    ),
+                    true,
+                )
+                .unwrap(),
+            IoPriorityApplyOutcome::Preserved
+        );
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn external_break_rebases_before_policy_is_reasserted() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        let claim = claim(
+            ControlOwner::IoPriority,
+            ProcessIoPriority::VeryLow,
+            IoPriorityPreservation::Exact,
+        );
+        controller.apply_policy_claim(claim.clone(), true).unwrap();
+        controller.platform.processes.get_mut(&42).unwrap().priority = 3;
+        controller.apply_policy_claim(claim, true).unwrap();
+
+        assert_eq!(controller.managed.values().next().unwrap().baseline, 3);
+        assert!(controller
+            .platform
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "relinquish:42:7"));
+    }
+
+    #[test]
+    fn failed_external_break_relinquish_retains_the_managed_chain() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        let claim = claim(
+            ControlOwner::IoPriority,
+            ProcessIoPriority::Low,
+            IoPriorityPreservation::Exact,
+        );
+        controller.apply_policy_claim(claim.clone(), true).unwrap();
+        controller.platform.processes.get_mut(&42).unwrap().priority = 3;
+        controller.platform.fail_next(FakeFailure::Relinquish);
+
+        assert!(controller.apply_policy_claim(claim, true).is_err());
+        assert!(controller.has_managed_state());
+    }
+
+    #[test]
+    fn external_break_is_not_overwritten_during_release() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.processes.get_mut(&42).unwrap().priority = 3;
+
+        let summary = controller.release_all_policy();
+        assert!(summary.failures.is_empty());
+        assert_eq!(summary.restored_processes, 0);
+        assert_eq!(controller.platform.processes[&42].priority, 3);
+    }
+
+    #[test]
+    fn process_exit_and_pid_reuse_relinquish_the_old_identity() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.processes.insert(
+            42,
+            FakeProcess {
+                identity: identity(42, 8),
+                priority: 2,
+            },
+        );
+        controller
+            .apply_policy_claim(
+                IoPriorityClaim {
+                    target: target(42, 8),
+                    owner: ControlOwner::IoPriority,
+                    priority: ProcessIoPriority::VeryLow,
+                    preservation: IoPriorityPreservation::Exact,
+                },
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(controller.managed.len(), 1);
+        assert_eq!(controller.managed.keys().next().unwrap().creation_time, 8);
+        assert!(controller
+            .platform
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "relinquish:42:7"));
+    }
+
+    #[test]
+    fn begin_apply_verification_and_commit_failures_compensate() {
+        for failure in [
+            FakeFailure::Begin,
+            FakeFailure::Apply,
+            FakeFailure::Verify,
+            FakeFailure::Commit,
+        ] {
+            let mut platform = FakePlatform::new(2);
+            platform.fail_next(failure);
+            let mut controller = IoPriorityController::with_platform(platform);
+            assert!(controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::IoPriority,
+                        ProcessIoPriority::Low,
+                        IoPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .is_err());
+            assert_eq!(controller.platform.processes[&42].priority, 2);
+            assert!(!controller.has_managed_state());
+        }
+    }
+
+    #[test]
+    fn failed_compensation_keeps_uncertain_state_for_recovery() {
+        let mut platform = FakePlatform::new(2);
+        platform.fail_next(FakeFailure::Apply);
+        platform.fail_next(FakeFailure::Apply);
+        let mut controller = IoPriorityController::with_platform(platform);
+
+        assert!(controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .is_err());
+        assert!(controller.has_managed_state());
+    }
+
+    #[test]
+    fn release_commit_failure_keeps_baseline_and_relinquishes_recovery() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::Commit);
+
+        let summary = controller.release_all_policy();
+        assert!(summary.failures.is_empty());
+        assert_eq!(summary.restored_processes, 1);
+        assert_eq!(controller.platform.processes[&42].priority, 2);
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn failed_release_relinquish_retries_without_reapplying() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::Commit);
+        controller.platform.fail_next(FakeFailure::Relinquish);
+        let first = controller.release_all_policy();
+        assert_eq!(first.failures.len(), 1);
+        assert_eq!(controller.platform.processes[&42].priority, 2);
+        let apply_count = controller
+            .platform
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.starts_with("apply:"))
+            .count();
+
+        let second = controller.release_all_policy();
+        assert!(second.failures.is_empty());
+        assert_eq!(
+            controller
+                .platform
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.starts_with("apply:"))
+                .count(),
+            apply_count
+        );
+    }
+
+    #[test]
+    fn shutdown_restores_in_reverse_application_order() {
+        let platform = FakePlatform::with_processes(&[(42, 7, 2), (43, 8, 2)]);
+        let events = Arc::clone(&platform.events);
+        let mut controller = IoPriorityController::with_platform(platform);
+        for (id, creation_time) in [(42, 7), (43, 8)] {
+            controller
+                .apply_policy_claim(
+                    IoPriorityClaim {
+                        target: target(id, creation_time),
+                        owner: ControlOwner::IoPriority,
+                        priority: ProcessIoPriority::Low,
+                        preservation: IoPriorityPreservation::Exact,
+                    },
+                    true,
+                )
+                .unwrap();
+        }
+        events.lock().unwrap().clear();
+        controller.shutdown().unwrap();
+
+        let restores = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.starts_with("apply:"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(restores, ["apply:43:2", "apply:42:2"]);
+    }
+
+    #[test]
+    #[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
+    fn io_priority_live_apply_and_clean_release() -> Result<(), String> {
+        struct DisposableProcess(Child);
+
+        impl Drop for DisposableProcess {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut executable_path = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
+        executable_path.push(r"System32\PING.EXE");
+        let child = Command::new(&executable_path)
+            .args(["-t", "127.0.0.1"])
+            .spawn()
+            .map_err(|error| format!("Could not start disposable process: {error}"))?;
+        let child = DisposableProcess(child);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let target = loop {
+            match crate::foreground::capture_process_action_target(
+                child.0.id(),
+                &executable_path,
+                true,
+            ) {
+                Ok(target) => break target,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        };
+        let baseline = current_process_io_priority(&target, true)?;
+        let expected = if baseline == ProcessIoPriority::VeryLow {
+            ProcessIoPriority::Low
+        } else {
+            ProcessIoPriority::VeryLow
+        };
+        let mut controller = IoPriorityController::default();
+
+        controller
+            .apply_process_list_action(&target, expected, true)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(current_process_io_priority(&target, true)?, expected);
+        controller.shutdown()?;
+        assert_eq!(current_process_io_priority(&target, true)?, baseline);
+        Ok(())
+    }
+}

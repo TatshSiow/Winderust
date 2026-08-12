@@ -1,45 +1,39 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
-    path::Path,
+    path::{Path, PathBuf},
     ptr::{null_mut, read_unaligned},
     slice,
 };
 
-use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
-    System::{
-        SystemInformation::{
-            GetLogicalProcessorInformationEx, GetSystemCpuSetInformation, RelationProcessorCore,
-            GROUP_AFFINITY, LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
-            SYSTEM_CPU_SET_INFORMATION, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-        },
-        Threading::{
-            GetActiveProcessorGroupCount, GetCurrentProcessId, GetProcessAffinityMask,
-            GetProcessDefaultCpuSets, OpenProcess, SetProcessAffinityMask,
-            SetProcessDefaultCpuSets, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION,
-        },
+use windows_sys::Win32::System::{
+    SystemInformation::{
+        GetLogicalProcessorInformationEx, RelationProcessorCore, GROUP_AFFINITY,
+        LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
     },
-};
-
-use crate::{
-    crash_recovery::{self, ProcessValue},
-    win_util::{last_error, WinHandle},
+    Threading::{GetActiveProcessorGroupCount, GetCurrentProcessId},
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CpuAllocationRule, CpuAllocationSettings},
+    control::{
+        cpu_allocation::{
+            CpuAllocationApplyOutcome, CpuAllocationClaim, CpuAllocationCoordinator,
+            CpuAllocationReconciliationSummary, CpuAllocationReleaseSummary, CpuAllocationRequest,
+        },
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+    },
     foreground::{
-        contains_process_name, list_processes, process_executable_path, process_failure_key,
-        process_handle_matches_executable_path, process_session_id, same_executable_path,
-        same_process_name, visible_window_process_ids, ProtectedProcesses,
+        contains_process_name, process_executable_path, process_failure_key, process_session_id,
+        same_executable_path, unique_app_names, ProtectedProcesses,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
     },
+    runtime::observations::CycleObservations,
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
@@ -64,7 +58,7 @@ pub(crate) struct CpuAllocationTarget {
     pub(crate) executable_path: String,
     pub(crate) mode: CpuAllocationMode,
     pub(crate) core_mask: u64,
-    pub(crate) expected_creation_time: Option<u64>,
+    pub(crate) creation_time: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,37 +83,9 @@ struct LogicalProcessorInformationHeader {
     size: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CpuSetInformationHeader {
-    size: u32,
-    cpu_set_type: u32,
-}
-
 pub struct CpuAllocationManager {
-    adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: ExecutionFailureTracker,
     action_log_feature: ActionLogFeature,
-}
-
-#[derive(Clone)]
-struct AdjustedProcess {
-    process_name: String,
-    executable_path: String,
-    creation_time: u64,
-    adjustment: AffinityAdjustment,
-}
-
-#[derive(Clone)]
-enum AffinityAdjustment {
-    HardAffinity {
-        previous_affinity: usize,
-        applied_affinity: usize,
-    },
-    SoftCpuSets {
-        previous_cpu_set_ids: Vec<u32>,
-        applied_cpu_set_ids: Vec<u32>,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,47 +97,49 @@ pub(crate) enum CpuAllocationMode {
 impl CpuAllocationManager {
     pub fn with_action_log_feature(action_log_feature: ActionLogFeature) -> Self {
         Self {
-            adjusted: BTreeMap::new(),
             failure_suppression: ExecutionFailureTracker::default(),
             action_log_feature,
         }
     }
 
-    pub fn adjusted_process_ids(&self) -> BTreeSet<u32> {
-        self.adjusted.keys().copied().collect()
-    }
-
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the policy boundary receives the shared runtime observations and coordinator"
+    )]
     pub fn update(
         &mut self,
+        coordinator: &mut CpuAllocationCoordinator,
+        owner: ControlOwner,
         settings: &CpuAllocationSettings,
         allocation: (CpuAllocationMode, ActionLogFeature),
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
         let (mode, action_log_feature) = allocation;
         self.action_log_feature = action_log_feature;
         if !automation_enabled {
-            let failed = self.clear_all(action_log, "automation disabled");
-            self.failure_suppression.clear();
-            return CpuAllocationSnapshot {
-                enabled: false,
-                failed_processes: failed,
-                message: "Automation disabled.".to_owned(),
-                ..Default::default()
-            };
+            return self.disabled_snapshot(
+                coordinator,
+                owner,
+                false,
+                "Automation disabled.",
+                "automation disabled",
+                action_log,
+            );
         }
 
         if !settings.enabled {
-            let failed = self.clear_all(action_log, &format!("{} disabled", self.feature_label()));
-            self.failure_suppression.clear();
-            return CpuAllocationSnapshot {
-                enabled: false,
-                failed_processes: failed,
-                message: format!("{} disabled.", self.feature_label()),
-                ..Default::default()
-            };
+            return self.disabled_snapshot(
+                coordinator,
+                owner,
+                false,
+                &format!("{} disabled.", self.feature_label()),
+                &format!("{} disabled", self.feature_label()),
+                action_log,
+            );
         }
 
         let enabled_process_names = settings
@@ -188,75 +156,77 @@ impl CpuAllocationManager {
             .collect::<BTreeSet<_>>();
         if enabled_process_names.is_empty() {
             let reason = format!("no {} rules configured", self.feature_label());
-            let failed = self.clear_all(action_log, &reason);
-            self.failure_suppression.clear();
-            return CpuAllocationSnapshot {
-                enabled: true,
-                failed_processes: failed,
-                message: format!("No {} rules configured.", self.feature_label()),
-                ..Default::default()
-            };
+            return self.disabled_snapshot(
+                coordinator,
+                owner,
+                true,
+                &format!("No {} rules configured.", self.feature_label()),
+                &reason,
+                action_log,
+            );
         }
 
         if settings.protect_foreground_app && foreground_process_id.is_none() {
-            let failed = self.clear_all(action_log, "foreground app is unknown");
-            return CpuAllocationSnapshot {
-                enabled: true,
-                failed_processes: failed,
-                message: "Paused: foreground app is unknown.".to_owned(),
-                ..Default::default()
-            };
+            return self.paused_snapshot(
+                coordinator,
+                owner,
+                "Paused: foreground app is unknown.".to_owned(),
+                "foreground app is unknown",
+                action_log,
+            );
         }
 
         let visible_window_process_ids = if settings.protect_visible_window_apps {
-            let Some(process_ids) = visible_window_process_ids() else {
-                let failed = self.clear_all(action_log, "visible windows are unavailable");
-                return CpuAllocationSnapshot {
-                    enabled: true,
-                    failed_processes: failed,
-                    message: "Paused: visible windows are unavailable.".to_owned(),
-                    ..Default::default()
-                };
+            let Ok(process_ids) = observations.visible_window_process_ids() else {
+                return self.paused_snapshot(
+                    coordinator,
+                    owner,
+                    "Paused: visible windows are unavailable.".to_owned(),
+                    "visible windows are unavailable",
+                    action_log,
+                );
             };
             process_ids
         } else {
-            BTreeSet::new()
+            Default::default()
         };
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failed = self.clear_all(action_log, "current Windows session is unknown");
-            return CpuAllocationSnapshot {
-                enabled: true,
-                failed_processes: failed,
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                ..Default::default()
-            };
+            return self.paused_snapshot(
+                coordinator,
+                owner,
+                "Paused: current Windows session is unknown.".to_owned(),
+                "current Windows session is unknown",
+                action_log,
+            );
         };
 
-        let processes = match list_processes() {
+        let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(err) => {
-                let failed = self.clear_all(action_log, "process list unavailable");
-                return CpuAllocationSnapshot {
-                    enabled: true,
-                    failed_processes: failed,
-                    message: err,
-                    ..Default::default()
-                };
+                let mut snapshot = self.paused_snapshot(
+                    coordinator,
+                    owner,
+                    err.clone(),
+                    "process list unavailable",
+                    action_log,
+                );
+                snapshot.last_error.get_or_insert(err);
+                return snapshot;
             }
         };
 
         let scanned_processes = processes.len();
         let protected_processes = ProtectedProcesses::capture(
-            &processes,
+            processes.as_ref(),
             settings.protect_foreground_app,
             foreground_process_id,
             visible_window_process_ids,
         );
-        let mut target_processes = BTreeMap::new();
-        for process in processes {
+        let mut targets = Vec::new();
+        for process in processes.iter() {
             if process.id == 0
                 || process.is_critical != Some(false)
                 || !process.can_set_information
@@ -273,92 +243,104 @@ impl CpuAllocationManager {
                 continue;
             }
 
-            let Some(executable_path) = process_executable_path(&process) else {
+            let Some(executable_path) = process_executable_path(process) else {
                 continue;
             };
             if protected_processes.contains(process.id, &executable_path) {
                 continue;
             }
+            let Some(creation_time) = process.creation_time else {
+                continue;
+            };
 
             if let Some(rule) = matching_rule(&settings.rules, &executable_path) {
-                target_processes.insert(
-                    process.id,
-                    (
-                        process.name,
-                        executable_path.to_string_lossy().into_owned(),
-                        mode,
-                        rule.core_mask,
-                        None,
-                    ),
-                );
+                targets.push(CpuAllocationTarget {
+                    process_id: process.id,
+                    process_name: process.name.clone(),
+                    executable_path: executable_path.to_string_lossy().into_owned(),
+                    mode,
+                    core_mask: rule.core_mask,
+                    creation_time,
+                });
             }
         }
 
         self.apply_targets(
-            target_processes,
+            coordinator,
+            owner,
+            targets,
             scanned_processes,
             cpu_allocation_message(mode),
+            allow_cross_session_process_control,
             action_log,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Workload Engine supplies already-discovered exact process targets"
+    )]
     pub(crate) fn update_discovered_targets(
         &mut self,
+        coordinator: &mut CpuAllocationCoordinator,
+        owner: ControlOwner,
         targets: Vec<CpuAllocationTarget>,
         scanned_processes: usize,
         message: &str,
+        allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
-        let targets = targets
-            .into_iter()
-            .map(|target| {
-                (
-                    target.process_id,
-                    (
-                        target.process_name,
-                        target.executable_path,
-                        target.mode,
-                        target.core_mask,
-                        target.expected_creation_time,
-                    ),
-                )
-            })
-            .collect();
-        self.apply_targets(targets, scanned_processes, message.to_owned(), action_log)
+        self.apply_targets(
+            coordinator,
+            owner,
+            targets,
+            scanned_processes,
+            message.to_owned(),
+            allow_cross_session_process_control,
+            action_log,
+        )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the controller call keeps policy owner, access, and reporting context explicit"
+    )]
     fn apply_targets(
         &mut self,
-        target_processes: BTreeMap<u32, (String, String, CpuAllocationMode, u64, Option<u64>)>,
+        coordinator: &mut CpuAllocationCoordinator,
+        owner: ControlOwner,
+        targets: Vec<CpuAllocationTarget>,
         scanned_processes: usize,
         message: String,
+        allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
-        let active_target_names = target_processes
-            .values()
-            .map(|(_name, path, _, _, _)| process_failure_key(path))
+        let active_targets = targets
+            .iter()
+            .map(cpu_allocation_target_key)
+            .collect::<BTreeSet<_>>();
+        let active_target_names = targets
+            .iter()
+            .map(|target| process_failure_key(&target.executable_path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
-        let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
-        let mut failed_processes = self.release_non_targets(
-            &target_ids,
+        let mut failures = CpuAllocationFailures::default();
+        self.merge_release_summary(
+            coordinator.release_policy_except(owner, &active_targets),
+            owner,
             action_log,
             &format!("process no longer matches a {} rule", self.feature_label()),
+            &mut failures,
         );
         let mut skipped_processes = 0;
-        let mut last_error = None;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (
-            process_id,
-            (process_name, executable_path, mode, rule_mask, expected_creation_time),
-        ) in target_processes
-        {
-            let failure_process_name = process_name.clone();
-            let failure_executable_path = executable_path.clone();
+        for target in targets {
+            let failure_process_name = target.process_name.clone();
+            let failure_executable_path = target.executable_path.clone();
             let suppression = self.check_process_suppression(
-                process_id,
+                target.process_id,
                 &failure_process_name,
                 &failure_executable_path,
                 action_log,
@@ -371,136 +353,161 @@ impl CpuAllocationManager {
                 continue;
             }
 
-            match apply_affinity(
-                (process_id, process_name, executable_path),
-                mode,
-                rule_mask,
-                expected_creation_time,
-                self.adjusted.get(&process_id),
-                self.action_log_feature,
-                action_log,
-            ) {
-                Ok(adjusted) => {
-                    if let Some(adjusted) = adjusted {
-                        self.clear_process_failure(&failure_executable_path);
-                        self.adjusted.insert(process_id, adjusted);
-                    } else {
-                        skipped_processes += 1;
-                        self.clear_process_failure(&failure_executable_path);
-                        self.adjusted.remove(&process_id);
-                    }
+            let request = match target.mode {
+                CpuAllocationMode::SoftCpuSets => CpuAllocationRequest::SoftCpuSets {
+                    logical_processor_mask: target.core_mask,
+                },
+                CpuAllocationMode::HardAffinity => CpuAllocationRequest::HardAffinity {
+                    logical_processor_mask: target.core_mask,
+                },
+            };
+            let claim = CpuAllocationClaim {
+                target: ProcessControlTarget::automatic(
+                    target.process_id,
+                    target.process_name.clone(),
+                    PathBuf::from(&target.executable_path),
+                    target.creation_time,
+                ),
+                owner,
+                request,
+            };
+            match coordinator.apply_policy_claim(claim, allow_cross_session_process_control) {
+                Ok(CpuAllocationApplyOutcome::Applied) => {
+                    self.clear_process_failure(&failure_executable_path);
+                    action_log.record(
+                        self.action_log_feature,
+                        Some(target.process_id),
+                        target.process_name,
+                        ActionLogResult::Applied,
+                        format!("Applied {}.", cpu_allocation_mode_label(target.mode)),
+                    );
                 }
-                Err(AffinityError::ProcessExited) => {
+                Ok(CpuAllocationApplyOutcome::Unchanged) => {
+                    self.clear_process_failure(&failure_executable_path);
+                }
+                Ok(
+                    CpuAllocationApplyOutcome::Shadowed | CpuAllocationApplyOutcome::NoUsableTarget,
+                ) => {
                     skipped_processes += 1;
-                    self.adjusted.remove(&process_id);
+                    self.clear_process_failure(&failure_executable_path);
                 }
-                Err(AffinityError::AccessDenied) => {
+                Err(ProcessControlError::ProcessExited) => {
+                    skipped_processes += 1;
+                }
+                Err(ProcessControlError::AccessDenied(message)) => {
                     skipped_processes += 1;
                     self.failure_suppression
                         .suppress_process_failure(&failure_executable_path);
                     action_log.record(
                         self.action_log_feature,
-                        Some(process_id),
+                        Some(target.process_id),
                         failure_process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        message,
                     );
                 }
                 Err(error) => {
                     self.record_process_failure(&failure_executable_path);
-                    let err = affinity_error_message(error);
-                    failed_processes += 1;
-                    if last_error.is_none() {
-                        last_error = Some(err.clone());
-                    }
-                    action_log.record(
+                    failures.record(
+                        "Apply",
+                        target.process_id,
+                        &failure_process_name,
+                        error,
                         self.action_log_feature,
-                        Some(process_id),
-                        failure_process_name,
-                        ActionLogResult::Failed,
-                        err,
+                        action_log,
                     );
                 }
             }
         }
 
+        let adjusted_apps = unique_app_names(
+            coordinator
+                .policy_managed_process_names(owner)
+                .iter()
+                .map(String::as_str),
+        );
         CpuAllocationSnapshot {
             enabled: true,
             scanned_processes,
-            adjusted_processes: self.adjusted.len(),
+            adjusted_processes: coordinator.policy_managed_process_count(owner),
             skipped_processes,
-            failed_processes,
+            failed_processes: failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            adjusted_apps: self
-                .adjusted
-                .values()
-                .map(|process| process.executable_path.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
+            adjusted_apps,
             message,
-            last_error,
+            last_error: failures.last_error,
         }
     }
 
-    fn release_non_targets(
+    fn disabled_snapshot(
         &mut self,
-        target_ids: &BTreeSet<u32>,
-        action_log: &mut ActionLog,
+        coordinator: &mut CpuAllocationCoordinator,
+        owner: ControlOwner,
+        enabled: bool,
+        message: &str,
         reason: &str,
-    ) -> usize {
-        let process_ids = self
-            .adjusted
-            .keys()
-            .copied()
-            .filter(|process_id| !target_ids.contains(process_id))
-            .collect::<Vec<_>>();
-
-        self.release_processes(&process_ids, action_log, reason)
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        let mut failures = CpuAllocationFailures::default();
+        self.merge_release_summary(
+            coordinator.release_all_policy(owner),
+            owner,
+            action_log,
+            reason,
+            &mut failures,
+        );
+        self.failure_suppression.clear();
+        CpuAllocationSnapshot {
+            enabled,
+            failed_processes: failures.count,
+            message: message.to_owned(),
+            last_error: failures.last_error,
+            ..Default::default()
+        }
     }
 
-    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> usize {
-        let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, action_log, reason)
+    fn paused_snapshot(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator,
+        owner: ControlOwner,
+        message: String,
+        reason: &str,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        let mut snapshot =
+            self.disabled_snapshot(coordinator, owner, true, &message, reason, action_log);
+        snapshot.enabled = true;
+        snapshot
     }
 
-    fn release_processes(
+    fn merge_release_summary(
         &mut self,
-        process_ids: &[u32],
+        summary: CpuAllocationReleaseSummary,
+        owner: ControlOwner,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> usize {
-        let mut failed = 0;
-        for process_id in process_ids {
-            if let Some(process) = self.adjusted.get(process_id).cloned() {
-                let process_name = process.process_name.clone();
-                let adjustment = process.adjustment.clone();
-                if let Err(err) = restore_affinity(*process_id, &process) {
-                    if matches!(&err, AffinityError::ProcessExited) {
-                        self.adjusted.remove(process_id);
-                        continue;
-                    }
-                    failed += 1;
-                    action_log.record(
-                        self.action_log_feature,
-                        Some(*process_id),
-                        process_name,
-                        ActionLogResult::Failed,
-                        affinity_error_message(err),
-                    );
-                } else {
-                    self.adjusted.remove(process_id);
-                    action_log.record(
-                        self.action_log_feature,
-                        Some(*process_id),
-                        process_name,
-                        ActionLogResult::Restored,
-                        format!("{reason}: restored {}.", adjustment_label(&adjustment)),
-                    );
-                }
+        failures: &mut CpuAllocationFailures,
+    ) {
+        record_cpu_allocation_restorations(summary.restored_owners, reason, action_log);
+        for failure in summary.failures {
+            let (action_log_feature, _) = cpu_allocation_action_log_context(failure.owner);
+            let message = failure.error.to_string();
+            if failure.owner == owner {
+                failures.note(
+                    "Restore",
+                    failure.process_id,
+                    &failure.process_name,
+                    &message,
+                );
             }
+            action_log.record(
+                action_log_feature,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                message,
+            );
         }
-        failed
     }
 
     fn check_process_suppression(
@@ -559,23 +566,158 @@ impl CpuAllocationManager {
     }
 }
 
-impl Drop for CpuAllocationManager {
-    fn drop(&mut self) {
-        let mut action_log = ActionLog::new(1);
-        self.clear_all(
-            &mut action_log,
-            &format!("{} manager dropped", self.feature_label()),
+pub(crate) fn record_cpu_allocation_restorations(
+    restored_owners: Vec<ControlOwner>,
+    reason: &str,
+    action_log: &mut ActionLog,
+) {
+    let mut counts = BTreeMap::new();
+    for owner in restored_owners {
+        *counts.entry(owner).or_insert(0_usize) += 1;
+    }
+    for (owner, count) in counts {
+        let (feature, label) = cpu_allocation_action_log_context(owner);
+        action_log.record(
+            feature,
+            None,
+            label,
+            ActionLogResult::Restored,
+            format!(
+                "Restored {count} CPU allocation {}: {reason}.",
+                if count == 1 { "property" } else { "properties" }
+            ),
         );
+    }
+}
+
+pub(crate) fn record_cpu_allocation_reconciliation(
+    summary: CpuAllocationReconciliationSummary,
+    action_log: &mut ActionLog,
+) {
+    for application in summary.applications {
+        let (feature, _) = cpu_allocation_action_log_context(application.owner);
+        action_log.record(
+            feature,
+            Some(application.process_id),
+            application.process_name,
+            ActionLogResult::Applied,
+            format!(
+                "Applied {} after CPU allocation precedence changed.",
+                cpu_allocation_request_label(application.request)
+            ),
+        );
+    }
+    for failure in summary.failures {
+        let (feature, _) = cpu_allocation_action_log_context(failure.owner);
+        action_log.record(
+            feature,
+            Some(failure.process_id),
+            failure.process_name,
+            ActionLogResult::Failed,
+            failure.error.to_string(),
+        );
+    }
+    record_cpu_allocation_restorations(
+        summary.releases.restored_owners,
+        "CPU allocation precedence changed",
+        action_log,
+    );
+    for failure in summary.releases.failures {
+        let (feature, _) = cpu_allocation_action_log_context(failure.owner);
+        action_log.record(
+            feature,
+            Some(failure.process_id),
+            failure.process_name,
+            ActionLogResult::Failed,
+            failure.error.to_string(),
+        );
+    }
+}
+
+pub(crate) fn cpu_allocation_action_log_context(
+    owner: ControlOwner,
+) -> (ActionLogFeature, &'static str) {
+    match owner {
+        ControlOwner::CpuSetsSoft => (ActionLogFeature::CpuSetsSoft, "CPU Sets (Soft)"),
+        ControlOwner::ProcessorAffinityHard => (
+            ActionLogFeature::ProcessorAffinityHard,
+            "Processor Affinity (Hard)",
+        ),
+        ControlOwner::CoreLimiter => (ActionLogFeature::CoreLimiter, "Core Limiter"),
+        ControlOwner::AdaptiveEngine => (ActionLogFeature::WorkloadEngine, "Workload Engine"),
+        unsupported => {
+            unreachable!("unsupported CPU allocation Action Log owner: {unsupported:?}")
+        }
     }
 }
 
 impl Default for CpuAllocationManager {
     fn default() -> Self {
         Self {
-            adjusted: BTreeMap::new(),
             failure_suppression: ExecutionFailureTracker::default(),
             action_log_feature: ActionLogFeature::CpuSetsSoft,
         }
+    }
+}
+
+#[derive(Default)]
+struct CpuAllocationFailures {
+    count: usize,
+    last_error: Option<String>,
+}
+
+impl CpuAllocationFailures {
+    fn record(
+        &mut self,
+        action: &str,
+        process_id: u32,
+        process_name: &str,
+        error: ProcessControlError,
+        action_log_feature: ActionLogFeature,
+        action_log: &mut ActionLog,
+    ) {
+        let message = error.to_string();
+        self.note(action, process_id, process_name, &message);
+        action_log.record(
+            action_log_feature,
+            Some(process_id),
+            process_name.to_owned(),
+            ActionLogResult::Failed,
+            message,
+        );
+    }
+
+    fn note(&mut self, action: &str, process_id: u32, process_name: &str, message: &str) {
+        self.last_error
+            .get_or_insert_with(|| format!("{action} {process_name} ({process_id}): {message}"));
+        self.count += 1;
+    }
+}
+
+fn cpu_allocation_target_key(
+    target: &CpuAllocationTarget,
+) -> crate::control::process::ProcessTargetKey {
+    ProcessControlTarget::automatic(
+        target.process_id,
+        target.process_name.clone(),
+        PathBuf::from(&target.executable_path),
+        target.creation_time,
+    )
+    .key()
+}
+
+fn cpu_allocation_mode_label(mode: CpuAllocationMode) -> &'static str {
+    match mode {
+        CpuAllocationMode::SoftCpuSets => "CPU Sets (Soft)",
+        CpuAllocationMode::HardAffinity => "Processor Affinity (Hard)",
+    }
+}
+
+fn cpu_allocation_request_label(request: CpuAllocationRequest) -> &'static str {
+    match request {
+        CpuAllocationRequest::SoftCpuSets { .. } => "CPU Sets (Soft)",
+        CpuAllocationRequest::HardAffinity { .. } => "Processor Affinity (Hard)",
+        CpuAllocationRequest::LimitLogicalProcessors { .. } => "Core Limiter",
     }
 }
 
@@ -615,6 +757,24 @@ pub fn contains_process(list: &[String], executable_path: &str) -> bool {
 
 pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
     logical_processors_from_topology().unwrap_or_else(fallback_logical_processors)
+}
+
+pub fn default_cpu_mask() -> u64 {
+    let processors = logical_processors();
+    let mask = processors
+        .iter()
+        .filter_map(|processor| (processor.index < 64).then_some(1_u64 << processor.index))
+        .fold(0, |mask, bit| mask | bit);
+    if mask != 0 {
+        return mask;
+    }
+
+    let processor_count = processors.len().clamp(1, 64);
+    if processor_count == 64 {
+        u64::MAX
+    } else {
+        (1_u64 << processor_count) - 1
+    }
 }
 
 pub fn has_multiple_processor_groups() -> bool {
@@ -822,507 +982,6 @@ fn rule_has_target(rule: &CpuAllocationRule) -> bool {
     rule.core_mask != 0
 }
 
-enum AffinityError {
-    AccessDenied,
-    ProcessExited,
-    Failed(String),
-}
-
-struct AffinityTarget {
-    process_id: u32,
-    process_name: String,
-    executable_path: String,
-    creation_time: u64,
-}
-
-fn apply_affinity(
-    (process_id, process_name, executable_path): (u32, String, String),
-    mode: CpuAllocationMode,
-    rule_mask: u64,
-    expected_creation_time: Option<u64>,
-    existing: Option<&AdjustedProcess>,
-    action_log_feature: ActionLogFeature,
-    action_log: &mut ActionLog,
-) -> Result<Option<AdjustedProcess>, AffinityError> {
-    let process = ProcessHandle::open(process_id)?;
-    if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
-        return Err(AffinityError::ProcessExited);
-    }
-    let creation_time = process
-        .0
-        .process_creation_time()
-        .ok_or(AffinityError::ProcessExited)?;
-    if expected_creation_time.is_some_and(|expected| expected != creation_time) {
-        return Err(AffinityError::ProcessExited);
-    }
-    let reusable_existing = existing
-        .filter(|adjusted| adjusted.creation_time == creation_time)
-        .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name))
-        .filter(|adjusted| adjusted.adjustment.mode() == mode);
-
-    if let Some(adjusted) = existing {
-        if adjusted.creation_time == creation_time
-            && (!same_process_name(&adjusted.process_name, &process_name)
-                || adjusted.adjustment.mode() != mode)
-        {
-            restore_adjustment(&process, &adjusted.adjustment)?;
-            action_log.record(
-                action_log_feature,
-                Some(process_id),
-                process_name.clone(),
-                ActionLogResult::Restored,
-                format!(
-                    "Rule changed: restored previous {}.",
-                    adjustment_label(&adjusted.adjustment)
-                ),
-            );
-        }
-    }
-
-    let restored_process_name = process_name.clone();
-    let adjusted = match mode {
-        CpuAllocationMode::HardAffinity => apply_hard_affinity(
-            AffinityTarget {
-                process_id,
-                process_name,
-                executable_path,
-                creation_time,
-            },
-            &process,
-            rule_mask,
-            reusable_existing,
-            action_log_feature,
-            action_log,
-        ),
-        CpuAllocationMode::SoftCpuSets => apply_soft_affinity(
-            AffinityTarget {
-                process_id,
-                process_name,
-                executable_path,
-                creation_time,
-            },
-            &process,
-            rule_mask,
-            reusable_existing,
-            action_log_feature,
-            action_log,
-        ),
-    }?;
-
-    if adjusted.is_none() {
-        if let Some(existing) = reusable_existing {
-            restore_adjustment(&process, &existing.adjustment)?;
-            action_log.record(
-                action_log_feature,
-                Some(process_id),
-                restored_process_name,
-                ActionLogResult::Restored,
-                format!(
-                    "Rule has no usable CPU target: restored previous {}.",
-                    adjustment_label(&existing.adjustment)
-                ),
-            );
-        }
-    }
-
-    Ok(adjusted)
-}
-
-fn restore_affinity(process_id: u32, process_state: &AdjustedProcess) -> Result<(), AffinityError> {
-    let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time)
-        || !process_handle_matches_executable_path(
-            &process.0,
-            Path::new(&process_state.executable_path),
-        )
-    {
-        return Err(AffinityError::ProcessExited);
-    }
-    restore_adjustment(&process, &process_state.adjustment)
-}
-
-fn apply_hard_affinity(
-    target: AffinityTarget,
-    process: &ProcessHandle,
-    rule_mask: u64,
-    existing: Option<&AdjustedProcess>,
-    action_log_feature: ActionLogFeature,
-    action_log: &mut ActionLog,
-) -> Result<Option<AdjustedProcess>, AffinityError> {
-    let AffinityTarget {
-        process_id,
-        process_name,
-        executable_path,
-        creation_time,
-    } = target;
-    let (current_affinity, system_affinity) = process.affinity_mask()?;
-    let Some(target_affinity) = target_affinity_mask(rule_mask, system_affinity) else {
-        return Ok(None);
-    };
-
-    if existing.is_some_and(|adjusted| {
-        matches!(
-            adjusted.adjustment,
-            AffinityAdjustment::HardAffinity {
-                applied_affinity,
-                ..
-            } if applied_affinity == target_affinity
-        ) && current_affinity == target_affinity
-    }) {
-        return Ok(existing.cloned());
-    }
-
-    process.set_affinity_mask(target_affinity)?;
-
-    let previous_affinity = existing
-        .and_then(|adjusted| match adjusted.adjustment {
-            AffinityAdjustment::HardAffinity {
-                previous_affinity, ..
-            } => Some(previous_affinity),
-            AffinityAdjustment::SoftCpuSets { .. } => None,
-        })
-        .unwrap_or(current_affinity);
-    action_log.record(
-        action_log_feature,
-        Some(process_id),
-        process_name.clone(),
-        ActionLogResult::Applied,
-        format!("Applied hard affinity mask {target_affinity:#x}."),
-    );
-
-    Ok(Some(AdjustedProcess {
-        process_name,
-        executable_path,
-        creation_time,
-        adjustment: AffinityAdjustment::HardAffinity {
-            previous_affinity,
-            applied_affinity: target_affinity,
-        },
-    }))
-}
-
-fn apply_soft_affinity(
-    target: AffinityTarget,
-    process: &ProcessHandle,
-    rule_mask: u64,
-    existing: Option<&AdjustedProcess>,
-    action_log_feature: ActionLogFeature,
-    action_log: &mut ActionLog,
-) -> Result<Option<AdjustedProcess>, AffinityError> {
-    let AffinityTarget {
-        process_id,
-        process_name,
-        executable_path,
-        creation_time,
-    } = target;
-    let Some(target_cpu_set_ids) = target_cpu_set_ids(rule_mask)? else {
-        return Ok(None);
-    };
-    let current_cpu_set_ids = process.default_cpu_set_ids()?;
-
-    if existing.is_some_and(|adjusted| {
-        matches!(
-            &adjusted.adjustment,
-            AffinityAdjustment::SoftCpuSets {
-                applied_cpu_set_ids,
-                ..
-            } if *applied_cpu_set_ids == target_cpu_set_ids
-        ) && current_cpu_set_ids == target_cpu_set_ids
-    }) {
-        return Ok(existing.cloned());
-    }
-
-    process.set_default_cpu_set_ids(&target_cpu_set_ids)?;
-
-    let previous_cpu_set_ids = existing
-        .and_then(|adjusted| match &adjusted.adjustment {
-            AffinityAdjustment::SoftCpuSets {
-                previous_cpu_set_ids,
-                ..
-            } => Some(previous_cpu_set_ids.clone()),
-            AffinityAdjustment::HardAffinity { .. } => None,
-        })
-        .unwrap_or(current_cpu_set_ids);
-    action_log.record(
-        action_log_feature,
-        Some(process_id),
-        process_name.clone(),
-        ActionLogResult::Applied,
-        format!("Applied CPU Sets: {}.", target_cpu_set_ids.len()),
-    );
-
-    Ok(Some(AdjustedProcess {
-        process_name,
-        executable_path,
-        creation_time,
-        adjustment: AffinityAdjustment::SoftCpuSets {
-            previous_cpu_set_ids,
-            applied_cpu_set_ids: target_cpu_set_ids,
-        },
-    }))
-}
-
-fn restore_adjustment(
-    process: &ProcessHandle,
-    adjustment: &AffinityAdjustment,
-) -> Result<(), AffinityError> {
-    match adjustment {
-        AffinityAdjustment::HardAffinity {
-            previous_affinity, ..
-        } => process.set_affinity_mask(*previous_affinity),
-        AffinityAdjustment::SoftCpuSets {
-            previous_cpu_set_ids,
-            ..
-        } => process.set_default_cpu_set_ids(previous_cpu_set_ids),
-    }
-}
-
-impl AffinityAdjustment {
-    fn mode(&self) -> CpuAllocationMode {
-        match self {
-            Self::HardAffinity { .. } => CpuAllocationMode::HardAffinity,
-            Self::SoftCpuSets { .. } => CpuAllocationMode::SoftCpuSets,
-        }
-    }
-}
-
-fn adjustment_label(adjustment: &AffinityAdjustment) -> &'static str {
-    match adjustment {
-        AffinityAdjustment::HardAffinity { .. } => "Processor Affinity (Hard)",
-        AffinityAdjustment::SoftCpuSets { .. } => "CPU Sets (Soft)",
-    }
-}
-
-fn affinity_error_message(error: AffinityError) -> String {
-    match error {
-        AffinityError::AccessDenied => "Access denied.".to_owned(),
-        AffinityError::ProcessExited => "Process exited.".to_owned(),
-        AffinityError::Failed(message) => message,
-    }
-}
-
-fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize> {
-    let mut mask = (rule_mask & usize::MAX as u64) as usize;
-    if system_affinity != 0 {
-        mask &= system_affinity;
-    }
-    (mask != 0).then_some(mask)
-}
-
-fn target_cpu_set_ids(rule_mask: u64) -> Result<Option<Vec<u32>>, AffinityError> {
-    let mut ids = system_cpu_set_ids_for_mask(rule_mask)?;
-    ids.sort_unstable();
-    ids.dedup();
-    Ok((!ids.is_empty()).then_some(ids))
-}
-
-fn system_cpu_set_ids_for_mask(rule_mask: u64) -> Result<Vec<u32>, AffinityError> {
-    let mut returned_length = 0;
-    // SAFETY: A null buffer with zero length requests the required byte count in returned_length.
-    unsafe {
-        GetSystemCpuSetInformation(null_mut(), 0, &mut returned_length, null_mut(), 0);
-    }
-
-    if returned_length == 0 {
-        return Ok(Vec::new());
-    }
-
-    let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
-    let mut buffer = vec![0_usize; word_count];
-    // SAFETY: buffer provides at least returned_length writable bytes and returned_length remains
-    // writable for the actual result size.
-    let ok = unsafe {
-        GetSystemCpuSetInformation(
-            buffer.as_mut_ptr() as *mut SYSTEM_CPU_SET_INFORMATION,
-            returned_length,
-            &mut returned_length,
-            null_mut(),
-            0,
-        )
-    };
-    if ok == 0 {
-        return Err(AffinityError::Failed(format!(
-            "GetSystemCpuSetInformation failed with error {}.",
-            last_error()
-        )));
-    }
-
-    Ok(cpu_set_ids_for_mask_from_bytes(
-        // SAFETY: The successful CPU-set query initialized returned_length bytes within buffer.
-        unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) },
-        rule_mask,
-    ))
-}
-
-fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
-    let mut ids = Vec::new();
-    let mut offset = 0;
-    let header_size = size_of::<CpuSetInformationHeader>();
-
-    while offset + header_size <= buffer.len() {
-        // SAFETY: The header bounds check guarantees enough bytes and unaligned access matches the
-        // byte-packed Win32 record layout.
-        let header = unsafe {
-            read_unaligned(buffer.as_ptr().add(offset) as *const CpuSetInformationHeader)
-        };
-        let record_size = header.size as usize;
-        if record_size < header_size || offset + record_size > buffer.len() {
-            break;
-        }
-
-        if header.cpu_set_type == 0 && record_size >= size_of::<SYSTEM_CPU_SET_INFORMATION>() {
-            // SAFETY: record_size was validated against the buffer and covers the full CPU-set
-            // record.
-            let info = unsafe {
-                read_unaligned(buffer.as_ptr().add(offset) as *const SYSTEM_CPU_SET_INFORMATION)
-            };
-            // SAFETY: cpu_set_type zero selects the CpuSet member of the Win32 union.
-            let cpu_set = unsafe { info.Anonymous.CpuSet };
-            if cpu_set.Group == 0 && cpu_set.LogicalProcessorIndex < 64 {
-                let bit = 1_u64 << cpu_set.LogicalProcessorIndex;
-                if (rule_mask & bit) != 0 {
-                    ids.push(cpu_set.Id);
-                }
-            }
-        }
-
-        offset += record_size;
-    }
-
-    ids
-}
-
-struct ProcessHandle(WinHandle);
-
-impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, AffinityError> {
-        let access_masks = [
-            PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-        ];
-
-        let mut last_open_error = 0;
-        for access in access_masks {
-            // SAFETY: process_id came from the current process snapshot, access is one of the two
-            // documented masks above, and no inherited handle is requested.
-            let handle = unsafe { OpenProcess(access, 0, process_id) };
-            if !handle.is_null() {
-                return Ok(Self(WinHandle::new(handle)));
-            }
-            last_open_error = last_error();
-        }
-
-        Err(open_process_error(process_id, last_open_error))
-    }
-
-    fn affinity_mask(&self) -> Result<(usize, usize), AffinityError> {
-        let mut process_affinity = 0;
-        let mut system_affinity = 0;
-        // SAFETY: self owns a live process handle and both affinity outputs are writable.
-        let ok = unsafe {
-            GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
-        };
-        if ok == 0 {
-            Err(AffinityError::Failed(format!(
-                "GetProcessAffinityMask failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok((process_affinity, system_affinity))
-        }
-    }
-
-    fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), AffinityError> {
-        let original = self.affinity_mask()?.0;
-        let recovery = crash_recovery::record_process_change(
-            self.0.raw(),
-            ProcessValue::Affinity(original as u64),
-            ProcessValue::Affinity(affinity_mask as u64),
-        )
-        .map_err(AffinityError::Failed)?;
-        // SAFETY: self owns a live process handle and affinity_mask was normalized against the
-        // system mask read from this process.
-        let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
-        if ok == 0 {
-            Err(AffinityError::Failed(format!(
-                "SetProcessAffinityMask failed with error {}.",
-                last_error()
-            )))
-        } else {
-            recovery.commit().map_err(AffinityError::Failed)?;
-            Ok(())
-        }
-    }
-
-    fn default_cpu_set_ids(&self) -> Result<Vec<u32>, AffinityError> {
-        let mut required_id_count = 0;
-        // SAFETY: A null id buffer with zero capacity requests the required count.
-        unsafe {
-            GetProcessDefaultCpuSets(self.0.raw(), null_mut(), 0, &mut required_id_count);
-        }
-        if required_id_count == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut ids = vec![0_u32; required_id_count as usize];
-        // SAFETY: ids provides required_id_count writable entries and the count out-parameter
-        // remains writable.
-        let ok = unsafe {
-            GetProcessDefaultCpuSets(
-                self.0.raw(),
-                ids.as_mut_ptr(),
-                ids.len() as u32,
-                &mut required_id_count,
-            )
-        };
-        if ok == 0 {
-            Err(AffinityError::Failed(format!(
-                "GetProcessDefaultCpuSets failed with error {}.",
-                last_error()
-            )))
-        } else {
-            ids.truncate(required_id_count as usize);
-            Ok(ids)
-        }
-    }
-
-    fn set_default_cpu_set_ids(&self, ids: &[u32]) -> Result<(), AffinityError> {
-        let recovery = crash_recovery::record_process_change(
-            self.0.raw(),
-            ProcessValue::CpuSets(self.default_cpu_set_ids()?),
-            ProcessValue::CpuSets(ids.to_vec()),
-        )
-        .map_err(AffinityError::Failed)?;
-        let (ptr, count) = if ids.is_empty() {
-            (null_mut(), 0)
-        } else {
-            (ids.as_ptr() as *mut u32, ids.len() as u32)
-        };
-        // SAFETY: self owns a live process handle; ptr is null for zero count or points to count
-        // initialized ids for the duration of the call.
-        let ok = unsafe { SetProcessDefaultCpuSets(self.0.raw(), ptr, count) };
-        if ok == 0 {
-            Err(AffinityError::Failed(format!(
-                "SetProcessDefaultCpuSets failed with error {}.",
-                last_error()
-            )))
-        } else {
-            recovery.commit().map_err(AffinityError::Failed)?;
-            Ok(())
-        }
-    }
-}
-
-fn open_process_error(process_id: u32, error: u32) -> AffinityError {
-    match error {
-        ERROR_ACCESS_DENIED => AffinityError::AccessDenied,
-        ERROR_INVALID_PARAMETER => AffinityError::ProcessExited,
-        _ => AffinityError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1367,14 +1026,6 @@ mod tests {
         }
 
         assert!(!is_builtin_excluded("chat.exe"));
-    }
-
-    #[test]
-    fn open_process_invalid_parameter_means_process_exited() {
-        assert!(matches!(
-            open_process_error(42, ERROR_INVALID_PARAMETER),
-            AffinityError::ProcessExited
-        ));
     }
 
     #[test]
@@ -1428,6 +1079,90 @@ mod tests {
     }
 
     #[test]
+    fn restorations_are_logged_against_the_actual_managed_owner() {
+        let mut log = ActionLog::new(8);
+
+        record_cpu_allocation_restorations(
+            vec![
+                ControlOwner::CpuSetsSoft,
+                ControlOwner::AdaptiveEngine,
+                ControlOwner::CpuSetsSoft,
+            ],
+            "settings changed",
+            &mut log,
+        );
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].feature, ActionLogFeature::CpuSetsSoft);
+        assert!(entries[0].reason.contains("2 CPU allocation properties"));
+        assert_eq!(entries[1].feature, ActionLogFeature::WorkloadEngine);
+        assert!(entries[1].reason.contains("1 CPU allocation property"));
+    }
+
+    #[test]
+    fn cross_owner_release_failure_is_not_charged_to_the_releasing_status() {
+        let mut manager =
+            CpuAllocationManager::with_action_log_feature(ActionLogFeature::WorkloadEngine);
+        let mut failures = CpuAllocationFailures::default();
+        let mut log = ActionLog::new(8);
+
+        manager.merge_release_summary(
+            CpuAllocationReleaseSummary {
+                restored_owners: Vec::new(),
+                failures: vec![
+                    crate::control::cpu_allocation::CpuAllocationReleaseFailure {
+                        owner: ControlOwner::CpuSetsSoft,
+                        process_id: 42,
+                        process_name: "worker.exe".to_owned(),
+                        property: "CPU Sets (Soft)",
+                        error: ProcessControlError::Failed(
+                            "injected restoration failure".to_owned(),
+                        ),
+                    },
+                ],
+            },
+            ControlOwner::AdaptiveEngine,
+            &mut log,
+            "settings changed",
+            &mut failures,
+        );
+
+        assert_eq!(failures.count, 0);
+        assert!(failures.last_error.is_none());
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].feature, ActionLogFeature::CpuSetsSoft);
+        assert_eq!(entries[0].result, ActionLogResult::Failed);
+    }
+
+    #[test]
+    fn pending_handoff_application_uses_the_effective_owner_log() {
+        let mut log = ActionLog::new(8);
+
+        record_cpu_allocation_reconciliation(
+            CpuAllocationReconciliationSummary {
+                applications: vec![
+                    crate::control::cpu_allocation::CpuAllocationReconciledApplication {
+                        owner: ControlOwner::CoreLimiter,
+                        process_id: 42,
+                        process_name: "worker.exe".to_owned(),
+                        request: CpuAllocationRequest::LimitLogicalProcessors { maximum: 2 },
+                    },
+                ],
+                ..Default::default()
+            },
+            &mut log,
+        );
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].feature, ActionLogFeature::CoreLimiter);
+        assert_eq!(entries[0].result, ActionLogResult::Applied);
+        assert!(entries[0].reason.contains("Core Limiter"));
+    }
+
+    #[test]
     fn first_cpu_allocation_suppression_reports_auto_exclusion_once() {
         let mut manager =
             CpuAllocationManager::with_action_log_feature(ActionLogFeature::CpuSetsSoft);
@@ -1458,46 +1193,10 @@ mod tests {
     }
 
     #[test]
-    fn target_mask_intersects_system_affinity() {
-        assert_eq!(target_affinity_mask(0b1110, 0b0110), Some(0b0110));
-        assert_eq!(target_affinity_mask(0b1000, 0b0111), None);
-        assert_eq!(target_affinity_mask(0, 0b0111), None);
-    }
-
-    #[test]
-    fn target_cpu_set_ids_empty_when_mask_selects_no_known_cpus() {
-        assert!(cpu_set_ids_for_mask_from_bytes(&[], 0b11).is_empty());
-    }
-
-    #[test]
     fn built_in_exclusions_include_system_processes() {
         assert!(is_builtin_excluded("csrss.exe"));
         assert!(is_builtin_excluded("winlogon.exe"));
         assert!(!is_builtin_excluded("browser.exe"));
-    }
-
-    #[test]
-    fn release_processes_skips_restore_when_process_identity_is_unknown() {
-        let mut manager = CpuAllocationManager::default();
-        manager.adjusted.insert(
-            0,
-            AdjustedProcess {
-                process_name: "exited.exe".to_owned(),
-                executable_path: r"C:\Apps\exited.exe".to_owned(),
-                creation_time: 0,
-                adjustment: AffinityAdjustment::HardAffinity {
-                    previous_affinity: 0b1111,
-                    applied_affinity: 0b0001,
-                },
-            },
-        );
-        let mut log = ActionLog::new(8);
-
-        let failed = manager.release_processes(&[0], &mut log, "test");
-
-        assert_eq!(failed, 0);
-        assert!(log.entries().is_empty());
-        assert!(manager.adjusted.is_empty());
     }
 
     #[test]

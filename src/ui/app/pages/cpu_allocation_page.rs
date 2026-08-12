@@ -303,8 +303,10 @@ impl WinderustApp {
     ) -> AnyElement {
         let rules = cpu_allocation_rules(&self.settings, kind);
         let status = match kind {
-            CpuAllocationPage::CpuSetsSoft => &self.cpu_sets_soft_status,
-            CpuAllocationPage::ProcessorAffinityHard => &self.processor_affinity_hard_status,
+            CpuAllocationPage::CpuSetsSoft => &self.feature_status.cpu_sets_soft,
+            CpuAllocationPage::ProcessorAffinityHard => {
+                &self.feature_status.processor_affinity_hard
+            }
         };
         let processors = cpu_allocation::logical_processors();
         let key = kind.key();

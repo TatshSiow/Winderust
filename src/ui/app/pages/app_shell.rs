@@ -158,7 +158,7 @@ impl WinderustApp {
                 continue;
             }
             let page = section.landing_page;
-            let selected = self.page.section_landing_page() == page;
+            let selected = self.shell.page.section_landing_page() == page;
             let target = page;
             let settings = &self.settings;
             let enabled_feature_count = if settings.general.show_enabled_feature_counts_in_sidebar {
@@ -218,15 +218,18 @@ impl WinderustApp {
 
     fn toggle_navigation_collapsed(&mut self, cx: &mut Context<Self>) {
         let collapsed = !self.settings.general.navigation_collapsed;
-        let mut persisted = self.saved_settings.clone();
-        persisted.general.navigation_collapsed = collapsed;
-        match config::storage::save(&persisted) {
-            Ok(()) => {
-                self.settings.general.navigation_collapsed = collapsed;
-                self.saved_settings.general.navigation_collapsed = collapsed;
+        let patch = NavigationCollapsedPatch {
+            base_revision: self.settings.base_revision(),
+            navigation_collapsed: collapsed,
+        };
+        match self.settings.apply_navigation_collapsed_patch(patch) {
+            Ok(changed) => {
+                if changed {
+                    self.sync_runtime_settings();
+                }
                 begin_control_motion("navigation-pane", !collapsed, cx);
             }
-            Err(error) => self.status_message = error,
+            Err(error) => self.status_message = error.to_string(),
         }
         cx.notify();
     }
@@ -284,7 +287,7 @@ impl WinderustApp {
                             .label(t!("common.save").to_string())
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.sync_input_values(cx);
-                                let had_unsaved_changes = app.settings != app.saved_settings;
+                                let had_unsaved_changes = app.settings.has_unsaved_changes();
                                 if app.save_settings() && had_unsaved_changes {
                                     app.start_unsaved_popup_vanish();
                                 }
@@ -320,7 +323,7 @@ impl WinderustApp {
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let version = self.latest_version.clone().unwrap_or_default();
+        let version = self.update.latest_version.clone().unwrap_or_default();
         let focus_handle = self.about_updates_focus_handle.clone();
         let scroll_anchor = self.about_updates_scroll_anchor.clone();
         let modal = v_flex()
@@ -393,7 +396,7 @@ impl WinderustApp {
             }))
             .child(modal);
 
-        if self.startup_update_modal_closing {
+        if self.update.startup_modal_closing {
             with_optional_motion(
                 overlay,
                 "startup-update-modal-exit",
@@ -492,7 +495,7 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match self.page {
+        match self.shell.page {
             Page::Home => self.render_home_page(cx),
             Page::PowerPlanControl => self.render_section_landing_page(Page::PowerPlanControl, cx),
             Page::WinderustFeatures => {

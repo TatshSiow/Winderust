@@ -165,8 +165,10 @@ impl WinderustApp {
                     self.settings.advanced.show_advanced_controls,
                     cx.listener(|app, checked, _, cx| {
                         app.settings.advanced.show_advanced_controls = *checked;
-                        if !*checked && app.page.section_landing_page() == Page::AdvancedControls {
-                            app.page = Page::ExperimentalFeatures;
+                        if !*checked
+                            && app.shell.page.section_landing_page() == Page::AdvancedControls
+                        {
+                            app.shell.replace_page(Page::ExperimentalFeatures);
                         }
                         cx.notify();
                     }),

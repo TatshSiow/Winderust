@@ -5,6 +5,7 @@ use std::{
     os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
     time::Instant,
 };
 
@@ -33,8 +34,8 @@ use windows_sys::Win32::{
         Threading::{
             GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
             IsProcessCritical, OpenProcess, OpenProcessToken, ProcessPowerThrottling,
-            ProcessProtectionLevelInfo, QueryFullProcessImageNameW, TerminateProcess,
-            IDLE_PRIORITY_CLASS, PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ProcessProtectionLevelInfo, QueryFullProcessImageNameW, IDLE_PRIORITY_CLASS,
+            PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
             PROCESS_PROTECTION_LEVEL_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
             PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROTECTION_LEVEL_NONE,
@@ -110,6 +111,7 @@ pub const EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub id: u32,
+    pub creation_time: Option<u64>,
     pub parent_id: Option<u32>,
     pub session_id: Option<u32>,
     pub user_name: Option<String>,
@@ -221,6 +223,7 @@ pub struct ProcessActionTarget {
 pub(crate) enum ProcessActionAccess {
     SafetyOnly,
     SetInformation,
+    TrimWorkingSet,
     Terminate,
     AssignToJob,
 }
@@ -230,6 +233,7 @@ impl ProcessActionAccess {
         match self {
             Self::SafetyOnly => 0,
             Self::SetInformation => PROCESS_SET_INFORMATION,
+            Self::TrimWorkingSet => PROCESS_SET_QUOTA,
             Self::Terminate => PROCESS_TERMINATE,
             Self::AssignToJob => PROCESS_SET_QUOTA | PROCESS_TERMINATE,
         }
@@ -277,6 +281,27 @@ pub fn capture_process_action_target(
     expected_executable_path: &Path,
     allow_cross_session: bool,
 ) -> Result<ProcessActionTarget, ProcessActionTargetError> {
+    capture_process_action_target_inner(
+        process_id,
+        expected_executable_path,
+        allow_cross_session,
+        true,
+    )
+}
+
+pub fn capture_process_action_target_for_owned_release(
+    process_id: u32,
+    expected_executable_path: &Path,
+) -> Result<ProcessActionTarget, ProcessActionTargetError> {
+    capture_process_action_target_inner(process_id, expected_executable_path, true, false)
+}
+
+fn capture_process_action_target_inner(
+    process_id: u32,
+    expected_executable_path: &Path,
+    allow_cross_session: bool,
+    enforce_acquisition_safety: bool,
+) -> Result<ProcessActionTarget, ProcessActionTargetError> {
     // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
     let current_process_id = unsafe { GetCurrentProcessId() };
     if process_id == 0 || process_id == current_process_id {
@@ -304,7 +329,7 @@ pub fn capture_process_action_target(
         }));
     }
     let process = WinHandle::new(handle);
-    if process_critical_from_handle(&process) != Some(false) {
+    if enforce_acquisition_safety && process_critical_from_handle(&process) != Some(false) {
         return Err(ProcessActionTargetError::ProtectedProcess);
     }
     let executable_path = process_image_path_from_handle(&process)
@@ -332,63 +357,88 @@ pub fn capture_process_action_target(
     })
 }
 
-pub fn terminate_process(target: &ProcessActionTarget) -> Result<(), String> {
-    ensure_process_action_target_access(target, ProcessActionAccess::Terminate)?;
-    let process = open_verified_action_process(target, PROCESS_TERMINATE)?;
-    // SAFETY: process is a verified live handle opened with PROCESS_TERMINATE.
-    if unsafe { TerminateProcess(process.raw(), 1) } == 0 {
-        // SAFETY: GetLastError has no caller requirements and is read immediately after the
-        // failing TerminateProcess call on this thread.
-        let error = unsafe { GetLastError() };
-        Err(format!("TerminateProcess failed with error {error}."))
-    } else {
-        Ok(())
-    }
-}
-
-pub fn terminate_process_trees(
-    roots: &[ProcessActionTarget],
+pub fn process_tree_action_targets(
+    captured_roots: &[ProcessActionTarget],
     processes: &[ProcessInfo],
-    allow_cross_session: bool,
-) -> Result<usize, String> {
-    if roots.is_empty() {
+) -> Result<Vec<ProcessActionTarget>, String> {
+    if captured_roots.is_empty() {
         return Err("No process targets were available.".to_owned());
     }
-    let process_ids = process_tree_ids_postorder(
-        &roots.iter().map(|root| root.id).collect::<Vec<_>>(),
-        processes,
-    );
+
+    for captured_root in captured_roots {
+        let current_root = processes
+            .iter()
+            .find(|process| process.id == captured_root.id)
+            .ok_or_else(|| {
+                "A selected process exited before its tree could be stopped.".to_owned()
+            })?;
+        let current_root = process_action_target_from_snapshot(current_root)?;
+        if current_root.creation_time != captured_root.creation_time
+            || !same_process_name(&current_root.name, &captured_root.name)
+            || !same_executable_path(
+                &current_root.executable_path,
+                &captured_root.executable_path,
+            )
+        {
+            return Err(
+                "A selected process instance changed before its tree could be stopped.".to_owned(),
+            );
+        }
+    }
+
+    let root_ids = captured_roots
+        .iter()
+        .map(|target| target.id)
+        .collect::<Vec<_>>();
+    let process_ids = process_tree_ids_postorder(&root_ids, processes)?;
 
     let mut targets = Vec::with_capacity(process_ids.len());
     for process_id in process_ids {
-        if let Some(root) = roots.iter().find(|root| root.id == process_id) {
-            targets.push(root.clone());
-            continue;
-        }
         let process = processes
             .iter()
             .find(|process| process.id == process_id)
-            .ok_or_else(|| "A child process exited before it could be stopped.".to_owned())?;
-        let path = process
-            .image_path
-            .as_deref()
-            .ok_or_else(|| "A child process could not be identified safely.".to_owned())?;
-        targets.push(
-            capture_process_action_target(process_id, path, allow_cross_session)
-                .map_err(|error| error.to_string())?,
-        );
+            .ok_or_else(|| "A process exited before its tree could be stopped.".to_owned())?;
+        targets.push(process_action_target_from_snapshot(process)?);
     }
-    let count = targets.len();
-    for target in &targets {
-        ensure_process_action_target_access(target, ProcessActionAccess::Terminate)?;
-    }
-    for target in targets {
-        terminate_process(&target)?;
-    }
-    Ok(count)
+    Ok(targets)
 }
 
-fn process_tree_ids_postorder(root_ids: &[u32], processes: &[ProcessInfo]) -> Vec<u32> {
+fn process_action_target_from_snapshot(
+    process: &ProcessInfo,
+) -> Result<ProcessActionTarget, String> {
+    let executable_path = process
+        .image_path
+        .clone()
+        .ok_or_else(|| "A process could not be identified safely.".to_owned())?;
+    if !executable_path.is_absolute() {
+        return Err("A process could not be identified safely.".to_owned());
+    }
+    let creation_time = process
+        .creation_time
+        .ok_or_else(|| "A process instance could not be identified safely.".to_owned())?;
+    let name = executable_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "A process could not be identified safely.".to_owned())?
+        .to_ascii_lowercase();
+    if !same_process_name(&name, &process.name) {
+        return Err("A process instance changed before it could be stopped.".to_owned());
+    }
+    Ok(ProcessActionTarget {
+        id: process.id,
+        name,
+        executable_path,
+        creation_time,
+        session_id: process.session_id,
+        is_service_account: process.is_service_account,
+    })
+}
+
+fn process_tree_ids_postorder(
+    root_ids: &[u32],
+    processes: &[ProcessInfo],
+) -> Result<Vec<u32>, String> {
     let mut selected = BTreeSet::new();
     let mut ordered = Vec::new();
     let mut pending = root_ids
@@ -404,35 +454,69 @@ fn process_tree_ids_postorder(root_ids: &[u32], processes: &[ProcessInfo]) -> Ve
         if !selected.insert(process_id) {
             continue;
         }
+        let parent_creation_time = processes
+            .iter()
+            .find(|process| process.id == process_id)
+            .ok_or_else(|| "A process exited before its tree could be stopped.".to_owned())?
+            .creation_time
+            .ok_or_else(|| {
+                "A process tree relationship could not be verified safely.".to_owned()
+            })?;
         pending.push((process_id, true));
-        pending.extend(
-            processes
-                .iter()
-                .filter(|process| process.parent_id == Some(process_id))
-                .map(|process| (process.id, false)),
-        );
+        for child in processes
+            .iter()
+            .filter(|process| process.parent_id == Some(process_id))
+        {
+            let child_creation_time = child.creation_time.ok_or_else(|| {
+                "A process tree relationship could not be verified safely.".to_owned()
+            })?;
+            if child_creation_time >= parent_creation_time {
+                pending.push((child.id, false));
+            }
+        }
     }
-    ordered
+    Ok(ordered)
 }
 
 pub(crate) fn ensure_process_action_target_access(
     target: &ProcessActionTarget,
     access: ProcessActionAccess,
 ) -> Result<(), String> {
-    if contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &target.name) {
-        return Err("Built-in Windows processes cannot be modified.".to_owned());
-    }
     let process = open_process_for_query(target.id)
         .ok_or_else(|| "The process is no longer accessible.".to_owned())?;
-    if process_critical_from_handle(&process) != Some(false) {
-        return Err("Critical or unverifiable processes cannot be modified.".to_owned());
-    }
-    if process_protection_from_handle(&process) != Some(false) {
-        return Err("Windows protected processes cannot be modified.".to_owned());
-    }
+    ensure_process_action_target_safety_on_handle(target, &process)?;
     let desired_access = access.desired_access();
     if desired_access != 0 && !process_has_access(target.id, desired_access) {
         return Err("Windows denied process control access.".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_process_action_target_access_on_handle(
+    target: &ProcessActionTarget,
+    access: ProcessActionAccess,
+    process: &WinHandle,
+) -> Result<(), String> {
+    ensure_process_action_target_safety_on_handle(target, process)?;
+    let desired_access = access.desired_access();
+    if desired_access != 0 && process_handle_has_access(process, desired_access) != Some(true) {
+        return Err("Windows denied process control access.".to_owned());
+    }
+    Ok(())
+}
+
+fn ensure_process_action_target_safety_on_handle(
+    target: &ProcessActionTarget,
+    process: &WinHandle,
+) -> Result<(), String> {
+    if contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &target.name) {
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
+    }
+    if process_critical_from_handle(process) != Some(false) {
+        return Err("Critical or unverifiable processes cannot be modified.".to_owned());
+    }
+    if process_protection_from_handle(process) != Some(false) {
+        return Err("Windows protected processes cannot be modified.".to_owned());
     }
     Ok(())
 }
@@ -474,27 +558,6 @@ fn windows_explorer_path() -> Result<PathBuf, String> {
     }
 }
 
-fn open_verified_action_process(
-    target: &ProcessActionTarget,
-    access: u32,
-) -> Result<WinHandle, String> {
-    // SAFETY: target was captured from the current-session process list and the handle is not inherited.
-    let handle = unsafe { OpenProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, 0, target.id) };
-    if handle.is_null() {
-        // SAFETY: GetLastError has no caller requirements and is read immediately after the
-        // failing OpenProcess call on this thread.
-        let error = unsafe { GetLastError() };
-        return Err(format!("OpenProcess failed with error {error}."));
-    }
-    let handle = WinHandle::new(handle);
-    if handle.process_creation_time() != Some(target.creation_time)
-        || !process_handle_matches_executable_path(&handle, &target.executable_path)
-    {
-        return Err("The selected process instance has changed.".to_owned());
-    }
-    Ok(handle)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessCandidateInfo {
     pub name: String,
@@ -534,6 +597,8 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
 }
 
 pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
+    #[cfg(feature = "architecture-diagnostics")]
+    crate::architecture_diagnostics::record_process_snapshot_scan();
     let snapshot = process_snapshot()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -547,6 +612,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
         if let Some(name) = process_name_from_entry(&entry) {
             processes.push(ProcessInfo {
                 id: entry.th32ProcessID,
+                creation_time: None,
                 parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
                 session_id: process_session_id(entry.th32ProcessID),
                 user_name: None,
@@ -567,6 +633,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
         let Some(handle) = open_process_for_query(process.id) else {
             continue;
         };
+        process.creation_time = handle.process_creation_time();
         process.is_critical = process_critical_from_handle(&handle);
         process.can_set_information = process_protection_from_handle(&handle) == Some(false)
             && process_has_access(process.id, PROCESS_SET_INFORMATION);
@@ -576,15 +643,22 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
 
 pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
     let mut processes = list_processes()?;
-    for process in &mut processes {
+    enrich_process_paths(&mut processes);
+    Ok(processes)
+}
+
+pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
+    #[cfg(feature = "architecture-diagnostics")]
+    crate::architecture_diagnostics::record_process_path_enrichment_scan();
+    for process in processes {
         let Some(handle) = open_process_for_query(process.id) else {
             continue;
         };
         process.image_path = process_image_path_from_handle(&handle);
+        process.creation_time = handle.process_creation_time();
         (process.user_name, process.is_service_account) = process_identity_from_handle(&handle);
         process.is_critical = process_critical_from_handle(&handle);
     }
-    Ok(processes)
 }
 
 pub fn for_each_process_id(mut visit: impl FnMut(u32)) -> Result<(), String> {
@@ -653,7 +727,8 @@ pub fn should_ignore_foreground_process(
 
 #[derive(Debug, Default)]
 pub struct ProtectedProcesses {
-    process_ids: BTreeSet<u32>,
+    process_ids: Arc<BTreeSet<u32>>,
+    foreground_process_id: Option<u32>,
     executable_paths: Vec<PathBuf>,
 }
 
@@ -662,24 +737,28 @@ impl ProtectedProcesses {
         processes: &[ProcessInfo],
         protect_foreground_app: bool,
         foreground_process_id: Option<u32>,
-        mut visible_window_process_ids: BTreeSet<u32>,
+        visible_window_process_ids: impl Into<Arc<BTreeSet<u32>>>,
     ) -> Self {
-        if let Some(process_id) = foreground_process_id.filter(|_| protect_foreground_app) {
-            visible_window_process_ids.insert(process_id);
-        }
+        let visible_window_process_ids = visible_window_process_ids.into();
+        let foreground_process_id = foreground_process_id.filter(|_| protect_foreground_app);
         let executable_paths = processes
             .iter()
-            .filter(|process| visible_window_process_ids.contains(&process.id))
+            .filter(|process| {
+                visible_window_process_ids.contains(&process.id)
+                    || foreground_process_id == Some(process.id)
+            })
             .filter_map(process_executable_path)
             .collect();
         Self {
             process_ids: visible_window_process_ids,
+            foreground_process_id,
             executable_paths,
         }
     }
 
     pub fn contains(&self, process_id: u32, executable_path: &Path) -> bool {
         self.process_ids.contains(&process_id)
+            || self.foreground_process_id == Some(process_id)
             || self
                 .executable_paths
                 .iter()
@@ -912,12 +991,7 @@ fn process_user_name_from_sid(sid: PSID) -> Option<String> {
     (name_len != 0).then(|| String::from_utf16_lossy(&name[..name_len]))
 }
 
-pub(crate) fn process_runs_as_service_account(process_id: u32) -> Option<bool> {
-    let process = open_process_for_query(process_id)?;
-    process_runs_as_service_account_from_handle(&process)
-}
-
-fn process_runs_as_service_account_from_handle(process: &WinHandle) -> Option<bool> {
+pub(crate) fn process_runs_as_service_account_from_handle(process: &WinHandle) -> Option<bool> {
     let token_buffer = process_token_user_buffer(process)?;
     // SAFETY: successful TokenUser output starts with a valid aligned TOKEN_USER whose SID remains
     // valid while token_buffer is alive.
@@ -1054,6 +1128,7 @@ mod tests {
     fn process_tree_postorder_covers_multiple_roots_once_and_children_first() {
         let process = |id, parent_id| ProcessInfo {
             id,
+            creation_time: Some(u64::from(id)),
             parent_id,
             session_id: None,
             user_name: None,
@@ -1069,10 +1144,90 @@ mod tests {
             process(20, None),
             process(21, Some(20)),
         ];
+        let captured_roots = [10, 11, 20]
+            .into_iter()
+            .map(|process_id| {
+                process_action_target_from_snapshot(
+                    processes
+                        .iter()
+                        .find(|process| process.id == process_id)
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
 
         assert_eq!(
-            process_tree_ids_postorder(&[10, 11, 20], &processes),
+            process_tree_ids_postorder(&[10, 11, 20], &processes).unwrap(),
             vec![11, 10, 21, 20]
+        );
+        let targets = process_tree_action_targets(&captured_roots, &processes).unwrap();
+        assert_eq!(
+            targets.iter().map(|target| target.id).collect::<Vec<_>>(),
+            vec![11, 10, 21, 20]
+        );
+        assert_eq!(targets[0].creation_time, 11);
+    }
+
+    #[test]
+    fn process_tree_rejects_a_reused_root_instance() {
+        let process = |creation_time, path: &str| ProcessInfo {
+            id: 10,
+            creation_time: Some(creation_time),
+            parent_id: None,
+            session_id: Some(1),
+            user_name: None,
+            is_service_account: Some(false),
+            is_critical: Some(false),
+            can_set_information: true,
+            name: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            image_path: Some(PathBuf::from(path)),
+        };
+        let captured =
+            process_action_target_from_snapshot(&process(100, r"C:\Apps\original.exe")).unwrap();
+        let current = [process(200, r"C:\Apps\replacement.exe")];
+
+        let error = process_tree_action_targets(&[captured], &current).unwrap_err();
+
+        assert!(error.contains("selected process instance changed"));
+    }
+
+    #[test]
+    fn process_tree_excludes_children_older_than_a_reused_parent_pid() {
+        let process = |id, parent_id, creation_time| ProcessInfo {
+            id,
+            creation_time: Some(creation_time),
+            parent_id,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: format!("process-{id}.exe"),
+            image_path: Some(PathBuf::from(format!(r"C:\Apps\process-{id}.exe"))),
+        };
+        let processes = [
+            process(10, None, 100),
+            process(11, Some(10), 50),
+            process(12, Some(10), 100),
+        ];
+        let captured_root = process_action_target_from_snapshot(&processes[0]).unwrap();
+
+        assert_eq!(
+            process_tree_ids_postorder(&[10], &processes).unwrap(),
+            vec![12, 10]
+        );
+        assert_eq!(
+            process_tree_action_targets(&[captured_root], &processes)
+                .unwrap()
+                .into_iter()
+                .map(|target| target.id)
+                .collect::<Vec<_>>(),
+            vec![12, 10]
         );
     }
 
@@ -1080,6 +1235,7 @@ mod tests {
     fn protected_processes_match_foreground_and_visible_apps_by_pid_or_path() {
         let process = |id, path: &str| ProcessInfo {
             id,
+            creation_time: Some(u64::from(id)),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -1115,6 +1271,19 @@ mod tests {
             .expect("current process token resolves");
 
         assert!(!user_name.is_empty());
+    }
+
+    #[test]
+    fn process_snapshot_captures_the_current_process_creation_time() {
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let process_id = unsafe { GetCurrentProcessId() };
+        let processes = list_processes().expect("process snapshot is available");
+        let current = processes
+            .iter()
+            .find(|process| process.id == process_id)
+            .expect("current process is present in its own snapshot");
+
+        assert!(current.creation_time.is_some());
     }
 
     #[test]
@@ -1162,6 +1331,10 @@ mod tests {
             PROCESS_SET_INFORMATION
         );
         assert_eq!(
+            ProcessActionAccess::TrimWorkingSet.desired_access(),
+            PROCESS_SET_QUOTA
+        );
+        assert_eq!(
             ProcessActionAccess::Terminate.desired_access(),
             PROCESS_TERMINATE
         );
@@ -1199,6 +1372,7 @@ mod tests {
     fn process_candidates_exclude_critical_and_unverifiable_processes() {
         let process = ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: Some(1),
             user_name: Some("User".to_owned()),
@@ -1262,6 +1436,7 @@ mod tests {
     fn executable_path_matching_distinguishes_same_named_binaries() {
         let process = ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,

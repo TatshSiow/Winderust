@@ -157,8 +157,38 @@ impl WinderustApp {
                     .label(t!("memory_trim.trim_now").to_string())
                     .disabled(!enabled)
                     .on_click(cx.listener(|app, _, _, cx| {
-                        app.background_automation.request_memory_trim_now();
+                        let receiver = match app.runtime_handle.request_memory_trim_now() {
+                            Ok(receiver) => receiver,
+                            Err(error) => {
+                                app.status_message = error.to_string();
+                                cx.notify();
+                                return;
+                            }
+                        };
                         app.status_message = t!("memory_trim.trim_now_requested").to_string();
+                        let result = cx.background_executor().spawn(async move {
+                            receiver
+                                .recv()
+                                .map_err(|_| {
+                                    "The Memory Trim worker stopped before replying.".to_owned()
+                                })?
+                                .map_err(|error| error.to_string())
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let result = result.await;
+                            let _ = this.update(cx, |app, cx| {
+                                match result {
+                                    Ok(status) => {
+                                        app.status_message =
+                                            localized_runtime_status(&status.message);
+                                        Arc::make_mut(&mut app.feature_status).memory_trim = status;
+                                    }
+                                    Err(error) => app.status_message = error,
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .detach();
                         cx.notify();
                     }))
                     .into_any_element(),
@@ -166,38 +196,52 @@ impl WinderustApp {
                 vec![stat_grid(vec![
                     (
                         t!("memory_trim.status").to_string(),
-                        localized_runtime_status(&self.memory_trim_status.message),
+                        localized_runtime_status(&self.feature_status.memory_trim.message),
                     ),
                     (
                         t!("memory_trim.memory_load").to_string(),
-                        self.memory_trim_status
+                        self.feature_status
+                            .memory_trim
                             .memory_load_percent
                             .map(|percent| format!("{percent}%"))
                             .unwrap_or_else(|| t!("common.unknown").to_string()),
                     ),
                     (
                         t!("memory_trim.trimmed_processes").to_string(),
-                        self.memory_trim_status.trimmed_processes.to_string(),
+                        self.feature_status
+                            .memory_trim
+                            .trimmed_processes
+                            .to_string(),
                     ),
                     (
                         t!("memory_trim.candidate_processes").to_string(),
-                        self.memory_trim_status.candidate_processes.to_string(),
+                        self.feature_status
+                            .memory_trim
+                            .candidate_processes
+                            .to_string(),
                     ),
                     (
                         t!("memory_trim.scanned_processes").to_string(),
-                        self.memory_trim_status.scanned_processes.to_string(),
+                        self.feature_status
+                            .memory_trim
+                            .scanned_processes
+                            .to_string(),
                     ),
                     (
                         t!("memory_trim.skipped_processes").to_string(),
-                        self.memory_trim_status.skipped_processes.to_string(),
+                        self.feature_status
+                            .memory_trim
+                            .skipped_processes
+                            .to_string(),
                     ),
                     (
                         t!("memory_trim.failed_actions").to_string(),
-                        self.memory_trim_status.failed_processes.to_string(),
+                        self.feature_status.memory_trim.failed_processes.to_string(),
                     ),
                     (
                         t!("common.last_failure").to_string(),
-                        self.memory_trim_status
+                        self.feature_status
+                            .memory_trim
                             .last_error
                             .clone()
                             .unwrap_or_else(|| t!("common.none").to_string()),

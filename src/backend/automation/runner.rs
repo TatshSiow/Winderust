@@ -1,5 +1,6 @@
 use super::*;
 use crate::action_log::ActionLogFeature;
+use crate::runtime::observations::CycleObservations;
 
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine.processor_policy_enabled
@@ -46,23 +47,11 @@ pub(super) fn adaptive_processor_demand(
     demand
 }
 
-pub(super) struct ActiveAdaptivePowerPlan {
-    original_guid: String,
-    plan_guid: String,
-    profile: AdaptivePowerProfile,
-    baseline: ProcessorPowerValues,
-    has_efficiency_cores: bool,
-    lower_demand_since: Option<Instant>,
-}
-
 #[derive(Default)]
-pub(super) struct HiddenAutomationRunner {
+pub(super) struct RuntimeCore {
+    shutdown_started: bool,
     last_settings: Option<Settings>,
-    current_guid: Option<String>,
-    original_power_plan_guid: Option<String>,
-    next_active_plan_refresh: Option<Instant>,
-    last_switch_attempt: Option<(String, Instant)>,
-    switch_failure_suppression: ExecutionFailureTracker,
+    power_plan_controller: PowerPlanController,
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
@@ -71,16 +60,17 @@ pub(super) struct HiddenAutomationRunner {
     adaptive_processor_topology: Vec<LogicalProcessorInfo>,
     adaptive_io_usage: IoUsageSnapshot,
     next_adaptive_io_refresh: Option<Instant>,
-    adaptive_power_plan: Option<ActiveAdaptivePowerPlan>,
     adaptive_foreground_process_id: Option<u32>,
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     background_efficiency_manager: BackgroundEfficiencyManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
+    pub(super) app_suspension_controller: SuspensionController,
     last_app_suspension_shell_user_intent: Option<Instant>,
     cpu_sets_soft_manager: CpuAllocationManager,
     processor_affinity_hard_manager: CpuAllocationManager,
+    cpu_allocation_coordinator: CpuAllocationCoordinator,
     core_limiter_manager: CoreLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
@@ -88,41 +78,169 @@ pub(super) struct HiddenAutomationRunner {
     launch_boost_active: bool,
     workload_engine_active: bool,
     process_priority_manager: ProcessPriorityManager,
+    priority_efficiency_controller: PriorityEfficiencyController,
     thread_priority_manager: ThreadPriorityManager,
+    thread_priority_controller: ThreadPriorityController,
     dynamic_priority_boost_manager: DynamicPriorityBoostManager,
+    dynamic_priority_boost_controller: DynamicPriorityBoostController,
     io_priority_manager: IoPriorityManager,
+    io_priority_controller: IoPriorityController,
     gpu_priority_manager: GpuPriorityManager,
+    gpu_priority_controller: GpuPriorityController,
     memory_priority_manager: MemoryPriorityManager,
+    memory_priority_controller: MemoryPriorityController,
     memory_trim_manager: MemoryTrimManager,
+    memory_trim_controller: MemoryTrimController,
+    process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
+    timer_resolution_controller: TimerResolutionController,
     pub(super) known_process_ids: BTreeSet<u32>,
     published_action_log_sequence: Option<u64>,
 }
 
-impl HiddenAutomationRunner {
-    pub(super) fn shutdown(&mut self) {
+#[derive(Default)]
+pub(super) struct ProcessControlCommandStatuses {
+    pub(super) memory_trim: Option<MemoryTrimSnapshot>,
+    pub(super) app_suspension: Option<AppSuspensionSnapshot>,
+}
+
+impl RuntimeCore {
+    pub(super) fn shutdown(&mut self) -> Result<(), String> {
+        if self.shutdown_started {
+            return Ok(());
+        }
+        self.shutdown_started = true;
+
+        let mut errors = Vec::<String>::new();
         let mut settings = self.last_settings.clone().unwrap_or_default();
         settings.general.enabled = false;
+        let mut observations = CycleObservations::default();
 
         // Restore in the reverse order used by the automation loop. Several features can touch
         // the same process state, so relying on field drop order can restore an intermediate
         // Winderust-managed value instead of the value that preceded Winderust.
-        self.run_timer_resolution_update(&settings);
-        self.run_by_running_app_update(&settings);
-        self.run_core_limiter_update(&settings);
-        self.run_processor_affinity_hard_update(&settings);
-        self.run_cpu_sets_soft_update(&settings);
-        self.run_app_suspension_update(&settings, &[], &[]);
-        self.run_memory_priority_update(&settings);
-        self.run_gpu_priority_update(&settings);
-        self.run_dynamic_priority_boost_update(&settings);
-        self.run_thread_priority_update(&settings);
-        self.run_process_priority_update(&settings);
-        self.run_io_priority_update(&settings);
-        self.run_workload_engine_update(&settings);
-        self.run_background_efficiency_update(&settings);
-        let _ = self.restore_adaptive_power_plan();
-        self.restore_original_power_plan();
+        collect_restore_error(
+            &mut errors,
+            "Timer Resolution",
+            self.run_timer_resolution_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.timer_resolution_controller.shutdown() {
+            errors.push(format!("Timer Resolution restoration failed: {error}"));
+        }
+        self.run_by_running_app_update(&settings, &mut observations);
+        collect_restore_error(
+            &mut errors,
+            "Core Limiter",
+            self.run_core_limiter_update(&settings, &mut observations)
+                .last_error,
+        );
+        collect_restore_error(
+            &mut errors,
+            "Processor Affinity (Hard)",
+            self.run_processor_affinity_hard_update(&settings, &mut observations)
+                .last_error,
+        );
+        collect_restore_error(
+            &mut errors,
+            "CPU Sets (Soft)",
+            self.run_cpu_sets_soft_update(&settings, &mut observations)
+                .last_error,
+        );
+        collect_restore_error(
+            &mut errors,
+            "App Suspension",
+            self.run_app_suspension_update(&settings, &[], &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self
+            .app_suspension_manager
+            .shutdown(&mut self.app_suspension_controller, &mut self.action_log)
+        {
+            errors.push(format!("App Suspension restoration failed: {error}"));
+        }
+        collect_restore_error(
+            &mut errors,
+            "Memory Priority",
+            self.run_memory_priority_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.memory_priority_controller.shutdown() {
+            errors.push(format!("Memory Priority restoration failed: {error}"));
+        }
+        collect_restore_error(
+            &mut errors,
+            "GPU Priority",
+            self.run_gpu_priority_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.gpu_priority_controller.shutdown() {
+            errors.push(format!("GPU Priority restoration failed: {error}"));
+        }
+        collect_restore_error(
+            &mut errors,
+            "Dynamic Priority Boost",
+            self.run_dynamic_priority_boost_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.dynamic_priority_boost_controller.shutdown() {
+            errors.push(format!(
+                "Dynamic Priority Boost restoration failed: {error}"
+            ));
+        }
+        collect_restore_error(
+            &mut errors,
+            "Thread Priority",
+            self.run_thread_priority_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.thread_priority_controller.shutdown() {
+            errors.push(format!("Thread Priority restoration failed: {error}"));
+        }
+        collect_restore_error(
+            &mut errors,
+            "Process Priority",
+            self.run_process_priority_update(&settings, &mut observations)
+                .last_error,
+        );
+        collect_restore_error(
+            &mut errors,
+            "I/O Priority",
+            self.run_io_priority_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.io_priority_controller.shutdown() {
+            errors.push(format!("I/O Priority restoration failed: {error}"));
+        }
+        collect_restore_error(
+            &mut errors,
+            "Workload Engine",
+            self.run_workload_engine_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
+            errors.push(format!("CPU allocation restoration failed: {error}"));
+        }
+        collect_restore_error(
+            &mut errors,
+            "Background Efficiency",
+            self.run_background_efficiency_update(&settings, &mut observations)
+                .last_error,
+        );
+        if let Err(error) = self.priority_efficiency_controller.shutdown() {
+            errors.push(format!(
+                "Process Priority and Efficiency restoration failed: {error}"
+            ));
+        }
+        if let Err(error) = self.power_plan_controller.shutdown(Instant::now()) {
+            errors.push(error);
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     pub(super) fn note_settings(&mut self, settings: &Settings) -> bool {
@@ -134,17 +252,20 @@ impl HiddenAutomationRunner {
         let changed = self.last_settings.as_ref() != Some(settings);
         if changed {
             self.last_settings = Some(settings.clone());
-            self.switch_failure_suppression.clear();
+            self.power_plan_controller.clear_failures();
         }
         changed
     }
 
-    pub(super) fn detect_process_appearance(&mut self) -> bool {
-        let Ok(processes) = list_processes() else {
+    pub(super) fn detect_process_appearance(
+        &mut self,
+        observations: &mut CycleObservations,
+    ) -> bool {
+        let Ok(processes) = observations.processes() else {
             return false;
         };
         let current_ids = processes
-            .into_iter()
+            .iter()
             .filter_map(|process| (process.id != 0).then_some(process.id))
             .collect::<BTreeSet<_>>();
 
@@ -189,15 +310,17 @@ impl HiddenAutomationRunner {
     pub(super) fn run_background_efficiency_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> BackgroundEfficiencySnapshot {
-        let foreground_process_id = foreground_process_id();
+        let foreground_process_id = observations.foreground_process_id();
         let background_efficiency = settings.background_efficiency.clone();
         self.background_efficiency_manager.update(
+            &mut self.priority_efficiency_controller,
             &background_efficiency,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
-            true,
+            observations,
             &mut self.action_log,
         )
     }
@@ -206,45 +329,44 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
         manual_freeze_processes: &[String],
-        process_requests: &[(ProcessActionTarget, bool)],
+        observations: &mut CycleObservations,
     ) -> AppSuspensionSnapshot {
-        for (target, suspend) in process_requests {
-            self.app_suspension_manager.apply_manual_process_action(
-                target,
-                *suspend,
-                settings.general.allow_cross_session_process_control,
-                &mut self.action_log,
-            );
-        }
-        let foreground_process_id = foreground_process_id();
+        let foreground_process_id = observations.foreground_process_id();
         self.app_suspension_manager.update(
+            &mut self.app_suspension_controller,
             &settings.app_suspension,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
             manual_freeze_processes,
+            observations,
             &mut self.action_log,
         )
     }
 
     pub(super) fn run_app_suspension_foreground_release(
         &mut self,
+        observations: &mut CycleObservations,
     ) -> Option<AppSuspensionSnapshot> {
         let now = Instant::now();
         if shell_window_mouse_pressed() && self.app_suspension_shell_user_intent_due(now) {
             self.last_app_suspension_shell_user_intent = Some(now);
             if let Some(status) = self
                 .app_suspension_manager
-                .release_all_suspended_processes_for_user_intent(&mut self.action_log)
+                .release_all_suspended_processes_for_user_intent(
+                    &mut self.app_suspension_controller,
+                    &mut self.action_log,
+                )
             {
                 return Some(status);
             }
         }
 
-        let foreground_process_id = foreground_process_id();
-        let foreground_process = foreground_process();
+        let foreground_process_id = observations.foreground_process_id();
+        let foreground_process = observations.foreground_process();
         if let Some(status) = foreground_process_id.and_then(|process_id| {
             self.app_suspension_manager.release_interactive_process(
+                &mut self.app_suspension_controller,
                 process_id,
                 foreground_process
                     .as_ref()
@@ -262,6 +384,7 @@ impl HiddenAutomationRunner {
         }
         let cursor_process = cursor_process();
         self.app_suspension_manager.release_interactive_process(
+            &mut self.app_suspension_controller,
             cursor_process_id,
             cursor_process
                 .as_ref()
@@ -273,10 +396,12 @@ impl HiddenAutomationRunner {
 
     pub(super) fn run_app_suspension_app_switch_release(
         &mut self,
+        observations: &mut CycleObservations,
     ) -> Option<AppSuspensionSnapshot> {
         self.app_suspension_manager
             .release_window_owner_processes_for_user_intent(
-                &top_level_window_process_ids(),
+                &mut self.app_suspension_controller,
+                observations.top_level_window_process_ids().as_ref(),
                 &mut self.action_log,
             )
     }
@@ -289,7 +414,10 @@ impl HiddenAutomationRunner {
         }
 
         self.app_suspension_manager
-            .release_all_suspended_processes_for_user_intent(&mut self.action_log)
+            .release_all_suspended_processes_for_user_intent(
+                &mut self.app_suspension_controller,
+                &mut self.action_log,
+            )
     }
 
     pub(super) fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {
@@ -302,9 +430,12 @@ impl HiddenAutomationRunner {
     pub(super) fn run_cpu_sets_soft_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> CpuAllocationSnapshot {
-        let foreground_process_id = foreground_process_id();
+        let foreground_process_id = observations.foreground_process_id();
         self.cpu_sets_soft_manager.update(
+            &mut self.cpu_allocation_coordinator,
+            ControlOwner::CpuSetsSoft,
             &settings.cpu_sets_soft,
             (
                 cpu_allocation::CpuAllocationMode::SoftCpuSets,
@@ -313,6 +444,7 @@ impl HiddenAutomationRunner {
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
+            observations,
             &mut self.action_log,
         )
     }
@@ -320,9 +452,12 @@ impl HiddenAutomationRunner {
     pub(super) fn run_processor_affinity_hard_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> CpuAllocationSnapshot {
         let processor_affinity_hard = processor_affinity_hard_settings(settings);
         self.processor_affinity_hard_manager.update(
+            &mut self.cpu_allocation_coordinator,
+            ControlOwner::ProcessorAffinityHard,
             &processor_affinity_hard,
             (
                 cpu_allocation::CpuAllocationMode::HardAffinity,
@@ -330,32 +465,59 @@ impl HiddenAutomationRunner {
             ),
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
 
-    pub(super) fn run_core_limiter_update(&mut self, settings: &Settings) -> CoreLimiterSnapshot {
-        let foreground_process_id = foreground_process_id();
-        let mut allocated_process_ids = self.cpu_sets_soft_manager.adjusted_process_ids();
-        allocated_process_ids.extend(self.processor_affinity_hard_manager.adjusted_process_ids());
+    pub(super) fn run_core_limiter_update(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+    ) -> CoreLimiterSnapshot {
+        let foreground_process_id = observations.foreground_process_id();
         self.core_limiter_manager.update(
+            &mut self.cpu_allocation_coordinator,
             &settings.core_limiter,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
-            &allocated_process_ids,
+            observations,
             &mut self.action_log,
         )
+    }
+
+    pub(super) fn run_cpu_allocation_reconciliation(
+        &mut self,
+        settings: &Settings,
+        include_release_retries: bool,
+    ) {
+        let summary = self.cpu_allocation_coordinator.reconcile_pending(
+            settings.general.allow_cross_session_process_control,
+            include_release_retries,
+        );
+        record_cpu_allocation_reconciliation(summary, &mut self.action_log);
+    }
+
+    pub(super) fn cpu_allocation_immediate_reconciliation_pending(&self) -> bool {
+        self.cpu_allocation_coordinator
+            .has_pending_immediate_reconciliation()
+    }
+
+    pub(super) fn cpu_allocation_release_retry_pending(&self) -> bool {
+        self.cpu_allocation_coordinator.has_pending_release_retry()
     }
 
     pub(super) fn run_by_running_app_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> ByRunningAppSnapshot {
         self.by_running_app_manager.update(
             &settings.by_running_app,
             settings.general.enabled,
+            observations,
             &mut self.action_log,
         )
     }
@@ -363,12 +525,15 @@ impl HiddenAutomationRunner {
     pub(super) fn run_workload_engine_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> WorkloadEngineSnapshot {
         self.refresh_cpu_usage();
-        let foreground_process_id = foreground_process_id();
+        let foreground_process_id = observations.foreground_process_id();
         let mut workload_settings = settings.workload_engine.clone();
         workload_settings.enabled &= settings.adaptive_engine.enabled;
-        let mut excluded_process_ids = self.background_efficiency_manager.throttled_process_ids();
+        let mut excluded_process_ids = self
+            .priority_efficiency_controller
+            .policy_target_process_ids(&[ControlOwner::BackgroundEfficiency]);
         excluded_process_ids.extend(self.by_running_app_manager.active_process_ids());
         let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
         let mut snapshot = self.workload_engine_manager.update(
@@ -389,7 +554,11 @@ impl HiddenAutomationRunner {
                 background_efficiency_managed: settings.background_efficiency.enabled,
                 excluded_process_ids: &excluded_process_ids,
                 explicit_cpu_allocation_paths: &explicit_cpu_allocation_paths,
+                observations,
             },
+            &mut self.cpu_allocation_coordinator,
+            &mut self.priority_efficiency_controller,
+            &mut self.memory_priority_controller,
             &mut self.action_log,
         );
         self.launch_boost_active = snapshot.launch_boost_active;
@@ -425,7 +594,7 @@ impl HiddenAutomationRunner {
             )
         } else {
             self.adaptive_foreground_process_id = None;
-            self.restore_adaptive_power_plan()
+            self.power_plan_controller.release_adaptive(Instant::now())
         }
     }
 
@@ -469,94 +638,34 @@ impl HiddenAutomationRunner {
             .iter()
             .any(|processor| processor.kind == LogicalProcessorKind::Efficiency);
 
-        if self.adaptive_power_plan.is_none() {
-            let original_guid = active_plan()?.guid;
-            let plan_guid = create_adaptive_plan(&original_guid)?;
-            if let Err(error) = apply_processor_power_values(
-                &plan_guid,
-                desired_profile.calibrated_power_values(baseline, has_efficiency_cores),
-            )
-            .and_then(|()| set_active_with_recovery(&plan_guid))
-            {
-                return Err(adaptive_plan_setup_error(error, delete_plan(&plan_guid)));
-            }
-            self.current_guid = Some(plan_guid.clone());
-            self.adaptive_power_plan = Some(ActiveAdaptivePowerPlan {
-                original_guid,
-                plan_guid,
+        let profile = self.power_plan_controller.reconcile_adaptive(
+            AdaptivePowerPlanRequest {
                 profile: desired_profile,
                 baseline,
                 has_efficiency_cores,
-                lower_demand_since: None,
-            });
-        }
-
-        let should_refresh_active_plan = self
-            .next_active_plan_refresh
-            .is_none_or(|refresh_at| now >= refresh_at);
-        if should_refresh_active_plan {
-            self.refresh_active_plan();
-        }
-        let plan = self
-            .adaptive_power_plan
-            .as_mut()
-            .ok_or_else(|| "Adaptive power plan was not initialized.".to_owned())?;
-        if self
-            .current_guid
-            .as_deref()
-            .is_none_or(|guid| !guid.eq_ignore_ascii_case(&plan.plan_guid))
-        {
-            set_active_with_recovery(&plan.plan_guid)?;
-            self.current_guid = Some(plan.plan_guid.clone());
-        }
-
-        let lower_demand_elapsed = if desired_profile < plan.profile {
-            now.duration_since(*plan.lower_demand_since.get_or_insert(now))
-        } else {
-            plan.lower_demand_since = None;
-            Duration::ZERO
-        };
-        let next_profile =
-            adaptive_power_profile_transition(plan.profile, desired_profile, lower_demand_elapsed);
-        if next_profile != plan.profile || baseline != plan.baseline {
-            apply_processor_power_values(
-                &plan.plan_guid,
-                next_profile.calibrated_power_values(baseline, plan.has_efficiency_cores),
-            )?;
-            plan.profile = next_profile;
-            plan.baseline = baseline;
-            plan.lower_demand_since = None;
-        }
-
-        snapshot.adaptive_power_profile = Some(plan.profile.label().to_owned());
+            },
+            now,
+        )?;
+        snapshot.adaptive_power_profile = Some(profile.label().to_owned());
         Ok(())
     }
 
-    pub(super) fn restore_adaptive_power_plan(&mut self) -> Result<(), String> {
-        let Some(plan) = self.adaptive_power_plan.take() else {
-            return Ok(());
-        };
-        if let Err(error) = set_active_with_recovery(&plan.original_guid) {
-            self.adaptive_power_plan = Some(plan);
-            return Err(error);
-        }
-
-        self.current_guid = Some(plan.original_guid.clone());
-        if let Err(error) = delete_plan(&plan.plan_guid) {
-            self.adaptive_power_plan = Some(plan);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(super) fn run_io_priority_update(&mut self, settings: &Settings) -> IoPrioritySnapshot {
+    pub(super) fn run_io_priority_update(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+    ) -> IoPrioritySnapshot {
         let io_priority_settings =
             effective_io_priority_settings(settings, self.workload_engine_active);
+        let owner = io_priority_control_owner(settings, self.workload_engine_active);
         self.io_priority_manager.update(
+            &mut self.io_priority_controller,
+            owner,
             &io_priority_settings,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
@@ -564,15 +673,23 @@ impl HiddenAutomationRunner {
     pub(super) fn run_process_priority_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> ProcessPrioritySnapshot {
-        let mut excluded_process_ids = self.workload_engine_manager.managed_process_ids();
-        excluded_process_ids.extend(self.background_efficiency_manager.throttled_process_ids());
+        let excluded_process_ids = self
+            .priority_efficiency_controller
+            .policy_target_process_ids(&[
+                ControlOwner::BackgroundEfficiency,
+                ControlOwner::AdaptiveEngine,
+                ControlOwner::WorkloadForegroundBoost,
+            ]);
         self.process_priority_manager.update(
+            &mut self.priority_efficiency_controller,
             &settings.process_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
             &excluded_process_ids,
+            observations,
             &mut self.action_log,
         )
     }
@@ -580,14 +697,19 @@ impl HiddenAutomationRunner {
     pub(super) fn run_thread_priority_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> ThreadPrioritySnapshot {
         let thread_priority_settings =
             effective_thread_priority_settings(settings, self.workload_engine_active);
+        let owner = thread_priority_control_owner(settings, self.workload_engine_active);
         self.thread_priority_manager.update(
+            &mut self.thread_priority_controller,
+            owner,
             &thread_priority_settings,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
@@ -595,26 +717,271 @@ impl HiddenAutomationRunner {
     pub(super) fn run_dynamic_priority_boost_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> DynamicPriorityBoostSnapshot {
         let dynamic_priority_boost_settings =
             effective_dynamic_priority_boost_settings(settings, self.workload_engine_active);
+        let owner = dynamic_priority_boost_control_owner(settings, self.workload_engine_active);
         self.dynamic_priority_boost_manager.update(
+            &mut self.dynamic_priority_boost_controller,
+            owner,
             &dynamic_priority_boost_settings,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
 
-    pub(super) fn run_gpu_priority_update(&mut self, settings: &Settings) -> GpuPrioritySnapshot {
+    pub(super) fn run_process_control_commands(
+        &mut self,
+        settings: &Settings,
+        commands: VecDeque<ProcessControlCommand>,
+        observations: &mut CycleObservations,
+    ) -> ProcessControlCommandStatuses {
+        let mut statuses = ProcessControlCommandStatuses::default();
+        for command in commands {
+            match command {
+                ProcessControlCommand::ProcessPriority {
+                    targets,
+                    priority,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.priority_efficiency_controller
+                                .apply_process_list_priority(
+                                    &target,
+                                    priority,
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::EfficiencyMode {
+                    targets,
+                    enabled,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.priority_efficiency_controller
+                                .apply_process_list_efficiency_mode(
+                                    &target,
+                                    enabled,
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::DynamicPriorityBoost {
+                    targets,
+                    state,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.dynamic_priority_boost_controller
+                                .apply_process_list_action(
+                                    &target,
+                                    state,
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::ThreadPriority {
+                    targets,
+                    priority,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.thread_priority_controller
+                                .apply_process_list_action(
+                                    &target,
+                                    priority,
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::IoPriority {
+                    targets,
+                    priority,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.io_priority_controller
+                                .apply_process_list_action(
+                                    &target,
+                                    priority,
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::GpuPriority {
+                    targets,
+                    priority,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.gpu_priority_controller
+                                .apply_process_list_action(
+                                    &target,
+                                    priority,
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::MemoryPriority {
+                    targets,
+                    priority,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.memory_priority_controller
+                                .apply_process_list_action(
+                                    &target,
+                                    priority,
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::AppSuspension {
+                    targets,
+                    suspend,
+                    result,
+                } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.app_suspension_manager.apply_manual_process_action(
+                                &mut self.app_suspension_controller,
+                                &target,
+                                suspend,
+                                settings.general.allow_cross_session_process_control,
+                                &mut self.action_log,
+                            )
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::AppSuspensionFreezePath {
+                    executable_path,
+                    result,
+                } => {
+                    let status = self.run_app_suspension_update(
+                        settings,
+                        std::slice::from_ref(&executable_path),
+                        observations,
+                    );
+                    let reply = self
+                        .app_suspension_manager
+                        .manual_freeze_result(&executable_path)
+                        .map(|()| status.clone())
+                        .map_err(|error| {
+                            RuntimeCommandError::CommandFailed(
+                                if !status.enabled || status.unsupported || status.status_unknown {
+                                    status.message.clone()
+                                } else {
+                                    error
+                                },
+                            )
+                        });
+                    let _ = result.try_send(reply);
+                    statuses.app_suspension = Some(status);
+                }
+                ProcessControlCommand::MemoryTrim { result } => {
+                    let status = self.run_memory_trim_now(settings, observations);
+                    let _ = result.try_send(Ok(status.clone()));
+                    statuses.memory_trim = Some(status);
+                }
+                ProcessControlCommand::StopProcesses { targets, result } => {
+                    let outcome = self.process_termination_controller.terminate_batch(
+                        targets,
+                        settings.general.allow_cross_session_process_control,
+                    );
+                    let _ = result.try_send(Ok(outcome));
+                }
+            }
+        }
+        statuses
+    }
+
+    pub(super) fn has_managed_process_control_state(&self) -> bool {
+        self.cpu_allocation_coordinator.has_managed_state()
+            || self.cpu_allocation_coordinator.has_pending_reconciliation()
+            || self.dynamic_priority_boost_controller.has_managed_state()
+            || self.thread_priority_controller.has_managed_state()
+            || self.io_priority_controller.has_managed_state()
+            || self.gpu_priority_controller.has_managed_state()
+            || self.memory_priority_controller.has_managed_state()
+            || self.priority_efficiency_controller.has_managed_state()
+            || self
+                .app_suspension_manager
+                .has_suspended_processes(&self.app_suspension_controller)
+    }
+
+    pub(super) fn run_gpu_priority_update(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+    ) -> GpuPrioritySnapshot {
         let gpu_priority_settings =
             effective_gpu_priority_settings(settings, self.workload_engine_active);
+        let owner = gpu_priority_control_owner(settings, self.workload_engine_active);
         self.gpu_priority_manager.update(
+            &mut self.gpu_priority_controller,
+            owner,
             &gpu_priority_settings,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
@@ -622,32 +989,47 @@ impl HiddenAutomationRunner {
     pub(super) fn run_memory_priority_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> MemoryPrioritySnapshot {
         self.memory_priority_manager.update_rules(
+            &mut self.memory_priority_controller,
             &settings.memory_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
 
-    pub(super) fn run_memory_trim_update(&mut self, settings: &Settings) -> MemoryTrimSnapshot {
+    pub(super) fn run_memory_trim_update(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+    ) -> MemoryTrimSnapshot {
         self.memory_trim_manager.update(
+            &mut self.memory_trim_controller,
             &settings.memory_trim,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
 
-    pub(super) fn run_memory_trim_now(&mut self, settings: &Settings) -> MemoryTrimSnapshot {
+    pub(super) fn run_memory_trim_now(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+    ) -> MemoryTrimSnapshot {
         self.memory_trim_manager.trim_now(
+            &mut self.memory_trim_controller,
             &settings.memory_trim,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id(),
+            observations.foreground_process_id(),
+            observations,
             &mut self.action_log,
         )
     }
@@ -655,13 +1037,15 @@ impl HiddenAutomationRunner {
     pub(super) fn run_timer_resolution_update(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
     ) -> TimerResolutionSnapshot {
         let foreground_executable_path = timer_resolution_required(settings)
-            .then(foreground_process)
+            .then(|| observations.foreground_process())
             .flatten()
             .filter(|process| process_is_critical(process.id) == Some(false))
             .map(|process| process.executable_path.to_string_lossy().into_owned());
         self.timer_resolution_manager.update(
+            &mut self.timer_resolution_controller,
             &settings.timer_resolution,
             settings.general.enabled,
             foreground_executable_path.as_deref(),
@@ -669,22 +1053,19 @@ impl HiddenAutomationRunner {
         )
     }
 
-    pub(super) fn run_check(&mut self, settings: &Settings) {
-        if self.adaptive_power_plan.is_some() {
-            return;
-        }
-
-        let should_refresh_active_plan = self
-            .next_active_plan_refresh
-            .is_none_or(|refresh_at| Instant::now() >= refresh_at);
-        if should_refresh_active_plan {
-            self.refresh_active_plan();
+    pub(super) fn run_check(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+    ) -> Result<(), String> {
+        if self.power_plan_controller.adaptive_active() {
+            return Ok(());
         }
 
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
         let foreground_executable_path = foreground_lookup_required(settings)
-            .then(foreground_process)
+            .then(|| observations.foreground_process())
             .flatten()
             .filter(|process| process_is_critical(process.id) == Some(false))
             .map(|process| process.executable_path.to_string_lossy().into_owned());
@@ -707,15 +1088,13 @@ impl HiddenAutomationRunner {
             by_cpu_load: by_cpu_load_decision,
         };
         let decision = decide(settings, decision_input);
-        self.apply_power_plan_guid(decision.power_plan_guid.as_deref());
+        self.power_plan_controller
+            .reconcile_ordinary(decision, Instant::now())
     }
 
-    pub(super) fn refresh_active_plan(&mut self) {
-        self.next_active_plan_refresh = Some(Instant::now() + ACTIVE_PLAN_REFRESH_INTERVAL);
-
-        if let Ok(active) = active_plan() {
-            self.current_guid = Some(active.guid);
-        }
+    pub(super) fn refresh_active_plan(&mut self) -> Result<(), String> {
+        self.power_plan_controller
+            .refresh_active_plan(Instant::now())
     }
 
     pub(super) fn refresh_cpu_usage(&mut self) {
@@ -728,74 +1107,14 @@ impl HiddenAutomationRunner {
         }
     }
 
-    pub(super) fn apply_power_plan_guid(&mut self, plan_guid: Option<&str>) {
-        let Some(plan_guid) = plan_guid else {
-            return;
-        };
-
-        let already_active = self
-            .current_guid
-            .as_deref()
-            .is_some_and(|guid| guid.eq_ignore_ascii_case(plan_guid));
-        if already_active {
-            self.clear_switch_failure(plan_guid);
-            return;
-        }
-
-        if self.is_switch_suppressed(plan_guid) {
-            return;
-        }
-
-        if let Some((last_guid, attempted_at)) = &self.last_switch_attempt {
-            if last_guid.eq_ignore_ascii_case(plan_guid)
-                && attempted_at.elapsed() < SWITCH_RETRY_INTERVAL
-            {
-                return;
-            }
-        }
-
-        self.last_switch_attempt = Some((plan_guid.to_owned(), Instant::now()));
-        let previous_guid = self
-            .current_guid
-            .clone()
-            .or_else(|| active_plan().ok().map(|plan| plan.guid));
-
-        match set_active_with_recovery(plan_guid) {
-            Ok(()) => {
-                if self.original_power_plan_guid.is_none() {
-                    self.original_power_plan_guid = previous_guid;
-                }
-                self.current_guid = Some(plan_guid.to_owned());
-                self.clear_switch_failure(plan_guid);
-            }
-            Err(_) => self.record_switch_failure(plan_guid),
-        }
+    pub(super) fn power_plan_status(&self) -> PowerPlanStatus {
+        self.power_plan_controller.status()
     }
+}
 
-    fn restore_original_power_plan(&mut self) {
-        let Some(plan_guid) = self.original_power_plan_guid.take() else {
-            return;
-        };
-        if set_active_with_recovery(&plan_guid).is_ok() {
-            self.current_guid = Some(plan_guid);
-        } else {
-            self.original_power_plan_guid = Some(plan_guid);
-        }
-    }
-
-    pub(super) fn is_switch_suppressed(&self, target_guid: &str) -> bool {
-        self.switch_failure_suppression
-            .is_key_suppressed(&switch_failure_key(target_guid))
-    }
-
-    pub(super) fn record_switch_failure(&mut self, target_guid: &str) {
-        self.switch_failure_suppression
-            .record_key_failure(&switch_failure_key(target_guid));
-    }
-
-    pub(super) fn clear_switch_failure(&mut self, target_guid: &str) {
-        self.switch_failure_suppression
-            .clear_key_failure(&switch_failure_key(target_guid));
+fn collect_restore_error(errors: &mut Vec<String>, feature: &str, error: Option<String>) {
+    if let Some(error) = error {
+        errors.push(format!("restore {feature}: {error}"));
     }
 }
 
@@ -823,31 +1142,8 @@ pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> 
         .collect()
 }
 
-pub(super) fn adaptive_plan_setup_error(
-    operation_error: String,
-    cleanup: Result<(), String>,
-) -> String {
-    match cleanup {
-        Ok(()) => operation_error,
-        Err(cleanup_error) => {
-            format!("{operation_error} Adaptive plan cleanup also failed: {cleanup_error}")
-        }
-    }
-}
-
-impl Drop for HiddenAutomationRunner {
+impl Drop for RuntimeCore {
     fn drop(&mut self) {
-        self.shutdown();
+        let _ = self.shutdown();
     }
-}
-
-fn set_active_with_recovery(plan_guid: &str) -> Result<(), String> {
-    let current_guid = active_plan()?.guid;
-    let recovery = crate::crash_recovery::record_power_plan_change(&current_guid, plan_guid)?;
-    set_active(plan_guid)?;
-    recovery.commit()
-}
-
-pub(super) fn switch_failure_key(target_guid: &str) -> String {
-    target_guid.trim().to_ascii_lowercase()
 }

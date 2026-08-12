@@ -2,25 +2,23 @@ use crate::ui::app::*;
 
 impl WinderustApp {
     pub(in crate::ui::app) fn save_settings(&mut self) -> bool {
-        match config::storage::save(&self.settings) {
-            Ok(()) => {
-                self.saved_settings = self.settings.clone();
-                self.sync_input_hook();
-                self.sync_background_settings();
-                self.status_message = match startup::set_startup_with_windows(
-                    self.saved_settings.general.startup_with_windows,
-                ) {
-                    Ok(()) => t!(
+        match self.settings.save() {
+            Ok(outcome) => {
+                self.sync_runtime_settings();
+                self.status_message = match outcome.startup_registration_error() {
+                    None => t!(
                         "status.saved_settings",
                         path = config::storage::config_path().display()
                     )
                     .to_string(),
-                    Err(err) => t!("status.saved_settings_with_error", error = err).to_string(),
+                    Some(error) => {
+                        t!("status.saved_settings_with_error", error = error).to_string()
+                    }
                 };
                 true
             }
             Err(err) => {
-                self.status_message = err;
+                self.status_message = err.to_string();
                 false
             }
         }
@@ -28,12 +26,12 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn export_settings_toml(&mut self) {
         match choose_settings_file(self.hwnd, FileDialogMode::Save) {
-            Some(path) => match config::storage::export_toml_to(&path, &self.settings) {
+            Some(path) => match self.settings.export_toml_to(&path) {
                 Ok(()) => {
                     self.status_message =
                         t!("status.exported_settings", path = path.display()).to_string();
                 }
-                Err(err) => self.status_message = err,
+                Err(err) => self.status_message = err.to_string(),
             },
             None => {
                 self.status_message = t!("status.export_canceled").to_string();
@@ -77,29 +75,20 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) {
         match choose_settings_file(self.hwnd, FileDialogMode::Open) {
-            Some(path) => match config::storage::import_toml_from(&path) {
-                Ok(settings) => match config::storage::save(&settings) {
-                    Ok(()) => {
-                        self.settings = settings;
-                        apply_language(self.settings.general.language);
-                        apply_appearance_settings(&self.settings.general, window, cx);
-                        self.saved_settings = self.settings.clone();
-                        self.status_message =
-                            match startup::set_startup_with_windows(
-                                self.saved_settings.general.startup_with_windows,
-                            ) {
-                                Ok(()) => t!("status.imported_settings", path = path.display())
-                                    .to_string(),
-                                Err(err) => t!("status.imported_settings_with_error", error = err)
-                                    .to_string(),
-                            };
-                        self.rebuild_inputs(window, cx);
-                        self.sync_input_hook();
-                        self.sync_background_settings();
-                    }
-                    Err(err) => self.status_message = err,
-                },
-                Err(err) => self.status_message = err,
+            Some(path) => match self.settings.import_toml_from(&path) {
+                Ok(outcome) => {
+                    apply_language(self.settings.general.language);
+                    apply_appearance_settings(&self.settings.general, window, cx);
+                    self.status_message = match outcome.startup_registration_error() {
+                        None => t!("status.imported_settings", path = path.display()).to_string(),
+                        Some(error) => {
+                            t!("status.imported_settings_with_error", error = error).to_string()
+                        }
+                    };
+                    self.rebuild_inputs(window, cx);
+                    self.sync_runtime_settings();
+                }
+                Err(err) => self.status_message = err.to_string(),
             },
             None => {
                 self.status_message = t!("status.import_canceled").to_string();
@@ -109,7 +98,7 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn page_uses_process_candidates(&self) -> bool {
         matches!(
-            self.page,
+            self.shell.page,
             Page::ByForeground
                 | Page::BackgroundEfficiency
                 | Page::AppSuspension
@@ -131,15 +120,15 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let had_unsaved_changes = self.settings != self.saved_settings;
-        self.settings = self.saved_settings.clone();
+        let had_unsaved_changes = self.settings.has_unsaved_changes();
+        self.settings.cancel();
         apply_language(self.settings.general.language);
         apply_appearance_settings(&self.settings.general, window, cx);
         self.status_message = t!("status.unsaved_canceled").to_string();
         self.editing_rule_title = None;
         self.expanded_rule_cards.clear();
         self.rebuild_inputs(window, cx);
-        self.sync_background_settings();
+        self.sync_runtime_settings();
         if had_unsaved_changes {
             self.start_unsaved_popup_vanish();
         }
@@ -193,32 +182,13 @@ impl WinderustApp {
         }
     }
 
-    pub(in crate::ui::app) fn background_settings(&self) -> Settings {
-        self.runtime_settings()
+    pub(in crate::ui::app) fn current_runtime_settings(&mut self) -> Arc<Settings> {
+        let snapshot = self.settings.runtime_settings_snapshot();
+        self.runtime_handle.replace_settings(&snapshot);
+        snapshot.value
     }
 
-    pub(in crate::ui::app) fn runtime_settings(&self) -> Settings {
-        runtime_settings_from(&self.settings, &self.saved_settings)
-    }
-
-    pub(in crate::ui::app) fn cached_runtime_settings(&mut self) -> Arc<Settings> {
-        self.sync_background_settings();
-        Arc::clone(&self.last_background_settings)
-    }
-
-    pub(in crate::ui::app) fn sync_background_settings(&mut self) {
-        if runtime_settings_matches(
-            self.last_background_settings.as_ref(),
-            &self.settings,
-            &self.saved_settings,
-        ) {
-            return;
-        }
-
-        let settings = Arc::new(self.background_settings());
-        self.sync_adaptive_engine(settings.as_ref());
-        self.background_automation
-            .update_settings(settings.as_ref());
-        self.last_background_settings = settings;
+    pub(in crate::ui::app) fn sync_runtime_settings(&mut self) {
+        let _ = self.current_runtime_settings();
     }
 }
