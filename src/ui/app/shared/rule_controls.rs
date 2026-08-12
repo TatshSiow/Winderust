@@ -390,9 +390,14 @@ impl WinderustApp {
         let selected_index = matches
             .iter()
             .position(|process| process_candidate_can_accept(target, &self.settings, process));
-        let mut suggestions = dropdown_surface(cx, max_height);
+        let mut process_list = v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scrollbar()
+            .gap_1()
+            .p_2();
         if matches.is_empty() {
-            suggestions = suggestions.child(dropdown_empty_row(
+            process_list = process_list.child(dropdown_empty_row(
                 process_load_state_message(&self.process_catalog.load_state).unwrap_or_else(|| {
                     if self.process_catalog.candidates.is_empty() {
                         t!("common.no_running_apps_loaded").to_string()
@@ -413,7 +418,7 @@ impl WinderustApp {
                 !enabled,
                 cx,
             );
-            suggestions = suggestions.child(if enabled {
+            process_list = process_list.child(if enabled {
                 row.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
@@ -428,7 +433,47 @@ impl WinderustApp {
             });
         }
 
-        suggestions.into_any_element()
+        let browse = dropdown_action_row(
+            SharedString::from(format!("{id}-browse-executable")),
+            t!("common.browse_executable").to_string(),
+            NavIcon::Plus,
+            cx,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                window.blur();
+                let hwnd = app.hwnd;
+                cx.spawn_in(window, async move |this, cx| {
+                    let Some(path) = choose_executable_file(hwnd).await else {
+                        return;
+                    };
+                    let executable_path = executable_path_key(&path);
+                    let _ = cx.update(move |window, app_cx| {
+                        if let Some(this) = this.upgrade() {
+                            this.update(app_cx, |app, cx| {
+                                app.apply_process_suggestion(target, &executable_path, window, cx);
+                                cx.notify();
+                            });
+                        }
+                    });
+                })
+                .detach();
+            }),
+        );
+
+        dropdown_surface_frame(cx, max_height)
+            .child(process_list)
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .px_2()
+                    .child(browse),
+            )
+            .into_any_element()
     }
 
     pub(in crate::ui::app) fn process_icon_for_path(&self, process: &str) -> Option<&Arc<Image>> {
@@ -556,7 +601,8 @@ impl WinderustApp {
             })
             .filter(|process| process_candidate_is_visible(target, &self.settings, process))
             .count()
-            .max(1);
+            .max(1)
+            + 1;
         let selected_path = self.process_picker_path(target, input, cx);
         let input_detail = if !selected_path.is_empty() {
             Some(selected_path)

@@ -8,7 +8,7 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
-use rfd::FileDialog;
+use rfd::{AsyncFileDialog, FileDialog};
 use rust_i18n::t;
 use windows_sys::Win32::Foundation::HWND;
 
@@ -62,6 +62,22 @@ pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBu
         .save_file()
 }
 
+pub(crate) async fn choose_executable_file(hwnd: Option<HWND>) -> Option<PathBuf> {
+    let file = async_dialog(hwnd)
+        .add_filter(t!("common.executable_files").to_string(), &["exe"])
+        .set_title(t!("common.select_executable").to_string())
+        .pick_file()
+        .await?;
+    let path = file.path().to_owned();
+    is_executable_file(&path).then_some(path)
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+}
+
 fn dialog(hwnd: Option<HWND>) -> FileDialog {
     hwnd.and_then(DialogParent::new)
         .map_or_else(FileDialog::new, |parent| {
@@ -91,5 +107,25 @@ impl HasDisplayHandle for DialogParent {
         let raw = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
         // SAFETY: Windows has a process-global display handle with no owned resource to release.
         Ok(unsafe { DisplayHandle::borrow_raw(raw) })
+    }
+}
+
+fn async_dialog(hwnd: Option<HWND>) -> AsyncFileDialog {
+    hwnd.and_then(DialogParent::new)
+        .map_or_else(AsyncFileDialog::new, |parent| {
+            AsyncFileDialog::new().set_parent(&parent)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executable_picker_accepts_only_exe_paths() {
+        assert!(is_executable_file(Path::new(r"C:\Apps\Example.exe")));
+        assert!(is_executable_file(Path::new(r"C:\Apps\Example.EXE")));
+        assert!(!is_executable_file(Path::new(r"C:\Apps\Example.com")));
+        assert!(!is_executable_file(Path::new(r"C:\Apps\Example")));
     }
 }

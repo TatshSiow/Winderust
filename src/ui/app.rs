@@ -87,7 +87,9 @@ use crate::{
     },
     dynamic_priority_boost,
     features::power_plan_control::next_by_time_switch_label,
-    file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
+    file_dialog::{
+        choose_action_log_export_file, choose_executable_file, choose_settings_file, FileDialogMode,
+    },
     foreground::{
         capture_process_action_target, capture_process_action_target_for_owned_release,
         contains_process_name, ensure_process_action_target_access, executable_path_key,

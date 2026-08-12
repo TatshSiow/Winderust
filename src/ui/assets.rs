@@ -65,6 +65,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/panel-left-open.svg", icondata_lu::LuPanelLeftOpen),
     ("icons/panels-top-left.svg", icondata_lu::LuPanelsTopLeft),
     ("icons/play.svg", icondata_lu::LuPlay),
+    ("icons/plus.svg", icondata_lu::LuPlus),
     ("icons/rocket.svg", icondata_lu::LuRocket),
     ("icons/rotate-3d.svg", icondata_lu::LuRotate3d),
     ("icons/scissors.svg", icondata_lu::LuScissors),
