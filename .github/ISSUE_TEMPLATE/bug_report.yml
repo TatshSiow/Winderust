@@ -1,0 +1,91 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Winderust.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Winderust. Do not report security vulnerabilities here; use the Security contact in the issue chooser.
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Winderust version
+      description: Use the release version or commit hash you tested.
+      placeholder: v0.5.0-alpha
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2, build 26100
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Processor and system architecture
+      placeholder: Intel Core 5 210H, x64
+    validations:
+      required: true
+
+  - type: dropdown
+    id: privileges
+    attributes:
+      label: How was Winderust running?
+      options:
+        - Administrator
+        - Standard user
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the incorrect behavior and when it occurs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Enable ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots, or settings
+      description: Attach useful evidence after removing credentials, usernames, paths, and other sensitive information.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include affected process names, enabled features, or anything else that may help reproduce the issue.

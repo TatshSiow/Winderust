@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest an enhancement for an existing Winderust workflow.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem first. Winderust favors focused features, conservative defaults, and native Windows facilities.
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is difficult or impossible today, and who is affected?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed enhancement
+      description: Describe the behavior you want without requiring a specific implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain any current workaround or simpler alternative you tried.
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Windows and safety considerations
+      description: Note any required privileges, process-state changes, restoration behavior, or relevant Microsoft documentation.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add mockups, screenshots, examples, or related issues when useful.
