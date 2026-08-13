@@ -104,14 +104,7 @@ impl WinderustApp {
             .into_any_element()
         };
 
-        let details_modal = self
-            .process_list
-            .details
-            .as_ref()
-            .map(|_| self.render_process_details_modal(window, cx));
-
         self.page_shell(Page::ProcessList, cx)
-            .relative()
             .flex_1()
             .h_full()
             .min_h(px(0.0))
@@ -204,11 +197,10 @@ impl WinderustApp {
                             .child(Scrollbar::horizontal(&horizontal_scroll_handle)),
                     ),
             )
-            .when_some(details_modal, |page, modal| page.child(modal))
             .into_any_element()
     }
 
-    fn render_process_details_modal(
+    pub(in crate::ui::app) fn render_process_details_modal(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,

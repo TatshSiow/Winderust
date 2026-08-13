@@ -1118,6 +1118,11 @@ impl Render for WinderustApp {
             } else {
                 div().into_any_element()
             })
+            .child(if self.process_list.details.is_some() {
+                self.render_process_details_modal(window, cx)
+            } else {
+                div().into_any_element()
+            })
             .child(if self.update.startup_modal_visible {
                 self.render_update_available_modal(cx)
             } else {
