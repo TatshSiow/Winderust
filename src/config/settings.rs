@@ -33,6 +33,8 @@ pub struct Settings {
     #[serde(default)]
     pub processor_affinity_hard: CpuAllocationSettings,
     #[serde(default)]
+    pub cpu_allocation_presets: Vec<CpuAllocationPreset>,
+    #[serde(default)]
     pub core_limiter: CoreLimiterSettings,
     #[serde(default)]
     pub by_running_app: ByRunningAppSettings,
@@ -390,15 +392,17 @@ pub struct AppSuspensionSettings {
     pub suspendable_apps: Vec<AppSuspensionRule>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuAllocationSettings {
     pub enabled: bool,
-    #[serde(default = "default_true")]
-    pub protect_foreground_app: bool,
-    #[serde(default)]
-    pub protect_visible_window_apps: bool,
     #[serde(default)]
     pub rules: Vec<CpuAllocationRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuAllocationPreset {
+    pub name: String,
+    pub core_mask: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,7 +612,17 @@ pub struct CpuAllocationRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
-    pub core_mask: u64,
+    pub focus_core_mask: u64,
+    pub visible_window_core_mask: u64,
+    pub background_core_mask: u64,
+}
+
+impl CpuAllocationRule {
+    pub fn has_cpu_selection(&self) -> bool {
+        self.focus_core_mask != 0
+            || self.visible_window_core_mask != 0
+            || self.background_core_mask != 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1442,6 +1456,7 @@ impl Default for Settings {
             app_suspension: AppSuspensionSettings::default(),
             cpu_sets_soft: CpuAllocationSettings::default(),
             processor_affinity_hard: CpuAllocationSettings::default(),
+            cpu_allocation_presets: Vec::new(),
             core_limiter: CoreLimiterSettings::default(),
             by_running_app: ByRunningAppSettings::default(),
             workload_engine: WorkloadEngineSettings::default(),
@@ -1818,17 +1833,6 @@ impl Default for AppSuspensionSettings {
             audio_wake_enabled: false,
             audio_wake_duration_seconds: default_audio_wake_duration_seconds(),
             suspendable_apps: Vec::new(),
-        }
-    }
-}
-
-impl Default for CpuAllocationSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            protect_foreground_app: default_true(),
-            protect_visible_window_apps: false,
-            rules: Vec::new(),
         }
     }
 }

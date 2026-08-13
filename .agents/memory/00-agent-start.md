@@ -66,7 +66,7 @@
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
   this handoff and directly restores all coordinator-owned state in reverse application order.
-- Background Efficiency, Core Limiter, CPU Sets (Soft), and Processor Affinity (Hard) expose independent process protections: Protect Foreground App defaults on; Protect Apps with Visible Windows defaults off and covers visible, non-minimized, non-cloaked top-level windows plus sibling processes with the same executable path.
+- Background Efficiency and Core Limiter expose independent process protections: Protect Foreground App defaults on; Protect Apps with Visible Windows defaults off and covers visible, non-minimized, non-cloaked top-level windows plus sibling processes with the same executable path.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules still override the selected tier.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency paths always protect focused and visible-window apps from throttling.
 - Exclusion-list features append `ProcessExclusionRule`.
@@ -126,6 +126,12 @@
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
   the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
   `src/platform/windows/cpu_allocation.rs`.
+- CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog containing
+  read-only hardware-derived Core Presets and editable user-defined presets. Core Presets can be
+  viewed but not changed. Every rule independently selects Focus, Visible Window,
+  and Background presets with Focus > Visible Window > Background precedence. Applying a preset
+  copies its current mask into that tier; later preset edits or deletion do not silently rewrite
+  configured rules.
 - Memory Trim and Stop Process / Stop Process Tree are typed, result-bearing runtime commands.
   `src/control/memory_trim.rs` and `src/control/process_termination.rs` own command semantics;
   their raw calls live only in the matching `src/platform/windows/` adapters. Both revalidate exact

@@ -7,19 +7,6 @@ pub(in crate::ui::app) struct SuspensionIndicator {
     pub(in crate::ui::app) hover: String,
 }
 
-pub(in crate::ui::app) struct AffinityIndicator {
-    pub(in crate::ui::app) label: String,
-    pub(in crate::ui::app) bg: u32,
-    pub(in crate::ui::app) fg: u32,
-    pub(in crate::ui::app) hover: String,
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::ui::app) enum CoreTileGridAction {
-    CpuSetsSoftRule { index: usize },
-    ProcessorAffinityHardRule { index: usize },
-}
-
 pub(in crate::ui::app) fn app_suspension_indicator(
     status: &AppSuspensionSnapshot,
     process: &str,
@@ -103,43 +90,6 @@ pub(in crate::ui::app) fn app_suspension_indicator(
             bg: panel_active_color(),
             fg: dim_text_color(),
             hover: t!("app_suspension.indicator.off_help").to_string(),
-        }
-    }
-}
-
-pub(in crate::ui::app) fn cpu_allocation_indicator(
-    status: &CpuAllocationSnapshot,
-    process: &str,
-) -> AffinityIndicator {
-    let accent = accent_color();
-    let accent_bg = settings_card_hover_color();
-    if cpu_allocation::is_builtin_excluded(process) {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.protected").to_string(),
-            bg: accent_bg,
-            fg: accent,
-            hover: t!("cpu_allocation.indicator.protected_help").to_string(),
-        }
-    } else if cpu_allocation::contains_process(&status.adjusted_apps, process) {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.pinned").to_string(),
-            bg: success_bg_color(),
-            fg: success_text_color(),
-            hover: t!("cpu_allocation.indicator.pinned_help").to_string(),
-        }
-    } else if status.enabled {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.ready").to_string(),
-            bg: panel_active_color(),
-            fg: muted_text_color(),
-            hover: t!("cpu_allocation.indicator.ready_help").to_string(),
-        }
-    } else {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.off").to_string(),
-            bg: panel_active_color(),
-            fg: dim_text_color(),
-            hover: t!("cpu_allocation.indicator.off_help").to_string(),
         }
     }
 }

@@ -762,7 +762,9 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: " ".to_owned(),
-        core_mask: 1,
+        focus_core_mask: 1,
+        visible_window_core_mask: 1,
+        background_core_mask: 1,
     });
     settings.core_limiter.rules.push(CoreLimiterRule {
         enabled: true,
@@ -813,7 +815,9 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
-        core_mask: 1,
+        focus_core_mask: 1,
+        visible_window_core_mask: 1,
+        background_core_mask: 1,
     });
     settings.core_limiter.enabled = true;
     settings.core_limiter.rules.push(CoreLimiterRule {
@@ -862,7 +866,9 @@ fn cpu_sets_soft_owns_duplicate_cpu_allocation_rules() {
     let rule = CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
-        core_mask: 1,
+        focus_core_mask: 1,
+        visible_window_core_mask: 1,
+        background_core_mask: 1,
     };
     settings.cpu_sets_soft.rules.push(rule.clone());
     settings.processor_affinity_hard.rules.push(rule);
@@ -879,7 +885,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\soft.exe".to_owned(),
-        core_mask: 1,
+        focus_core_mask: 1,
+        visible_window_core_mask: 1,
+        background_core_mask: 1,
     });
     settings.processor_affinity_hard.enabled = true;
     settings
@@ -888,7 +896,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
         .push(CpuAllocationRule {
             enabled: false,
             executable_path: r"C:\Apps\disabled.exe".to_owned(),
-            core_mask: 1,
+            focus_core_mask: 1,
+            visible_window_core_mask: 1,
+            background_core_mask: 1,
         });
     settings
         .processor_affinity_hard
@@ -896,7 +906,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
         .push(CpuAllocationRule {
             enabled: true,
             executable_path: r"C:\Apps\empty.exe".to_owned(),
-            core_mask: 0,
+            focus_core_mask: 0,
+            visible_window_core_mask: 0,
+            background_core_mask: 0,
         });
 
     let paths = explicit_cpu_allocation_paths(&settings);

@@ -73,8 +73,6 @@ pub(in crate::ui::app) enum RuleCardTarget {
     ByCpuLoad(usize),
     AppSuspension(String),
     CoreLimiter(String),
-    CpuSetsSoft(String),
-    ProcessorAffinityHard(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -508,6 +506,12 @@ impl UiInputs {
                 "",
                 &t!("common.search_running_apps"),
             ),
+            cpu_allocation_preset_name: make_input(
+                window,
+                cx,
+                "",
+                &t!("cpu_allocation.preset_name_placeholder"),
+            ),
             workload_engine_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             process_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             thread_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
@@ -659,6 +663,12 @@ impl UiInputs {
         {
             set_input_placeholder(input, t!("common.rule_name"), window, cx);
         }
+        set_input_placeholder(
+            &self.cpu_allocation_preset_name,
+            t!("cpu_allocation.preset_name_placeholder"),
+            window,
+            cx,
+        );
     }
 }
 
@@ -672,6 +682,7 @@ impl WinderustApp {
         let processor_power_values = self.processor_power_values();
         self.editing_rule_title = None;
         self.editing_numeric = None;
+        self.cpu_allocation_preset_editor = None;
         self.expanded_rule_cards.clear();
         self.pending_list_item_removals.clear();
         self.process_catalog.selected_paths.clear();
@@ -681,6 +692,7 @@ impl WinderustApp {
         self.subscribe_to_numeric_input(window, cx);
         self.subscribe_to_dashboard_search_input(window, cx);
         self.subscribe_to_process_list_search_input(window, cx);
+        self.subscribe_to_cpu_allocation_preset_name_input(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
         self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         self.subscribe_to_activity_sliders(window, cx);
@@ -824,6 +836,18 @@ impl WinderustApp {
     ) {
         self._process_list_search_subscription = Some(cx.subscribe_in(
             &self.inputs.process_list_search,
+            window,
+            move |_, _, _: &InputEvent, _, cx| cx.notify(),
+        ));
+    }
+
+    pub(in crate::ui::app) fn subscribe_to_cpu_allocation_preset_name_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._cpu_allocation_preset_name_subscription = Some(cx.subscribe_in(
+            &self.inputs.cpu_allocation_preset_name,
             window,
             move |_, _, _: &InputEvent, _, cx| cx.notify(),
         ));

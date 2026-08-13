@@ -1135,7 +1135,7 @@ pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> 
         .flat_map(|feature| &feature.rules)
         .filter(|rule| {
             rule.enabled
-                && rule.core_mask != 0
+                && rule.has_cpu_selection()
                 && Path::new(rule.executable_path.trim()).is_absolute()
         })
         .map(|rule| rule.executable_path.clone())

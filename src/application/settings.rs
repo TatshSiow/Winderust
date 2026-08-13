@@ -657,10 +657,13 @@ fn app_suspension_rule(path: &str) -> crate::config::AppSuspensionRule {
 }
 
 fn cpu_allocation_rule(path: &str) -> crate::config::CpuAllocationRule {
+    let core_mask = crate::features::cpu_control::cpu_allocation::default_cpu_mask();
     crate::config::CpuAllocationRule {
         enabled: false,
         executable_path: path.to_owned(),
-        core_mask: crate::features::cpu_control::cpu_allocation::default_cpu_mask(),
+        focus_core_mask: core_mask,
+        visible_window_core_mask: core_mask,
+        background_core_mask: core_mask,
     }
 }
 
@@ -688,6 +691,7 @@ pub fn runtime_settings_for(current: &Settings, persisted: &Settings) -> Setting
     projected.general = current.general.clone();
     projected.general.enabled = persisted.general.enabled;
     projected.advanced = current.advanced.clone();
+    projected.cpu_allocation_presets.clear();
     projected
 }
 
@@ -979,6 +983,12 @@ mod tests {
         persisted.general.enabled = true;
         current.process_priority.enabled = true;
         persisted.process_priority.enabled = false;
+        persisted
+            .cpu_allocation_presets
+            .push(crate::config::CpuAllocationPreset {
+                name: "Gaming".to_owned(),
+                core_mask: 0b11,
+            });
         let runtime = runtime_settings_for(&current, &persisted);
         assert!(runtime.general.enabled);
         assert_eq!(
@@ -986,6 +996,7 @@ mod tests {
             persisted.process_priority.enabled
         );
         assert_eq!(runtime.advanced, current.advanced);
+        assert!(runtime.cpu_allocation_presets.is_empty());
     }
 
     #[test]

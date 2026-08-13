@@ -113,20 +113,13 @@ impl WinderustApp {
                 remove_at(&mut self.settings.app_suspension.suspendable_apps, index);
             }
             ListItemRemovalKind::CpuSetsSoftRule => {
-                if let Some(rule) = self.settings.cpu_sets_soft.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::CpuSetsSoft(rule.executable_path.clone()));
-                }
                 remove_at(&mut self.settings.cpu_sets_soft.rules, index);
             }
             ListItemRemovalKind::ProcessorAffinityHardRule => {
-                if let Some(rule) = self.settings.processor_affinity_hard.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::ProcessorAffinityHard(
-                            rule.executable_path.clone(),
-                        ));
-                }
                 remove_at(&mut self.settings.processor_affinity_hard.rules, index);
+            }
+            ListItemRemovalKind::CpuAllocationPreset => {
+                remove_at(&mut self.settings.cpu_allocation_presets, index);
             }
             ListItemRemovalKind::CoreLimiterRule => {
                 if let Some(rule) = self.settings.core_limiter.rules.get(index) {

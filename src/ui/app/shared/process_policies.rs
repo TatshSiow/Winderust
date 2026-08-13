@@ -500,10 +500,13 @@ pub(in crate::ui::app) fn new_app_suspension_rule(process: &str) -> AppSuspensio
 }
 
 pub(in crate::ui::app) fn new_cpu_allocation_rule(process: &str) -> CpuAllocationRule {
+    let core_mask = default_affinity_mask();
     CpuAllocationRule {
         enabled: true,
         executable_path: executable_path_key(Path::new(process)),
-        core_mask: default_affinity_mask(),
+        focus_core_mask: core_mask,
+        visible_window_core_mask: core_mask,
+        background_core_mask: core_mask,
     }
 }
 

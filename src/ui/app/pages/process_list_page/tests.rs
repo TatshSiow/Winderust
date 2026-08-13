@@ -836,7 +836,7 @@ fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
 fn new_cpu_allocation_rules_select_available_cpus() {
     let rule = new_cpu_allocation_rule(r"C:\Games\game.exe");
 
-    assert_ne!(rule.core_mask, 0);
+    assert!(rule.has_cpu_selection());
 }
 
 #[test]

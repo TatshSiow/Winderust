@@ -633,25 +633,6 @@ pub(in crate::ui::app) fn rule_card_body_height(row_count: usize) -> f32 {
     CARD_ROW_HEIGHT * row_count.max(1) as f32
 }
 
-pub(in crate::ui::app) fn cpu_allocation_selector_body_height(processor_count: usize) -> f32 {
-    rule_card_body_height(1)
-        + px_spacing(3) * 2.0
-        + TEXT_BODY_LINE_HEIGHT
-        + px_spacing(2)
-        + core_tile_grid_height(processor_count)
-}
-
-pub(in crate::ui::app) fn core_tile_grid_height(processor_count: usize) -> f32 {
-    let grid_rows =
-        processor_count.saturating_add(CORE_TILE_GRID_COLUMNS - 1) / CORE_TILE_GRID_COLUMNS;
-    if grid_rows == 0 {
-        TEXT_BODY_LINE_HEIGHT
-    } else {
-        let row_gaps = grid_rows.saturating_sub(1) as f32 * CORE_TILE_GRID_GAP;
-        grid_rows as f32 * CORE_TILE_HEIGHT + row_gaps
-    }
-}
-
 pub(in crate::ui::app) fn px_spacing(slot: usize) -> f32 {
     slot as f32 * 4.0
 }

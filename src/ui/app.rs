@@ -79,7 +79,7 @@ use crate::{
     },
     core_limiter::{self, CoreLimiterSnapshot},
     cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
-    cpu_allocation::{self, CpuAllocationSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
+    cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind},
     crash_recovery,
     dashboard_metrics::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
@@ -161,7 +161,6 @@ const DASHBOARD_SPLIT_VALUE_WIDTH: f32 = 90.0;
 const CARD_ROW_HEIGHT: f32 = 58.0;
 const CORE_TILE_GRID_COLUMNS: usize = 8;
 const CORE_TILE_HEIGHT: f32 = 54.0;
-const CORE_TILE_GRID_GAP: f32 = 4.0;
 const EXPANDED_CHILD_MAX_ANIMATION_HEIGHT: f32 = 1800.0;
 const EXPANDED_CHILD_SLIDE_PX: f32 = 8.0;
 const MOTION_CONTROL_SECONDS: f64 = 0.18;
@@ -204,7 +203,7 @@ const FONT_WINDOW_CONTROLS: &str = "Segoe Fluent Icons";
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const DROPDOWN_OPTION_ROW_HEIGHT: f32 = 40.0;
 const DROPDOWN_CONTROL_HEIGHT: f32 = 32.0;
-const DROPDOWN_SELECT_COMPACT_WIDTH: f32 = 96.0;
+const DROPDOWN_SELECT_COMPACT_WIDTH: f32 = 136.0;
 const DROPDOWN_SELECT_TABLE_WIDTH: f32 = 168.0;
 const DROPDOWN_SELECT_STANDARD_WIDTH: f32 = 240.0;
 const DROPDOWN_SELECT_WIDE_WIDTH: f32 = 280.0;
@@ -470,6 +469,7 @@ pub struct WinderustApp {
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
     editing_numeric: Option<NumericField>,
+    cpu_allocation_preset_editor: Option<CpuAllocationPresetEditor>,
     expanded_rule_cards: HashSet<RuleCardTarget>,
     expanded_setting_groups: HashSet<SettingGroupTarget>,
     update: UpdateModel,
@@ -487,6 +487,7 @@ pub struct WinderustApp {
     _numeric_input_subscription: Option<Subscription>,
     _dashboard_search_subscription: Option<Subscription>,
     _process_list_search_subscription: Option<Subscription>,
+    _cpu_allocation_preset_name_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
@@ -603,6 +604,7 @@ enum ListItemRemovalKind {
     AppSuspensionRule,
     CpuSetsSoftRule,
     ProcessorAffinityHardRule,
+    CpuAllocationPreset,
     CoreLimiterRule,
     ByRunningAppRule,
     WorkloadEngineExclusion,
@@ -614,6 +616,18 @@ enum ListItemRemovalKind {
     MemoryPriorityExclusion,
     TimerResolutionRule,
     MemoryTrimExclusion,
+}
+
+#[derive(Clone, Copy)]
+struct CpuAllocationPresetEditor {
+    target: CpuAllocationPresetEditorTarget,
+    core_mask: u64,
+}
+
+#[derive(Clone, Copy)]
+enum CpuAllocationPresetEditorTarget {
+    Core(usize),
+    Custom(Option<usize>),
 }
 
 impl ListItemRemovalTarget {
@@ -651,6 +665,7 @@ struct UiInputs {
     performance_process: Entity<InputState>,
     cpu_sets_soft_process: Entity<InputState>,
     processor_affinity_hard_process: Entity<InputState>,
+    cpu_allocation_preset_name: Entity<InputState>,
     workload_engine_process: Entity<InputState>,
     process_priority_process: Entity<InputState>,
     thread_priority_process: Entity<InputState>,
@@ -913,6 +928,7 @@ impl WinderustApp {
             start_minimized_applied: false,
             editing_rule_title: None,
             editing_numeric: None,
+            cpu_allocation_preset_editor: None,
             expanded_rule_cards: HashSet::new(),
             expanded_setting_groups: HashSet::new(),
             update: UpdateModel::new(),
@@ -930,6 +946,7 @@ impl WinderustApp {
             _numeric_input_subscription: None,
             _dashboard_search_subscription: None,
             _process_list_search_subscription: None,
+            _cpu_allocation_preset_name_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
@@ -952,6 +969,7 @@ impl WinderustApp {
         app.subscribe_to_numeric_input(window, cx);
         app.subscribe_to_dashboard_search_input(window, cx);
         app.subscribe_to_process_list_search_input(window, cx);
+        app.subscribe_to_cpu_allocation_preset_name_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
         app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         app.subscribe_to_activity_sliders(window, cx);
@@ -997,6 +1015,11 @@ impl Render for WinderustApp {
 
         let search_query = self.dashboard_search_query(cx);
         let search_active = !search_query.is_empty();
+        let show_cpu_allocation_presets_panel = !search_active
+            && matches!(
+                self.shell.page,
+                Page::CpuSetsSoft | Page::ProcessorAffinityHard
+            );
         let page_body = if search_active {
             self.render_search_results_page(&search_query, cx)
         } else {
@@ -1063,6 +1086,8 @@ impl Render for WinderustApp {
             .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
                 if app.update.startup_modal_visible {
                     app.dismiss_startup_update_modal(cx);
+                } else if app.cpu_allocation_preset_editor.is_some() {
+                    app.close_cpu_allocation_preset_editor(cx);
                 } else if app.process_list.details.is_some() {
                     app.save_process_details(cx);
                 } else {
@@ -1105,7 +1130,12 @@ impl Render for WinderustApp {
                             .min_h(px(0.0))
                             .overflow_hidden()
                             .child(page_scroll_area),
-                    ),
+                    )
+                    .child(if show_cpu_allocation_presets_panel {
+                        self.render_cpu_allocation_presets_panel(cx)
+                    } else {
+                        div().into_any_element()
+                    }),
             )
             .child(if show_unsaved_popup {
                 self.render_unsaved_popup(unsaved_popup_vanish_progress, cx)
@@ -1120,6 +1150,11 @@ impl Render for WinderustApp {
             })
             .child(if self.process_list.details.is_some() {
                 self.render_process_details_modal(window, cx)
+            } else {
+                div().into_any_element()
+            })
+            .child(if self.cpu_allocation_preset_editor.is_some() {
+                self.render_cpu_allocation_preset_modal(window, cx)
             } else {
                 div().into_any_element()
             })

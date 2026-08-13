@@ -88,7 +88,8 @@ pub(super) fn app_suspension_required(settings: &Settings) -> bool {
 pub(super) fn cpu_sets_soft_required(settings: &Settings) -> bool {
     settings.cpu_sets_soft.enabled
         && settings.cpu_sets_soft.rules.iter().any(|rule| {
-            enabled_executable_path_rule(rule.enabled, &rule.executable_path) && rule.core_mask != 0
+            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+                && rule.has_cpu_selection()
         })
 }
 
@@ -96,7 +97,7 @@ pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
     settings.processor_affinity_hard.enabled
         && settings.processor_affinity_hard.rules.iter().any(|rule| {
             enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && rule.core_mask != 0
+                && rule.has_cpu_selection()
                 && !settings
                     .cpu_sets_soft
                     .contains_rule_for(&rule.executable_path)

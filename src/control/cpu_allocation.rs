@@ -1227,13 +1227,6 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_names(&self, owner: ControlOwner) -> Vec<String> {
-        self.managed_identities(owner)
-            .into_iter()
-            .map(|identity| identity.name.clone())
-            .collect()
-    }
-
     pub(crate) fn policy_managed_process_paths(&self, owner: ControlOwner) -> Vec<String> {
         self.managed_identities(owner)
             .into_iter()

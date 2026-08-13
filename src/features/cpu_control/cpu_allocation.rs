@@ -25,9 +25,10 @@ use crate::{
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget},
     },
+    features::priority_control::PriorityProcessTier,
     foreground::{
-        contains_process_name, process_executable_path, process_failure_key, process_session_id,
-        same_executable_path, unique_app_names, ProtectedProcesses,
+        contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
+        process_session_id, same_executable_path, ProtectedProcesses,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
@@ -47,7 +48,6 @@ pub struct CpuAllocationSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
-    pub adjusted_apps: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -145,11 +145,7 @@ impl CpuAllocationManager {
         let enabled_process_names = settings
             .rules
             .iter()
-            .filter(|rule| {
-                rule.enabled
-                    && rule_has_target(rule)
-                    && Path::new(rule.executable_path.trim()).is_absolute()
-            })
+            .filter(|rule| cpu_allocation_rule_is_active(rule))
             .filter_map(|rule| Path::new(&rule.executable_path).file_name())
             .filter_map(|name| name.to_str())
             .map(str::to_ascii_lowercase)
@@ -166,7 +162,9 @@ impl CpuAllocationManager {
             );
         }
 
-        if settings.protect_foreground_app && foreground_process_id.is_none() {
+        let (needs_foreground, needs_visible_windows) =
+            cpu_allocation_observation_requirements(&settings.rules);
+        if needs_foreground && foreground_process_id.is_none() {
             return self.paused_snapshot(
                 coordinator,
                 owner,
@@ -176,7 +174,7 @@ impl CpuAllocationManager {
             );
         }
 
-        let visible_window_process_ids = if settings.protect_visible_window_apps {
+        let visible_window_process_ids = if needs_visible_windows {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
                 return self.paused_snapshot(
                     coordinator,
@@ -219,10 +217,16 @@ impl CpuAllocationManager {
         };
 
         let scanned_processes = processes.len();
-        let protected_processes = ProtectedProcesses::capture(
+        let foreground_executable_path = foreground_process_id.and_then(|id| {
+            processes
+                .iter()
+                .find(|process| process.id == id)
+                .and_then(process_executable_path)
+        });
+        let visible_processes = ProtectedProcesses::capture(
             processes.as_ref(),
-            settings.protect_foreground_app,
-            foreground_process_id,
+            false,
+            None,
             visible_window_process_ids,
         );
         let mut targets = Vec::new();
@@ -246,20 +250,29 @@ impl CpuAllocationManager {
             let Some(executable_path) = process_executable_path(process) else {
                 continue;
             };
-            if protected_processes.contains(process.id, &executable_path) {
-                continue;
-            }
             let Some(creation_time) = process.creation_time else {
                 continue;
             };
 
             if let Some(rule) = matching_rule(&settings.rules, &executable_path) {
+                let foreground = is_foreground_process(
+                    process.id,
+                    &executable_path,
+                    foreground_process_id,
+                    foreground_executable_path.as_deref(),
+                );
+                let visible_window =
+                    !foreground && visible_processes.contains(process.id, &executable_path);
+                let core_mask = cpu_allocation_rule_core_mask(rule, foreground, visible_window);
+                if core_mask == 0 {
+                    continue;
+                }
                 targets.push(CpuAllocationTarget {
                     process_id: process.id,
                     process_name: process.name.clone(),
                     executable_path: executable_path.to_string_lossy().into_owned(),
                     mode,
-                    core_mask: rule.core_mask,
+                    core_mask,
                     creation_time,
                 });
             }
@@ -420,12 +433,6 @@ impl CpuAllocationManager {
             }
         }
 
-        let adjusted_apps = unique_app_names(
-            coordinator
-                .policy_managed_process_names(owner)
-                .iter()
-                .map(String::as_str),
-        );
         CpuAllocationSnapshot {
             enabled: true,
             scanned_processes,
@@ -433,7 +440,6 @@ impl CpuAllocationManager {
             skipped_processes,
             failed_processes: failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            adjusted_apps,
             message,
             last_error: failures.last_error,
         }
@@ -730,7 +736,6 @@ impl Default for CpuAllocationSnapshot {
             skipped_processes: 0,
             failed_processes: 0,
             auto_excluded_processes: Vec::new(),
-            adjusted_apps: Vec::new(),
             message: "CPU allocation disabled.".to_owned(),
             last_error: None,
         }
@@ -972,14 +977,38 @@ fn matching_rule<'a>(
     executable_path: &Path,
 ) -> Option<&'a CpuAllocationRule> {
     rules.iter().find(|rule| {
-        rule.enabled
-            && rule_has_target(rule)
+        cpu_allocation_rule_is_active(rule)
             && same_executable_path(Path::new(&rule.executable_path), executable_path)
     })
 }
 
-fn rule_has_target(rule: &CpuAllocationRule) -> bool {
-    rule.core_mask != 0
+fn cpu_allocation_rule_is_active(rule: &CpuAllocationRule) -> bool {
+    rule.enabled && rule.has_cpu_selection() && Path::new(rule.executable_path.trim()).is_absolute()
+}
+
+fn cpu_allocation_observation_requirements(rules: &[CpuAllocationRule]) -> (bool, bool) {
+    let mut needs_foreground = false;
+    let mut needs_visible_windows = false;
+    for rule in rules
+        .iter()
+        .filter(|rule| cpu_allocation_rule_is_active(rule))
+    {
+        needs_foreground |= rule.focus_core_mask != rule.visible_window_core_mask;
+        needs_visible_windows |= rule.visible_window_core_mask != rule.background_core_mask;
+    }
+    (needs_foreground, needs_visible_windows)
+}
+
+fn cpu_allocation_rule_core_mask(
+    rule: &CpuAllocationRule,
+    foreground: bool,
+    visible_window: bool,
+) -> u64 {
+    PriorityProcessTier::from_flags(foreground, visible_window).select(
+        rule.focus_core_mask,
+        rule.visible_window_core_mask,
+        rule.background_core_mask,
+    )
 }
 
 #[cfg(test)]
@@ -992,17 +1021,23 @@ mod tests {
             CpuAllocationRule {
                 enabled: false,
                 executable_path: r"C:\Apps\Browser\browser.exe".to_owned(),
-                core_mask: 1,
+                focus_core_mask: 1,
+                visible_window_core_mask: 1,
+                background_core_mask: 1,
             },
             CpuAllocationRule {
                 enabled: true,
                 executable_path: r"C:\Apps\Backup\backup.exe".to_owned(),
-                core_mask: 0,
+                focus_core_mask: 0,
+                visible_window_core_mask: 0,
+                background_core_mask: 0,
             },
             CpuAllocationRule {
                 enabled: true,
                 executable_path: r" C:\Apps\Worker\Worker.EXE ".to_owned(),
-                core_mask: 0b11,
+                focus_core_mask: 0b001,
+                visible_window_core_mask: 0b010,
+                background_core_mask: 0b100,
             },
         ];
 
@@ -1010,6 +1045,40 @@ mod tests {
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Browser\browser.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Backup\backup.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"D:\Other\worker.exe")).is_none());
+    }
+
+    #[test]
+    fn cpu_allocation_rule_prefers_focus_then_visible_window_then_background() {
+        let rule = CpuAllocationRule {
+            enabled: true,
+            executable_path: r"C:\Apps\Worker\worker.exe".to_owned(),
+            focus_core_mask: 0b001,
+            visible_window_core_mask: 0b010,
+            background_core_mask: 0b100,
+        };
+
+        assert_eq!(cpu_allocation_rule_core_mask(&rule, true, true), 0b001);
+        assert_eq!(cpu_allocation_rule_core_mask(&rule, false, true), 0b010);
+        assert_eq!(cpu_allocation_rule_core_mask(&rule, false, false), 0b100);
+    }
+
+    #[test]
+    fn cpu_allocation_observations_are_required_only_when_tiers_differ() {
+        for (focus, visible, background, expected) in [
+            (1, 1, 1, (false, false)),
+            (2, 1, 1, (true, false)),
+            (1, 1, 2, (false, true)),
+            (2, 1, 2, (true, true)),
+        ] {
+            let rule = CpuAllocationRule {
+                enabled: true,
+                executable_path: r"C:\Apps\Worker\worker.exe".to_owned(),
+                focus_core_mask: focus,
+                visible_window_core_mask: visible,
+                background_core_mask: background,
+            };
+            assert_eq!(cpu_allocation_observation_requirements(&[rule]), expected);
+        }
     }
 
     #[test]

@@ -508,7 +508,7 @@ impl WinderustApp {
                 })
                 .count()
         });
-        h_flex()
+        let app_name = h_flex()
             .flex_1()
             .min_w(px(0.0))
             .overflow_hidden()
@@ -546,7 +546,15 @@ impl WinderustApp {
                     .text_size(px(TEXT_HEADER_SIZE))
                     .line_height(px(TEXT_HEADER_LINE_HEIGHT))
                     .child(display_name),
-            )
+            );
+
+        h_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .items_center()
+            .gap_2()
+            .child(app_name)
             .child(self.process_rule_path(process))
             .into_any_element()
     }
