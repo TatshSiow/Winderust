@@ -126,12 +126,12 @@
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
   the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
   `src/platform/windows/cpu_allocation.rs`.
-- CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog containing
-  read-only hardware-derived Core Presets and editable user-defined presets. Core Presets can be
-  viewed but not changed. Every rule independently selects Focus, Visible Window,
-  and Background presets with Focus > Visible Window > Background precedence. Applying a preset
-  copies its current mask into that tier; later preset edits or deletion do not silently rewrite
-  configured rules.
+- CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog. The
+  topology-derived Core Presets are read-only: All, P-cores, E-cores, All cores no SMT, P-cores no
+  SMT, and E-cores no SMT. Custom presets remain editable. Every rule independently selects Focus,
+  Visible Window, and Background masks with Focus > Visible Window > Background precedence.
+  Selecting a preset copies its current mask into that tier; later preset edits or deletion do not
+  silently rewrite configured rules.
 - Memory Trim and Stop Process / Stop Process Tree are typed, result-bearing runtime commands.
   `src/control/memory_trim.rs` and `src/control/process_termination.rs` own command semantics;
   their raw calls live only in the matching `src/platform/windows/` adapters. Both revalidate exact

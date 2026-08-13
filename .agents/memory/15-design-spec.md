@@ -89,14 +89,17 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Use collapsible setting groups for advanced or multi-row settings.
 - Put explanatory text in muted helper labels or info popovers, not large instruction blocks.
 - Settings that affect Windows behavior should show conservative defaults and explicit enable controls.
-- CPU Sets (Soft) and Processor Affinity (Hard) place their shared custom-preset manager in a
-  fixed right-side rail beside the page viewport, matching the navigation panel structure. Add and
-  edit use the existing full-window modal style. The rail presents Core Presets and custom presets
-  as separate rounded rows without divider lines or resting fills, using the navigation panel's
-  compact row and text scale; the row background appears only on hover. Core Presets expose a
-  read-only CPU-mask view, while custom presets remain editable. Compact rule tables use Active, App Name,
-  Executable Path, Focus, Visible Window, Background, and Actions columns without expandable
-  per-rule CPU grids.
+
+### CPU Allocation
+
+- CPU Sets (Soft) and Processor Affinity (Hard) share a fixed Presets rail at the right edge of the
+  page viewport, matching the navigation panel structure.
+- Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
+  delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
+  edit, and view use the existing full-window modal style.
+- Rule tables use Active, App Name, Executable Path, Focus, Visible Window, Background, and Actions
+  columns. Each policy column selects a Core or custom preset; do not restore expandable per-rule
+  CPU grids.
 
 ## Localization
 

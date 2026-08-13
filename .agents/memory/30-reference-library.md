@@ -381,7 +381,15 @@ Implementation entry points:
 
 Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / Workload Engine. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance.
 
-Background Efficiency, Core Limiter, CPU Sets (Soft), and Processor Affinity (Hard) can protect the current foreground app or apps with visible windows through the shared process-list boundary. Foreground protection resolves the foreground window to its process. Visible-window protection enumerates top-level windows and keeps those that are visible, not minimized, and not DWM-cloaked. It also protects sibling processes with the same executable path. A fully covered window still qualifies because `IsWindowVisible` reports window style state rather than pixel occlusion.
+Background Efficiency and Core Limiter expose Protect Foreground App and Protect Apps with Visible
+Windows. CPU Sets (Soft) and Processor Affinity (Hard) instead classify each matched process as
+Focus, Visible Window, or Background and select that rule's corresponding CPU mask. Foreground
+resolution starts from the active window; visible-window detection keeps top-level windows that are
+visible, not minimized, and not DWM-cloaked. Both classifications include sibling processes with
+the same executable path. A fully covered window still qualifies because `IsWindowVisible` reports
+window style state rather than pixel occlusion. CPU allocation skips a foreground or visible-window
+observation when the adjacent tier masks are identical and the observation cannot change the
+selected mask.
 
 Implementation paths:
 
@@ -391,7 +399,7 @@ Implementation paths:
 - `src/platform/windows/cpu_allocation.rs`: sole live affinity/CPU Set query and setter adapter,
   including packed `GetSystemCpuSetInformation` topology-buffer conversion.
 - `src/features/cpu_control/cpu_allocation.rs`: explicit-rule discovery,
-  foreground/visible-window protection, topology policy, failure suppression,
+  Focus/Visible Window/Background tier selection, topology policy, failure suppression,
   status, and Action Log reporting.
 - `src/features/cpu_control/core_limiter.rs`: CPU sampling, sustain/cooldown
   hysteresis, and limit policy only.
@@ -431,8 +439,8 @@ Windows adapter and crash-recovery mirror follow this contract.
 | `GetActiveProcessorGroupCount` | Detects multi-group systems where single-mask affinity APIs are group-relative. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount |
 | Processor Groups | Explains why hard affinity masks are group-relative and why multi-group systems need special handling. | https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups |
 | CPU Sets | Explains soft processor preference while remaining more compatible with OS power management. | https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets |
-| `GetForegroundWindow` / `GetWindowThreadProcessId` | Resolves the current active top-level window to the process protected by Protect Foreground App. | [GetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow) / [GetWindowThreadProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid) |
-| `EnumWindows` / `IsWindowVisible` / `IsIconic` | Enumerates top-level windows and filters hidden or minimized windows for Protect Apps with Visible Windows. | [EnumWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows) / [IsWindowVisible](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-iswindowvisible) / [IsIconic](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isiconic) |
+| `GetForegroundWindow` / `GetWindowThreadProcessId` | Resolves the current active top-level window for Focus-tier selection and foreground-protection features. | [GetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow) / [GetWindowThreadProcessId](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid) |
+| `EnumWindows` / `IsWindowVisible` / `IsIconic` | Enumerates top-level windows and filters hidden or minimized windows for Visible Window tiers and visible-window protection. | [EnumWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows) / [IsWindowVisible](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-iswindowvisible) / [IsIconic](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isiconic) |
 | `DwmGetWindowAttribute(DWMWA_CLOAKED)` | Excludes windows hidden by DWM, including windows not shown on the current virtual desktop. | [DwmGetWindowAttribute](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmgetwindowattribute) / [DWMWINDOWATTRIBUTE](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute) |
 
 ## App Suspension

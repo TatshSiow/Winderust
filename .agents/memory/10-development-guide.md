@@ -212,7 +212,7 @@ and the corrected commit must be the tagged source.
 - Feature backends use the UI names. CPU Sets (Soft) and Processor Affinity
   (Hard) retain separate settings, pages, rules, status, and Action Log labels;
   `src/features/cpu_control/cpu_allocation.rs` owns their discovery, topology,
-  protection, and reporting policy, while the typed controller owns the shared
+  tier selection, and reporting policy, while the typed controller owns the shared
   Windows mechanism and restoration state. Core Limiter retains sampling and
   hysteresis only. Workload Engine retains pressure, selection, and tuning only.
   Workload Engine process sampling and identity helpers live in
@@ -286,10 +286,7 @@ Process-control features must keep these defaults:
   reverse application order so one feature cannot restore another feature's
   intermediate value. `RuntimeCore::shutdown` and `PowerPlanController` own the
   automatic restoration order; `RuntimeHandle` restores Winderust self-power;
-  `WinderustApp` owns the reverse-order Process List quick-action stack for
-  properties not yet converted to typed runtime controllers. Dynamic Priority
-  Boost, Thread Priority, I/O Priority, GPU Priority, and Memory Priority Process List actions
-  are owned and restored by `RuntimeCore`.
+  reversible Process List actions are owned and restored by `RuntimeCore`.
 - Before every reversible process, thread, App Suspension, or automatic
   power-plan mutation, synchronously send the captured original and expected
   state to the external crash-recovery watchdog and wait for its acknowledgement.

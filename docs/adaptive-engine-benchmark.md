@@ -354,102 +354,11 @@ Prefer changes that improve median and p95 together. Ignore one-off wins where
 average improves only because of a single outlier. If a preset is slower by less
 than about 3%, treat it as neutral unless repeated runs show the same direction.
 
-Previous reference run after the one-parameter optimization pass:
+## Saved Results
 
-| Case | Average foreground time | Median foreground time | P95 foreground time | Average vs Off |
-| --- | ---: | ---: | ---: | ---: |
-| Off | 289.93 ms | 288.64 ms | 297.23 ms | baseline |
-| Low Impact | 261.99 ms | 263.03 ms | 268.07 ms | 9.6% faster |
-| Foreground First | 148.42 ms | 145.27 ms | 151.42 ms | 48.8% faster |
-
-Richer reference run with stability and background-throughput metrics:
-
-| Case | Average foreground time | P95 foreground time | Foreground jitter | P95 minus median | Foreground iterations/sec | Background throughput retained vs Off |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Off | 844.28 ms | 892.48 ms | 59.31 ms | 71.09 ms | 1,480,548 | baseline |
-| Low Impact | 826.93 ms | 853.80 ms | 19.35 ms | 36.50 ms | 1,511,608 | 96.1% |
-| Foreground First | 251.25 ms | 256.34 ms | 6.07 ms | 2.87 ms | 4,975,123 | 84.2% |
-
-That richer run shows why a single compact score is risky: Foreground First
-improved both speed and stability, while Low Impact mostly improved stability.
-
-Previous paired methodology validation on Intel Core 5 210H, 12 logical processors:
-
-| Case | Median improvement avg | P95 improvement avg | Repeat passes won |
-| --- | ---: | ---: | ---: |
-| Low Impact | -0.7% | -2.2% | 0/3 |
-| Foreground First | 60.1% | 54.9% | 3/3 |
-
-Use this result to avoid over-tuning Low Impact from this synthetic loop. It
-validates the method for large scheduling changes, but priority-only changes
-need longer runs, more hardware, or real app traces before changing global
-defaults.
-
-Previous paired validation after adding background-throughput measurement on the same CPU:
-
-| Case | Median improvement avg | P95 improvement avg | Background throughput retained avg |
-| --- | ---: | ---: | ---: |
-| Low Impact | 10.8% | 41.5% | 100.0% |
-| Foreground First | 72.9% | 84.7% | 29.5% |
-
-This shows the foreground/background cost directly: Foreground First is the
-only large foreground win, but it deliberately gives up background throughput.
-Low Impact may be useful for a light touch.
-
-Latest CPU-loop validation after standard/all-P topology tuning on AMD Ryzen 7 7735HS, 16 logical processors:
-
-| Case | Median improvement avg | P95 improvement avg | Background throughput retained avg | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: |
-| Low Impact | 34.3% | 44.1% | 91.0% | 3/3 |
-| Foreground First | 49.9% | 52.9% | 66.2% | 3/3 |
-| Max Foreground | 50.5% | 55.5% | 16.6% | 3/3 |
-
-This run used the standard/all-P benchmark approximation: Low Impact limited
-background workers to 11 logical processors, Foreground First to 8, and Max
-Foreground to 1.
-
-Latest Adaptive Engine preset CPU-loop check on AMD Ryzen 7 7735HS, 16 logical
-processors, 3 passes, 5 rounds, 1,000,000 foreground iterations per round, with
-the score suite and RAPL package-power sampling:
-
-| Case | Median latency vs Off | P95 latency vs Off | Foreground throughput vs Off | Background retained vs Off | Background latency vs Off | Package power vs Off | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Off | 228.67 ms | 239.84 ms | 4,540,008 iter/s | 100.0% | 1.00x | 63.90 W | baseline |
-| Powersave | 377.30 ms (-70.6%) | 378.55 ms (-65.1%) | 2,643,422 iter/s (-41.8%) | 82.7% | 1.21x (+20.9%) | 10.97 W (-82.8%) | 0/3 |
-| Balanced | 181.46 ms (+24.2%) | 187.33 ms (+24.7%) | 5,423,882 iter/s (+19.5%) | 83.2% | 1.20x (+20.3%) | 21.16 W (-66.9%) | 3/3 |
-| Performance | 123.99 ms (+47.1%) | 125.15 ms (+50.4%) | 8,033,565 iter/s (+76.9%) | 66.6% | 1.50x (+50.2%) | 57.91 W (-9.4%) | 3/3 |
-| Speed | 119.07 ms (+44.7%) | 119.35 ms (+47.6%) | 8,410,122 iter/s (+85.2%) | 8.3% | 12.05x (+1,105.4%) | 22.65 W (-64.5%) | 3/3 |
-
-This run validates the current split with broader coverage: Balanced clears the
-repeat-pass gate and saves package power but gives up score throughput,
-Performance keeps a larger background lane while improving several score components,
-and Speed now wins every score component in this run while making the
-background lane much slower by design.
-
-Native WinSAT D3D was checked on the same machine, but this Windows build no
-longer runs the D3D assessment. The XML reports `NoD3DTestRun` and hardcoded
-sentinel values, so it is not a valid gaming/GPU benchmark.
-
-Latest foreground I/O-loop validation on Intel Core 5 210H, 12 logical processors:
-
-| Case | Avg latency vs Off | Foreground IOPS vs Off | Median latency vs Off | P95 latency vs Off | Interactivity vs no-load | Background throughput vs Off | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Off | 74.61 ms | 55,604 | 75.45 ms | 80.11 ms | 36.7% | 100.0% | baseline |
-| Low Impact | 52.38 ms (+29.8%) | 76,377 (+37.4%) | 54.79 ms (+27.4%) | 55.68 ms (+30.5%) | 52.3% | 75.2% | 3/3 |
-| Foreground First | 27.43 ms (+63.2%) | 145,830 (+162.3%) | 27.43 ms (+63.6%) | 27.85 ms (+65.2%) | 99.8% | 19.8% | 3/3 |
-| Max Foreground | 27.15 ms (+63.6%) | 147,368 (+165.0%) | 27.09 ms (+64.1%) | 27.56 ms (+65.6%) | 100.8% | 19.6% | 3/3 |
-
-Latest Winderust launch scenario on AMD Ryzen 7 7735HS after launch-grace tuning:
-
-| Case | Median improvement avg | Median improvement min | P95 improvement avg | P95 improvement min | Background throughput retained avg | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Low Impact | 3.8% | 0.0% | 3.8% | 0.0% | 99.8% | 1/3 |
-| Foreground First | -4.8% | -12.5% | -4.8% | -12.5% | 99.9% | 1/3 |
-
-Launch grace keeps background throughput intact while the foreground app starts,
-but this app-launch scenario still does not validate stronger Foreground First
-launch behavior. Treat the CPU-loop wins as scheduler headroom, not guaranteed
-app-startup improvement.
+Machine-specific reports and their raw JSON live in [`benchmark/`](../benchmark/README.md). Keep
+this guide focused on methodology; add new measurements to a dated hardware report instead of
+embedding a moving "latest result" here.
 
 ## Known Limitations
 
@@ -466,8 +375,7 @@ app-startup improvement.
 - It does not test real foreground-app detection, Winderust exclusions, restore,
   cooldown, launch boost,
   or failure handling.
-- Hard affinity may make CPU-share behavior look harsher than Winderust Soft CPU
-  Sets.
+- Hard affinity may make CPU-share behavior look harsher than Winderust CPU Sets (Soft).
 - Thermal throttling and Windows background services can move results by several
   percent.
 - The power-drain benchmark needs a Windows `Energy Meter` or `Power Meter`

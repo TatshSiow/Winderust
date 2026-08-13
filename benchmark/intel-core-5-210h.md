@@ -29,7 +29,7 @@ Performance was the less disruptive high-performance result: it improved paired
 median and p95 latency by about 35% while retaining 99.0% of background throughput.
 The PowerShell runner omits adaptive affinity on hybrid CPUs and does not launch
 the app automation loop, so this result does not exercise runtime custom-plan
-tier switching or the Soft CPU Set topology floor.
+tier switching or the CPU Sets (Soft) topology floor.
 
 Command:
 
