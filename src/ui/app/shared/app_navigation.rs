@@ -199,14 +199,20 @@ pub(in crate::ui::app) fn nav_row(
     page: Page,
     selected: bool,
     collapsed: bool,
+    expansion_progress: f32,
     enabled_feature_count: Option<usize>,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let row_id = SharedString::from(format!("nav-row-{page:?}"));
     let hover_id = row_id.to_string();
     let (hovered, _) = card_hover_snapshot(&hover_id);
-    let bg_layer = animated_nav_row_bg(&hover_id, selected);
+    let bg_layer = animated_nav_row_bg(
+        &hover_id,
+        selected,
+        nav_row_highlight_width(NAV_PANE_WIDTH, expansion_progress),
+    );
     let content_opacity = if selected || hovered { 1.0 } else { 0.86 };
+    let expansion_progress = expansion_progress.clamp(0.0, 1.0);
     let hover_row_id = (!selected).then_some(hover_id);
 
     h_flex()
@@ -215,7 +221,7 @@ pub(in crate::ui::app) fn nav_row(
         .w_full()
         .items_center()
         .pl(px(0.0))
-        .when(!collapsed, |row| row.pr(px(12.0)))
+        .pr(px(12.0))
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_CONTROL))
@@ -231,25 +237,26 @@ pub(in crate::ui::app) fn nav_row(
         .child(bg_layer)
         .child(nav_selection_indicator(page, selected))
         .child(nav_icon(page, selected, cx))
-        .when(!collapsed, |row| {
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .opacity(content_opacity * expansion_progress)
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                .truncate()
+                .child(page.label()),
+        )
+        .when_some(enabled_feature_count, |row, count| {
+            let (background, foreground) = if count == 0 {
+                (sidebar_hover_color(), muted_text_color())
+            } else {
+                (success_bg_color(), success_text_color())
+            };
             row.child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .opacity(content_opacity)
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .truncate()
-                    .child(page.label()),
+                status_pill_div(count.to_string(), background, foreground)
+                    .opacity(expansion_progress),
             )
-            .when_some(enabled_feature_count, |row, count| {
-                let (background, foreground) = if count == 0 {
-                    (sidebar_hover_color(), muted_text_color())
-                } else {
-                    (success_bg_color(), success_text_color())
-                };
-                row.child(status_pill_div(count.to_string(), background, foreground))
-            })
         })
         .when(collapsed, |row| {
             let label = page.label();
@@ -262,18 +269,21 @@ pub(in crate::ui::app) fn nav_action_row(
     icon: NavIcon,
     label: String,
     collapsed: bool,
+    expansion_progress: f32,
+    expanded_rail_width: f32,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let (hovered, _) = card_hover_snapshot(id);
     let hover_id = id.to_owned();
     let content_opacity = if hovered { 0.9 } else { 0.68 };
+    let expansion_progress = expansion_progress.clamp(0.0, 1.0);
 
     h_flex()
         .id(id)
         .h(px(40.0))
         .w_full()
         .items_center()
-        .when(!collapsed, |row| row.pr(px(12.0)))
+        .pr(px(12.0))
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_CONTROL))
@@ -282,20 +292,22 @@ pub(in crate::ui::app) fn nav_action_row(
             set_card_hovered(hover_id.clone(), *hovered, cx);
         })
         .cursor_pointer()
-        .child(animated_nav_row_bg(id, false))
+        .child(animated_nav_row_bg(
+            id,
+            false,
+            nav_row_highlight_width(expanded_rail_width, expansion_progress),
+        ))
         .child(nav_action_icon(icon, content_opacity, cx))
-        .when(!collapsed, |row| {
-            row.child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .opacity(content_opacity)
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .truncate()
-                    .child(label.clone()),
-            )
-        })
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .opacity(content_opacity * expansion_progress)
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                .truncate()
+                .child(label.clone()),
+        )
         .when(collapsed, |row| {
             row.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
         })
@@ -318,7 +330,19 @@ pub(in crate::ui::app) fn nav_action_icon(
         .child(Icon::new(icon).with_size(px(18.0)))
 }
 
-pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyElement {
+pub(in crate::ui::app) fn nav_row_highlight_width(
+    expanded_rail_width: f32,
+    expansion_progress: f32,
+) -> f32 {
+    const COMPACT_ROW_WIDTH: f32 = 40.0;
+    const RAIL_HORIZONTAL_PADDING: f32 = 24.0;
+
+    COMPACT_ROW_WIDTH
+        + (expanded_rail_width - RAIL_HORIZONTAL_PADDING - COMPACT_ROW_WIDTH)
+            * expansion_progress.clamp(0.0, 1.0)
+}
+
+pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool, width: f32) -> AnyElement {
     let (hovered, _) = card_hover_snapshot(id);
     let hover_active = !selected && hovered;
     let selected_layer = div()
@@ -336,7 +360,10 @@ pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyEl
 
     div()
         .absolute()
-        .inset_0()
+        .left_0()
+        .top_0()
+        .w(px(width))
+        .h_full()
         .child(with_state_change_motion(
             selected_layer,
             SharedString::from(format!("nav-row-selected-{id}")),
@@ -480,6 +507,8 @@ pub(in crate::ui::app) enum NavIcon {
     Palette,
     PanelLeftClose,
     PanelLeftOpen,
+    PanelRightClose,
+    PanelRightOpen,
     PanelsTopLeft,
     Play,
     Plus,
@@ -530,6 +559,8 @@ impl IconNamed for NavIcon {
             Self::Palette => "icons/palette.svg",
             Self::PanelLeftClose => "icons/panel-left-close.svg",
             Self::PanelLeftOpen => "icons/panel-left-open.svg",
+            Self::PanelRightClose => "icons/panel-right-close.svg",
+            Self::PanelRightOpen => "icons/panel-right-open.svg",
             Self::PanelsTopLeft => "icons/panels-top-left.svg",
             Self::Play => "icons/play.svg",
             Self::Plus => "icons/plus.svg",
@@ -574,5 +605,14 @@ mod tests {
         );
         assert_eq!(feature_page_enabled(&settings, Page::Home), None);
         assert_eq!(section_enabled_feature_count(&settings, Page::Home), None);
+    }
+
+    #[test]
+    fn navigation_highlight_keeps_compact_and_expanded_row_insets() {
+        assert_eq!(nav_row_highlight_width(NAV_PANE_WIDTH, 0.0), 40.0);
+        assert_eq!(
+            nav_row_highlight_width(NAV_PANE_WIDTH, 1.0),
+            NAV_PANE_WIDTH - 24.0
+        );
     }
 }

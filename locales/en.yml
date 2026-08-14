@@ -11,6 +11,8 @@ tray:
 nav:
   collapse_navigation: "Hide sidebar"
   expand_navigation: "Show sidebar"
+  collapse_side_panel: "Collapse side panel"
+  expand_side_panel: "Expand side panel"
   home: "Home"
   winderust_features: "Winderust Features"
   power_plan_control: "Power Plan Control"

@@ -375,7 +375,7 @@ impl WinderustApp {
             self.render_cpu_allocation_presets_content(cx)
         };
 
-        page_side_panel(header, body, cx)
+        page_side_panel(header, body)
     }
 
     fn render_cpu_allocation_presets_content(&self, cx: &mut Context<Self>) -> AnyElement {

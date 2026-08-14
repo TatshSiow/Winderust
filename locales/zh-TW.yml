@@ -11,6 +11,8 @@ tray:
 nav:
   collapse_navigation: "收起側欄"
   expand_navigation: "展開側欄"
+  collapse_side_panel: "收起側邊面板"
+  expand_side_panel: "展開側邊面板"
   home: "首頁"
   winderust_features: "Winderust 功能"
   power_plan_control: "電源計畫控制"

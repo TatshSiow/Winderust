@@ -67,41 +67,91 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_sidebar_search(
         &self,
+        collapsed: bool,
+        expansion_progress: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        const SEARCH_ID: &str = "navigation-search";
+
         let search_focused = self
             .inputs
             .dashboard_search
             .read(cx)
             .focus_handle(cx)
             .is_focused(window);
+        let (search_hovered, _) = card_hover_snapshot(SEARCH_ID);
+        let field_width = nav_row_highlight_width(NAV_PANE_WIDTH, expansion_progress);
+        let expanded_field_width = NAV_PANE_WIDTH - 24.0;
+        let icon_opacity = if search_focused || search_hovered {
+            0.9
+        } else {
+            0.68
+        };
 
         div()
-            .id("sidebar-search")
+            .id(SEARCH_ID)
             .occlude()
             .w_full()
             .h(px(40.0))
             .min_w(px(0.0))
-            .flex()
-            .items_center()
+            .relative()
+            .overflow_hidden()
+            .rounded(px(BRAND_RADIUS_CONTROL))
+            .on_hover(|hovered, _, cx| {
+                set_card_hovered(SEARCH_ID.to_owned(), *hovered, cx);
+            })
             .on_mouse_down_out(cx.listener(|_, _: &gpui::MouseDownEvent, window, cx| {
                 window.blur();
                 cx.notify();
             }))
+            .when(collapsed, |search| {
+                search
+                    .cursor_pointer()
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(t!("home.search_placeholder").to_string()).build(window, cx)
+                    })
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.toggle_navigation_collapsed(cx);
+                        if !app.settings.general.navigation_collapsed {
+                            let focus_handle =
+                                app.inputs.dashboard_search.read(cx).focus_handle(cx);
+                            window.on_next_frame(move |window, _| focus_handle.focus(window));
+                        }
+                    }))
+            })
             .child(
-                app_input(&self.inputs.dashboard_search, search_focused, cx)
-                    .pl(px(28.0))
+                div()
+                    .absolute()
+                    .inset_0()
+                    .opacity(1.0 - expansion_progress.clamp(0.0, 1.0))
+                    .child(animated_nav_row_bg(SEARCH_ID, false, field_width)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(4.0))
+                    .w(px(field_width))
+                    .h(px(32.0))
+                    .overflow_hidden()
+                    .rounded(px(BRAND_RADIUS_CONTROL))
                     .child(
-                        nav_action_icon(
-                            NavIcon::Search,
-                            if search_focused { 0.9 } else { 0.68 },
-                            cx,
-                        )
-                        .absolute()
-                        .left(px(0.0))
-                        .top(px(5.0)),
+                        div()
+                            .w(px(expanded_field_width))
+                            .min_w(px(expanded_field_width))
+                            .opacity(expansion_progress.clamp(0.0, 1.0))
+                            .child(
+                                app_input(&self.inputs.dashboard_search, search_focused, cx)
+                                    .pl(px(40.0)),
+                            ),
                     ),
+            )
+            .child(
+                nav_action_icon(NavIcon::Search, icon_opacity, cx)
+                    .absolute()
+                    .left_0()
+                    .top(px(9.0)),
             )
             .into_any_element()
     }
@@ -113,9 +163,9 @@ impl WinderustApp {
     ) -> AnyElement {
         let collapsed = self.settings.general.navigation_collapsed;
         let expanded = !collapsed;
-        let nav_width =
-            navigation_pane_width_at_progress(control_motion_progress("navigation-pane", expanded));
-        let mut nav = v_flex()
+        let expansion_progress = control_motion_progress("navigation-pane", expanded);
+        let nav_width = navigation_pane_width_at_progress(expansion_progress);
+        let nav = v_flex()
             .w(px(nav_width))
             .min_w(px(nav_width))
             .h_full()
@@ -125,27 +175,12 @@ impl WinderustApp {
             .bg(cx.theme().sidebar);
 
         let drawer = v_flex().flex_1().min_h(px(0.0)).overflow_y_scrollbar();
-        let mut drawer_items = v_flex().gap_1().p_3();
-        if collapsed {
-            drawer_items = drawer_items.child(
-                nav_action_row(
-                    "navigation-search",
-                    NavIcon::Search,
-                    t!("home.search_placeholder").to_string(),
-                    true,
-                    cx,
-                )
-                .on_click(cx.listener(|app, _, window, cx| {
-                    app.toggle_navigation_collapsed(cx);
-                    if !app.settings.general.navigation_collapsed {
-                        let focus_handle = app.inputs.dashboard_search.read(cx).focus_handle(cx);
-                        window.on_next_frame(move |window, _| focus_handle.focus(window));
-                    }
-                })),
-            );
-        } else {
-            drawer_items = drawer_items.child(self.render_sidebar_search(window, cx));
-        }
+        let mut drawer_items = v_flex().gap_1().p_3().child(self.render_sidebar_search(
+            collapsed,
+            expansion_progress,
+            window,
+            cx,
+        ));
         let mut footer = v_flex()
             .flex_shrink_0()
             .gap_1()
@@ -166,11 +201,18 @@ impl WinderustApp {
             } else {
                 None
             };
-            let row = nav_row(page, selected, collapsed, enabled_feature_count, cx)
-                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                    app.navigate_to(target, cx);
-                }))
-                .into_any_element();
+            let row = nav_row(
+                page,
+                selected,
+                collapsed,
+                expansion_progress,
+                enabled_feature_count,
+                cx,
+            )
+            .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                app.navigate_to(target, cx);
+            }))
+            .into_any_element();
 
             if nav_section_in_footer(section.landing_page) {
                 footer = footer.child(row);
@@ -187,12 +229,24 @@ impl WinderustApp {
                     .my_2()
                     .bg(cx.theme().sidebar_border),
             )
-            .child(self.render_navigation_toggle(collapsed, cx));
-        nav = nav.child(drawer.child(drawer_items)).child(footer);
-        nav.into_any_element()
+            .child(self.render_navigation_toggle(collapsed, expansion_progress, cx));
+        nav.child(
+            v_flex()
+                .w(px(NAV_PANE_WIDTH))
+                .min_w(px(NAV_PANE_WIDTH))
+                .h_full()
+                .child(drawer.child(drawer_items))
+                .child(footer),
+        )
+        .into_any_element()
     }
 
-    fn render_navigation_toggle(&self, collapsed: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_navigation_toggle(
+        &self,
+        collapsed: bool,
+        expansion_progress: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let tooltip = t!(if collapsed {
             "nav.expand_navigation"
         } else {
@@ -208,6 +262,8 @@ impl WinderustApp {
             },
             tooltip,
             collapsed,
+            expansion_progress,
+            NAV_PANE_WIDTH,
             cx,
         )
         .on_click(cx.listener(|app, _, _, cx| {

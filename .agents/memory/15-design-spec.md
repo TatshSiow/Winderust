@@ -16,7 +16,10 @@ Prefer visible state, compact controls, and predictable rows over large illustra
   searchable when expanded and keeps a search action in its remembered compact
   icon rail; the quiet navigation-styled toggle stays below a divider in normal
   sidebar flow rather than floating over content. Keep icon and row geometry
-  stable across the animated expanded/compact transition.
+  stable across the animated expanded/compact transition; selected and hover
+  surfaces retain rounded compact-row geometry instead of being edge-clipped.
+  Search remains one persistent field across both states so its icon, text
+  metrics, focus, and rounded surface never swap or reflow during the motion.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs`.
@@ -63,6 +66,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Respect `AnimationMode`: system/on/off flows through `ui_animations_enabled()`.
 - Use existing motion helpers such as `with_optional_motion`, `begin_expandable_motion`, `begin_control_motion`, hover layers, and collapsible chevrons.
 - Motion should clarify state changes: selected navigation, hover, dropdowns, popovers, switches, collapsible groups, and process groups.
+- Right-side status and preset rails slide at the window edge using the shared control-motion timing, collapse to the same 64 px action-row pattern as navigation, and retain their content only until an exit transition completes.
 - Keep animation IDs stable and bounded. Do not create unbounded global motion state keyed by volatile data.
 
 ## Process List

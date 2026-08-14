@@ -479,6 +479,9 @@ pub struct WinderustApp {
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
     cpu_allocation_side_panel_tab: CpuAllocationSidePanelTab,
+    side_panel_collapsed: bool,
+    side_panel_visible: bool,
+    retained_side_panel_page: Option<Page>,
     editing_numeric: Option<NumericField>,
     cpu_allocation_preset_editor: Option<CpuAllocationPresetEditor>,
     expanded_rule_cards: HashSet<RuleCardTarget>,
@@ -941,6 +944,9 @@ impl WinderustApp {
             start_minimized_applied: false,
             editing_rule_title: None,
             cpu_allocation_side_panel_tab: CpuAllocationSidePanelTab::default(),
+            side_panel_collapsed: false,
+            side_panel_visible: false,
+            retained_side_panel_page: None,
             editing_numeric: None,
             cpu_allocation_preset_editor: None,
             expanded_rule_cards: HashSet::new(),
@@ -1029,16 +1035,7 @@ impl Render for WinderustApp {
 
         let search_query = self.dashboard_search_query(cx);
         let search_active = !search_query.is_empty();
-        let side_panel = if search_active {
-            None
-        } else if matches!(
-            self.shell.page,
-            Page::CpuSetsSoft | Page::ProcessorAffinityHard
-        ) {
-            Some(self.render_cpu_allocation_side_panel(self.shell.page, cx))
-        } else {
-            self.render_page_status_panel(self.shell.page, cx)
-        };
+        let side_panel = self.render_animated_side_panel(search_active, cx);
         let page_body = if search_active {
             self.render_search_results_page(&search_query, cx)
         } else {
@@ -1194,6 +1191,23 @@ mod tests {
             NAV_PANE_COMPACT_WIDTH
         );
         assert_eq!(navigation_pane_width_at_progress(1.0), NAV_PANE_WIDTH);
+    }
+
+    #[test]
+    fn side_panel_width_tracks_visibility_progress() {
+        assert_eq!(page_side_panel_width_at_progress(0.0, 1.0), 0.0);
+        assert_eq!(
+            page_side_panel_width_at_progress(1.0, 0.0),
+            PAGE_SIDE_PANEL_COMPACT_WIDTH
+        );
+        assert_eq!(
+            page_side_panel_width_at_progress(1.0, 1.0),
+            PAGE_SIDE_PANEL_WIDTH
+        );
+        assert_eq!(
+            page_side_panel_width_at_progress(2.0, 2.0),
+            PAGE_SIDE_PANEL_WIDTH
+        );
     }
 
     #[test]

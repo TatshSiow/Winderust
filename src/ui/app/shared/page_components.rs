@@ -1,20 +1,100 @@
 use crate::ui::app::*;
 
 pub(in crate::ui::app) const PAGE_SIDE_PANEL_WIDTH: f32 = 360.0;
+pub(in crate::ui::app) const PAGE_SIDE_PANEL_COMPACT_WIDTH: f32 = NAV_PANE_COMPACT_WIDTH;
 
-pub(in crate::ui::app) fn page_side_panel(
-    header: AnyElement,
-    body: AnyElement,
+pub(in crate::ui::app) fn page_side_panel_width_at_progress(
+    presence_progress: f32,
+    expansion_progress: f32,
+) -> f32 {
+    let expanded_width = PAGE_SIDE_PANEL_COMPACT_WIDTH
+        + (PAGE_SIDE_PANEL_WIDTH - PAGE_SIDE_PANEL_COMPACT_WIDTH)
+            * expansion_progress.clamp(0.0, 1.0);
+    expanded_width * presence_progress.clamp(0.0, 1.0)
+}
+
+pub(in crate::ui::app) fn animated_page_side_panel(
+    panel: AnyElement,
+    presence_progress: f32,
+    expansion_progress: f32,
+    collapsed: bool,
     cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
+    let width = page_side_panel_width_at_progress(presence_progress, expansion_progress);
+    let content_opacity = expansion_progress.clamp(0.0, 1.0);
+    let toggle = side_panel_toggle_row(collapsed, expansion_progress, cx);
     v_flex()
-        .w(px(PAGE_SIDE_PANEL_WIDTH))
-        .min_w(px(PAGE_SIDE_PANEL_WIDTH))
+        .w(px(width))
+        .min_w(px(width))
         .h_full()
         .overflow_hidden()
         .border_l_1()
         .border_color(cx.theme().sidebar_border)
         .bg(cx.theme().sidebar)
+        .child(
+            div()
+                .flex_1()
+                .w(px(PAGE_SIDE_PANEL_WIDTH))
+                .min_w(px(PAGE_SIDE_PANEL_WIDTH))
+                .min_h(px(0.0))
+                .opacity(content_opacity)
+                .when(expansion_progress < 0.999, |content| {
+                    content.block_mouse_except_scroll()
+                })
+                .child(panel),
+        )
+        .child(
+            v_flex()
+                .flex_shrink_0()
+                .gap_1()
+                .p_3()
+                .border_t_1()
+                .border_color(cx.theme().sidebar_border)
+                .child(toggle),
+        )
+        .into_any_element()
+}
+
+fn side_panel_toggle_row(
+    collapsed: bool,
+    expansion_progress: f32,
+    cx: &mut Context<WinderustApp>,
+) -> AnyElement {
+    let (icon, label) = if collapsed {
+        (
+            NavIcon::PanelRightOpen,
+            t!("nav.expand_side_panel").to_string(),
+        )
+    } else {
+        (
+            NavIcon::PanelRightClose,
+            t!("nav.collapse_side_panel").to_string(),
+        )
+    };
+
+    nav_action_row(
+        "toggle-page-side-panel",
+        icon,
+        label,
+        collapsed,
+        expansion_progress,
+        PAGE_SIDE_PANEL_WIDTH,
+        cx,
+    )
+    .on_click(cx.listener(|app, _, _, cx| {
+        app.side_panel_collapsed = !app.side_panel_collapsed;
+        begin_control_motion("page-side-panel-expanded", !app.side_panel_collapsed, cx);
+        cx.notify();
+    }))
+    .into_any_element()
+}
+
+pub(in crate::ui::app) fn page_side_panel(header: AnyElement, body: AnyElement) -> AnyElement {
+    v_flex()
+        .w(px(PAGE_SIDE_PANEL_WIDTH))
+        .min_w(px(PAGE_SIDE_PANEL_WIDTH))
+        .h_full()
+        .overflow_hidden()
         .child(header)
         .child(body)
         .into_any_element()
@@ -158,6 +238,56 @@ fn status_section(title: String, body: AnyElement) -> gpui::Div {
 }
 
 impl WinderustApp {
+    fn render_side_panel_for_page(&self, page: Page, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if matches!(page, Page::CpuSetsSoft | Page::ProcessorAffinityHard) {
+            Some(self.render_cpu_allocation_side_panel(page, cx))
+        } else {
+            self.render_page_status_panel(page, cx)
+        }
+    }
+
+    pub(in crate::ui::app) fn render_animated_side_panel(
+        &mut self,
+        search_active: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let page = self.shell.page;
+        let requested_panel = if search_active {
+            None
+        } else {
+            self.render_side_panel_for_page(page, cx)
+        };
+        let visible = requested_panel.is_some();
+
+        if visible {
+            self.retained_side_panel_page = Some(page);
+        }
+        if visible != self.side_panel_visible {
+            self.side_panel_visible = visible;
+            begin_control_motion("page-side-panel", visible, cx);
+        }
+
+        let progress = control_motion_progress("page-side-panel", visible);
+        if !visible && progress <= 0.001 {
+            self.retained_side_panel_page = None;
+            return None;
+        }
+
+        let panel = match requested_panel {
+            Some(panel) => panel,
+            None => self.render_side_panel_for_page(self.retained_side_panel_page?, cx)?,
+        };
+        let expanded = !self.side_panel_collapsed;
+        let expansion_progress = control_motion_progress("page-side-panel-expanded", expanded);
+        Some(animated_page_side_panel(
+            panel,
+            progress,
+            expansion_progress,
+            self.side_panel_collapsed,
+            cx,
+        ))
+    }
+
     fn power_plan_name(&self, guid: Option<&str>) -> String {
         let Some(guid) = guid else {
             return t!("common.none").to_string();
@@ -523,7 +653,7 @@ impl WinderustApp {
             .p_3()
             .child(status)
             .into_any_element();
-        Some(page_side_panel(header, body, cx))
+        Some(page_side_panel(header, body))
     }
 }
 
