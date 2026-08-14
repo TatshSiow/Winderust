@@ -230,17 +230,6 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
     t!(key).to_string()
 }
 
-pub(in crate::ui::app) fn adaptive_power_profile_label(profile: &str) -> String {
-    match profile {
-        "Idle" => t!("adaptive_engine.profile_idle"),
-        "Responsive" => t!("adaptive_engine.profile_responsive"),
-        "Sustained" => t!("adaptive_engine.profile_sustained"),
-        "Burst" => t!("adaptive_engine.profile_burst"),
-        _ => t!("common.unknown"),
-    }
-    .to_string()
-}
-
 pub(in crate::ui::app) fn weekday_short_label(day: WeekdaySetting) -> String {
     match day {
         WeekdaySetting::Mon => t!("weekday.mon"),

@@ -146,14 +146,40 @@ impl WinderustApp {
                 ],
                 window,
                 cx,
+            ));
+        self.page_shell(Page::MemoryTrim, cx)
+            .child(feature_toggle_switch_with_help(
+                "memory-trim-enabled",
+                t!("memory_trim.enable").to_string(),
+                tooltip_lines(vec![
+                    t!("memory_trim.intro_1").to_string(),
+                    t!("memory_trim.intro_2").to_string(),
+                    t!("memory_trim.intro_3").to_string(),
+                ]),
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.memory_trim.enabled = *checked;
+                    cx.notify();
+                }),
             ))
-            .child(setting_group_with_help(
-                SettingGroupTarget::MemoryTrimMonitoring,
-                (
-                    t!("memory_trim.category_monitoring").to_string(),
-                    t!("memory_trim.category_monitoring_help").to_string(),
-                ),
+            .child(disabled_feature_body("memory-trim-body", body, enabled, cx))
+            .into_any_element()
+    }
+
+    pub(in crate::ui::app) fn render_memory_trim_status_card(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let enabled = self.settings.memory_trim.enabled;
+        v_flex()
+            .gap_3()
+            .child(
+                self.render_normalized_feature_status(Page::MemoryTrim)
+                    .expect("Memory Trim always has normalized runtime status"),
+            )
+            .child(
                 primary_control_button(Button::new("memory-trim-now"), cx)
+                    .w_full()
                     .label(t!("memory_trim.trim_now").to_string())
                     .disabled(!enabled)
                     .on_click(cx.listener(|app, _, _, cx| {
@@ -190,83 +216,8 @@ impl WinderustApp {
                         })
                         .detach();
                         cx.notify();
-                    }))
-                    .into_any_element(),
-                self.is_setting_group_collapsed(SettingGroupTarget::MemoryTrimMonitoring),
-                vec![stat_grid(vec![
-                    (
-                        t!("memory_trim.status").to_string(),
-                        localized_runtime_status(&self.feature_status.memory_trim.message),
-                    ),
-                    (
-                        t!("memory_trim.memory_load").to_string(),
-                        self.feature_status
-                            .memory_trim
-                            .memory_load_percent
-                            .map(|percent| format!("{percent}%"))
-                            .unwrap_or_else(|| t!("common.unknown").to_string()),
-                    ),
-                    (
-                        t!("memory_trim.trimmed_processes").to_string(),
-                        self.feature_status
-                            .memory_trim
-                            .trimmed_processes
-                            .to_string(),
-                    ),
-                    (
-                        t!("memory_trim.candidate_processes").to_string(),
-                        self.feature_status
-                            .memory_trim
-                            .candidate_processes
-                            .to_string(),
-                    ),
-                    (
-                        t!("memory_trim.scanned_processes").to_string(),
-                        self.feature_status
-                            .memory_trim
-                            .scanned_processes
-                            .to_string(),
-                    ),
-                    (
-                        t!("memory_trim.skipped_processes").to_string(),
-                        self.feature_status
-                            .memory_trim
-                            .skipped_processes
-                            .to_string(),
-                    ),
-                    (
-                        t!("memory_trim.failed_actions").to_string(),
-                        self.feature_status.memory_trim.failed_processes.to_string(),
-                    ),
-                    (
-                        t!("common.last_failure").to_string(),
-                        self.feature_status
-                            .memory_trim
-                            .last_error
-                            .clone()
-                            .unwrap_or_else(|| t!("common.none").to_string()),
-                    ),
-                ])
-                .into_any_element()],
-                window,
-                cx,
-            ));
-        self.page_shell(Page::MemoryTrim, cx)
-            .child(feature_toggle_switch_with_help(
-                "memory-trim-enabled",
-                t!("memory_trim.enable").to_string(),
-                tooltip_lines(vec![
-                    t!("memory_trim.intro_1").to_string(),
-                    t!("memory_trim.intro_2").to_string(),
-                    t!("memory_trim.intro_3").to_string(),
-                ]),
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.memory_trim.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(disabled_feature_body("memory-trim-body", body, enabled, cx))
+                    })),
+            )
             .into_any_element()
     }
 

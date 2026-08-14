@@ -39,7 +39,7 @@ use gpui_component::{
 };
 
 use crate::{
-    action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult, ActionLogSummaries},
     activity::{
         merge_activity_snapshot, ActivitySnapshot, ActivityState, ControllerActivityDetector,
         IdleDetector,
@@ -74,6 +74,7 @@ use crate::{
         gpu_priority::current_process_gpu_priority,
         io_priority::current_process_io_priority,
         memory_priority::current_process_memory_priority,
+        power_plan::PowerPlanStatus,
         priority_efficiency::{current_efficiency_mode, current_process_priority},
         thread_priority::current_process_thread_priority,
     },
@@ -400,6 +401,13 @@ struct ProcessDetailsDraft {
     executable_path: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CpuAllocationSidePanelTab {
+    Status,
+    #[default]
+    Presets,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct ProcessResourceUsage {
     cpu_percent: Option<f32>,
@@ -415,7 +423,9 @@ pub struct WinderustApp {
     activity: ActivitySnapshot,
     dashboard: DashboardModel,
     feature_status: Arc<RuntimeFeatureStatus>,
+    power_plan_status: Arc<PowerPlanStatus>,
     action_log_entries: Arc<Vec<ActionLogEntry>>,
+    action_log_summaries: Arc<ActionLogSummaries>,
     last_appearance_change_generation: u64,
     last_runtime_status_generation: u64,
     last_auto_exclusion_patch_generation: u64,
@@ -468,6 +478,7 @@ pub struct WinderustApp {
     win32_priority_separation_status: String,
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
+    cpu_allocation_side_panel_tab: CpuAllocationSidePanelTab,
     editing_numeric: Option<NumericField>,
     cpu_allocation_preset_editor: Option<CpuAllocationPresetEditor>,
     expanded_rule_cards: HashSet<RuleCardTarget>,
@@ -866,7 +877,9 @@ impl WinderustApp {
                 timer_resolution: initial_timer_resolution_status,
                 ..Default::default()
             }),
+            power_plan_status: Arc::new(PowerPlanStatus::default()),
             action_log_entries: Arc::new(Vec::new()),
+            action_log_summaries: Arc::new(ActionLogSummaries::new()),
             last_appearance_change_generation: 0,
             last_runtime_status_generation: 0,
             last_auto_exclusion_patch_generation: 0,
@@ -927,6 +940,7 @@ impl WinderustApp {
             win32_priority_separation_status,
             start_minimized_applied: false,
             editing_rule_title: None,
+            cpu_allocation_side_panel_tab: CpuAllocationSidePanelTab::default(),
             editing_numeric: None,
             cpu_allocation_preset_editor: None,
             expanded_rule_cards: HashSet::new(),
@@ -1015,11 +1029,16 @@ impl Render for WinderustApp {
 
         let search_query = self.dashboard_search_query(cx);
         let search_active = !search_query.is_empty();
-        let show_cpu_allocation_presets_panel = !search_active
-            && matches!(
-                self.shell.page,
-                Page::CpuSetsSoft | Page::ProcessorAffinityHard
-            );
+        let side_panel = if search_active {
+            None
+        } else if matches!(
+            self.shell.page,
+            Page::CpuSetsSoft | Page::ProcessorAffinityHard
+        ) {
+            Some(self.render_cpu_allocation_side_panel(self.shell.page, cx))
+        } else {
+            self.render_page_status_panel(self.shell.page, cx)
+        };
         let page_body = if search_active {
             self.render_search_results_page(&search_query, cx)
         } else {
@@ -1131,11 +1150,7 @@ impl Render for WinderustApp {
                             .overflow_hidden()
                             .child(page_scroll_area),
                     )
-                    .child(if show_cpu_allocation_presets_panel {
-                        self.render_cpu_allocation_presets_panel(cx)
-                    } else {
-                        div().into_any_element()
-                    }),
+                    .children(side_panel),
             )
             .child(if show_unsaved_popup {
                 self.render_unsaved_popup(unsaved_popup_vanish_progress, cx)

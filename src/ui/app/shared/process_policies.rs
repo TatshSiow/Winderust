@@ -1265,12 +1265,6 @@ pub(in crate::ui::app) fn timer_resolution_edit_value(value_100ns: u32) -> Strin
     value.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-pub(in crate::ui::app) fn format_optional_timer_resolution(value_100ns: Option<u32>) -> String {
-    value_100ns
-        .map(timer_resolution::format_resolution_ms)
-        .unwrap_or_else(|| t!("common.unknown").to_string())
-}
-
 pub(in crate::ui::app) fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
     match priority {
         ProcessMemoryPriority::VeryLow => {

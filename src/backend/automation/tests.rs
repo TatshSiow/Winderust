@@ -2,6 +2,9 @@ use super::*;
 use chrono::{Datelike, Duration as ChronoDuration, Local};
 use std::sync::Arc;
 
+use crate::action_log::{
+    ActionLogFeature, ActionLogFeatureSummary, ActionLogResult, ActionLogSummaries,
+};
 use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
     AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CoreLimiterRule,
@@ -157,6 +160,71 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
         .status_snapshot_since(1)
         .expect("power-plan status advances the status generation");
     assert_eq!(snapshot.power_plan_status.as_ref(), &status);
+}
+
+#[test]
+fn power_plan_action_logs_are_attributed_to_the_winning_rule_family() {
+    assert_eq!(
+        power_plan_action_log_feature(DecisionState::ByForeground),
+        Some(ActionLogFeature::ByForeground)
+    );
+    assert_eq!(
+        power_plan_action_log_feature(DecisionState::ByRunningApp),
+        Some(ActionLogFeature::ByRunningApp)
+    );
+    assert_eq!(
+        power_plan_action_log_feature(DecisionState::ByCpuLoad),
+        Some(ActionLogFeature::ByCpuLoad)
+    );
+    assert_eq!(
+        power_plan_action_log_feature(DecisionState::ByActivityIdle),
+        Some(ActionLogFeature::ByActivity)
+    );
+    assert_eq!(
+        power_plan_action_log_feature(DecisionState::ByTime),
+        Some(ActionLogFeature::ByTime)
+    );
+    assert_eq!(
+        power_plan_action_log_feature(DecisionState::PausedWhilePluggedIn),
+        None
+    );
+}
+
+#[test]
+fn clearing_action_log_immediately_clears_runtime_summaries() {
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let entry = ActionLogEntry {
+        sequence: 1,
+        timestamp_epoch_ms: 1,
+        feature: ActionLogFeature::ByTime,
+        process_id: None,
+        process_name: String::new(),
+        result: ActionLogResult::Applied,
+        reason: "applied".to_owned(),
+    };
+    update_action_log(
+        &automation.shared,
+        vec![entry.clone()],
+        ActionLogSummaries::from([(
+            ActionLogFeature::ByTime,
+            ActionLogFeatureSummary {
+                successful_actions: 1,
+                last_success: Some(entry),
+                ..Default::default()
+            },
+        )]),
+    );
+    let published = automation
+        .status_snapshot_since(1)
+        .expect("published action summary advances status generation");
+
+    automation.clear_action_log();
+
+    let cleared = automation
+        .status_snapshot_since(published.generation)
+        .expect("clearing action summaries advances status generation");
+    assert!(cleared.action_log_entries.is_empty());
+    assert!(cleared.action_log_summaries.is_empty());
 }
 
 #[test]

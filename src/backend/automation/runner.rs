@@ -1,5 +1,5 @@
 use super::*;
-use crate::action_log::ActionLogFeature;
+use crate::action_log::{ActionLogFeature, ActionLogResult};
 use crate::runtime::observations::CycleObservations;
 
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
@@ -95,7 +95,7 @@ pub(super) struct RuntimeCore {
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
     pub(super) known_process_ids: BTreeSet<u32>,
-    published_action_log_sequence: Option<u64>,
+    published_action_log_revision: u64,
 }
 
 #[derive(Default)]
@@ -281,13 +281,17 @@ impl RuntimeCore {
     }
 
     pub(super) fn publish_action_log_if_changed(&mut self, shared: &SharedAutomationState) {
-        let latest_sequence = self.action_log.latest_sequence();
-        if self.published_action_log_sequence == latest_sequence {
+        let revision = self.action_log.revision();
+        if self.published_action_log_revision == revision {
             return;
         }
 
-        update_action_log_entries(shared, self.action_log.entries());
-        self.published_action_log_sequence = latest_sequence;
+        update_action_log(
+            shared,
+            self.action_log.entries(),
+            self.action_log.summaries(),
+        );
+        self.published_action_log_revision = revision;
     }
 
     pub(super) fn activity_snapshot(
@@ -518,7 +522,6 @@ impl RuntimeCore {
             &settings.by_running_app,
             settings.general.enabled,
             observations,
-            &mut self.action_log,
         )
     }
 
@@ -1079,23 +1082,58 @@ impl RuntimeCore {
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
+        let by_running_app = self.by_running_app_manager.active_decision().map(
+            |(rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
+                rule_name,
+                process_name,
+                power_plan_guid,
+            },
+        );
+        let action_process_name = by_running_app
+            .as_ref()
+            .map(|decision| decision.process_name.clone())
+            .unwrap_or_default();
         let decision_input = DecisionInput {
             activity_state: activity.state,
             foreground_executable_path,
             plugged_in: power_source::is_plugged_in(),
-            by_running_app: self.by_running_app_manager.active_decision().map(
-                |(rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
-                    rule_name,
-                    process_name,
-                    power_plan_guid,
-                },
-            ),
+            by_running_app,
             by_time: by_time_decision,
             by_cpu_load: by_cpu_load_decision,
         };
         let decision = decide(settings, decision_input);
-        self.power_plan_controller
+        let feature = power_plan_action_log_feature(decision.state);
+        let target_guid = decision.power_plan_guid.clone().unwrap_or_default();
+        let reason = decision.reason.clone();
+        match self
+            .power_plan_controller
             .reconcile_ordinary(decision, Instant::now())
+        {
+            Ok(applied) => {
+                if let (true, Some(feature)) = (applied, feature) {
+                    self.action_log.record(
+                        feature,
+                        None,
+                        action_process_name,
+                        ActionLogResult::Applied,
+                        format!("{reason} Applied power plan {target_guid}."),
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(feature) = feature {
+                    self.action_log.record(
+                        feature,
+                        None,
+                        action_process_name,
+                        ActionLogResult::Failed,
+                        format!("{reason} Power plan switch failed: {error}"),
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(super) fn refresh_active_plan(&mut self) -> Result<(), String> {
@@ -1115,6 +1153,21 @@ impl RuntimeCore {
 
     pub(super) fn power_plan_status(&self) -> PowerPlanStatus {
         self.power_plan_controller.status()
+    }
+}
+
+pub(super) fn power_plan_action_log_feature(state: DecisionState) -> Option<ActionLogFeature> {
+    match state {
+        DecisionState::ByForeground => Some(ActionLogFeature::ByForeground),
+        DecisionState::ByRunningApp => Some(ActionLogFeature::ByRunningApp),
+        DecisionState::ByTime => Some(ActionLogFeature::ByTime),
+        DecisionState::ByCpuLoad => Some(ActionLogFeature::ByCpuLoad),
+        DecisionState::ByActivityIdle | DecisionState::ByActivityActive => {
+            Some(ActionLogFeature::ByActivity)
+        }
+        DecisionState::Disabled
+        | DecisionState::PausedWhilePluggedIn
+        | DecisionState::NoPowerPlanSelected => None,
     }
 }
 

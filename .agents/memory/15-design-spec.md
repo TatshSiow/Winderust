@@ -92,8 +92,17 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ### CPU Allocation
 
-- CPU Sets (Soft) and Processor Affinity (Hard) share a fixed Presets rail at the right edge of the
-  page viewport, matching the navigation panel structure.
+- Runtime-backed feature pages use a fixed status rail at the right edge instead of interrupting
+  the settings flow. Every rail uses the same Running / Not running / Unknown state, process
+  counts, and latest success/failure Action Log summary; unavailable snapshot metrics show an
+  em dash rather than a fabricated zero. Action counts and latest outcomes are runtime telemetry,
+  independent of Action Log visibility mode and its bounded visible history; clearing the Action
+  Log resets both.
+- By Foreground, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
+  every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
+  Power-plan actions are recorded only after the controller verifies the Windows plan transition.
+- CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
+  tabs, matching the navigation panel structure.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
   delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
   edit, and view use the existing full-window modal style.

@@ -446,7 +446,11 @@ pub(in crate::ui::app) fn action_log_feature_label(feature: ActionLogFeature) ->
         ActionLogFeature::ProcessorAffinityHard => t!("nav.processor_affinity_hard").to_string(),
         ActionLogFeature::BackgroundEfficiency => t!("nav.background_efficiency").to_string(),
         ActionLogFeature::CoreLimiter => t!("nav.core_limiter").to_string(),
+        ActionLogFeature::ByForeground => t!("nav.by_foreground").to_string(),
         ActionLogFeature::ByRunningApp => t!("nav.by_running_app").to_string(),
+        ActionLogFeature::ByCpuLoad => t!("nav.by_cpu_load").to_string(),
+        ActionLogFeature::ByActivity => t!("nav.by_activity").to_string(),
+        ActionLogFeature::ByTime => t!("nav.by_time").to_string(),
         ActionLogFeature::WorkloadEngine => t!("nav.workload_engine").to_string(),
         ActionLogFeature::ProcessPriority => t!("nav.process_priority").to_string(),
         ActionLogFeature::ThreadPriority => t!("nav.thread_priority").to_string(),
@@ -621,14 +625,18 @@ pub(in crate::ui::app) enum ActionLogFeatureFilter {
 }
 
 impl ActionLogFeatureFilter {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 20] = [
         Self::All,
         Self::Feature(ActionLogFeature::AppSuspension),
         Self::Feature(ActionLogFeature::CpuSetsSoft),
         Self::Feature(ActionLogFeature::ProcessorAffinityHard),
         Self::Feature(ActionLogFeature::BackgroundEfficiency),
         Self::Feature(ActionLogFeature::CoreLimiter),
+        Self::Feature(ActionLogFeature::ByForeground),
         Self::Feature(ActionLogFeature::ByRunningApp),
+        Self::Feature(ActionLogFeature::ByCpuLoad),
+        Self::Feature(ActionLogFeature::ByActivity),
+        Self::Feature(ActionLogFeature::ByTime),
         Self::Feature(ActionLogFeature::WorkloadEngine),
         Self::Feature(ActionLogFeature::ProcessPriority),
         Self::Feature(ActionLogFeature::ThreadPriority),

@@ -197,6 +197,11 @@ impl WinderustApp {
                 }
             }
 
+            if !Arc::ptr_eq(&self.power_plan_status, &runtime_status.power_plan_status) {
+                self.power_plan_status = runtime_status.power_plan_status;
+                changed = true;
+            }
+
             if !Arc::ptr_eq(&self.feature_status, &runtime_status.feature_status) {
                 self.feature_status = runtime_status.feature_status;
                 changed = true;
@@ -204,6 +209,14 @@ impl WinderustApp {
 
             if !Arc::ptr_eq(&self.action_log_entries, &runtime_status.action_log_entries) {
                 self.action_log_entries = runtime_status.action_log_entries;
+                changed = true;
+            }
+
+            if !Arc::ptr_eq(
+                &self.action_log_summaries,
+                &runtime_status.action_log_summaries,
+            ) {
+                self.action_log_summaries = runtime_status.action_log_summaries;
                 changed = true;
             }
 

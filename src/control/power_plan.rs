@@ -214,10 +214,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         &mut self,
         decision: DecisionOutcome,
         now: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         self.last_decision = Some(decision);
         if self.adaptive_active() {
-            return Ok(());
+            return Ok(false);
         }
         self.refresh_active_plan_if_due(now)?;
 
@@ -226,7 +226,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             .as_ref()
             .and_then(|decision| decision.power_plan_guid.clone())
         else {
-            return Ok(());
+            return Ok(false);
         };
         if self
             .current_guid
@@ -234,7 +234,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             .is_some_and(|current| same_guid(current, &target_guid))
         {
             self.clear_switch_failure(&target_guid);
-            return Ok(());
+            return Ok(false);
         }
         if self.is_switch_suppressed(&target_guid)
             || self.last_switch_attempt.as_ref().is_some_and(|(guid, at)| {
@@ -242,7 +242,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     && now.saturating_duration_since(*at) < SWITCH_RETRY_INTERVAL
             })
         {
-            return Ok(());
+            return Ok(false);
         }
 
         self.last_switch_attempt = Some((target_guid.clone(), now));
@@ -269,7 +269,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 {
                     self.clear_ordinary_ownership();
                 }
-                Ok(())
+                Ok(true)
             }
             Err(error) => {
                 self.record_switch_failure(&target_guid);
@@ -825,6 +825,19 @@ mod tests {
         assert!(events.iter().any(|event| event == "begin:original->first"));
         assert!(events.iter().any(|event| event == "begin:first->second"));
         assert!(events.iter().any(|event| event == "begin:second->original"));
+    }
+
+    #[test]
+    fn ordinary_reconcile_reports_only_verified_switches() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+
+        assert!(controller
+            .reconcile_ordinary(decision(Some("target")), now)
+            .unwrap());
+        assert!(!controller
+            .reconcile_ordinary(decision(Some("target")), now + Duration::from_secs(1))
+            .unwrap());
     }
 
     #[test]

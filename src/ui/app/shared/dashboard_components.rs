@@ -1,44 +1,5 @@
 use crate::ui::app::*;
 
-pub(in crate::ui::app) fn stat_grid(rows: Vec<(String, String)>) -> gpui::Div {
-    let mut list = v_flex().w_full().min_w(px(0.0));
-    for (index, (label, value)) in rows.into_iter().enumerate() {
-        list = list.child(
-            h_flex()
-                .w_full()
-                .min_w(px(0.0))
-                .min_h(px(36.0))
-                .items_center()
-                .gap_3()
-                .px_4()
-                .when(index > 0, |row| {
-                    row.border_t_1().border_color(rgb(border_color()))
-                })
-                .child(
-                    div()
-                        .w(px(172.0))
-                        .flex_shrink_0()
-                        .truncate()
-                        .text_color(rgb(dim_text_color()))
-                        .text_size(px(TEXT_BODY_SIZE))
-                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .truncate()
-                        .text_color(rgb(primary_text_color()))
-                        .text_size(px(TEXT_BODY_SIZE))
-                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                        .child(value),
-                ),
-        );
-    }
-    branded_panel().py_1().child(list)
-}
-
 pub(in crate::ui::app) fn dashboard_card_slot(card: AnyElement) -> gpui::Div {
     div()
         .w(relative(0.49))

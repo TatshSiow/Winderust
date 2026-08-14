@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,14 +19,18 @@ pub struct ActionLogEntry {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ActionLogFeature {
     AppSuspension,
     CpuSetsSoft,
     ProcessorAffinityHard,
     BackgroundEfficiency,
     CoreLimiter,
+    ByForeground,
     ByRunningApp,
+    ByCpuLoad,
+    ByActivity,
+    ByTime,
     WorkloadEngine,
     ProcessPriority,
     ThreadPriority,
@@ -37,6 +41,16 @@ pub enum ActionLogFeature {
     MemoryTrim,
     TimerResolution,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActionLogFeatureSummary {
+    pub successful_actions: usize,
+    pub failed_actions: usize,
+    pub last_success: Option<ActionLogEntry>,
+    pub last_failed: Option<ActionLogEntry>,
+}
+
+pub type ActionLogSummaries = BTreeMap<ActionLogFeature, ActionLogFeatureSummary>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionLogResult {
@@ -49,8 +63,10 @@ pub enum ActionLogResult {
 pub struct ActionLog {
     entries: VecDeque<ActionLogEntry>,
     next_sequence: u64,
+    revision: u64,
     capacity: usize,
     mode: ActionLogMode,
+    summaries: ActionLogSummaries,
 }
 
 impl ActionLog {
@@ -59,8 +75,10 @@ impl ActionLog {
         Self {
             entries: VecDeque::with_capacity(capacity),
             next_sequence: 1,
+            revision: 0,
             capacity,
             mode: ActionLogMode::Full,
+            summaries: BTreeMap::new(),
         }
     }
 
@@ -76,29 +94,22 @@ impl ActionLog {
         result: ActionLogResult,
         reason: impl Into<String>,
     ) {
-        if !self.mode.should_record(result) {
-            return;
-        }
-
         let process_name = process_name.into();
         let reason = reason.into();
         let timestamp_epoch_ms = timestamp_epoch_ms();
         if result == ActionLogResult::Skipped
-            && self.entries.iter().rev().any(|entry| {
-                entry.feature == feature
-                    && entry.process_id == process_id
-                    && entry.process_name == process_name
-                    && entry.result == result
-                    && entry.reason == reason
-                    && timestamp_epoch_ms.saturating_sub(entry.timestamp_epoch_ms)
-                        < SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS
-            })
+            && (!self.mode.should_record(result)
+                || self.entries.iter().rev().any(|entry| {
+                    entry.feature == feature
+                        && entry.process_id == process_id
+                        && entry.process_name == process_name
+                        && entry.result == result
+                        && entry.reason == reason
+                        && timestamp_epoch_ms.saturating_sub(entry.timestamp_epoch_ms)
+                            < SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS
+                }))
         {
             return;
-        }
-
-        if self.entries.len() == self.capacity {
-            self.entries.pop_front();
         }
 
         let entry = ActionLogEntry {
@@ -111,19 +122,44 @@ impl ActionLog {
             reason,
         };
         self.next_sequence = self.next_sequence.saturating_add(1);
-        self.entries.push_back(entry);
+        match result {
+            ActionLogResult::Applied | ActionLogResult::Restored => {
+                let summary = self.summaries.entry(feature).or_default();
+                summary.successful_actions = summary.successful_actions.saturating_add(1);
+                summary.last_success = Some(entry.clone());
+            }
+            ActionLogResult::Failed => {
+                let summary = self.summaries.entry(feature).or_default();
+                summary.failed_actions = summary.failed_actions.saturating_add(1);
+                summary.last_failed = Some(entry.clone());
+            }
+            ActionLogResult::Skipped => {}
+        }
+        if self.mode.should_record(result) {
+            if self.entries.len() == self.capacity {
+                self.entries.pop_front();
+            }
+            self.entries.push_back(entry);
+        }
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn entries(&self) -> Vec<ActionLogEntry> {
         self.entries.iter().cloned().collect()
     }
 
-    pub fn latest_sequence(&self) -> Option<u64> {
-        self.entries.back().map(|entry| entry.sequence)
+    pub fn summaries(&self) -> ActionLogSummaries {
+        self.summaries.clone()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.summaries.clear();
+        self.revision = self.revision.wrapping_add(1);
     }
 }
 
@@ -215,24 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn action_log_latest_sequence_tracks_clear() {
-        let mut log = ActionLog::new(8);
-        assert_eq!(log.latest_sequence(), None);
-
-        log.record(
-            ActionLogFeature::CoreLimiter,
-            Some(1),
-            "a.exe",
-            ActionLogResult::Applied,
-            "ok",
-        );
-        assert_eq!(log.latest_sequence(), Some(1));
-
-        log.clear();
-        assert_eq!(log.latest_sequence(), None);
-    }
-
-    #[test]
     fn action_log_mode_filters_records() {
         let mut log = ActionLog::new(8);
         log.set_mode(ActionLogMode::Warning);
@@ -293,6 +311,40 @@ mod tests {
         );
 
         assert_eq!(log.entries().len(), 2);
+        assert_eq!(
+            log.summaries()[&ActionLogFeature::BackgroundEfficiency].successful_actions,
+            2
+        );
+    }
+
+    #[test]
+    fn summaries_are_not_limited_by_history_capacity_or_visibility_mode() {
+        let mut log = ActionLog::new(1);
+        log.set_mode(ActionLogMode::Off);
+        log.record(
+            ActionLogFeature::ByForeground,
+            None,
+            "",
+            ActionLogResult::Applied,
+            "first",
+        );
+        log.record(
+            ActionLogFeature::ByForeground,
+            None,
+            "",
+            ActionLogResult::Failed,
+            "second",
+        );
+
+        assert!(log.entries().is_empty());
+        let summary = &log.summaries()[&ActionLogFeature::ByForeground];
+        assert_eq!(summary.successful_actions, 1);
+        assert_eq!(summary.failed_actions, 1);
+        assert_eq!(summary.last_success.as_ref().unwrap().reason, "first");
+        assert_eq!(summary.last_failed.as_ref().unwrap().reason, "second");
+
+        log.clear();
+        assert!(log.summaries().is_empty());
     }
 
     #[test]

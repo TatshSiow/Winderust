@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
-    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ByRunningAppRule, ByRunningAppSettings},
     foreground::{
         contains_process_name, process_matches_executable_path, process_session_id,
@@ -42,29 +41,28 @@ impl ByRunningAppManager {
         settings: &ByRunningAppSettings,
         automation_enabled: bool,
         observations: &mut CycleObservations,
-        action_log: &mut ActionLog,
     ) -> ByRunningAppSnapshot {
         if !automation_enabled {
-            self.release(action_log, "automation disabled");
+            self.release();
             return ByRunningAppSnapshot::default();
         }
 
         if !settings.enabled {
-            self.release(action_log, "By Running App disabled");
+            self.release();
             return ByRunningAppSnapshot::default();
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            self.release(action_log, "current Windows session is unknown");
+            self.release();
             return ByRunningAppSnapshot::default();
         };
 
         let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(_) => {
-                self.release(action_log, "process list unavailable");
+                self.release();
                 return ByRunningAppSnapshot::default();
             }
         };
@@ -81,7 +79,7 @@ impl ByRunningAppManager {
         let matched = matching_rule_process(settings, &eligible_processes);
 
         let Some(matched) = matched else {
-            self.release(action_log, "no By Running App process is running");
+            self.release();
             return ByRunningAppSnapshot::default();
         };
 
@@ -89,16 +87,6 @@ impl ByRunningAppManager {
             return self.snapshot();
         }
 
-        action_log.record(
-            ActionLogFeature::ByRunningApp,
-            Some(matched.process_id),
-            matched.process_name.clone(),
-            ActionLogResult::Applied,
-            format!(
-                "Rule '{}' requested power plan {}.",
-                matched.rule_name, matched.target_guid
-            ),
-        );
         self.active = Some(matched);
         self.snapshot()
     }
@@ -131,18 +119,8 @@ impl ByRunningAppManager {
         })
     }
 
-    fn release(&mut self, action_log: &mut ActionLog, reason: &str) {
-        let Some(active) = self.active.take() else {
-            return;
-        };
-
-        action_log.record(
-            ActionLogFeature::ByRunningApp,
-            Some(active.process_id),
-            active.process_name,
-            ActionLogResult::Restored,
-            format!("{reason}; released By Running App decision."),
-        );
+    fn release(&mut self) {
+        self.active = None;
     }
 
     fn snapshot(&self) -> ByRunningAppSnapshot {

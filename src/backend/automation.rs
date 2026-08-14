@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogEntry},
+    action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
         input_tracker, merge_activity_snapshot, ControllerActivityDetector, IdleDetector,
         InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
@@ -66,6 +66,7 @@ use crate::{
     process_priority::{ProcessPriorityManager, ProcessPrioritySnapshot},
     rules::{
         decide, set_execution_failure_suppression_threshold, ByRunningAppDecision, DecisionInput,
+        DecisionState,
     },
     runtime::{
         observations::CycleObservations,
@@ -311,6 +312,7 @@ pub struct RuntimeStatusSnapshot {
     pub feature_status: Arc<RuntimeFeatureStatus>,
     pub(crate) power_plan_status: Arc<PowerPlanStatus>,
     pub action_log_entries: Arc<Vec<ActionLogEntry>>,
+    pub action_log_summaries: Arc<ActionLogSummaries>,
     pub appearance_change_generation: u64,
 }
 
@@ -544,6 +546,8 @@ impl RuntimeHandle {
             return;
         }
         state.status.action_log_entries = Arc::new(Vec::new());
+        state.status.action_log_summaries = Arc::new(ActionLogSummaries::new());
+        bump_status_generation(&self.shared, &mut state);
         state.action_log_clear_requested = true;
         state.change_generation = state.change_generation.wrapping_add(1);
         self.shared.changed.notify_one();
@@ -1456,8 +1460,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             );
         }
 
-        runner.publish_action_log_if_changed(&shared);
-
         let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {
             if scheduler.is_due(RefreshDomain::PowerPlanCheck, wait_now) {
@@ -1477,6 +1479,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
             None
         };
+        runner.publish_action_log_if_changed(&shared);
         update_power_plan_status(&shared, runner.power_plan_status());
 
         wait_for = scheduler.minimum_wait(

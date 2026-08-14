@@ -110,7 +110,6 @@ pub(in crate::ui::app) enum SettingGroupTarget {
     MemoryPriorityMaster,
     MemoryPriorityForegroundDetection,
     MemoryPriorityVisibleWindowDetection,
-    MemoryTrimMonitoring,
     MemoryTrimSafety,
     MemoryTrimThresholds,
     MemoryTrimWhen,

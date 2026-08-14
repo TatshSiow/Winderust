@@ -393,19 +393,27 @@ pub(super) fn update_status_with_auto_exclusions<T: PartialEq>(
     bump_status_generation(shared, &mut state);
 }
 
-pub(super) fn update_action_log_entries(
+pub(super) fn update_action_log(
     shared: &SharedAutomationState,
     entries: Vec<ActionLogEntry>,
+    summaries: ActionLogSummaries,
 ) {
     let mut state = lock_unpoisoned(&shared.state);
     let entries = Arc::new(entries);
-    if state.status.action_log_entries != entries {
-        state.status.action_log_entries = entries;
-        bump_status_generation(shared, &mut state);
+    let summaries = Arc::new(summaries);
+    if state.status.action_log_entries == entries && state.status.action_log_summaries == summaries
+    {
+        return;
     }
+    state.status.action_log_entries = entries;
+    state.status.action_log_summaries = summaries;
+    bump_status_generation(shared, &mut state);
 }
 
-fn bump_status_generation(shared: &SharedAutomationState, state: &mut AutomationWorkerState) {
+pub(super) fn bump_status_generation(
+    shared: &SharedAutomationState,
+    state: &mut AutomationWorkerState,
+) {
     state.status.generation = state.status.generation.wrapping_add(1);
     shared
         .status_generation

@@ -168,9 +168,6 @@ impl WinderustApp {
 
         self.page_shell(Page::BackgroundEfficiency, cx)
             .child(self.render_background_efficiency_enable_card(enabled, help, window, cx))
-            .when(enabled, |page| {
-                page.child(self.render_background_efficiency_status_card(cx))
-            })
             .child(disabled_feature_body(
                 "efficiency-exclusions-body",
                 body,
@@ -180,22 +177,22 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_background_efficiency_status_card(&self, cx: &mut Context<Self>) -> AnyElement {
-        let status = &self.feature_status.background_efficiency;
+    pub(in crate::ui::app) fn render_background_efficiency_status_card(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let access_denied_processes = self
+            .feature_status
+            .background_efficiency
+            .access_denied_processes;
         v_flex()
             .gap_2()
-            .child(stat_grid(vec![
-                (
-                    t!("background_efficiency.applied_processes").to_string(),
-                    status.throttled_processes.to_string(),
-                ),
-                (
-                    t!("background_efficiency.access_denied_processes").to_string(),
-                    status.access_denied_processes.to_string(),
-                ),
-            ]))
+            .child(
+                self.render_normalized_feature_status(Page::BackgroundEfficiency)
+                    .expect("Background Efficiency always has normalized runtime status"),
+            )
             .when(
-                status.access_denied_processes > 0 && !privilege::is_running_as_admin(),
+                access_denied_processes > 0 && !privilege::is_running_as_admin(),
                 |card| {
                     card.child(
                         h_flex().justify_end().child(

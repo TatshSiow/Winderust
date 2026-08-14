@@ -1,5 +1,532 @@
 use crate::ui::app::*;
 
+pub(in crate::ui::app) const PAGE_SIDE_PANEL_WIDTH: f32 = 360.0;
+
+pub(in crate::ui::app) fn page_side_panel(
+    header: AnyElement,
+    body: AnyElement,
+    cx: &mut Context<WinderustApp>,
+) -> AnyElement {
+    v_flex()
+        .w(px(PAGE_SIDE_PANEL_WIDTH))
+        .min_w(px(PAGE_SIDE_PANEL_WIDTH))
+        .h_full()
+        .overflow_hidden()
+        .border_l_1()
+        .border_color(cx.theme().sidebar_border)
+        .bg(cx.theme().sidebar)
+        .child(header)
+        .child(body)
+        .into_any_element()
+}
+
+#[derive(Clone, Copy)]
+enum FeatureRunState {
+    Running,
+    NotRunning,
+    Unknown,
+}
+
+struct FeatureStatusSummary {
+    state: FeatureRunState,
+    scanned: Option<usize>,
+    adjusted: Option<usize>,
+    protected_or_denied: Option<usize>,
+    skipped: Option<usize>,
+    last_error: Option<String>,
+    action_log_feature: ActionLogFeature,
+}
+
+fn feature_run_state(enabled: bool, unknown: bool) -> FeatureRunState {
+    if !enabled {
+        FeatureRunState::NotRunning
+    } else if unknown {
+        FeatureRunState::Unknown
+    } else {
+        FeatureRunState::Running
+    }
+}
+
+fn status_state_row(state: FeatureRunState) -> gpui::Div {
+    let (label, color) = match state {
+        FeatureRunState::Running => (t!("common.running").to_string(), success_text_color()),
+        FeatureRunState::NotRunning => (t!("common.not_running").to_string(), dim_text_color()),
+        FeatureRunState::Unknown => (t!("common.unknown").to_string(), warning_text_color()),
+    };
+    h_flex()
+        .min_h(px(34.0))
+        .gap_2()
+        .rounded(px(BRAND_RADIUS_SURFACE))
+        .bg(rgb(settings_card_color()))
+        .p_3()
+        .child(
+            div()
+                .flex_1()
+                .text_color(rgb(dim_text_color()))
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .child(t!("common.status").to_string()),
+        )
+        .child(div().size(px(8.0)).rounded_full().bg(rgb(color)))
+        .child(
+            div()
+                .text_color(rgb(color))
+                .text_size(px(TEXT_BODY_SIZE))
+                .child(label),
+        )
+}
+
+fn status_count_label(count: Option<usize>) -> String {
+    count
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "—".to_owned())
+}
+
+fn status_metric_row(label: String, value: String) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(32.0))
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .text_color(rgb(dim_text_color()))
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_color(rgb(primary_text_color()))
+                .text_size(px(TEXT_BODY_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .child(value),
+        )
+}
+
+fn status_log_row(
+    label: String,
+    entry: Option<&ActionLogEntry>,
+    fallback: Option<&str>,
+) -> gpui::Div {
+    let value = entry
+        .map(|entry| {
+            format!(
+                "[{}] {} — {}",
+                action_log_time_label(entry.timestamp_epoch_ms),
+                action_log_process_label(entry),
+                entry.reason
+            )
+        })
+        .or_else(|| fallback.map(|message| format!("[--:--:--] {message}")))
+        .unwrap_or_else(|| t!("common.none").to_string());
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .gap_1()
+        .pt_1()
+        .child(
+            div()
+                .text_color(rgb(dim_text_color()))
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                .child(label),
+        )
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .py_1()
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .child(value),
+        )
+}
+
+fn status_section(title: String, body: AnyElement) -> gpui::Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .gap_2()
+        .rounded(px(BRAND_RADIUS_SURFACE))
+        .bg(rgb(settings_card_color()))
+        .p_3()
+        .child(section_title_text(title))
+        .child(body)
+}
+
+impl WinderustApp {
+    fn power_plan_name(&self, guid: Option<&str>) -> String {
+        let Some(guid) = guid else {
+            return t!("common.none").to_string();
+        };
+        self.plans
+            .iter()
+            .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+            .map(|plan| plan.name.clone())
+            .unwrap_or_else(|| guid.to_owned())
+    }
+
+    fn render_power_plan_status(&self, page: Page) -> Option<AnyElement> {
+        let (feature_enabled, action_log_feature) = match page {
+            Page::ByForeground => (
+                self.settings.by_foreground.enabled,
+                ActionLogFeature::ByForeground,
+            ),
+            Page::ByRunningApp => (
+                self.settings.by_running_app.enabled,
+                ActionLogFeature::ByRunningApp,
+            ),
+            Page::ByCpuLoad => (
+                self.settings.by_cpu_load.enabled,
+                ActionLogFeature::ByCpuLoad,
+            ),
+            Page::ByActivity => (
+                self.settings.by_activity.enabled,
+                ActionLogFeature::ByActivity,
+            ),
+            Page::ByTime => (self.settings.by_time.enabled, ActionLogFeature::ByTime),
+            _ => return None,
+        };
+        let action_summary = self.action_log_summaries.get(&action_log_feature);
+        let successful_actions = v_flex()
+            .w_full()
+            .child(status_metric_row(
+                t!("common.success_count").to_string(),
+                action_summary
+                    .map_or(0, |summary| summary.successful_actions)
+                    .to_string(),
+            ))
+            .child(status_log_row(
+                t!("common.last_success").to_string(),
+                action_summary.and_then(|summary| summary.last_success.as_ref()),
+                None,
+            ));
+        let failed_actions = v_flex()
+            .w_full()
+            .child(status_metric_row(
+                t!("common.failed_count").to_string(),
+                action_summary
+                    .map_or(0, |summary| summary.failed_actions)
+                    .to_string(),
+            ))
+            .child(status_log_row(
+                t!("common.last_failed").to_string(),
+                action_summary.and_then(|summary| summary.last_failed.as_ref()),
+                None,
+            ));
+        Some(
+            v_flex()
+                .w_full()
+                .min_w(px(0.0))
+                .gap_4()
+                .child(status_state_row(feature_run_state(
+                    self.settings.general.enabled && feature_enabled,
+                    self.power_plan_status.current_guid.is_none(),
+                )))
+                .child(status_section(
+                    t!("common.current_power_plan").to_string(),
+                    div()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .text_size(px(TEXT_BODY_SIZE))
+                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                        .child(self.power_plan_name(self.power_plan_status.current_guid.as_deref()))
+                        .into_any_element(),
+                ))
+                .child(status_section(
+                    t!("common.successful_actions").to_string(),
+                    successful_actions.into_any_element(),
+                ))
+                .child(status_section(
+                    t!("common.failed_actions").to_string(),
+                    failed_actions.into_any_element(),
+                ))
+                .into_any_element(),
+        )
+    }
+
+    fn feature_status_summary(&self, page: Page) -> Option<FeatureStatusSummary> {
+        let summary = match page {
+            Page::AdaptiveEngine => {
+                let status = &self.feature_status.workload_engine;
+                FeatureStatusSummary {
+                    state: feature_run_state(
+                        self.settings.general.enabled && self.settings.adaptive_engine.enabled,
+                        false,
+                    ),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.background_adjusted_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::WorkloadEngine,
+                }
+            }
+            Page::BackgroundEfficiency => {
+                let status = &self.feature_status.background_efficiency;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, status.unsupported),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.throttled_processes),
+                    protected_or_denied: Some(status.access_denied_processes),
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::BackgroundEfficiency,
+                }
+            }
+            Page::MemoryTrim => {
+                let status = &self.feature_status.memory_trim;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.trimmed_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::MemoryTrim,
+                }
+            }
+            Page::ProcessPriority => {
+                let status = &self.feature_status.process_priority;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.adjusted_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::ProcessPriority,
+                }
+            }
+            Page::ThreadPriority => {
+                let status = &self.feature_status.thread_priority;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.adjusted_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::ThreadPriority,
+                }
+            }
+            Page::DynamicPriorityBoost => {
+                let status = &self.feature_status.dynamic_priority_boost;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.adjusted_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::DynamicPriorityBoost,
+                }
+            }
+            Page::IoPriority => {
+                let status = &self.feature_status.io_priority;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.adjusted_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::IoPriority,
+                }
+            }
+            Page::GpuPriority => {
+                let status = &self.feature_status.gpu_priority;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.adjusted_processes),
+                    protected_or_denied: Some(status.denied_processes),
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::GpuPriority,
+                }
+            }
+            Page::MemoryPriority => {
+                let status = &self.feature_status.memory_priority;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: None,
+                    adjusted: Some(status.adjusted_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::MemoryPriority,
+                }
+            }
+            Page::CoreLimiter => {
+                let status = &self.feature_status.core_limiter;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.limited_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::CoreLimiter,
+                }
+            }
+            Page::CpuSetsSoft | Page::ProcessorAffinityHard => {
+                let (status, feature) = if page == Page::CpuSetsSoft {
+                    (
+                        &self.feature_status.cpu_sets_soft,
+                        ActionLogFeature::CpuSetsSoft,
+                    )
+                } else {
+                    (
+                        &self.feature_status.processor_affinity_hard,
+                        ActionLogFeature::ProcessorAffinityHard,
+                    )
+                };
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: Some(status.scanned_processes),
+                    adjusted: Some(status.adjusted_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: feature,
+                }
+            }
+            Page::AppSuspension => {
+                let status = &self.feature_status.app_suspension;
+                FeatureStatusSummary {
+                    state: feature_run_state(
+                        status.enabled,
+                        status.unsupported || status.status_unknown,
+                    ),
+                    scanned: None,
+                    adjusted: Some(status.suspended_processes),
+                    protected_or_denied: None,
+                    skipped: Some(status.skipped_processes),
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::AppSuspension,
+                }
+            }
+            Page::TimerResolution => {
+                let status = &self.feature_status.timer_resolution;
+                FeatureStatusSummary {
+                    state: feature_run_state(status.enabled, false),
+                    scanned: None,
+                    adjusted: None,
+                    protected_or_denied: None,
+                    skipped: None,
+                    last_error: status.last_error.clone(),
+                    action_log_feature: ActionLogFeature::TimerResolution,
+                }
+            }
+            _ => return None,
+        };
+        Some(summary)
+    }
+
+    pub(in crate::ui::app) fn render_normalized_feature_status(
+        &self,
+        page: Page,
+    ) -> Option<AnyElement> {
+        let status = self.feature_status_summary(page)?;
+        let action_summary = self.action_log_summaries.get(&status.action_log_feature);
+        let process_activity = v_flex()
+            .w_full()
+            .child(status_metric_row(
+                t!("common.scanned_processes").to_string(),
+                status_count_label(status.scanned),
+            ))
+            .child(status_metric_row(
+                t!("common.adjusted_processes").to_string(),
+                status_count_label(status.adjusted),
+            ))
+            .child(status_metric_row(
+                t!("common.protected_or_denied_processes").to_string(),
+                status_count_label(status.protected_or_denied),
+            ))
+            .child(status_metric_row(
+                t!("common.skipped_processes").to_string(),
+                status_count_label(status.skipped),
+            ));
+        let successful_actions = v_flex()
+            .w_full()
+            .child(status_metric_row(
+                t!("common.success_count").to_string(),
+                action_summary
+                    .map_or(0, |summary| summary.successful_actions)
+                    .to_string(),
+            ))
+            .child(status_log_row(
+                t!("common.last_success").to_string(),
+                action_summary.and_then(|summary| summary.last_success.as_ref()),
+                None,
+            ));
+        let failed_actions = v_flex()
+            .w_full()
+            .child(status_metric_row(
+                t!("common.failed_count").to_string(),
+                action_summary
+                    .map_or(0, |summary| summary.failed_actions)
+                    .to_string(),
+            ))
+            .child(status_log_row(
+                t!("common.last_failed").to_string(),
+                action_summary.and_then(|summary| summary.last_failed.as_ref()),
+                status.last_error.as_deref(),
+            ));
+        Some(
+            v_flex()
+                .w_full()
+                .min_w(px(0.0))
+                .gap_4()
+                .child(status_state_row(status.state))
+                .child(status_section(
+                    t!("common.process_activity").to_string(),
+                    process_activity.into_any_element(),
+                ))
+                .child(status_section(
+                    t!("common.successful_actions").to_string(),
+                    successful_actions.into_any_element(),
+                ))
+                .child(status_section(
+                    t!("common.failed_actions").to_string(),
+                    failed_actions.into_any_element(),
+                ))
+                .into_any_element(),
+        )
+    }
+
+    pub(in crate::ui::app) fn render_page_status_panel(
+        &self,
+        page: Page,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let status = match page {
+            Page::BackgroundEfficiency => self.render_background_efficiency_status_card(cx),
+            Page::MemoryTrim => self.render_memory_trim_status_card(cx),
+            _ => self
+                .render_normalized_feature_status(page)
+                .or_else(|| self.render_power_plan_status(page))?,
+        };
+        let header = h_flex()
+            .min_h(px(48.0))
+            .px_3()
+            .child(section_title_text(t!("common.status").to_string()))
+            .into_any_element();
+        let body = v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scrollbar()
+            .p_3()
+            .child(status)
+            .into_any_element();
+        Some(page_side_panel(header, body, cx))
+    }
+}
+
 pub(in crate::ui::app) fn action_log_page_help() -> SharedString {
     tooltip_lines(vec![
         t!("action_log.intro_1").to_string(),

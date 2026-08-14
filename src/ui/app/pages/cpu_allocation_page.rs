@@ -306,10 +306,79 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(in crate::ui::app) fn render_cpu_allocation_presets_panel(
+    pub(in crate::ui::app) fn render_cpu_allocation_side_panel(
         &self,
+        page: Page,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let status_selected =
+            self.cpu_allocation_side_panel_tab == CpuAllocationSidePanelTab::Status;
+        let presets_selected = !status_selected;
+        let selected_background = cx.theme().secondary_active;
+        let hover_background = cx.theme().secondary_hover;
+        let header = h_flex()
+            .min_h(px(48.0))
+            .gap_1()
+            .px_3()
+            .child(
+                div()
+                    .id("cpu-allocation-status-tab")
+                    .flex_1()
+                    .h(px(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(BRAND_RADIUS_CONTROL))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .cursor_pointer()
+                    .when(status_selected, |tab| tab.bg(selected_background))
+                    .hover(move |style| style.bg(hover_background))
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.cpu_allocation_side_panel_tab = CpuAllocationSidePanelTab::Status;
+                        cx.notify();
+                    }))
+                    .child(t!("common.status").to_string()),
+            )
+            .child(
+                div()
+                    .id("cpu-allocation-presets-tab")
+                    .flex_1()
+                    .h(px(32.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(BRAND_RADIUS_CONTROL))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .cursor_pointer()
+                    .when(presets_selected, |tab| tab.bg(selected_background))
+                    .hover(move |style| style.bg(hover_background))
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.cpu_allocation_side_panel_tab = CpuAllocationSidePanelTab::Presets;
+                        cx.notify();
+                    }))
+                    .child(t!("cpu_allocation.presets").to_string()),
+            )
+            .into_any_element();
+
+        let body = if status_selected {
+            v_flex()
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_y_scrollbar()
+                .p_3()
+                .child(
+                    self.render_normalized_feature_status(page)
+                        .expect("CPU allocation pages always have normalized runtime status"),
+                )
+                .into_any_element()
+        } else {
+            self.render_cpu_allocation_presets_content(cx)
+        };
+
+        page_side_panel(header, body, cx)
+    }
+
+    fn render_cpu_allocation_presets_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let processors = cpu_allocation::logical_processors();
         let row_hover = cx.theme().secondary_hover;
         let mut presets = v_flex()
@@ -457,24 +526,9 @@ impl WinderustApp {
         presets = presets.child(custom_presets);
 
         v_flex()
-            .w(px(256.0))
-            .min_w(px(256.0))
-            .h_full()
+            .flex_1()
+            .min_h(px(0.0))
             .overflow_hidden()
-            .border_l_1()
-            .border_color(cx.theme().sidebar_border)
-            .bg(cx.theme().sidebar)
-            .child(
-                h_flex()
-                    .min_h(px(48.0))
-                    .gap_1()
-                    .px_3()
-                    .child(section_title_text(t!("cpu_allocation.presets").to_string()))
-                    .child(title_info_button(
-                        "cpu-allocation-presets-info",
-                        t!("cpu_allocation.custom_presets_help").to_string(),
-                    )),
-            )
             .child(presets)
             .child(
                 div()

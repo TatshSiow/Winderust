@@ -141,7 +141,6 @@ impl WinderustApp {
                 enabled,
                 cx,
             ))
-            .child(self.render_adaptive_engine_status_card(cx))
             .into_any_element()
     }
 
@@ -194,110 +193,6 @@ impl WinderustApp {
             dropdown,
         )
         .into_any_element()
-    }
-
-    pub(in crate::ui::app) fn render_adaptive_engine_status_card(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let selected_preset = PowerModePreset::ALL
-            .iter()
-            .copied()
-            .find(|preset| power_mode_matches_preset(&self.settings, *preset));
-        let power_mode = selected_preset
-            .map(power_mode_preset_label)
-            .unwrap_or_else(|| t!("common.custom").to_string());
-        titled_status_list(
-            &t!("adaptive_engine.status"),
-            None,
-            vec![
-                (
-                    None,
-                    t!("adaptive_engine.power_mode").to_string(),
-                    power_mode,
-                ),
-                (
-                    None,
-                    t!("adaptive_engine.processor_policy").to_string(),
-                    if let Some(profile) =
-                        &self.feature_status.workload_engine.adaptive_power_profile
-                    {
-                        t!(
-                            "adaptive_engine.processor_policy_adaptive",
-                            profile = adaptive_power_profile_label(profile)
-                        )
-                        .to_string()
-                    } else if matches!(
-                        selected_preset,
-                        Some(PowerModePreset::Performance) | Some(PowerModePreset::Speed)
-                    ) {
-                        t!("adaptive_engine.processor_policy_fixed").to_string()
-                    } else if self.settings.adaptive_engine.enabled
-                        && self.settings.adaptive_engine.processor_policy_enabled
-                    {
-                        t!("adaptive_engine.processor_policy_dynamic").to_string()
-                    } else {
-                        t!("common.disabled").to_string()
-                    },
-                ),
-                (
-                    None,
-                    t!("adaptive_engine.background_efficiency").to_string(),
-                    if self.settings.background_efficiency.enabled {
-                        format!(
-                            "{} {}",
-                            self.feature_status
-                                .background_efficiency
-                                .throttled_processes,
-                            t!("background_efficiency.throttled_processes")
-                        )
-                    } else {
-                        t!("common.disabled").to_string()
-                    },
-                ),
-                (
-                    None,
-                    t!("adaptive_engine.timer_ignored").to_string(),
-                    format!(
-                        "{} {}",
-                        self.feature_status
-                            .background_efficiency
-                            .timer_resolution_ignored_processes
-                            + self
-                                .feature_status
-                                .workload_engine
-                                .timer_resolution_ignored_processes,
-                        t!("adaptive_engine.audio_guarded")
-                    ),
-                ),
-                (
-                    None,
-                    t!("adaptive_engine.workload_engine").to_string(),
-                    if self.settings.adaptive_engine.enabled
-                        && self.settings.workload_engine.enabled
-                    {
-                        format!(
-                            "{} {}",
-                            self.feature_status
-                                .workload_engine
-                                .background_adjusted_processes,
-                            t!("workload_engine.background_adjusted")
-                        )
-                    } else {
-                        t!("common.disabled").to_string()
-                    },
-                ),
-                (
-                    None,
-                    t!("adaptive_engine.restrained").to_string(),
-                    localized_runtime_status(
-                        &self.feature_status.workload_engine.workload_engine_message,
-                    ),
-                ),
-            ],
-            None,
-            cx,
-        )
     }
 
     pub(in crate::ui::app) fn render_workload_engine_tunables(

@@ -62,8 +62,7 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_timer_resolution_rules(cx))
-            .child(self.render_timer_resolution_status_card());
+            .child(self.render_timer_resolution_rules(cx));
 
         self.page_shell(Page::TimerResolution, cx)
             .child(feature_toggle_switch_with_help(
@@ -141,50 +140,5 @@ impl WinderustApp {
             list = list.child(text_muted(t!("timer_resolution.no_rules").to_string()).p_4());
         }
         list.into_any_element()
-    }
-
-    pub(in crate::ui::app) fn render_timer_resolution_status_card(&self) -> gpui::Div {
-        let status = &self.feature_status.timer_resolution;
-        let requested = status
-            .requested_100ns
-            .map(timer_resolution::format_resolution_ms)
-            .unwrap_or_else(|| {
-                if self.settings.timer_resolution.enabled {
-                    t!("timer_resolution.no_active_request").to_string()
-                } else {
-                    t!("common.disabled").to_string()
-                }
-            });
-        let active_rule = status.active_rule_process.clone().unwrap_or_else(|| {
-            if self.settings.timer_resolution.enabled {
-                t!("timer_resolution.no_matching_rule").to_string()
-            } else {
-                t!("common.disabled").to_string()
-            }
-        });
-
-        let mut rows = vec![
-            (
-                t!("timer_resolution.foreground_rule").to_string(),
-                active_rule,
-            ),
-            (t!("timer_resolution.requested").to_string(), requested),
-            (
-                t!("timer_resolution.minimum").to_string(),
-                format_optional_timer_resolution(status.minimum_100ns),
-            ),
-            (
-                t!("timer_resolution.maximum").to_string(),
-                format_optional_timer_resolution(status.maximum_100ns),
-            ),
-            (
-                t!("common.status").to_string(),
-                localized_runtime_status(&status.message),
-            ),
-        ];
-        if let Some(error) = &status.last_error {
-            rows.push((t!("common.last_failure").to_string(), error.clone()));
-        }
-        stat_grid(rows)
     }
 }

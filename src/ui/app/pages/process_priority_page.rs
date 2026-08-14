@@ -179,7 +179,6 @@ impl WinderustApp {
                 window,
                 cx,
             ))
-            .child(self.render_process_priority_status_card())
             .child(section_header(
                 &t!("process_priority.exclusions"),
                 t!("process_priority.exclusions_help").to_string(),
@@ -252,38 +251,6 @@ impl WinderustApp {
             window,
             cx,
         )
-    }
-
-    pub(in crate::ui::app) fn render_process_priority_status_card(&self) -> gpui::Div {
-        let status = &self.feature_status.process_priority;
-        let message = if status.message.is_empty() {
-            t!("process_priority.not_checked").to_string()
-        } else {
-            localized_runtime_status(&status.message)
-        };
-        let mut rows = vec![
-            (t!("common.status").to_string(), message),
-            (
-                t!("process_priority.adjusted_processes").to_string(),
-                status.adjusted_processes.to_string(),
-            ),
-            (
-                t!("process_priority.scanned_processes").to_string(),
-                status.scanned_processes.to_string(),
-            ),
-            (
-                t!("process_priority.skipped_processes").to_string(),
-                status.skipped_processes.to_string(),
-            ),
-            (
-                t!("process_priority.failed_actions").to_string(),
-                status.failed_processes.to_string(),
-            ),
-        ];
-        if let Some(error) = &status.last_error {
-            rows.push((t!("common.last_failure").to_string(), error.clone()));
-        }
-        stat_grid(rows)
     }
 
     pub(in crate::ui::app) fn render_process_priority_default_selector(
