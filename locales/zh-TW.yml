@@ -253,7 +253,6 @@ home:
   home: "總覽"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
-  current_power_plan: "目前電源計畫"
   current_mode: "目前模式"
   master_switch_enabled: "主要開關已啟用"
   master_switch_disabled: "主要開關已停用"

@@ -253,7 +253,6 @@ home:
   home: "Overview"
   intro_1: "Dashboard summarizes the current automation decision, detected state, and active power plan."
   intro_2: "Use it to verify what Winderust is doing before changing page settings."
-  current_power_plan: "Current power plan"
   current_mode: "Current mode"
   master_switch_enabled: "Master switch enabled"
   master_switch_disabled: "Master switch disabled"

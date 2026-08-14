@@ -97,8 +97,9 @@ impl ActionLog {
         let process_name = process_name.into();
         let reason = reason.into();
         let timestamp_epoch_ms = timestamp_epoch_ms();
+        let should_record = self.mode.should_record(result);
         if result == ActionLogResult::Skipped
-            && (!self.mode.should_record(result)
+            && (!should_record
                 || self.entries.iter().rev().any(|entry| {
                     entry.feature == feature
                         && entry.process_id == process_id
@@ -135,7 +136,7 @@ impl ActionLog {
             }
             ActionLogResult::Skipped => {}
         }
-        if self.mode.should_record(result) {
+        if should_record {
             if self.entries.len() == self.capacity {
                 self.entries.pop_front();
             }

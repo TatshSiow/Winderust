@@ -43,10 +43,13 @@ impl WinderustApp {
             .child(
                 control_button(Button::new("clear-action-log"))
                     .label(t!("action_log.clear").to_string())
-                    .disabled(self.action_log_entries.is_empty())
+                    .disabled(
+                        self.action_log_entries.is_empty() && self.action_log_summaries.is_empty(),
+                    )
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.runtime_handle.clear_action_log();
                         app.action_log_entries = Arc::new(Vec::new());
+                        app.action_log_summaries = Arc::new(ActionLogSummaries::new());
                         app.action_log_page = 0;
                         cx.notify();
                     })),
