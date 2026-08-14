@@ -181,8 +181,11 @@ impl IoPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let configured_override =
-                settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+            let configured_override = settings.override_for(
+                executable_path.to_string_lossy().as_ref(),
+                foreground,
+                visible_window,
+            );
             let default_priority = tier.select(
                 settings.foreground_priority,
                 settings.visible_window_priority,

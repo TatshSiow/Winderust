@@ -304,9 +304,15 @@ pub struct ByCpuLoadSettings {
 pub struct BackgroundEfficiencySettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
-    pub protect_foreground_app: bool,
+    pub foreground_detection_enabled: bool,
     #[serde(default)]
-    pub protect_visible_window_apps: bool,
+    pub visible_window_detection_enabled: bool,
+    #[serde(default)]
+    pub foreground_efficiency_mode: bool,
+    #[serde(default)]
+    pub visible_window_efficiency_mode: bool,
+    #[serde(default = "default_true")]
+    pub background_efficiency_mode: bool,
     #[serde(default)]
     pub aggressiveness: BackgroundEfficiencyAggressiveness,
     #[serde(default)]
@@ -343,6 +349,55 @@ pub struct BackgroundEfficiencyRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
+    #[serde(default = "default_disabled_process_rule_mode")]
+    pub focus_efficiency_mode: ProcessRuleMode,
+    #[serde(default = "default_disabled_process_rule_mode")]
+    pub visible_window_efficiency_mode: ProcessRuleMode,
+    #[serde(default = "default_disabled_process_rule_mode")]
+    pub background_efficiency_mode: ProcessRuleMode,
+}
+
+impl BackgroundEfficiencyRule {
+    pub fn efficiency_mode_for(
+        &self,
+        focus: bool,
+        visible_window: bool,
+        default_enabled: bool,
+    ) -> bool {
+        if focus {
+            self.focus_efficiency_mode
+        } else if visible_window {
+            self.visible_window_efficiency_mode
+        } else {
+            self.background_efficiency_mode
+        }
+        .resolve(default_enabled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessRuleMode {
+    #[default]
+    Default,
+    Enabled,
+    Disabled,
+}
+
+impl ProcessRuleMode {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
+
+    pub const fn resolve(self, default_enabled: bool) -> bool {
+        match self {
+            Self::Default => default_enabled,
+            Self::Enabled => true,
+            Self::Disabled => false,
+        }
+    }
+}
+
+fn default_disabled_process_rule_mode() -> ProcessRuleMode {
+    ProcessRuleMode::Disabled
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -413,25 +468,37 @@ pub struct ProcessExclusionRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_foreground_priority: Option<ProcessPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_visible_window_priority: Option<ProcessPrioritySetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_background_priority: Option<ProcessPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_foreground_priority: Option<ProcessThreadPrioritySetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_visible_window_priority: Option<ProcessThreadPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_background_priority: Option<ProcessThreadPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_priority_boost_foreground: Option<ProcessDynamicPriorityBoostSetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_priority_boost_visible_window: Option<ProcessDynamicPriorityBoostSetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_priority_boost_background: Option<ProcessDynamicPriorityBoostSetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_foreground_priority: Option<ProcessIoPrioritySetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_visible_window_priority: Option<ProcessIoPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_background_priority: Option<ProcessIoPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_foreground_priority: Option<ProcessGpuPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_visible_window_priority: Option<ProcessGpuPrioritySetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_background_priority: Option<ProcessGpuPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_foreground_priority: Option<ProcessMemoryPrioritySetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_visible_window_priority: Option<ProcessMemoryPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_background_priority: Option<ProcessMemoryPrioritySetting>,
 }
@@ -442,64 +509,84 @@ impl Default for ProcessExclusionRule {
             enabled: true,
             executable_path: String::new(),
             process_foreground_priority: None,
+            process_visible_window_priority: None,
             process_background_priority: None,
             thread_foreground_priority: None,
+            thread_visible_window_priority: None,
             thread_background_priority: None,
             dynamic_priority_boost_foreground: None,
+            dynamic_priority_boost_visible_window: None,
             dynamic_priority_boost_background: None,
             io_foreground_priority: None,
+            io_visible_window_priority: None,
             io_background_priority: None,
             gpu_foreground_priority: None,
+            gpu_visible_window_priority: None,
             gpu_background_priority: None,
             memory_foreground_priority: None,
+            memory_visible_window_priority: None,
             memory_background_priority: None,
         }
     }
 }
 
 impl ProcessExclusionRule {
-    pub fn process_priority_override(&self, foreground: bool) -> ProcessPrioritySetting {
-        if foreground {
-            self.process_foreground_priority.unwrap_or_default()
-        } else {
-            self.process_background_priority.unwrap_or_default()
-        }
+    pub fn process_priority_override(
+        &self,
+        foreground: bool,
+        visible_window: bool,
+    ) -> ProcessPrioritySetting {
+        tier_override(
+            self.process_foreground_priority,
+            self.process_visible_window_priority,
+            self.process_background_priority,
+            foreground,
+            visible_window,
+        )
     }
 
     pub fn set_process_priority_override(
         &mut self,
         foreground: bool,
+        visible_window: bool,
         priority: ProcessPrioritySetting,
     ) {
-        set_optional_default(
-            if foreground {
-                &mut self.process_foreground_priority
-            } else {
-                &mut self.process_background_priority
-            },
+        set_tier_override(
+            &mut self.process_foreground_priority,
+            &mut self.process_visible_window_priority,
+            &mut self.process_background_priority,
+            foreground,
+            visible_window,
             priority,
         );
     }
 
-    pub fn thread_priority_override(&self, foreground: bool) -> ProcessThreadPrioritySetting {
-        if foreground {
-            self.thread_foreground_priority.unwrap_or_default()
-        } else {
-            self.thread_background_priority.unwrap_or_default()
-        }
+    pub fn thread_priority_override(
+        &self,
+        foreground: bool,
+        visible_window: bool,
+    ) -> ProcessThreadPrioritySetting {
+        tier_override(
+            self.thread_foreground_priority,
+            self.thread_visible_window_priority,
+            self.thread_background_priority,
+            foreground,
+            visible_window,
+        )
     }
 
     pub fn set_thread_priority_override(
         &mut self,
         foreground: bool,
+        visible_window: bool,
         priority: ProcessThreadPrioritySetting,
     ) {
-        set_optional_default(
-            if foreground {
-                &mut self.thread_foreground_priority
-            } else {
-                &mut self.thread_background_priority
-            },
+        set_tier_override(
+            &mut self.thread_foreground_priority,
+            &mut self.thread_visible_window_priority,
+            &mut self.thread_background_priority,
+            foreground,
+            visible_window,
             priority,
         );
     }
@@ -507,95 +594,159 @@ impl ProcessExclusionRule {
     pub fn dynamic_priority_boost_override(
         &self,
         foreground: bool,
+        visible_window: bool,
     ) -> ProcessDynamicPriorityBoostSetting {
-        if foreground {
-            self.dynamic_priority_boost_foreground.unwrap_or_default()
-        } else {
-            self.dynamic_priority_boost_background.unwrap_or_default()
-        }
+        tier_override(
+            self.dynamic_priority_boost_foreground,
+            self.dynamic_priority_boost_visible_window,
+            self.dynamic_priority_boost_background,
+            foreground,
+            visible_window,
+        )
     }
 
     pub fn set_dynamic_priority_boost_override(
         &mut self,
         foreground: bool,
+        visible_window: bool,
         boost: ProcessDynamicPriorityBoostSetting,
     ) {
-        set_optional_default(
-            if foreground {
-                &mut self.dynamic_priority_boost_foreground
-            } else {
-                &mut self.dynamic_priority_boost_background
-            },
+        set_tier_override(
+            &mut self.dynamic_priority_boost_foreground,
+            &mut self.dynamic_priority_boost_visible_window,
+            &mut self.dynamic_priority_boost_background,
+            foreground,
+            visible_window,
             boost,
         );
     }
 
-    pub fn io_priority_override(&self, foreground: bool) -> ProcessIoPrioritySetting {
-        if foreground {
-            self.io_foreground_priority.unwrap_or_default()
-        } else {
-            self.io_background_priority.unwrap_or_default()
-        }
+    pub fn io_priority_override(
+        &self,
+        foreground: bool,
+        visible_window: bool,
+    ) -> ProcessIoPrioritySetting {
+        tier_override(
+            self.io_foreground_priority,
+            self.io_visible_window_priority,
+            self.io_background_priority,
+            foreground,
+            visible_window,
+        )
     }
 
     pub fn set_io_priority_override(
         &mut self,
         foreground: bool,
+        visible_window: bool,
         priority: ProcessIoPrioritySetting,
     ) {
-        set_optional_default(
-            if foreground {
-                &mut self.io_foreground_priority
-            } else {
-                &mut self.io_background_priority
-            },
+        set_tier_override(
+            &mut self.io_foreground_priority,
+            &mut self.io_visible_window_priority,
+            &mut self.io_background_priority,
+            foreground,
+            visible_window,
             priority,
         );
     }
 
-    pub fn gpu_priority_override(&self, foreground: bool) -> ProcessGpuPrioritySetting {
-        if foreground {
-            self.gpu_foreground_priority.unwrap_or_default()
-        } else {
-            self.gpu_background_priority.unwrap_or_default()
-        }
+    pub fn gpu_priority_override(
+        &self,
+        foreground: bool,
+        visible_window: bool,
+    ) -> ProcessGpuPrioritySetting {
+        tier_override(
+            self.gpu_foreground_priority,
+            self.gpu_visible_window_priority,
+            self.gpu_background_priority,
+            foreground,
+            visible_window,
+        )
     }
 
     pub fn set_gpu_priority_override(
         &mut self,
         foreground: bool,
+        visible_window: bool,
         priority: ProcessGpuPrioritySetting,
     ) {
-        set_optional_default(
-            if foreground {
-                &mut self.gpu_foreground_priority
-            } else {
-                &mut self.gpu_background_priority
-            },
+        set_tier_override(
+            &mut self.gpu_foreground_priority,
+            &mut self.gpu_visible_window_priority,
+            &mut self.gpu_background_priority,
+            foreground,
+            visible_window,
             priority,
         );
     }
 
-    pub fn memory_priority_override(&self, foreground: bool) -> ProcessMemoryPrioritySetting {
-        if foreground {
-            self.memory_foreground_priority.unwrap_or_default()
-        } else {
-            self.memory_background_priority.unwrap_or_default()
-        }
+    pub fn memory_priority_override(
+        &self,
+        foreground: bool,
+        visible_window: bool,
+    ) -> ProcessMemoryPrioritySetting {
+        tier_override(
+            self.memory_foreground_priority,
+            self.memory_visible_window_priority,
+            self.memory_background_priority,
+            foreground,
+            visible_window,
+        )
     }
 
     pub fn set_memory_priority_override(
         &mut self,
         foreground: bool,
+        visible_window: bool,
         priority: ProcessMemoryPrioritySetting,
     ) {
+        set_tier_override(
+            &mut self.memory_foreground_priority,
+            &mut self.memory_visible_window_priority,
+            &mut self.memory_background_priority,
+            foreground,
+            visible_window,
+            priority,
+        );
+    }
+}
+
+fn tier_override<T: Copy + Default>(
+    foreground_value: Option<T>,
+    visible_window_value: Option<T>,
+    background_value: Option<T>,
+    foreground: bool,
+    visible_window: bool,
+) -> T {
+    if foreground {
+        foreground_value
+    } else if visible_window {
+        visible_window_value.or(background_value)
+    } else {
+        background_value
+    }
+    .unwrap_or_default()
+}
+
+fn set_tier_override<T: Copy + Default + PartialEq>(
+    foreground_target: &mut Option<T>,
+    visible_window_target: &mut Option<T>,
+    background_target: &mut Option<T>,
+    foreground: bool,
+    visible_window: bool,
+    value: T,
+) {
+    if visible_window && !foreground {
+        *visible_window_target = Some(value);
+    } else {
         set_optional_default(
             if foreground {
-                &mut self.memory_foreground_priority
+                foreground_target
             } else {
-                &mut self.memory_background_priority
+                background_target
             },
-            priority,
+            value,
         );
     }
 }
@@ -641,6 +792,12 @@ pub struct CoreLimiterRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
+    #[serde(default)]
+    pub focus_mode: ProcessRuleMode,
+    #[serde(default)]
+    pub visible_window_mode: ProcessRuleMode,
+    #[serde(default)]
+    pub background_mode: ProcessRuleMode,
     #[serde(default = "default_core_limiter_threshold_percent")]
     pub threshold_percent: u8,
     #[serde(default = "default_core_limiter_sustain_seconds")]
@@ -649,6 +806,18 @@ pub struct CoreLimiterRule {
     pub cooldown_seconds: u64,
     #[serde(default = "default_core_limiter_max_logical_processors")]
     pub max_logical_processors: u8,
+}
+
+impl CoreLimiterRule {
+    pub const fn mode_for(&self, focus: bool, visible_window: bool) -> ProcessRuleMode {
+        if focus {
+            self.focus_mode
+        } else if visible_window {
+            self.visible_window_mode
+        } else {
+            self.background_mode
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -676,6 +845,14 @@ pub struct WorkloadEngineSettings {
     pub lower_background_apps: bool,
     #[serde(default = "default_true")]
     pub workload_engine_background_efficiency_enabled: bool,
+    #[serde(default = "default_true")]
+    pub workload_engine_foreground_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub workload_engine_visible_window_detection_enabled: bool,
+    #[serde(default)]
+    pub workload_engine_foreground_efficiency_mode: bool,
+    #[serde(default)]
+    pub workload_engine_visible_window_efficiency_mode: bool,
     #[serde(default = "default_workload_engine_background_priority")]
     pub workload_engine_background_priority: ProcessPriority,
     #[serde(default = "default_workload_engine_visible_window_priority")]
@@ -929,13 +1106,7 @@ pub enum ProcessIoPrioritySetting {
 
 impl ProcessIoPrioritySetting {
     pub const ALL: [Self; 4] = [Self::Default, Self::VeryLow, Self::Low, Self::Normal];
-    pub const CUSTOM_RULE_ALL: [Self; 5] = [
-        Self::Default,
-        Self::Auto,
-        Self::VeryLow,
-        Self::Low,
-        Self::Normal,
-    ];
+    pub const CUSTOM_RULE_ALL: [Self; 4] = [Self::Default, Self::VeryLow, Self::Low, Self::Normal];
     pub const ADVANCED_ALL: [Self; 6] = [
         Self::Default,
         Self::VeryLow,
@@ -944,9 +1115,8 @@ impl ProcessIoPrioritySetting {
         Self::High,
         Self::Critical,
     ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
+    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 6] = [
         Self::Default,
-        Self::Auto,
         Self::VeryLow,
         Self::Low,
         Self::Normal,
@@ -1019,9 +1189,8 @@ impl ProcessGpuPrioritySetting {
         Self::Normal,
         Self::AboveNormal,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 6] = [
+    pub const CUSTOM_RULE_ALL: [Self; 5] = [
         Self::Default,
-        Self::Auto,
         Self::Idle,
         Self::BelowNormal,
         Self::Normal,
@@ -1036,9 +1205,8 @@ impl ProcessGpuPrioritySetting {
         Self::High,
         Self::Realtime,
     ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 8] = [
+    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
         Self::Default,
-        Self::Auto,
         Self::Idle,
         Self::BelowNormal,
         Self::Normal,
@@ -1123,9 +1291,8 @@ impl ProcessMemoryPrioritySetting {
         Self::BelowNormal,
         Self::Normal,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 7] = [
+    pub const CUSTOM_RULE_ALL: [Self; 6] = [
         Self::Default,
-        Self::Auto,
         Self::VeryLow,
         Self::Low,
         Self::Medium,
@@ -1196,9 +1363,8 @@ impl ProcessThreadPrioritySetting {
         Self::AboveNormal,
         Self::Highest,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 8] = [
+    pub const CUSTOM_RULE_ALL: [Self; 7] = [
         Self::Default,
-        Self::Auto,
         Self::Idle,
         Self::Lowest,
         Self::BelowNormal,
@@ -1216,9 +1382,8 @@ impl ProcessThreadPrioritySetting {
         Self::Highest,
         Self::TimeCritical,
     ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 9] = [
+    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 8] = [
         Self::Default,
-        Self::Auto,
         Self::Idle,
         Self::Lowest,
         Self::BelowNormal,
@@ -1245,9 +1410,8 @@ impl ProcessPrioritySetting {
         Self::AboveNormal,
         Self::High,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 7] = [
+    pub const CUSTOM_RULE_ALL: [Self; 6] = [
         Self::Default,
-        Self::Auto,
         Self::Idle,
         Self::BelowNormal,
         Self::Normal,
@@ -1264,9 +1428,8 @@ impl ProcessPrioritySetting {
         Self::High,
         Self::Realtime,
     ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 8] = [
+    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
         Self::Default,
-        Self::Auto,
         Self::Idle,
         Self::BelowNormal,
         Self::Normal,
@@ -1295,8 +1458,7 @@ pub enum ProcessDynamicPriorityBoostSetting {
 
 impl ProcessDynamicPriorityBoostSetting {
     pub const ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
-    pub const CUSTOM_RULE_ALL: [Self; 4] =
-        [Self::Default, Self::Auto, Self::Enabled, Self::Disabled];
+    pub const CUSTOM_RULE_ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
 
     pub const fn disabled_flag(self) -> Option<bool> {
         match self {
@@ -1540,8 +1702,11 @@ impl Default for BackgroundEfficiencySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            protect_foreground_app: default_true(),
-            protect_visible_window_apps: false,
+            foreground_detection_enabled: default_true(),
+            visible_window_detection_enabled: false,
+            foreground_efficiency_mode: false,
+            visible_window_efficiency_mode: false,
+            background_efficiency_mode: true,
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: Vec::new(),
         }
@@ -1854,6 +2019,10 @@ impl Default for WorkloadEngineSettings {
             enabled: false,
             lower_background_apps: default_true(),
             workload_engine_background_efficiency_enabled: default_true(),
+            workload_engine_foreground_detection_enabled: default_true(),
+            workload_engine_visible_window_detection_enabled: default_true(),
+            workload_engine_foreground_efficiency_mode: false,
+            workload_engine_visible_window_efficiency_mode: false,
             workload_engine_background_priority: default_workload_engine_background_priority(),
             workload_engine_visible_window_priority:
                 default_workload_engine_visible_window_priority(),
@@ -2033,6 +2202,8 @@ impl IoPrioritySettings {
             process_exclusion_rule_matches(rule, process_name)
                 && rule.io_foreground_priority.unwrap_or_default()
                     == ProcessIoPrioritySetting::Default
+                && rule.io_visible_window_priority.unwrap_or_default()
+                    == ProcessIoPrioritySetting::Default
                 && rule.io_background_priority.unwrap_or_default()
                     == ProcessIoPrioritySetting::Default
         })
@@ -2042,13 +2213,11 @@ impl IoPrioritySettings {
         &self,
         process_name: &str,
         foreground: bool,
+        visible_window: bool,
     ) -> Option<Option<ProcessIoPrioritySetting>> {
-        process_custom_rule_override(
-            &self.exclusions,
-            process_name,
-            foreground,
-            |rule, foreground| rule.io_priority_override(foreground),
-        )
+        process_custom_rule_override(&self.exclusions, process_name, |rule| {
+            rule.io_priority_override(foreground, visible_window)
+        })
     }
 }
 
@@ -2063,13 +2232,11 @@ impl ProcessPrioritySettings {
         &self,
         process_name: &str,
         foreground: bool,
+        visible_window: bool,
     ) -> Option<Option<ProcessPrioritySetting>> {
-        process_custom_rule_override(
-            &self.exclusions,
-            process_name,
-            foreground,
-            |rule, foreground| rule.process_priority_override(foreground),
-        )
+        process_custom_rule_override(&self.exclusions, process_name, |rule| {
+            rule.process_priority_override(foreground, visible_window)
+        })
     }
 }
 
@@ -2084,13 +2251,11 @@ impl ThreadPrioritySettings {
         &self,
         process_name: &str,
         foreground: bool,
+        visible_window: bool,
     ) -> Option<Option<ProcessThreadPrioritySetting>> {
-        process_custom_rule_override(
-            &self.exclusions,
-            process_name,
-            foreground,
-            |rule, foreground| rule.thread_priority_override(foreground),
-        )
+        process_custom_rule_override(&self.exclusions, process_name, |rule| {
+            rule.thread_priority_override(foreground, visible_window)
+        })
     }
 }
 
@@ -2105,13 +2270,11 @@ impl DynamicPriorityBoostSettings {
         &self,
         process_name: &str,
         foreground: bool,
+        visible_window: bool,
     ) -> Option<Option<ProcessDynamicPriorityBoostSetting>> {
-        process_custom_rule_override(
-            &self.exclusions,
-            process_name,
-            foreground,
-            |rule, foreground| rule.dynamic_priority_boost_override(foreground),
-        )
+        process_custom_rule_override(&self.exclusions, process_name, |rule| {
+            rule.dynamic_priority_boost_override(foreground, visible_window)
+        })
     }
 }
 
@@ -2127,6 +2290,8 @@ impl GpuPrioritySettings {
             process_exclusion_rule_matches(rule, process_name)
                 && rule.gpu_foreground_priority.unwrap_or_default()
                     == ProcessGpuPrioritySetting::Default
+                && rule.gpu_visible_window_priority.unwrap_or_default()
+                    == ProcessGpuPrioritySetting::Default
                 && rule.gpu_background_priority.unwrap_or_default()
                     == ProcessGpuPrioritySetting::Default
         })
@@ -2136,13 +2301,11 @@ impl GpuPrioritySettings {
         &self,
         process_name: &str,
         foreground: bool,
+        visible_window: bool,
     ) -> Option<Option<ProcessGpuPrioritySetting>> {
-        process_custom_rule_override(
-            &self.exclusions,
-            process_name,
-            foreground,
-            |rule, foreground| rule.gpu_priority_override(foreground),
-        )
+        process_custom_rule_override(&self.exclusions, process_name, |rule| {
+            rule.gpu_priority_override(foreground, visible_window)
+        })
     }
 }
 
@@ -2158,6 +2321,8 @@ impl MemoryPrioritySettings {
             process_exclusion_rule_matches(rule, process_name)
                 && rule.memory_foreground_priority.unwrap_or_default()
                     == ProcessMemoryPrioritySetting::Default
+                && rule.memory_visible_window_priority.unwrap_or_default()
+                    == ProcessMemoryPrioritySetting::Default
                 && rule.memory_background_priority.unwrap_or_default()
                     == ProcessMemoryPrioritySetting::Default
         })
@@ -2167,13 +2332,11 @@ impl MemoryPrioritySettings {
         &self,
         process_name: &str,
         foreground: bool,
+        visible_window: bool,
     ) -> Option<Option<ProcessMemoryPrioritySetting>> {
-        process_custom_rule_override(
-            &self.exclusions,
-            process_name,
-            foreground,
-            |rule, foreground| rule.memory_priority_override(foreground),
-        )
+        process_custom_rule_override(&self.exclusions, process_name, |rule| {
+            rule.memory_priority_override(foreground, visible_window)
+        })
     }
 }
 
@@ -2184,8 +2347,7 @@ fn process_exclusion_rule_matches(rule: &ProcessExclusionRule, process_name: &st
 fn process_custom_rule_override<T>(
     rules: &[ProcessExclusionRule],
     process_name: &str,
-    foreground: bool,
-    value: impl Fn(&ProcessExclusionRule, bool) -> T,
+    value: impl Fn(&ProcessExclusionRule) -> T,
 ) -> Option<Option<T>>
 where
     T: Copy + Default + PartialEq,
@@ -2194,7 +2356,7 @@ where
         .iter()
         .find(|rule| process_exclusion_rule_matches(rule, process_name))
         .map(|rule| {
-            let value = value(rule, foreground);
+            let value = value(rule);
             (value != T::default()).then_some(value)
         })
 }
@@ -2272,14 +2434,27 @@ impl AppSuspensionSettings {
 }
 
 impl BackgroundEfficiencySettings {
+    pub fn custom_rule_applies_efficiency_mode(&self, rule: &BackgroundEfficiencyRule) -> bool {
+        rule.background_efficiency_mode
+            .resolve(self.background_efficiency_mode)
+            || self.foreground_detection_enabled
+                && rule
+                    .focus_efficiency_mode
+                    .resolve(self.foreground_efficiency_mode)
+            || self.visible_window_detection_enabled
+                && rule
+                    .visible_window_efficiency_mode
+                    .resolve(self.visible_window_efficiency_mode)
+    }
+
     pub fn contains_custom_rule(&self, process_name: &str) -> bool {
         self.custom_rules
             .iter()
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
-    pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
-        self.custom_rules.iter().any(|rule| {
+    pub fn custom_rule_for(&self, process_name: &str) -> Option<&BackgroundEfficiencyRule> {
+        self.custom_rules.iter().find(|rule| {
             rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
         })
     }
@@ -2405,6 +2580,92 @@ impl ByCpuLoadRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_priority_rule_choices_do_not_offer_auto() {
+        assert!(!ProcessPrioritySetting::CUSTOM_RULE_ALL.contains(&ProcessPrioritySetting::Auto));
+        assert!(!ProcessThreadPrioritySetting::CUSTOM_RULE_ALL
+            .contains(&ProcessThreadPrioritySetting::Auto));
+        assert!(!ProcessDynamicPriorityBoostSetting::CUSTOM_RULE_ALL
+            .contains(&ProcessDynamicPriorityBoostSetting::Auto));
+        assert!(
+            !ProcessIoPrioritySetting::CUSTOM_RULE_ALL.contains(&ProcessIoPrioritySetting::Auto)
+        );
+        assert!(
+            !ProcessGpuPrioritySetting::CUSTOM_RULE_ALL.contains(&ProcessGpuPrioritySetting::Auto)
+        );
+        assert!(!ProcessMemoryPrioritySetting::CUSTOM_RULE_ALL
+            .contains(&ProcessMemoryPrioritySetting::Auto));
+    }
+
+    #[test]
+    fn visible_window_default_remains_independent_from_background() {
+        let mut rule = ProcessExclusionRule {
+            process_background_priority: Some(ProcessPrioritySetting::BelowNormal),
+            thread_background_priority: Some(ProcessThreadPrioritySetting::Lowest),
+            dynamic_priority_boost_background: Some(ProcessDynamicPriorityBoostSetting::Disabled),
+            io_background_priority: Some(ProcessIoPrioritySetting::VeryLow),
+            gpu_background_priority: Some(ProcessGpuPrioritySetting::Idle),
+            memory_background_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
+            ..Default::default()
+        };
+
+        rule.set_process_priority_override(false, true, ProcessPrioritySetting::Default);
+        rule.set_thread_priority_override(false, true, ProcessThreadPrioritySetting::Default);
+        rule.set_dynamic_priority_boost_override(
+            false,
+            true,
+            ProcessDynamicPriorityBoostSetting::Default,
+        );
+        rule.set_io_priority_override(false, true, ProcessIoPrioritySetting::Default);
+        rule.set_gpu_priority_override(false, true, ProcessGpuPrioritySetting::Default);
+        rule.set_memory_priority_override(false, true, ProcessMemoryPrioritySetting::Default);
+
+        assert_eq!(
+            rule.process_priority_override(false, true),
+            ProcessPrioritySetting::Default
+        );
+        assert_eq!(
+            rule.thread_priority_override(false, true),
+            ProcessThreadPrioritySetting::Default
+        );
+        assert_eq!(
+            rule.dynamic_priority_boost_override(false, true),
+            ProcessDynamicPriorityBoostSetting::Default
+        );
+        assert_eq!(
+            rule.io_priority_override(false, true),
+            ProcessIoPrioritySetting::Default
+        );
+        assert_eq!(
+            rule.gpu_priority_override(false, true),
+            ProcessGpuPrioritySetting::Default
+        );
+        assert_eq!(
+            rule.memory_priority_override(false, true),
+            ProcessMemoryPrioritySetting::Default
+        );
+    }
+
+    #[test]
+    fn visible_window_priority_override_is_not_an_exclusion() {
+        let path = r"C:\Apps\editor.exe";
+        let rule = ProcessExclusionRule {
+            executable_path: path.to_owned(),
+            io_visible_window_priority: Some(ProcessIoPrioritySetting::Low),
+            gpu_visible_window_priority: Some(ProcessGpuPrioritySetting::BelowNormal),
+            memory_visible_window_priority: Some(ProcessMemoryPrioritySetting::Low),
+            ..Default::default()
+        };
+        let mut settings = Settings::default();
+        settings.io_priority.exclusions.push(rule.clone());
+        settings.gpu_priority.exclusions.push(rule.clone());
+        settings.memory_priority.exclusions.push(rule);
+
+        assert!(!settings.io_priority.exclusion_enabled_for(path));
+        assert!(!settings.gpu_priority.exclusion_enabled_for(path));
+        assert!(!settings.memory_priority.exclusion_enabled_for(path));
+    }
 
     #[test]
     fn first_run_rule_modules_are_disabled() {
@@ -2642,6 +2903,7 @@ mod tests {
             enabled: true,
             executable_path: r"C:\Apps\worker.exe".to_owned(),
             process_foreground_priority: Some(ProcessPrioritySetting::AboveNormal),
+            process_visible_window_priority: Some(ProcessPrioritySetting::Normal),
             process_background_priority: Some(ProcessPrioritySetting::BelowNormal),
             thread_foreground_priority: Some(ProcessThreadPrioritySetting::Highest),
             thread_background_priority: Some(ProcessThreadPrioritySetting::Lowest),
@@ -2653,6 +2915,7 @@ mod tests {
             gpu_background_priority: Some(ProcessGpuPrioritySetting::Idle),
             memory_foreground_priority: Some(ProcessMemoryPrioritySetting::Normal),
             memory_background_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
+            ..Default::default()
         };
         let later_duplicate = ProcessExclusionRule {
             enabled: true,
@@ -2698,78 +2961,100 @@ mod tests {
         };
 
         assert_eq!(
-            process.override_for(r"c:/apps/WORKER.exe", true),
+            process.override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessPrioritySetting::AboveNormal))
         );
         assert_eq!(
-            process.override_for(r"c:/apps/WORKER.exe", false),
+            process.override_for(r"c:/apps/WORKER.exe", false, true),
+            Some(Some(ProcessPrioritySetting::Normal))
+        );
+        assert_eq!(
+            process.override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessPrioritySetting::BelowNormal))
         );
         assert_eq!(
-            thread.override_for(r"c:/apps/WORKER.exe", true),
+            thread.override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessThreadPrioritySetting::Highest))
         );
         assert_eq!(
-            thread.override_for(r"c:/apps/WORKER.exe", false),
+            thread.override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessThreadPrioritySetting::Lowest))
         );
         assert_eq!(
-            boost.override_for(r"c:/apps/WORKER.exe", true),
+            boost.override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessDynamicPriorityBoostSetting::Enabled))
         );
         assert_eq!(
-            boost.override_for(r"c:/apps/WORKER.exe", false),
+            boost.override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessDynamicPriorityBoostSetting::Disabled))
         );
         assert_eq!(
-            io.override_for(r"c:/apps/WORKER.exe", true),
+            io.override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessIoPrioritySetting::Normal))
         );
         assert_eq!(
-            io.override_for(r"c:/apps/WORKER.exe", false),
+            io.override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessIoPrioritySetting::VeryLow))
         );
         assert_eq!(
-            gpu.override_for(r"c:/apps/WORKER.exe", true),
+            gpu.override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessGpuPrioritySetting::AboveNormal))
         );
         assert_eq!(
-            gpu.override_for(r"c:/apps/WORKER.exe", false),
+            gpu.override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessGpuPrioritySetting::Idle))
         );
         assert_eq!(
-            memory.override_for(r"c:/apps/WORKER.exe", true),
+            memory.override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessMemoryPrioritySetting::Normal))
         );
         assert_eq!(
-            memory.override_for(r"c:/apps/WORKER.exe", false),
+            memory.override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessMemoryPrioritySetting::VeryLow))
         );
 
         assert_eq!(
-            process.override_for(r"C:\Apps\excluded.exe", true),
+            process.override_for(r"C:\Apps\excluded.exe", true, false),
             Some(None)
         );
         assert_eq!(
-            thread.override_for(r"C:\Apps\excluded.exe", true),
+            thread.override_for(r"C:\Apps\excluded.exe", true, false),
             Some(None)
         );
         assert_eq!(
-            boost.override_for(r"C:\Apps\excluded.exe", true),
+            boost.override_for(r"C:\Apps\excluded.exe", true, false),
             Some(None)
         );
-        assert_eq!(io.override_for(r"C:\Apps\excluded.exe", true), Some(None));
-        assert_eq!(gpu.override_for(r"C:\Apps\excluded.exe", true), Some(None));
         assert_eq!(
-            memory.override_for(r"C:\Apps\excluded.exe", true),
+            io.override_for(r"C:\Apps\excluded.exe", true, false),
+            Some(None)
+        );
+        assert_eq!(
+            gpu.override_for(r"C:\Apps\excluded.exe", true, false),
+            Some(None)
+        );
+        assert_eq!(
+            memory.override_for(r"C:\Apps\excluded.exe", true, false),
             Some(None)
         );
 
-        assert_eq!(process.override_for(r"C:\Other\worker.exe", true), None);
-        assert_eq!(thread.override_for(r"C:\Other\worker.exe", true), None);
-        assert_eq!(boost.override_for(r"C:\Other\worker.exe", true), None);
-        assert_eq!(io.override_for(r"C:\Other\worker.exe", true), None);
-        assert_eq!(gpu.override_for(r"C:\Other\worker.exe", true), None);
-        assert_eq!(memory.override_for(r"C:\Other\worker.exe", true), None);
+        assert_eq!(
+            process.override_for(r"C:\Other\worker.exe", true, false),
+            None
+        );
+        assert_eq!(
+            thread.override_for(r"C:\Other\worker.exe", true, false),
+            None
+        );
+        assert_eq!(
+            boost.override_for(r"C:\Other\worker.exe", true, false),
+            None
+        );
+        assert_eq!(io.override_for(r"C:\Other\worker.exe", true, false), None);
+        assert_eq!(gpu.override_for(r"C:\Other\worker.exe", true, false), None);
+        assert_eq!(
+            memory.override_for(r"C:\Other\worker.exe", true, false),
+            None
+        );
     }
 }

@@ -102,6 +102,8 @@ pub(in crate::ui::app) enum SettingGroupTarget {
     IoPriorityForegroundDetection,
     IoPriorityVisibleWindowDetection,
     EfficiencyEnable,
+    BackgroundEfficiencyForegroundDetection,
+    BackgroundEfficiencyVisibleWindowDetection,
     GpuPriorityMaster,
     GpuPriorityForegroundDetection,
     GpuPriorityVisibleWindowDetection,
@@ -122,6 +124,34 @@ pub(in crate::ui::app) enum WorkloadEnginePreset {
     LowImpact,
     ForegroundFirst,
     MaxForeground,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui::app) enum ProcessRuleTier {
+    Focus,
+    VisibleWindow,
+    Background,
+}
+
+impl ProcessRuleTier {
+    pub(in crate::ui::app) const ALL: [Self; 3] =
+        [Self::Focus, Self::VisibleWindow, Self::Background];
+
+    pub(in crate::ui::app) const fn key(self) -> &'static str {
+        match self {
+            Self::Focus => "focus",
+            Self::VisibleWindow => "visible-window",
+            Self::Background => "background",
+        }
+    }
+
+    pub(in crate::ui::app) const fn flags(self) -> (bool, bool) {
+        match self {
+            Self::Focus => (true, false),
+            Self::VisibleWindow => (false, true),
+            Self::Background => (false, false),
+        }
+    }
 }
 
 impl WorkloadEnginePreset {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ProcessRuleMode;
 
 #[test]
 fn process_resource_columns_format_usage() {
@@ -597,10 +598,7 @@ fn process_policy_summary_carries_typed_active_state() {
     assert!(summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
     assert!(!summary.value_is_active(ProcessListColumn::ProcessPriority));
 
-    settings
-        .background_efficiency
-        .custom_rules
-        .push(new_background_efficiency_rule(path));
+    set_background_efficiency_custom_rule(&mut settings.background_efficiency, path, true);
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
@@ -611,6 +609,11 @@ fn process_policy_summary_carries_typed_active_state() {
     let summary = process_policy_summary(&settings, &[], path);
     assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
     assert!(summary.value_is_active(ProcessListColumn::ProcessPriority));
+
+    settings.background_efficiency.custom_rules[0].background_efficiency_mode =
+        ProcessRuleMode::Enabled;
+    let summary = process_policy_summary(&settings, &[], path);
+    assert!(summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
 }
 
 #[test]
@@ -621,32 +624,32 @@ fn process_list_priority_rule_can_update_each_side_independently() {
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
-        Some(true),
+        Some(ProcessRuleTier::Focus),
         ProcessPrioritySetting::High,
     );
     let rule = &settings.process_priority.exclusions[0];
     assert_eq!(
-        rule.process_priority_override(true),
+        rule.process_priority_override(true, false),
         ProcessPrioritySetting::High
     );
     assert_eq!(
-        rule.process_priority_override(false),
+        rule.process_priority_override(false, false),
         ProcessPrioritySetting::Default
     );
 
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
-        Some(false),
+        Some(ProcessRuleTier::Background),
         ProcessPrioritySetting::Idle,
     );
     let rule = &settings.process_priority.exclusions[0];
     assert_eq!(
-        rule.process_priority_override(true),
+        rule.process_priority_override(true, false),
         ProcessPrioritySetting::High
     );
     assert_eq!(
-        rule.process_priority_override(false),
+        rule.process_priority_override(false, false),
         ProcessPrioritySetting::Idle
     );
 }
@@ -685,6 +688,12 @@ fn process_policy_summary_reports_priority_policy_values() {
     settings.io_priority.enabled = true;
     settings.gpu_priority.enabled = true;
     settings.memory_priority.enabled = true;
+    settings.io_priority.visible_window_detection_enabled = true;
+    settings.io_priority.visible_window_priority = ProcessIoPrioritySetting::Low;
+    settings.gpu_priority.visible_window_detection_enabled = true;
+    settings.gpu_priority.visible_window_priority = ProcessGpuPrioritySetting::BelowNormal;
+    settings.memory_priority.visible_window_detection_enabled = true;
+    settings.memory_priority.visible_window_priority = ProcessMemoryPrioritySetting::Low;
 
     let summary = process_policy_summary(&settings, &[], "editor.exe");
 
@@ -700,6 +709,16 @@ fn process_policy_summary_reports_priority_policy_values() {
         summary.memory_priority,
         memory_priority_policy_label(&settings.memory_priority)
     );
+    assert_eq!(
+        summary.io_priority,
+        format!(
+            "{} / {} / {}",
+            process_io_priority_setting_label(settings.io_priority.foreground_priority),
+            process_io_priority_setting_label(settings.io_priority.visible_window_priority),
+            process_io_priority_setting_label(settings.io_priority.background_priority)
+        )
+    );
+    assert!(process_list_priority_header_label("I/O".to_owned(), true).contains("FG/VW/BG"));
 }
 
 #[test]
@@ -708,12 +727,16 @@ fn process_policy_summary_ignores_disabled_priority_rules() {
     let path = r"C:\Apps\editor.exe";
     let mut rule = new_process_exclusion_rule(path);
     rule.enabled = false;
-    rule.set_process_priority_override(true, ProcessPrioritySetting::Idle);
-    rule.set_thread_priority_override(true, ProcessThreadPrioritySetting::Lowest);
-    rule.set_dynamic_priority_boost_override(true, ProcessDynamicPriorityBoostSetting::Disabled);
-    rule.set_io_priority_override(true, ProcessIoPrioritySetting::Low);
-    rule.set_gpu_priority_override(true, ProcessGpuPrioritySetting::BelowNormal);
-    rule.set_memory_priority_override(true, ProcessMemoryPrioritySetting::Low);
+    rule.set_process_priority_override(true, false, ProcessPrioritySetting::Idle);
+    rule.set_thread_priority_override(true, false, ProcessThreadPrioritySetting::Lowest);
+    rule.set_dynamic_priority_boost_override(
+        true,
+        false,
+        ProcessDynamicPriorityBoostSetting::Disabled,
+    );
+    rule.set_io_priority_override(true, false, ProcessIoPrioritySetting::Low);
+    rule.set_gpu_priority_override(true, false, ProcessGpuPrioritySetting::BelowNormal);
+    rule.set_memory_priority_override(true, false, ProcessMemoryPrioritySetting::Low);
 
     settings.process_priority.exclusions.push(rule.clone());
     settings.thread_priority.exclusions.push(rule.clone());
@@ -791,6 +814,22 @@ fn process_policy_summary_reports_process_rule_columns() {
 #[test]
 fn process_policy_summary_reports_include_exclude_columns() {
     let mut settings = Settings::default();
+    set_background_efficiency_custom_rule(&mut settings.background_efficiency, "editor.exe", true);
+
+    let summary = process_policy_summary(&settings, &[], "editor.exe");
+
+    assert_eq!(summary.background_efficiency, process_list_exclude_label());
+}
+
+#[test]
+fn background_efficiency_summary_resolves_default_rule_layers() {
+    let mut settings = Settings::default();
+    settings.background_efficiency.foreground_detection_enabled = true;
+    settings
+        .background_efficiency
+        .visible_window_detection_enabled = false;
+    settings.background_efficiency.foreground_efficiency_mode = false;
+    settings.background_efficiency.background_efficiency_mode = false;
     settings
         .background_efficiency
         .custom_rules
@@ -799,6 +838,7 @@ fn process_policy_summary_reports_include_exclude_columns() {
     let summary = process_policy_summary(&settings, &[], "editor.exe");
 
     assert_eq!(summary.background_efficiency, process_list_exclude_label());
+    assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
 }
 #[test]
 fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {

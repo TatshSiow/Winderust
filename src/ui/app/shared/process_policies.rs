@@ -1,3 +1,4 @@
+use crate::config::ProcessRuleMode;
 use crate::ui::app::*;
 
 pub(in crate::ui::app) fn process_target_can_accept(
@@ -180,6 +181,9 @@ pub(in crate::ui::app) fn new_background_efficiency_rule(
     BackgroundEfficiencyRule {
         enabled: true,
         executable_path: executable_path_key(Path::new(process)),
+        focus_efficiency_mode: ProcessRuleMode::Default,
+        visible_window_efficiency_mode: ProcessRuleMode::Default,
+        background_efficiency_mode: ProcessRuleMode::Default,
     }
 }
 
@@ -195,10 +199,15 @@ pub(in crate::ui::app) fn set_background_efficiency_custom_rule(
             .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
+            rule.focus_efficiency_mode = ProcessRuleMode::Disabled;
+            rule.visible_window_efficiency_mode = ProcessRuleMode::Disabled;
+            rule.background_efficiency_mode = ProcessRuleMode::Disabled;
         } else {
-            settings
-                .custom_rules
-                .push(new_background_efficiency_rule(process_name));
+            let mut rule = new_background_efficiency_rule(process_name);
+            rule.focus_efficiency_mode = ProcessRuleMode::Disabled;
+            rule.visible_window_efficiency_mode = ProcessRuleMode::Disabled;
+            rule.background_efficiency_mode = ProcessRuleMode::Disabled;
+            settings.custom_rules.push(rule);
         }
     } else {
         settings
@@ -229,12 +238,12 @@ pub(in crate::ui::app) fn set_process_exclusion(
 pub(in crate::ui::app) fn set_process_priority_rule(
     settings: &mut ProcessPrioritySettings,
     process_name: &str,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     priority: ProcessPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        set_priority_rule_sides(foreground, |foreground| {
-            rule.set_process_priority_override(foreground, priority);
+        set_priority_rule_tiers(tier, |foreground, visible_window| {
+            rule.set_process_priority_override(foreground, visible_window, priority);
         });
     });
 }
@@ -242,12 +251,12 @@ pub(in crate::ui::app) fn set_process_priority_rule(
 pub(in crate::ui::app) fn set_thread_priority_rule(
     settings: &mut ThreadPrioritySettings,
     process_name: &str,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     priority: ProcessThreadPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        set_priority_rule_sides(foreground, |foreground| {
-            rule.set_thread_priority_override(foreground, priority);
+        set_priority_rule_tiers(tier, |foreground, visible_window| {
+            rule.set_thread_priority_override(foreground, visible_window, priority);
         });
     });
 }
@@ -255,12 +264,12 @@ pub(in crate::ui::app) fn set_thread_priority_rule(
 pub(in crate::ui::app) fn set_dynamic_priority_boost_rule(
     settings: &mut DynamicPriorityBoostSettings,
     process_name: &str,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     boost: ProcessDynamicPriorityBoostSetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        set_priority_rule_sides(foreground, |foreground| {
-            rule.set_dynamic_priority_boost_override(foreground, boost);
+        set_priority_rule_tiers(tier, |foreground, visible_window| {
+            rule.set_dynamic_priority_boost_override(foreground, visible_window, boost);
         });
     });
 }
@@ -268,12 +277,12 @@ pub(in crate::ui::app) fn set_dynamic_priority_boost_rule(
 pub(in crate::ui::app) fn set_io_priority_rule(
     settings: &mut IoPrioritySettings,
     process_name: &str,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     priority: ProcessIoPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        set_priority_rule_sides(foreground, |foreground| {
-            rule.set_io_priority_override(foreground, priority);
+        set_priority_rule_tiers(tier, |foreground, visible_window| {
+            rule.set_io_priority_override(foreground, visible_window, priority);
         });
     });
 }
@@ -281,12 +290,12 @@ pub(in crate::ui::app) fn set_io_priority_rule(
 pub(in crate::ui::app) fn set_gpu_priority_rule(
     settings: &mut GpuPrioritySettings,
     process_name: &str,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     priority: ProcessGpuPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        set_priority_rule_sides(foreground, |foreground| {
-            rule.set_gpu_priority_override(foreground, priority);
+        set_priority_rule_tiers(tier, |foreground, visible_window| {
+            rule.set_gpu_priority_override(foreground, visible_window, priority);
         });
     });
 }
@@ -294,22 +303,25 @@ pub(in crate::ui::app) fn set_gpu_priority_rule(
 pub(in crate::ui::app) fn set_memory_priority_rule(
     settings: &mut MemoryPrioritySettings,
     process_name: &str,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     priority: ProcessMemoryPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        set_priority_rule_sides(foreground, |foreground| {
-            rule.set_memory_priority_override(foreground, priority);
+        set_priority_rule_tiers(tier, |foreground, visible_window| {
+            rule.set_memory_priority_override(foreground, visible_window, priority);
         });
     });
 }
 
-fn set_priority_rule_sides(foreground: Option<bool>, mut update: impl FnMut(bool)) {
-    if let Some(foreground) = foreground {
-        update(foreground);
+fn set_priority_rule_tiers(tier: Option<ProcessRuleTier>, mut update: impl FnMut(bool, bool)) {
+    if let Some(tier) = tier {
+        let (foreground, visible_window) = tier.flags();
+        update(foreground, visible_window);
     } else {
-        update(true);
-        update(false);
+        for tier in ProcessRuleTier::ALL {
+            let (foreground, visible_window) = tier.flags();
+            update(foreground, visible_window);
+        }
     }
 }
 
@@ -524,6 +536,9 @@ pub(in crate::ui::app) fn new_core_limiter_rule(process: &str) -> CoreLimiterRul
     CoreLimiterRule {
         enabled: true,
         executable_path: executable_path_key(Path::new(process)),
+        focus_mode: ProcessRuleMode::Default,
+        visible_window_mode: ProcessRuleMode::Default,
+        background_mode: ProcessRuleMode::Default,
         threshold_percent: 75,
         sustain_seconds: 5,
         cooldown_seconds: 10,
@@ -655,25 +670,36 @@ pub(in crate::ui::app) fn process_policy_summary(
     if adaptive_engine_excluded {
         summary.mark_custom(ProcessListColumn::AdaptiveEngine);
     }
-    let background_efficiency_excluded = settings
-        .background_efficiency
-        .custom_rule_enabled_for(process_name);
+    let background_efficiency_rule = settings.background_efficiency.custom_rule_for(process_name);
+    let background_efficiency_active = background_efficiency_rule.is_none_or(|rule| {
+        settings
+            .background_efficiency
+            .custom_rule_applies_efficiency_mode(rule)
+    });
     summary.background_efficiency =
-        process_list_include_exclude_label(!background_efficiency_excluded);
+        process_list_include_exclude_label(background_efficiency_active);
     summary.set_active(
         ProcessListColumn::BackgroundEfficiency,
-        !background_efficiency_excluded,
+        background_efficiency_active,
     );
-    if background_efficiency_excluded {
+    if background_efficiency_rule.is_some() {
         summary.mark_custom(ProcessListColumn::BackgroundEfficiency);
     }
 
     let process_rule = process_rule_state(
-        settings.process_priority.override_for(process_name, true),
-        settings.process_priority.override_for(process_name, false),
+        settings
+            .process_priority
+            .override_for(process_name, true, false),
+        settings
+            .process_priority
+            .override_for(process_name, false, true),
+        settings
+            .process_priority
+            .override_for(process_name, false, false),
     );
-    summary.process_priority = priority_pair_label(
+    summary.process_priority = priority_tier_label(
         process_rule.foreground,
+        process_rule.visible_window,
         process_rule.background,
         process_priority_setting_label,
     );
@@ -683,11 +709,19 @@ pub(in crate::ui::app) fn process_policy_summary(
     summary.set_active(ProcessListColumn::ProcessPriority, process_rule.active);
 
     let thread_rule = process_rule_state(
-        settings.thread_priority.override_for(process_name, true),
-        settings.thread_priority.override_for(process_name, false),
+        settings
+            .thread_priority
+            .override_for(process_name, true, false),
+        settings
+            .thread_priority
+            .override_for(process_name, false, true),
+        settings
+            .thread_priority
+            .override_for(process_name, false, false),
     );
-    summary.thread_priority = priority_pair_label(
+    summary.thread_priority = priority_tier_label(
         thread_rule.foreground,
+        thread_rule.visible_window,
         thread_rule.background,
         process_thread_priority_setting_label,
     );
@@ -699,13 +733,17 @@ pub(in crate::ui::app) fn process_policy_summary(
     let boost_rule = process_rule_state(
         settings
             .dynamic_priority_boost
-            .override_for(process_name, true),
+            .override_for(process_name, true, false),
         settings
             .dynamic_priority_boost
-            .override_for(process_name, false),
+            .override_for(process_name, false, true),
+        settings
+            .dynamic_priority_boost
+            .override_for(process_name, false, false),
     );
-    summary.dynamic_priority_boost = priority_pair_label(
+    summary.dynamic_priority_boost = priority_tier_label(
         boost_rule.foreground,
+        boost_rule.visible_window,
         boost_rule.background,
         process_dynamic_priority_boost_setting_label,
     );
@@ -715,15 +753,19 @@ pub(in crate::ui::app) fn process_policy_summary(
     summary.set_active(ProcessListColumn::DynamicPriorityBoost, boost_rule.active);
 
     let io_rule = process_rule_state(
-        settings.io_priority.override_for(process_name, true),
-        settings.io_priority.override_for(process_name, false),
+        settings.io_priority.override_for(process_name, true, false),
+        settings.io_priority.override_for(process_name, false, true),
+        settings
+            .io_priority
+            .override_for(process_name, false, false),
     );
     if io_rule.configured {
         summary.io_priority = if settings.io_priority.exclusion_enabled_for(process_name) {
             process_list_exclude_label()
         } else {
-            priority_pair_label(
+            priority_tier_label(
                 io_rule.foreground,
+                io_rule.visible_window,
                 io_rule.background,
                 process_io_priority_setting_label,
             )
@@ -735,15 +777,23 @@ pub(in crate::ui::app) fn process_policy_summary(
     summary.set_active(ProcessListColumn::IoPriority, io_rule.active);
 
     let gpu_rule = process_rule_state(
-        settings.gpu_priority.override_for(process_name, true),
-        settings.gpu_priority.override_for(process_name, false),
+        settings
+            .gpu_priority
+            .override_for(process_name, true, false),
+        settings
+            .gpu_priority
+            .override_for(process_name, false, true),
+        settings
+            .gpu_priority
+            .override_for(process_name, false, false),
     );
     if gpu_rule.configured {
         summary.gpu_priority = if settings.gpu_priority.exclusion_enabled_for(process_name) {
             process_list_exclude_label()
         } else {
-            priority_pair_label(
+            priority_tier_label(
                 gpu_rule.foreground,
+                gpu_rule.visible_window,
                 gpu_rule.background,
                 process_gpu_priority_setting_label,
             )
@@ -755,15 +805,23 @@ pub(in crate::ui::app) fn process_policy_summary(
     summary.set_active(ProcessListColumn::GpuPriority, gpu_rule.active);
 
     let memory_rule = process_rule_state(
-        settings.memory_priority.override_for(process_name, true),
-        settings.memory_priority.override_for(process_name, false),
+        settings
+            .memory_priority
+            .override_for(process_name, true, false),
+        settings
+            .memory_priority
+            .override_for(process_name, false, true),
+        settings
+            .memory_priority
+            .override_for(process_name, false, false),
     );
     if memory_rule.configured {
         summary.memory_priority = if settings.memory_priority.exclusion_enabled_for(process_name) {
             process_list_exclude_label()
         } else {
-            priority_pair_label(
+            priority_tier_label(
                 memory_rule.foreground,
+                memory_rule.visible_window,
                 memory_rule.background,
                 process_memory_priority_setting_label,
             )
@@ -779,6 +837,7 @@ pub(in crate::ui::app) fn process_policy_summary(
 
 struct ProcessRuleState<T> {
     foreground: T,
+    visible_window: T,
     background: T,
     configured: bool,
     active: bool,
@@ -786,13 +845,17 @@ struct ProcessRuleState<T> {
 
 fn process_rule_state<T: Copy + Default>(
     foreground: Option<Option<T>>,
+    visible_window: Option<Option<T>>,
     background: Option<Option<T>>,
 ) -> ProcessRuleState<T> {
     ProcessRuleState {
         foreground: foreground.flatten().unwrap_or_default(),
+        visible_window: visible_window.flatten().unwrap_or_default(),
         background: background.flatten().unwrap_or_default(),
-        configured: foreground.is_some() || background.is_some(),
-        active: foreground.flatten().is_some() || background.flatten().is_some(),
+        configured: foreground.is_some() || visible_window.is_some() || background.is_some(),
+        active: foreground.flatten().is_some()
+            || visible_window.flatten().is_some()
+            || background.flatten().is_some(),
     }
 }
 
@@ -825,15 +888,21 @@ pub(in crate::ui::app) fn default_process_policy_summary() -> ProcessPolicySumma
     }
 }
 
-fn priority_pair_label<T: Copy + PartialEq>(
+fn priority_tier_label<T: Copy + PartialEq>(
     foreground: T,
+    visible_window: T,
     background: T,
     label: impl Fn(T) -> String,
 ) -> String {
-    if foreground == background {
+    if foreground == visible_window && visible_window == background {
         label(foreground)
     } else {
-        format!("{} / {}", label(foreground), label(background))
+        format!(
+            "{} / {} / {}",
+            label(foreground),
+            label(visible_window),
+            label(background)
+        )
     }
 }
 
@@ -944,66 +1013,111 @@ pub(in crate::ui::app) fn process_list_exclude_label() -> String {
 pub(in crate::ui::app) fn process_list_default_label() -> String {
     t!("process_list.default").to_string()
 }
-pub(in crate::ui::app) fn io_priority_has_foreground_background_split(
-    settings: &IoPrioritySettings,
-) -> bool {
-    settings.enabled
-        && settings.foreground_detection_enabled
-        && settings.foreground_priority != settings.background_priority
+pub(in crate::ui::app) fn io_priority_has_tier_split(settings: &IoPrioritySettings) -> bool {
+    priority_policy_has_tier_split(
+        settings.enabled,
+        settings.foreground_detection_enabled,
+        settings.visible_window_detection_enabled,
+        settings.foreground_priority,
+        settings.visible_window_priority,
+        settings.background_priority,
+    )
 }
 
 pub(in crate::ui::app) fn io_priority_policy_label(settings: &IoPrioritySettings) -> String {
-    if io_priority_has_foreground_background_split(settings) {
-        format!(
-            "{} / {}",
-            process_io_priority_setting_label(settings.foreground_priority),
-            process_io_priority_setting_label(settings.background_priority)
-        )
-    } else {
-        process_io_priority_setting_label(settings.background_priority)
-    }
+    priority_policy_label(
+        settings.foreground_detection_enabled,
+        settings.visible_window_detection_enabled,
+        settings.foreground_priority,
+        settings.visible_window_priority,
+        settings.background_priority,
+        process_io_priority_setting_label,
+    )
 }
 
-pub(in crate::ui::app) fn gpu_priority_has_foreground_background_split(
-    settings: &GpuPrioritySettings,
-) -> bool {
-    settings.enabled
-        && settings.foreground_detection_enabled
-        && settings.foreground_priority != settings.background_priority
+pub(in crate::ui::app) fn gpu_priority_has_tier_split(settings: &GpuPrioritySettings) -> bool {
+    priority_policy_has_tier_split(
+        settings.enabled,
+        settings.foreground_detection_enabled,
+        settings.visible_window_detection_enabled,
+        settings.foreground_priority,
+        settings.visible_window_priority,
+        settings.background_priority,
+    )
 }
 
 pub(in crate::ui::app) fn gpu_priority_policy_label(settings: &GpuPrioritySettings) -> String {
-    if gpu_priority_has_foreground_background_split(settings) {
-        format!(
-            "{} / {}",
-            process_gpu_priority_setting_label(settings.foreground_priority),
-            process_gpu_priority_setting_label(settings.background_priority)
-        )
-    } else {
-        process_gpu_priority_setting_label(settings.background_priority)
-    }
+    priority_policy_label(
+        settings.foreground_detection_enabled,
+        settings.visible_window_detection_enabled,
+        settings.foreground_priority,
+        settings.visible_window_priority,
+        settings.background_priority,
+        process_gpu_priority_setting_label,
+    )
 }
 
-pub(in crate::ui::app) fn memory_priority_has_foreground_background_split(
+pub(in crate::ui::app) fn memory_priority_has_tier_split(
     settings: &MemoryPrioritySettings,
 ) -> bool {
-    settings.enabled
-        && settings.foreground_detection_enabled
-        && settings.foreground_priority != settings.background_priority
+    priority_policy_has_tier_split(
+        settings.enabled,
+        settings.foreground_detection_enabled,
+        settings.visible_window_detection_enabled,
+        settings.foreground_priority,
+        settings.visible_window_priority,
+        settings.background_priority,
+    )
 }
 
 pub(in crate::ui::app) fn memory_priority_policy_label(
     settings: &MemoryPrioritySettings,
 ) -> String {
-    if memory_priority_has_foreground_background_split(settings) {
-        format!(
-            "{} / {}",
-            process_memory_priority_setting_label(settings.foreground_priority),
-            process_memory_priority_setting_label(settings.background_priority)
-        )
-    } else {
-        process_memory_priority_setting_label(settings.background_priority)
-    }
+    priority_policy_label(
+        settings.foreground_detection_enabled,
+        settings.visible_window_detection_enabled,
+        settings.foreground_priority,
+        settings.visible_window_priority,
+        settings.background_priority,
+        process_memory_priority_setting_label,
+    )
+}
+
+fn priority_policy_has_tier_split<T: PartialEq>(
+    enabled: bool,
+    foreground_detection_enabled: bool,
+    visible_window_detection_enabled: bool,
+    foreground: T,
+    visible_window: T,
+    background: T,
+) -> bool {
+    enabled
+        && (foreground_detection_enabled && foreground != background
+            || visible_window_detection_enabled && visible_window != background)
+}
+
+fn priority_policy_label<T: Copy + PartialEq>(
+    foreground_detection_enabled: bool,
+    visible_window_detection_enabled: bool,
+    foreground: T,
+    visible_window: T,
+    background: T,
+    label: impl Fn(T) -> String,
+) -> String {
+    priority_tier_label(
+        if foreground_detection_enabled {
+            foreground
+        } else {
+            background
+        },
+        if visible_window_detection_enabled {
+            visible_window
+        } else {
+            background
+        },
+        background,
+        label,
+    )
 }
 pub(in crate::ui::app) fn process_priority_label(priority: ProcessPriority) -> String {
     match priority {

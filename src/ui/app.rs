@@ -600,7 +600,7 @@ enum ListItemRemovalKind {
     ByForegroundRule,
     ByTimeRule,
     ByCpuLoadRule,
-    BackgroundEfficiencyExclusion,
+    BackgroundEfficiencyRule,
     AppSuspensionRule,
     CpuSetsSoftRule,
     ProcessorAffinityHardRule,

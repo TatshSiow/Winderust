@@ -275,6 +275,7 @@ impl WinderustApp {
         let mut priority_rules = rule_list(vec![
             rule_table_title_header(t!("process_list.details_priority").to_string()),
             priority_exclusion_table_cell(t!("process_list.foreground").to_string()),
+            priority_exclusion_table_cell(t!("common.visible_window").to_string()),
             priority_exclusion_table_cell(t!("process_list.background").to_string()),
         ]);
         for column in priority_columns {
@@ -285,18 +286,20 @@ impl WinderustApp {
             .child(rule_table_title_header(process_list_priority_rule_label(
                 column,
             )));
-            for foreground in [true, false] {
+            for tier in ProcessRuleTier::ALL {
+                let (foreground, visible_window) = tier.flags();
                 let dropdown_id = format!(
                     "{}-{}",
                     process_list_cell_editor_id(&path, column),
-                    if foreground {
-                        "foreground"
-                    } else {
-                        "background"
-                    }
+                    tier.key()
                 );
-                let value =
-                    process_list_priority_column_value(&self.settings, &path, column, foreground);
+                let value = process_list_priority_column_value(
+                    &self.settings,
+                    &path,
+                    column,
+                    foreground,
+                    visible_window,
+                );
                 row = row.child(self.render_dropdown_select(
                     dropdown_id,
                     value,
@@ -309,7 +312,7 @@ impl WinderustApp {
                         process_list_cell_editor_options(
                             &path,
                             column,
-                            Some(foreground),
+                            Some(tier),
                             self,
                             max_height,
                             cx,
@@ -324,7 +327,7 @@ impl WinderustApp {
 
         let modal = v_flex()
             .w_full()
-            .max_w(px(760.0))
+            .max_w(px(960.0))
             .h_full()
             .max_h(px(680.0))
             .overflow_hidden()
@@ -482,13 +485,14 @@ pub(in crate::ui::app) fn process_list_header_row(
 
 pub(in crate::ui::app) fn process_list_priority_header_label(
     label: String,
-    has_foreground_background_split: bool,
+    has_tier_split: bool,
 ) -> String {
-    if has_foreground_background_split {
+    if has_tier_split {
         format!(
-            "{} ({}/{})",
+            "{} ({}/{}/{})",
             label,
             process_list_foreground_short_label(),
+            process_list_visible_window_short_label(),
             process_list_background_short_label()
         )
     } else {
@@ -502,6 +506,10 @@ pub(in crate::ui::app) fn process_list_foreground_short_label() -> &'static str 
 
 pub(in crate::ui::app) fn process_list_background_short_label() -> &'static str {
     "BG"
+}
+
+pub(in crate::ui::app) fn process_list_visible_window_short_label() -> &'static str {
+    "VW"
 }
 
 pub(in crate::ui::app) fn process_list_header_cell(
@@ -1865,47 +1873,48 @@ fn process_list_priority_column_value(
     process_name: &str,
     column: ProcessListColumn,
     foreground: bool,
+    visible_window: bool,
 ) -> SharedString {
     match column {
         ProcessListColumn::ProcessPriority => process_priority_setting_label(
             settings
                 .process_priority
-                .override_for(process_name, foreground)
+                .override_for(process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default(),
         ),
         ProcessListColumn::ThreadPriority => process_thread_priority_setting_label(
             settings
                 .thread_priority
-                .override_for(process_name, foreground)
+                .override_for(process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default(),
         ),
         ProcessListColumn::DynamicPriorityBoost => process_dynamic_priority_boost_setting_label(
             settings
                 .dynamic_priority_boost
-                .override_for(process_name, foreground)
+                .override_for(process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default(),
         ),
         ProcessListColumn::IoPriority => process_io_priority_setting_label(
             settings
                 .io_priority
-                .override_for(process_name, foreground)
+                .override_for(process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default(),
         ),
         ProcessListColumn::GpuPriority => process_gpu_priority_setting_label(
             settings
                 .gpu_priority
-                .override_for(process_name, foreground)
+                .override_for(process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default(),
         ),
         ProcessListColumn::MemoryPriority => process_memory_priority_setting_label(
             settings
                 .memory_priority
-                .override_for(process_name, foreground)
+                .override_for(process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default(),
         ),
@@ -2303,12 +2312,13 @@ pub(in crate::ui::app) fn process_list_cell_editor_option_count(
 pub(in crate::ui::app) fn process_list_cell_editor_options(
     process_name: &str,
     column: ProcessListColumn,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     app: &WinderustApp,
     max_height: Pixels,
     cx: &mut Context<WinderustApp>,
 ) -> Scrollable<gpui::Div> {
     let settings = &app.settings;
+    let (foreground, visible_window) = tier.unwrap_or(ProcessRuleTier::Focus).flags();
     let mut options = dropdown_surface(cx, max_height)
         .w(px(PROCESS_LIST_CELL_EDITOR_WIDTH))
         .min_w(px(PROCESS_LIST_CELL_EDITOR_WIDTH));
@@ -2368,10 +2378,15 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
             }
         }
         ProcessListColumn::BackgroundEfficiency => {
-            let included = !app
+            let included = app
                 .settings
                 .background_efficiency
-                .custom_rule_enabled_for(&process_name);
+                .custom_rule_for(&process_name)
+                .is_none_or(|rule| {
+                    app.settings
+                        .background_efficiency
+                        .custom_rule_applies_efficiency_mode(rule)
+                });
             options = process_list_include_exclude_editor_options(
                 options,
                 &process_name,
@@ -2395,7 +2410,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         ProcessListColumn::ProcessPriority => {
             let selected = settings
                 .process_priority
-                .override_for(&process_name, foreground.unwrap_or(true))
+                .override_for(&process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default();
             let values = if app.settings.advanced.expose_all_priority_values {
@@ -2408,7 +2423,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 &process_name,
                 column,
                 selected,
-                foreground,
+                tier,
                 values,
                 process_priority_setting_label,
                 WinderustApp::set_process_list_process_priority,
@@ -2418,7 +2433,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         ProcessListColumn::ThreadPriority => {
             let selected = settings
                 .thread_priority
-                .override_for(&process_name, foreground.unwrap_or(true))
+                .override_for(&process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default();
             let values = if app.settings.advanced.expose_all_priority_values {
@@ -2431,7 +2446,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 &process_name,
                 column,
                 selected,
-                foreground,
+                tier,
                 values,
                 process_thread_priority_setting_label,
                 WinderustApp::set_process_list_thread_priority,
@@ -2441,7 +2456,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         ProcessListColumn::DynamicPriorityBoost => {
             let selected = settings
                 .dynamic_priority_boost
-                .override_for(&process_name, foreground.unwrap_or(true))
+                .override_for(&process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default();
             options = process_list_priority_editor_options(
@@ -2449,7 +2464,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 &process_name,
                 column,
                 selected,
-                foreground,
+                tier,
                 &ProcessDynamicPriorityBoostSetting::CUSTOM_RULE_ALL,
                 process_dynamic_priority_boost_setting_label,
                 WinderustApp::set_process_list_dynamic_priority_boost,
@@ -2459,7 +2474,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         ProcessListColumn::IoPriority => {
             let selected = settings
                 .io_priority
-                .override_for(&process_name, foreground.unwrap_or(true))
+                .override_for(&process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default();
             let values = if app.settings.advanced.expose_all_priority_values {
@@ -2472,7 +2487,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 &process_name,
                 column,
                 selected,
-                foreground,
+                tier,
                 values,
                 process_io_priority_setting_label,
                 WinderustApp::set_process_list_io_priority,
@@ -2482,7 +2497,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         ProcessListColumn::GpuPriority => {
             let selected = settings
                 .gpu_priority
-                .override_for(&process_name, foreground.unwrap_or(true))
+                .override_for(&process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default();
             let values = if app.settings.advanced.expose_all_priority_values {
@@ -2495,7 +2510,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 &process_name,
                 column,
                 selected,
-                foreground,
+                tier,
                 values,
                 process_gpu_priority_setting_label,
                 WinderustApp::set_process_list_gpu_priority,
@@ -2505,7 +2520,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         ProcessListColumn::MemoryPriority => {
             let selected = settings
                 .memory_priority
-                .override_for(&process_name, foreground.unwrap_or(true))
+                .override_for(&process_name, foreground, visible_window)
                 .flatten()
                 .unwrap_or_default();
             options = process_list_priority_editor_options(
@@ -2513,7 +2528,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 &process_name,
                 column,
                 selected,
-                foreground,
+                tier,
                 &ProcessMemoryPrioritySetting::CUSTOM_RULE_ALL,
                 process_memory_priority_setting_label,
                 WinderustApp::set_process_list_memory_priority,
@@ -2562,10 +2577,10 @@ pub(in crate::ui::app) fn process_list_priority_editor_options<T>(
     process_name: &str,
     column: ProcessListColumn,
     selected: T,
-    foreground: Option<bool>,
+    tier: Option<ProcessRuleTier>,
     values: &[T],
     label: fn(T) -> String,
-    apply: fn(&mut WinderustApp, String, Option<bool>, T, &mut Context<WinderustApp>),
+    apply: fn(&mut WinderustApp, String, Option<ProcessRuleTier>, T, &mut Context<WinderustApp>),
     cx: &mut Context<WinderustApp>,
 ) -> Scrollable<gpui::Div>
 where
@@ -2578,7 +2593,7 @@ where
         options = options.child(
             dropdown_option_row(option_id, value_label, selected == value, cx).on_click(
                 cx.listener(move |app, _, _, cx| {
-                    apply(app, process_name.clone(), foreground, value, cx);
+                    apply(app, process_name.clone(), tier, value, cx);
                     cx.stop_propagation();
                 }),
             ),

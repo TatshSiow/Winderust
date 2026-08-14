@@ -6,7 +6,8 @@ use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
     AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CoreLimiterRule,
     CpuAllocationRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
-    ProcessGpuPrioritySetting, ProcessThreadPrioritySetting, TimerResolutionRule, WeekdaySetting,
+    ProcessGpuPrioritySetting, ProcessRuleMode, ProcessThreadPrioritySetting, TimerResolutionRule,
+    WeekdaySetting,
 };
 
 fn runtime_settings(snapshot: Settings) -> RuntimeSettingsSnapshot {
@@ -769,6 +770,9 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.core_limiter.rules.push(CoreLimiterRule {
         enabled: true,
         executable_path: " ".to_owned(),
+        focus_mode: ProcessRuleMode::Default,
+        visible_window_mode: ProcessRuleMode::Default,
+        background_mode: ProcessRuleMode::Default,
         threshold_percent: 80,
         sustain_seconds: 1,
         cooldown_seconds: 1,
@@ -823,6 +827,9 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     settings.core_limiter.rules.push(CoreLimiterRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
+        focus_mode: ProcessRuleMode::Default,
+        visible_window_mode: ProcessRuleMode::Default,
+        background_mode: ProcessRuleMode::Default,
         threshold_percent: 80,
         sustain_seconds: 1,
         cooldown_seconds: 1,

@@ -102,7 +102,7 @@ impl WinderustApp {
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalKind::BackgroundEfficiencyExclusion => {
+            ListItemRemovalKind::BackgroundEfficiencyRule => {
                 remove_at(&mut self.settings.background_efficiency.custom_rules, index);
             }
             ListItemRemovalKind::AppSuspensionRule => {

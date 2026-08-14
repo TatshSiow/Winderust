@@ -544,11 +544,17 @@ impl RuntimeCore {
                     .general
                     .allow_cross_session_process_control,
                 protect_foreground_app_from_efficiency: settings
-                    .background_efficiency
-                    .protect_foreground_app,
+                    .workload_engine
+                    .workload_engine_foreground_detection_enabled
+                    && !settings
+                        .workload_engine
+                        .workload_engine_foreground_efficiency_mode,
                 protect_visible_window_apps_from_efficiency: settings
-                    .background_efficiency
-                    .protect_visible_window_apps,
+                    .workload_engine
+                    .workload_engine_visible_window_detection_enabled
+                    && !settings
+                        .workload_engine
+                        .workload_engine_visible_window_efficiency_mode,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
                 background_efficiency_managed: settings.background_efficiency.enabled,

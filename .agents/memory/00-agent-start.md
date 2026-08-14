@@ -66,9 +66,14 @@
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
   this handoff and directly restores all coordinator-owned state in reverse application order.
-- Background Efficiency and Core Limiter expose independent process protections: Protect Foreground App defaults on; Protect Apps with Visible Windows defaults off and covers visible, non-minimized, non-cloaked top-level windows plus sibling processes with the same executable path.
-- Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules still override the selected tier.
-- Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency paths always protect focused and visible-window apps from throttling.
+- Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection
+  layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
+  off, and each layer owns an Enabled/Disabled Efficiency Mode default.
+- Background Efficiency and Core Limiter custom rules use Focus, Visible Window, and Background
+  columns with Default/Enabled/Disabled values and Focus > Visible Window > Background precedence.
+  Default inherits the page-wide foreground/visible protection behavior.
+- Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Auto remains loadable for existing pre-release settings but is not offered in custom-rule selectors.
+- Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution does not use process failure suppression.
 - `src/control/timer_resolution.rs` is the sole Timer Resolution lifecycle owner;

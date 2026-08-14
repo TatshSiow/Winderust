@@ -190,8 +190,11 @@ impl DynamicPriorityBoostManager {
                 settings.visible_window_boost,
                 settings.background_boost,
             );
-            let configured_override =
-                settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+            let configured_override = settings.override_for(
+                executable_path.to_string_lossy().as_ref(),
+                foreground,
+                visible_window,
+            );
             let boost = match configured_override {
                 Some(Some(ProcessDynamicPriorityBoostSetting::Auto)) => default_boost,
                 Some(Some(boost)) => boost,

@@ -17,8 +17,8 @@ use crate::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     foreground::{
-        contains_process_name, process_executable_path, process_failure_key, process_session_id,
-        ProtectedProcesses,
+        contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
+        process_session_id, ProtectedProcesses,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -141,7 +141,9 @@ impl BackgroundEfficiencyManager {
                 "Background Efficiency disabled",
             );
         }
-        if settings.protect_foreground_app && foreground_process_id.is_none() {
+        let needs_foreground = settings.foreground_detection_enabled;
+        let needs_visible_windows = settings.visible_window_detection_enabled;
+        if needs_foreground && foreground_process_id.is_none() {
             return self.paused_snapshot(
                 controller,
                 action_log,
@@ -150,7 +152,7 @@ impl BackgroundEfficiencyManager {
             );
         }
 
-        let visible_window_process_ids = if settings.protect_visible_window_apps {
+        let visible_window_process_ids = if needs_visible_windows {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
                 return self.paused_snapshot(
                     controller,
@@ -187,10 +189,16 @@ impl BackgroundEfficiencyManager {
         };
 
         let scanned_processes = processes.len();
-        let protected_processes = ProtectedProcesses::capture(
+        let foreground_executable_path = foreground_process_id.and_then(|id| {
+            processes
+                .iter()
+                .find(|process| process.id == id)
+                .and_then(process_executable_path)
+        });
+        let visible_processes = ProtectedProcesses::capture(
             processes.as_ref(),
-            settings.protect_foreground_app,
-            foreground_process_id,
+            false,
+            None,
             visible_window_process_ids,
         );
         let active_audio_process_ids = active_audio_process_ids().ok();
@@ -209,9 +217,20 @@ impl BackgroundEfficiencyManager {
                 }
                 let executable_path = process_executable_path(process)?;
                 let creation_time = process.creation_time?;
-                if protected_processes.contains(process.id, &executable_path)
-                    || settings.custom_rule_enabled_for(executable_path.to_string_lossy().as_ref())
-                {
+                let focus = is_foreground_process(
+                    process.id,
+                    &executable_path,
+                    foreground_process_id,
+                    foreground_executable_path.as_deref(),
+                );
+                let visible_window =
+                    !focus && visible_processes.contains(process.id, &executable_path);
+                if !background_efficiency_enabled_for(
+                    settings,
+                    executable_path.to_string_lossy().as_ref(),
+                    focus,
+                    visible_window,
+                ) {
                     return None;
                 }
                 Some(BackgroundEfficiencyTarget {
@@ -558,13 +577,18 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 }
 
 #[cfg(test)]
-fn is_process_excluded(process: &str, settings: &BackgroundEfficiencySettings) -> bool {
+fn is_process_excluded(
+    process: &str,
+    settings: &BackgroundEfficiencySettings,
+    focus: bool,
+    visible_window: bool,
+) -> bool {
     let process_name = Path::new(process)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(process);
     is_builtin_excluded_for(process_name, settings.aggressiveness)
-        || settings.custom_rule_enabled_for(process)
+        || !background_efficiency_enabled_for(settings, process, focus, visible_window)
 }
 
 fn is_builtin_excluded_for(
@@ -591,28 +615,56 @@ fn ignore_timer_resolution_allowed(
     active_audio_process_ids.is_some_and(|ids| !ids.contains(&process_id))
 }
 
+fn background_efficiency_enabled_for(
+    settings: &BackgroundEfficiencySettings,
+    process_name: &str,
+    focus: bool,
+    visible_window: bool,
+) -> bool {
+    let focus = settings.foreground_detection_enabled && focus;
+    let visible_window = !focus && settings.visible_window_detection_enabled && visible_window;
+    let default_enabled = if focus {
+        settings.foreground_efficiency_mode
+    } else if visible_window {
+        settings.visible_window_efficiency_mode
+    } else {
+        settings.background_efficiency_mode
+    };
+    settings
+        .custom_rule_for(process_name)
+        .map(|rule| rule.efficiency_mode_for(focus, visible_window, default_enabled))
+        .unwrap_or(default_enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProcessRuleMode;
 
     #[test]
     fn exclusions_include_builtin_and_user_entries() {
         let settings = BackgroundEfficiencySettings {
             enabled: true,
-            protect_foreground_app: true,
-            protect_visible_window_apps: false,
+            foreground_detection_enabled: true,
+            visible_window_detection_enabled: false,
+            foreground_efficiency_mode: false,
+            visible_window_efficiency_mode: false,
+            background_efficiency_mode: true,
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: true,
                 executable_path: "mouse.exe".to_owned(),
+                focus_efficiency_mode: ProcessRuleMode::Disabled,
+                visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                background_efficiency_mode: ProcessRuleMode::Disabled,
             }],
         };
 
-        assert!(is_process_excluded("EXPLORER.EXE", &settings));
-        assert!(is_process_excluded("csrss.exe", &settings));
-        assert!(is_process_excluded("winlogon.exe", &settings));
-        assert!(is_process_excluded("Mouse.exe", &settings));
-        assert!(!is_process_excluded("browser.exe", &settings));
+        assert!(is_process_excluded("EXPLORER.EXE", &settings, false, false));
+        assert!(is_process_excluded("csrss.exe", &settings, false, false));
+        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
+        assert!(is_process_excluded("Mouse.exe", &settings, false, false));
+        assert!(!is_process_excluded("browser.exe", &settings, false, false));
     }
 
     #[test]
@@ -622,19 +674,34 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(is_process_excluded("SearchHost.exe", &settings));
-        assert!(is_process_excluded("dwm.exe", &settings));
-        assert!(is_process_excluded("winlogon.exe", &settings));
+        assert!(is_process_excluded(
+            "SearchHost.exe",
+            &settings,
+            false,
+            false
+        ));
+        assert!(is_process_excluded("dwm.exe", &settings, false, false));
+        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
 
         settings.aggressiveness = BackgroundEfficiencyAggressiveness::Balanced;
-        assert!(!is_process_excluded("SearchHost.exe", &settings));
-        assert!(is_process_excluded("dwm.exe", &settings));
-        assert!(is_process_excluded("winlogon.exe", &settings));
+        assert!(!is_process_excluded(
+            "SearchHost.exe",
+            &settings,
+            false,
+            false
+        ));
+        assert!(is_process_excluded("dwm.exe", &settings, false, false));
+        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
 
         settings.aggressiveness = BackgroundEfficiencyAggressiveness::Aggressive;
-        assert!(!is_process_excluded("SearchHost.exe", &settings));
-        assert!(!is_process_excluded("dwm.exe", &settings));
-        assert!(is_process_excluded("winlogon.exe", &settings));
+        assert!(!is_process_excluded(
+            "SearchHost.exe",
+            &settings,
+            false,
+            false
+        ));
+        assert!(!is_process_excluded("dwm.exe", &settings, false, false));
+        assert!(is_process_excluded("winlogon.exe", &settings, false, false));
     }
 
     #[test]
@@ -643,12 +710,66 @@ mod tests {
             custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: false,
                 executable_path: "mouse.exe".to_owned(),
+                focus_efficiency_mode: ProcessRuleMode::Disabled,
+                visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                background_efficiency_mode: ProcessRuleMode::Disabled,
             }],
             ..Default::default()
         };
 
         assert!(settings.contains_custom_rule("MOUSE.EXE"));
-        assert!(!is_process_excluded("mouse.exe", &settings));
+        assert!(!is_process_excluded("mouse.exe", &settings, false, false));
+    }
+
+    #[test]
+    fn custom_rule_prefers_focus_then_visible_window_then_background() {
+        let settings = BackgroundEfficiencySettings {
+            foreground_detection_enabled: true,
+            visible_window_detection_enabled: true,
+            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
+                enabled: true,
+                executable_path: "app.exe".to_owned(),
+                focus_efficiency_mode: ProcessRuleMode::Enabled,
+                visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                background_efficiency_mode: ProcessRuleMode::Enabled,
+            }],
+            ..Default::default()
+        };
+
+        assert!(background_efficiency_enabled_for(
+            &settings, "APP.EXE", true, true
+        ));
+        assert!(!background_efficiency_enabled_for(
+            &settings, "app.exe", false, true
+        ));
+        assert!(background_efficiency_enabled_for(
+            &settings, "app.exe", false, false
+        ));
+    }
+
+    #[test]
+    fn custom_rule_default_inherits_global_layer() {
+        let settings = BackgroundEfficiencySettings {
+            foreground_detection_enabled: true,
+            visible_window_detection_enabled: true,
+            foreground_efficiency_mode: false,
+            visible_window_efficiency_mode: true,
+            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
+                enabled: true,
+                executable_path: "app.exe".to_owned(),
+                focus_efficiency_mode: ProcessRuleMode::Default,
+                visible_window_efficiency_mode: ProcessRuleMode::Default,
+                background_efficiency_mode: ProcessRuleMode::Default,
+            }],
+            ..Default::default()
+        };
+
+        assert!(!background_efficiency_enabled_for(
+            &settings, "app.exe", true, false
+        ));
+        assert!(background_efficiency_enabled_for(
+            &settings, "app.exe", false, true
+        ));
     }
 
     #[test]

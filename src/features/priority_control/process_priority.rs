@@ -166,8 +166,11 @@ impl ProcessPriorityManager {
                     settings.visible_window_priority,
                     settings.background_priority,
                 );
-                let configured_override =
-                    settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+                let configured_override = settings.override_for(
+                    executable_path.to_string_lossy().as_ref(),
+                    foreground,
+                    visible_window,
+                );
                 let priority = match configured_override {
                     Some(Some(ProcessPrioritySetting::Auto)) => default_priority,
                     Some(Some(priority)) => priority,

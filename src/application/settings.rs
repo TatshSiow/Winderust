@@ -671,6 +671,9 @@ fn core_limiter_rule(path: &str) -> crate::config::CoreLimiterRule {
     crate::config::CoreLimiterRule {
         enabled: false,
         executable_path: path.to_owned(),
+        focus_mode: crate::config::ProcessRuleMode::Default,
+        visible_window_mode: crate::config::ProcessRuleMode::Default,
+        background_mode: crate::config::ProcessRuleMode::Default,
         threshold_percent: 75,
         sustain_seconds: 5,
         cooldown_seconds: 10,

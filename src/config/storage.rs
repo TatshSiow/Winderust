@@ -91,6 +91,7 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::config::{
         AccentSettings, ActionLogMode, AdaptiveEngineSettings, AdvancedSettings, AnimationMode,
         AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
@@ -105,9 +106,28 @@ mod tests {
         ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
         ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
         ProcessMemoryPrioritySetting, ProcessPriority, ProcessPrioritySetting,
-        ProcessPrioritySettings, ProcessThreadPrioritySetting, ThreadPrioritySettings,
-        TimerResolutionRule, TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
+        ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting,
+        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+        WorkloadEngineSettings,
     };
+
+    #[test]
+    fn background_efficiency_rule_without_tiers_remains_an_exclusion() {
+        let rule: BackgroundEfficiencyRule = toml::from_str(
+            r#"
+                executable_path = "C:\\Apps\\legacy.exe"
+            "#,
+        )
+        .expect("existing Background Efficiency rule should parse");
+
+        assert!(rule.enabled);
+        assert_eq!(rule.focus_efficiency_mode, ProcessRuleMode::Disabled);
+        assert_eq!(
+            rule.visible_window_efficiency_mode,
+            ProcessRuleMode::Disabled
+        );
+        assert_eq!(rule.background_efficiency_mode, ProcessRuleMode::Disabled);
+    }
 
     #[test]
     fn only_missing_settings_use_defaults() {
@@ -237,17 +257,26 @@ mod tests {
             },
             background_efficiency: BackgroundEfficiencySettings {
                 enabled: true,
-                protect_foreground_app: false,
-                protect_visible_window_apps: true,
+                foreground_detection_enabled: false,
+                visible_window_detection_enabled: true,
+                foreground_efficiency_mode: false,
+                visible_window_efficiency_mode: false,
+                background_efficiency_mode: true,
                 aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
                 custom_rules: vec![
                     BackgroundEfficiencyRule {
                         enabled: true,
                         executable_path: "mouse.exe".to_owned(),
+                        focus_efficiency_mode: ProcessRuleMode::Disabled,
+                        visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                        background_efficiency_mode: ProcessRuleMode::Disabled,
                     },
                     BackgroundEfficiencyRule {
                         enabled: false,
                         executable_path: "comma,app.exe".to_owned(),
+                        focus_efficiency_mode: ProcessRuleMode::Disabled,
+                        visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                        background_efficiency_mode: ProcessRuleMode::Disabled,
                     },
                 ],
             },
@@ -324,6 +353,9 @@ mod tests {
                 rules: vec![CoreLimiterRule {
                     enabled: true,
                     executable_path: "encoder.exe".to_owned(),
+                    focus_mode: ProcessRuleMode::Default,
+                    visible_window_mode: ProcessRuleMode::Default,
+                    background_mode: ProcessRuleMode::Default,
                     threshold_percent: 80,
                     sustain_seconds: 5,
                     cooldown_seconds: 15,
@@ -343,6 +375,10 @@ mod tests {
                 enabled: true,
                 lower_background_apps: true,
                 workload_engine_background_efficiency_enabled: true,
+                workload_engine_foreground_detection_enabled: true,
+                workload_engine_visible_window_detection_enabled: true,
+                workload_engine_foreground_efficiency_mode: false,
+                workload_engine_visible_window_efficiency_mode: false,
                 workload_engine_background_priority: ProcessPriority::BelowNormal,
                 workload_engine_visible_window_priority: ProcessPriority::Normal,
                 lower_background_io_priority_enabled: true,
@@ -526,16 +562,24 @@ mod tests {
             enabled: true,
             executable_path: r"C:\Apps\worker.exe".to_owned(),
             process_foreground_priority: Some(ProcessPrioritySetting::AboveNormal),
+            process_visible_window_priority: Some(ProcessPrioritySetting::Normal),
             process_background_priority: Some(ProcessPrioritySetting::BelowNormal),
             thread_foreground_priority: Some(ProcessThreadPrioritySetting::Highest),
+            thread_visible_window_priority: Some(ProcessThreadPrioritySetting::AboveNormal),
             thread_background_priority: Some(ProcessThreadPrioritySetting::Lowest),
             dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Enabled),
+            dynamic_priority_boost_visible_window: Some(
+                ProcessDynamicPriorityBoostSetting::Default,
+            ),
             dynamic_priority_boost_background: Some(ProcessDynamicPriorityBoostSetting::Disabled),
             io_foreground_priority: Some(ProcessIoPrioritySetting::Normal),
+            io_visible_window_priority: Some(ProcessIoPrioritySetting::Low),
             io_background_priority: Some(ProcessIoPrioritySetting::VeryLow),
             gpu_foreground_priority: Some(ProcessGpuPrioritySetting::AboveNormal),
+            gpu_visible_window_priority: Some(ProcessGpuPrioritySetting::Normal),
             gpu_background_priority: Some(ProcessGpuPrioritySetting::Idle),
             memory_foreground_priority: Some(ProcessMemoryPrioritySetting::Normal),
+            memory_visible_window_priority: Some(ProcessMemoryPrioritySetting::Medium),
             memory_background_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
         };
         let settings = Settings {
@@ -573,37 +617,43 @@ mod tests {
         assert_eq!(
             parsed
                 .process_priority
-                .override_for(r"c:/apps/WORKER.exe", true),
+                .override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessPrioritySetting::AboveNormal))
         );
         assert_eq!(
             parsed
                 .thread_priority
-                .override_for(r"c:/apps/WORKER.exe", false),
+                .override_for(r"c:/apps/WORKER.exe", false, true),
+            Some(Some(ProcessThreadPrioritySetting::AboveNormal))
+        );
+        assert_eq!(
+            parsed
+                .thread_priority
+                .override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessThreadPrioritySetting::Lowest))
         );
         assert_eq!(
             parsed
                 .dynamic_priority_boost
-                .override_for(r"c:/apps/WORKER.exe", true),
+                .override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessDynamicPriorityBoostSetting::Enabled))
         );
         assert_eq!(
             parsed
                 .io_priority
-                .override_for(r"c:/apps/WORKER.exe", false),
+                .override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessIoPrioritySetting::VeryLow))
         );
         assert_eq!(
             parsed
                 .gpu_priority
-                .override_for(r"c:/apps/WORKER.exe", true),
+                .override_for(r"c:/apps/WORKER.exe", true, false),
             Some(Some(ProcessGpuPrioritySetting::AboveNormal))
         );
         assert_eq!(
             parsed
                 .memory_priority
-                .override_for(r"c:/apps/WORKER.exe", false),
+                .override_for(r"c:/apps/WORKER.exe", false, false),
             Some(Some(ProcessMemoryPrioritySetting::VeryLow))
         );
     }

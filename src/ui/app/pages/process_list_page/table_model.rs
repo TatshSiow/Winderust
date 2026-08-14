@@ -694,15 +694,15 @@ pub(in crate::ui::app) fn process_list_column_label(
         }
         ProcessListColumn::IoPriority => process_list_priority_header_label(
             t!("process_list.io_priority").to_string(),
-            io_priority_has_foreground_background_split(&settings.io_priority),
+            io_priority_has_tier_split(&settings.io_priority),
         ),
         ProcessListColumn::GpuPriority => process_list_priority_header_label(
             t!("process_list.gpu_priority").to_string(),
-            gpu_priority_has_foreground_background_split(&settings.gpu_priority),
+            gpu_priority_has_tier_split(&settings.gpu_priority),
         ),
         ProcessListColumn::MemoryPriority => process_list_priority_header_label(
             t!("process_list.memory_priority").to_string(),
-            memory_priority_has_foreground_background_split(&settings.memory_priority),
+            memory_priority_has_tier_split(&settings.memory_priority),
         ),
     }
 }

@@ -25,7 +25,7 @@ use crate::{
     foreground::{
         contains_process_name, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_executable_path,
-        ProtectedProcesses, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -139,7 +139,13 @@ impl CoreLimiterManager {
             };
         }
 
-        if settings.protect_foreground_app && foreground_process_id.is_none() {
+        let needs_foreground = settings.protect_foreground_app
+            || settings.rules.iter().any(|rule| {
+                rule.enabled
+                    && (rule.focus_mode != rule.visible_window_mode
+                        || rule.focus_mode != rule.background_mode)
+            });
+        if needs_foreground && foreground_process_id.is_none() {
             let failed = self.clear_all(coordinator, action_log, "foreground app is unknown");
             return CoreLimiterSnapshot {
                 enabled: true,
@@ -150,7 +156,12 @@ impl CoreLimiterManager {
             };
         }
 
-        let visible_window_process_ids = if settings.protect_visible_window_apps {
+        let needs_visible_windows = settings.protect_visible_window_apps
+            || settings
+                .rules
+                .iter()
+                .any(|rule| rule.enabled && rule.visible_window_mode != rule.background_mode);
+        let visible_window_process_ids = if needs_visible_windows {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
                 let failed =
                     self.clear_all(coordinator, action_log, "visible windows are unavailable");
@@ -199,13 +210,6 @@ impl CoreLimiterManager {
         };
 
         let scanned_processes = processes.len();
-        let protected_processes = ProtectedProcesses::capture(
-            processes.as_ref(),
-            settings.protect_foreground_app,
-            foreground_process_id,
-            visible_window_process_ids,
-        );
-
         let mut target_processes = BTreeMap::new();
         for process in processes.iter() {
             if process.id == 0
@@ -223,11 +227,17 @@ impl CoreLimiterManager {
             let Some(executable_path) = process_executable_path(process) else {
                 continue;
             };
-            if protected_processes.contains(process.id, &executable_path) {
-                continue;
-            }
-
             if let Some(rule) = matching_rule(settings, &executable_path) {
+                let focus = foreground_process_id == Some(process.id);
+                let visible_window = !focus && visible_window_process_ids.contains(&process.id);
+                let default_enabled = !(settings.protect_foreground_app && focus
+                    || settings.protect_visible_window_apps && visible_window);
+                if !rule
+                    .mode_for(focus, visible_window)
+                    .resolve(default_enabled)
+                {
+                    continue;
+                }
                 target_processes.insert(
                     process.id,
                     CoreLimiterTarget {
@@ -755,6 +765,9 @@ mod tests {
             rules: vec![CoreLimiterRule {
                 enabled: true,
                 executable_path: r"C:\Apps\Worker.EXE".to_owned(),
+                focus_mode: crate::config::ProcessRuleMode::Default,
+                visible_window_mode: crate::config::ProcessRuleMode::Default,
+                background_mode: crate::config::ProcessRuleMode::Default,
                 threshold_percent: 75,
                 sustain_seconds: 5,
                 cooldown_seconds: 10,
@@ -764,6 +777,25 @@ mod tests {
 
         assert!(matching_rule(&settings, Path::new(r"C:\Apps\worker.exe")).is_some());
         assert!(matching_rule(&settings, Path::new(r"D:\Tools\worker.exe")).is_none());
+    }
+
+    #[test]
+    fn rule_modes_override_or_inherit_global_protection() {
+        let rule = CoreLimiterRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".to_owned(),
+            focus_mode: crate::config::ProcessRuleMode::Enabled,
+            visible_window_mode: crate::config::ProcessRuleMode::Disabled,
+            background_mode: crate::config::ProcessRuleMode::Default,
+            threshold_percent: 75,
+            sustain_seconds: 5,
+            cooldown_seconds: 10,
+            max_logical_processors: 1,
+        };
+
+        assert!(rule.mode_for(true, false).resolve(false));
+        assert!(!rule.mode_for(false, true).resolve(true));
+        assert!(rule.mode_for(false, false).resolve(true));
     }
 
     #[test]

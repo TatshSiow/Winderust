@@ -151,14 +151,14 @@ impl WinderustApp {
     pub(in crate::ui::app) fn set_process_list_process_priority(
         &mut self,
         process_name: String,
-        foreground: Option<bool>,
+        tier: Option<ProcessRuleTier>,
         priority: ProcessPrioritySetting,
         cx: &mut Context<Self>,
     ) {
         set_process_priority_rule(
             &mut self.settings.process_priority,
             &process_name,
-            foreground,
+            tier,
             priority,
         );
         self.finish_process_list_edit(cx);
@@ -167,14 +167,14 @@ impl WinderustApp {
     pub(in crate::ui::app) fn set_process_list_thread_priority(
         &mut self,
         process_name: String,
-        foreground: Option<bool>,
+        tier: Option<ProcessRuleTier>,
         priority: ProcessThreadPrioritySetting,
         cx: &mut Context<Self>,
     ) {
         set_thread_priority_rule(
             &mut self.settings.thread_priority,
             &process_name,
-            foreground,
+            tier,
             priority,
         );
         self.finish_process_list_edit(cx);
@@ -183,14 +183,14 @@ impl WinderustApp {
     pub(in crate::ui::app) fn set_process_list_dynamic_priority_boost(
         &mut self,
         process_name: String,
-        foreground: Option<bool>,
+        tier: Option<ProcessRuleTier>,
         boost: ProcessDynamicPriorityBoostSetting,
         cx: &mut Context<Self>,
     ) {
         set_dynamic_priority_boost_rule(
             &mut self.settings.dynamic_priority_boost,
             &process_name,
-            foreground,
+            tier,
             boost,
         );
         self.finish_process_list_edit(cx);
@@ -199,14 +199,14 @@ impl WinderustApp {
     pub(in crate::ui::app) fn set_process_list_io_priority(
         &mut self,
         process_name: String,
-        foreground: Option<bool>,
+        tier: Option<ProcessRuleTier>,
         priority: ProcessIoPrioritySetting,
         cx: &mut Context<Self>,
     ) {
         set_io_priority_rule(
             &mut self.settings.io_priority,
             &process_name,
-            foreground,
+            tier,
             priority,
         );
         self.finish_process_list_edit(cx);
@@ -215,14 +215,14 @@ impl WinderustApp {
     pub(in crate::ui::app) fn set_process_list_gpu_priority(
         &mut self,
         process_name: String,
-        foreground: Option<bool>,
+        tier: Option<ProcessRuleTier>,
         priority: ProcessGpuPrioritySetting,
         cx: &mut Context<Self>,
     ) {
         set_gpu_priority_rule(
             &mut self.settings.gpu_priority,
             &process_name,
-            foreground,
+            tier,
             priority,
         );
         self.finish_process_list_edit(cx);
@@ -231,14 +231,14 @@ impl WinderustApp {
     pub(in crate::ui::app) fn set_process_list_memory_priority(
         &mut self,
         process_name: String,
-        foreground: Option<bool>,
+        tier: Option<ProcessRuleTier>,
         priority: ProcessMemoryPrioritySetting,
         cx: &mut Context<Self>,
     ) {
         set_memory_priority_rule(
             &mut self.settings.memory_priority,
             &process_name,
-            foreground,
+            tier,
             priority,
         );
         self.finish_process_list_edit(cx);

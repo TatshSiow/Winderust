@@ -101,6 +101,21 @@ Prefer visible state, compact controls, and predictable rows over large illustra
   columns. Each policy column selects a Core or custom preset; do not restore expandable per-rule
   CPU grids.
 
+### Background Efficiency
+
+- The master group owns the Background Efficiency Mode default. Foreground Detection and Visible
+  Window Detection use the same collapsible toggle-plus-value pattern as Priority Control.
+- Custom rules use the same compact Active, App Name, Executable Path, Focus, Visible Window,
+  Background, and Actions table pattern as CPU allocation. Each policy column selects Default,
+  Enabled, or Disabled; Default inherits the matching page-wide Efficiency Mode value.
+
+### Priority Control and Core Limiter
+
+- Priority Control custom rules use the same three policy columns and independently select the
+  priority for Focus, Visible Window, and Background.
+- Core Limiter uses the same three policy columns with Default, Enabled, and Disabled. Threshold,
+  sustain, cooldown, and processor-limit controls remain in the expandable rule details.
+
 ## Localization
 
 - All translatable user-facing strings should use `t!()` and locale files.

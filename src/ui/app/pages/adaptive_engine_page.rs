@@ -609,52 +609,67 @@ impl WinderustApp {
             self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineEfficiency),
             vec![
                 setting_group_action_row_with_help(
-                    "workload-engine-auto-efficiency-level",
-                    t!("workload_engine.auto_efficiency_level").to_string(),
-                    t!("workload_engine.auto_efficiency_level_help").to_string(),
-                    self.render_background_efficiency_aggressiveness_picker(
-                        self.settings.background_efficiency.aggressiveness,
-                        auto_efficiency_controls_enabled,
+                    "workload-engine-auto-efficiency-protect-foreground",
+                    t!("background_efficiency.foreground_detection").to_string(),
+                    t!("background_efficiency.foreground_detection_help").to_string(),
+                    setting_group_switch_action(
+                        "workload-engine-auto-efficiency-protect-foreground-switch",
+                        self.settings
+                            .workload_engine
+                            .workload_engine_foreground_detection_enabled,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings
+                                .workload_engine
+                                .workload_engine_foreground_detection_enabled = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    true,
+                )
+                .when(!auto_efficiency_controls_enabled, |row| {
+                    row.opacity(0.42).cursor_default()
+                })
+                .into_any_element(),
+                setting_group_action_row(
+                    "workload-engine-auto-efficiency-foreground-mode",
+                    t!("process_list.efficiency_mode").to_string(),
+                    self.render_workload_engine_efficiency_mode_picker(
+                        false,
+                        self.settings
+                            .workload_engine
+                            .workload_engine_foreground_efficiency_mode,
+                        auto_efficiency_controls_enabled
+                            && self
+                                .settings
+                                .workload_engine
+                                .workload_engine_foreground_detection_enabled,
                         window,
                         cx,
                     ),
-                    true,
+                    false,
                 )
-                .when(!auto_efficiency_controls_enabled, |row| {
-                    row.opacity(0.42).cursor_default()
-                })
-                .into_any_element(),
-                setting_group_action_row_with_help(
-                    "workload-engine-auto-efficiency-protect-foreground",
-                    t!("common.protect_foreground_app").to_string(),
-                    t!("common.protect_foreground_app_help").to_string(),
-                    setting_group_switch_action(
-                        "workload-engine-auto-efficiency-protect-foreground-switch",
-                        self.settings.background_efficiency.protect_foreground_app,
-                        cx.listener(|app, checked, _, cx| {
-                            app.settings.background_efficiency.protect_foreground_app = *checked;
-                            cx.notify();
-                        }),
-                    ),
-                    true,
+                .when(
+                    !auto_efficiency_controls_enabled
+                        || !self
+                            .settings
+                            .workload_engine
+                            .workload_engine_foreground_detection_enabled,
+                    |row| row.opacity(0.42).cursor_default(),
                 )
-                .when(!auto_efficiency_controls_enabled, |row| {
-                    row.opacity(0.42).cursor_default()
-                })
                 .into_any_element(),
                 setting_group_action_row_with_help(
                     "workload-engine-auto-efficiency-protect-visible-windows",
-                    t!("common.protect_visible_window_apps").to_string(),
-                    t!("common.protect_visible_window_apps_help").to_string(),
+                    t!("common.visible_window_detection").to_string(),
+                    t!("common.visible_window_detection_help").to_string(),
                     setting_group_switch_action(
                         "workload-engine-auto-efficiency-protect-visible-windows-switch",
                         self.settings
-                            .background_efficiency
-                            .protect_visible_window_apps,
+                            .workload_engine
+                            .workload_engine_visible_window_detection_enabled,
                         cx.listener(|app, checked, _, cx| {
                             app.settings
-                                .background_efficiency
-                                .protect_visible_window_apps = *checked;
+                                .workload_engine
+                                .workload_engine_visible_window_detection_enabled = *checked;
                             cx.notify();
                         }),
                     ),
@@ -663,10 +678,91 @@ impl WinderustApp {
                 .when(!auto_efficiency_controls_enabled, |row| {
                     row.opacity(0.42).cursor_default()
                 })
+                .into_any_element(),
+                setting_group_action_row(
+                    "workload-engine-auto-efficiency-visible-window-mode",
+                    t!("process_list.efficiency_mode").to_string(),
+                    self.render_workload_engine_efficiency_mode_picker(
+                        true,
+                        self.settings
+                            .workload_engine
+                            .workload_engine_visible_window_efficiency_mode,
+                        auto_efficiency_controls_enabled
+                            && self
+                                .settings
+                                .workload_engine
+                                .workload_engine_visible_window_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .when(
+                    !auto_efficiency_controls_enabled
+                        || !self
+                            .settings
+                            .workload_engine
+                            .workload_engine_visible_window_detection_enabled,
+                    |row| row.opacity(0.42).cursor_default(),
+                )
                 .into_any_element(),
             ],
             window,
             cx,
+        )
+        .into_any_element()
+    }
+
+    fn render_workload_engine_efficiency_mode_picker(
+        &self,
+        visible_window: bool,
+        selected: bool,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tier = if visible_window {
+            "visible-window"
+        } else {
+            "foreground"
+        };
+        self.render_dropdown_select(
+            format!("workload-engine-{tier}-efficiency-mode"),
+            adaptive_efficiency_mode_label(selected),
+            enabled,
+            DropdownSelectWidth::Standard,
+            2,
+            window,
+            cx,
+            move |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in [true, false] {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "workload-engine-{tier}-efficiency-mode-{mode}"
+                            )),
+                            adaptive_efficiency_mode_label(mode),
+                            selected == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if visible_window {
+                                app.settings
+                                    .workload_engine
+                                    .workload_engine_visible_window_efficiency_mode = mode;
+                            } else {
+                                app.settings
+                                    .workload_engine
+                                    .workload_engine_foreground_efficiency_mode = mode;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
         )
         .into_any_element()
     }
@@ -2068,5 +2164,13 @@ impl WinderustApp {
                 .into_any_element(),
             cx,
         )
+    }
+}
+
+fn adaptive_efficiency_mode_label(enabled: bool) -> String {
+    if enabled {
+        t!("common.enabled").to_string()
+    } else {
+        t!("common.disabled").to_string()
     }
 }

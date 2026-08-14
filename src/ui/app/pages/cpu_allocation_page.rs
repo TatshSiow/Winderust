@@ -39,25 +39,8 @@ impl CpuAllocationPage {
     }
 }
 
-#[derive(Clone, Copy)]
-enum CpuAllocationRuleTier {
-    Focus,
-    VisibleWindow,
-    Background,
-}
-
-impl CpuAllocationRuleTier {
-    const ALL: [Self; 3] = [Self::Focus, Self::VisibleWindow, Self::Background];
-
-    fn key(self) -> &'static str {
-        match self {
-            Self::Focus => "focus",
-            Self::VisibleWindow => "visible-window",
-            Self::Background => "background",
-        }
-    }
-
-    fn label(self) -> String {
+impl ProcessRuleTier {
+    fn cpu_allocation_label(self) -> String {
         match self {
             Self::Focus => t!("cpu_allocation.focus").to_string(),
             Self::VisibleWindow => t!("common.visible_window").to_string(),
@@ -65,7 +48,7 @@ impl CpuAllocationRuleTier {
         }
     }
 
-    fn core_mask(self, rule: &CpuAllocationRule) -> u64 {
+    fn cpu_allocation_core_mask(self, rule: &CpuAllocationRule) -> u64 {
         match self {
             Self::Focus => rule.focus_core_mask,
             Self::VisibleWindow => rule.visible_window_core_mask,
@@ -73,7 +56,7 @@ impl CpuAllocationRuleTier {
         }
     }
 
-    fn set_core_mask(self, rule: &mut CpuAllocationRule, core_mask: u64) {
+    fn set_cpu_allocation_core_mask(self, rule: &mut CpuAllocationRule, core_mask: u64) {
         match self {
             Self::Focus => rule.focus_core_mask = core_mask,
             Self::VisibleWindow => rule.visible_window_core_mask = core_mask,
@@ -174,16 +157,16 @@ impl WinderustApp {
                         .border_b_1()
                         .border_color(rgb(border_color())),
                     );
-                for tier in CpuAllocationRuleTier::ALL {
+                for tier in ProcessRuleTier::ALL {
                     card = card.child(
                         rule_action_row(
                             format!("process-details-{key}-{}-preset-row", tier.key()),
-                            tier.label(),
+                            tier.cpu_allocation_label(),
                             self.render_cpu_allocation_preset_selector(
                                 kind,
                                 index,
                                 tier,
-                                tier.core_mask(rule),
+                                tier.cpu_allocation_core_mask(rule),
                                 &processors,
                                 DropdownSelectWidth::Standard,
                                 window,
@@ -817,12 +800,12 @@ impl WinderustApp {
                     }),
                 ))
                 .child(self.process_rule_title(&process, cx));
-            for tier in CpuAllocationRuleTier::ALL {
+            for tier in ProcessRuleTier::ALL {
                 row = row.child(self.render_cpu_allocation_preset_selector(
                     kind,
                     index,
                     tier,
-                    tier.core_mask(rule),
+                    tier.cpu_allocation_core_mask(rule),
                     &processors,
                     DropdownSelectWidth::Compact,
                     window,
@@ -867,7 +850,7 @@ impl WinderustApp {
         &self,
         kind: CpuAllocationPage,
         index: usize,
-        tier: CpuAllocationRuleTier,
+        tier: ProcessRuleTier,
         core_mask: u64,
         processors: &[LogicalProcessorInfo],
         width: DropdownSelectWidth,
@@ -929,7 +912,7 @@ impl WinderustApp {
                             if let Some(rule) =
                                 cpu_allocation_rules_mut(&mut app.settings, kind).get_mut(index)
                             {
-                                tier.set_core_mask(rule, mask);
+                                tier.set_cpu_allocation_core_mask(rule, mask);
                             }
                             app.active_power_plan_picker = None;
                             cx.notify();
