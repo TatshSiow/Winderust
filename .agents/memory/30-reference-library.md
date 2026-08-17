@@ -23,6 +23,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Automation event wake handling | `src/backend/automation.rs`, `src/activity/input_hook.rs`, and `src/backend/windows_events.rs` | Runtime-owned low-level input hooks, foreground/window WinEvent hooks, power, suspend/resume, and session notifications |
 | Winderust self-power | `src/backend/self_power.rs` and `src/platform/windows/self_power.rs` | Strict baseline/composition lifecycle plus the sole raw current-process priority and Power Throttling adapter |
 | System tray lifecycle | `src/backend/tray.rs` | Notification-area icon, window-procedure subclassing, popup menu, and restore/quit messages |
+| Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, named App Suspension jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/workload_engine.rs`, `workload_engine/process_control.rs`, and `src/control/priority_efficiency.rs` | Workload decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
@@ -113,6 +114,23 @@ User-facing behavior:
 | `ShowWindow` | Hides the window with `SW_HIDE` and shows it with `SW_SHOW`, preserving its current size and maximized state instead of resetting it with `SW_RESTORE`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow |
 | `SetWindowLongPtrW` | Installs and restores the temporary `GWLP_WNDPROC` tray callback. A zero return is a failure only when `GetLastError` is nonzero after first clearing it with `SetLastError(0)`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw |
 | `CallWindowProcW` | Forwards unhandled messages to the exact original window procedure. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw |
+
+## Administrator Relaunch And Single-Instance Handoff
+
+`src/backend/privilege.rs` launches the current executable with the private elevated-relaunch
+argument through `ShellExecuteExW`. `SEE_MASK_NOASYNC` completes process creation before the
+standard instance begins shutdown, and `SEE_MASK_NOCLOSEPROCESS` confirms that Windows returned a
+live replacement-process handle. `src/main.rs` recognizes only that private argument and waits on
+the existing path-scoped single-instance mutex; ordinary duplicate launches retain their zero-wait
+behavior. The elevated replacement continues when the standard instance releases the mutex during
+normal shutdown or Windows abandons it after forced termination.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `ShellExecuteExW` / `SHELLEXECUTEINFOW` | Starts the current executable with the `runas` verb and confirms creation of the elevated replacement before the caller exits. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw / https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
+| `SEE_MASK_NOASYNC` | Keeps shell activation synchronous because the standard instance exits immediately after a successful launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
+| `SEE_MASK_NOCLOSEPROCESS` | Requests the replacement process handle used to distinguish accepted shell execution from an actual process launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
+| Named mutex / `WaitForSingleObject` | Keeps normal launches single-instance while allowing the explicit elevated replacement to wait for the closing instance's ownership to end. | https://learn.microsoft.com/en-us/windows/win32/sync/mutex-objects / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
 
 ## Winderust Self-Power
 
