@@ -55,19 +55,20 @@ use crate::{
     },
     background_efficiency,
     config::{
-        self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
-        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
-        BackgroundEfficiencyRule, BackgroundEfficiencySettings, ByCpuLoadRule, ByForegroundRule,
-        ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, CoreLimiterRule,
-        CoreLimiterSettings, CpuAllocationRule, CpuRestrictionMode, CpuUsageComparison,
-        DynamicPriorityBoostSettings, ForegroundBoostPriority, GpuPrioritySettings,
-        IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
-        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPriority,
-        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
-        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
-        ProcessPrioritySetting, ProcessPrioritySettings, ProcessThreadPrioritySetting, Settings,
-        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, UpdateChannel,
-        WeekdaySetting, WorkloadEngineSettings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        self, AccentColorSource, AccentSettings, ActionLogMode, AdvancedPowerPlanTuningPreset,
+        AnimationMode, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
+        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
+        ByCpuLoadRule, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
+        ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings, CpuAllocationRule,
+        CpuRestrictionMode, CpuUsageComparison, DynamicPriorityBoostSettings,
+        ForegroundBoostPriority, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
+        MemoryTrimSettings, NetworkThresholdUnit, ProcessDynamicPriorityBoostSetting,
+        ProcessExclusionRule, ProcessGpuPriority, ProcessGpuPrioritySetting, ProcessIoPriority,
+        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
+        ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
+        ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
+        TimerResolutionSettings, UpdateChannel, WeekdaySetting, WorkloadEngineSettings,
+        CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
     control::{
         dynamic_priority_boost::{current_dynamic_priority_boost_state, DynamicPriorityBoostState},
@@ -469,7 +470,6 @@ pub struct WinderustApp {
     processor_power_target_plan_guid: Option<String>,
     processor_power_loaded_plan_guid: Option<String>,
     processor_power_target_plan_personality: Option<PowerPlanPersonality>,
-    processor_power_link_ac_dc: bool,
     processor_power_dirty: bool,
     win32_priority_separation_service: Win32PrioritySeparationService,
     win32_priority_separation_value: Option<u32>,
@@ -484,6 +484,7 @@ pub struct WinderustApp {
     retained_side_panel_page: Option<Page>,
     editing_numeric: Option<NumericField>,
     cpu_allocation_preset_editor: Option<CpuAllocationPresetEditor>,
+    advanced_power_plan_tuning_preset_editor: Option<AdvancedPowerPlanTuningPresetEditor>,
     expanded_rule_cards: HashSet<RuleCardTarget>,
     expanded_setting_groups: HashSet<SettingGroupTarget>,
     update: UpdateModel,
@@ -502,6 +503,7 @@ pub struct WinderustApp {
     _dashboard_search_subscription: Option<Subscription>,
     _process_list_search_subscription: Option<Subscription>,
     _cpu_allocation_preset_name_subscription: Option<Subscription>,
+    _advanced_power_plan_tuning_preset_name_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
@@ -619,6 +621,7 @@ enum ListItemRemovalKind {
     CpuSetsSoftRule,
     ProcessorAffinityHardRule,
     CpuAllocationPreset,
+    AdvancedPowerPlanTuningPreset,
     CoreLimiterRule,
     ByRunningAppRule,
     WorkloadEngineExclusion,
@@ -641,6 +644,19 @@ struct CpuAllocationPresetEditor {
 #[derive(Clone, Copy)]
 enum CpuAllocationPresetEditorTarget {
     Core(usize),
+    Custom(Option<usize>),
+}
+
+struct AdvancedPowerPlanTuningPresetEditor {
+    target: AdvancedPowerPlanTuningPresetEditorTarget,
+    values: ProcessorPowerValues,
+    sliders: [Entity<SliderState>; 4],
+    _slider_subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy)]
+enum AdvancedPowerPlanTuningPresetEditorTarget {
+    BuiltIn(ProcessorPowerPreset),
     Custom(Option<usize>),
 }
 
@@ -680,6 +696,7 @@ struct UiInputs {
     cpu_sets_soft_process: Entity<InputState>,
     processor_affinity_hard_process: Entity<InputState>,
     cpu_allocation_preset_name: Entity<InputState>,
+    advanced_power_plan_tuning_preset_name: Entity<InputState>,
     workload_engine_process: Entity<InputState>,
     process_priority_process: Entity<InputState>,
     thread_priority_process: Entity<InputState>,
@@ -933,8 +950,6 @@ impl WinderustApp {
             processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
             processor_power_target_plan_personality: initial_processor_power
                 .target_plan_personality,
-            processor_power_link_ac_dc: initial_processor_power.values.ac
-                == initial_processor_power.values.dc,
             processor_power_dirty: false,
             win32_priority_separation_service,
             win32_priority_separation_value,
@@ -949,6 +964,7 @@ impl WinderustApp {
             retained_side_panel_page: None,
             editing_numeric: None,
             cpu_allocation_preset_editor: None,
+            advanced_power_plan_tuning_preset_editor: None,
             expanded_rule_cards: HashSet::new(),
             expanded_setting_groups: HashSet::new(),
             update: UpdateModel::new(),
@@ -967,6 +983,7 @@ impl WinderustApp {
             _dashboard_search_subscription: None,
             _process_list_search_subscription: None,
             _cpu_allocation_preset_name_subscription: None,
+            _advanced_power_plan_tuning_preset_name_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
@@ -990,6 +1007,7 @@ impl WinderustApp {
         app.subscribe_to_dashboard_search_input(window, cx);
         app.subscribe_to_process_list_search_input(window, cx);
         app.subscribe_to_cpu_allocation_preset_name_input(window, cx);
+        app.subscribe_to_advanced_power_plan_tuning_preset_name_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
         app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         app.subscribe_to_activity_sliders(window, cx);
@@ -1047,7 +1065,7 @@ impl Render for WinderustApp {
             self.page_header(self.shell.page, cx).into_any_element()
         };
         let page_uses_inner_scroll = !search_active && self.shell.page == Page::ProcessList;
-        let unsaved = self.settings.has_unsaved_changes();
+        let unsaved = self.has_pending_changes();
         let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
         let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
         let show_admin_rights_prompt = self.admin_rights_prompt_visible;
@@ -1102,6 +1120,8 @@ impl Render for WinderustApp {
             .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
                 if app.update.startup_modal_visible {
                     app.dismiss_startup_update_modal(cx);
+                } else if app.advanced_power_plan_tuning_preset_editor.is_some() {
+                    app.close_advanced_power_plan_tuning_preset_editor(cx);
                 } else if app.cpu_allocation_preset_editor.is_some() {
                     app.close_cpu_allocation_preset_editor(cx);
                 } else if app.process_list.details.is_some() {
@@ -1167,6 +1187,11 @@ impl Render for WinderustApp {
             })
             .child(if self.cpu_allocation_preset_editor.is_some() {
                 self.render_cpu_allocation_preset_modal(window, cx)
+            } else {
+                div().into_any_element()
+            })
+            .child(if self.advanced_power_plan_tuning_preset_editor.is_some() {
+                self.render_advanced_power_plan_tuning_preset_modal(window, cx)
             } else {
                 div().into_any_element()
             })

@@ -241,6 +241,8 @@ impl WinderustApp {
     fn render_side_panel_for_page(&self, page: Page, cx: &mut Context<Self>) -> Option<AnyElement> {
         if matches!(page, Page::CpuSetsSoft | Page::ProcessorAffinityHard) {
             Some(self.render_cpu_allocation_side_panel(page, cx))
+        } else if page == Page::AdvancedPowerPlanTuning {
+            Some(self.render_advanced_power_plan_tuning_side_panel(cx))
         } else {
             self.render_page_status_panel(page, cx)
         }

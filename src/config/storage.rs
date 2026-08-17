@@ -93,13 +93,13 @@ mod tests {
     use super::*;
 
     use crate::config::{
-        AccentSettings, ActionLogMode, AdaptiveEngineSettings, AdvancedSettings, AnimationMode,
-        AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
-        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
-        ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule,
-        ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings,
-        CoreLimiterRule, CoreLimiterSettings, CpuAllocationPreset, CpuAllocationRule,
-        CpuAllocationSettings, CpuRestrictionMode, CpuUsageComparison,
+        AccentSettings, ActionLogMode, AdaptiveEngineSettings, AdvancedPowerPlanTuningPreset,
+        AdvancedSettings, AnimationMode, AppLanguage, AppSuspensionRule, AppSuspensionSettings,
+        AppThemeMode, BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule,
+        BackgroundEfficiencySettings, ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings,
+        ByForegroundRule, ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule,
+        ByTimeSettings, CoreLimiterRule, CoreLimiterSettings, CpuAllocationPreset,
+        CpuAllocationRule, CpuAllocationSettings, CpuRestrictionMode, CpuUsageComparison,
         DynamicPriorityBoostSettings, ForegroundBoostPriority, GeneralSettings,
         GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
         MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings, PriorityRule,
@@ -345,6 +345,16 @@ mod tests {
             cpu_allocation_presets: vec![CpuAllocationPreset {
                 name: "Performance cores".to_owned(),
                 core_mask: 0b0101,
+            }],
+            advanced_power_plan_tuning_presets: vec![AdvancedPowerPlanTuningPreset {
+                name: "Plugged in performance".to_owned(),
+                values: crate::power::plan::ProcessorPowerValues::new_with_boost_mode(
+                    100,
+                    100,
+                    100,
+                    100,
+                    crate::power::plan::ProcessorBoostMode::Aggressive,
+                ),
             }],
             core_limiter: CoreLimiterSettings {
                 enabled: true,

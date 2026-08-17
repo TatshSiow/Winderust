@@ -35,6 +35,8 @@ pub struct Settings {
     #[serde(default)]
     pub cpu_allocation_presets: Vec<CpuAllocationPreset>,
     #[serde(default)]
+    pub advanced_power_plan_tuning_presets: Vec<AdvancedPowerPlanTuningPreset>,
+    #[serde(default)]
     pub core_limiter: CoreLimiterSettings,
     #[serde(default)]
     pub by_running_app: ByRunningAppSettings,
@@ -458,6 +460,12 @@ pub struct CpuAllocationSettings {
 pub struct CpuAllocationPreset {
     pub name: String,
     pub core_mask: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvancedPowerPlanTuningPreset {
+    pub name: String,
+    pub values: ProcessorPowerValues,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1619,6 +1627,7 @@ impl Default for Settings {
             cpu_sets_soft: CpuAllocationSettings::default(),
             processor_affinity_hard: CpuAllocationSettings::default(),
             cpu_allocation_presets: Vec::new(),
+            advanced_power_plan_tuning_presets: Vec::new(),
             core_limiter: CoreLimiterSettings::default(),
             by_running_app: ByRunningAppSettings::default(),
             workload_engine: WorkloadEngineSettings::default(),

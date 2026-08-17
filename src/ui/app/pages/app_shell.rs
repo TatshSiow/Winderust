@@ -332,7 +332,7 @@ impl WinderustApp {
                             .small()
                             .label(t!("common.discard").to_string())
                             .on_click(cx.listener(|app, _, window, cx| {
-                                app.cancel_settings_changes(window, cx);
+                                app.discard_pending_changes(window, cx);
                                 cx.notify();
                             })),
                     )
@@ -343,8 +343,8 @@ impl WinderustApp {
                             .label(t!("common.save").to_string())
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.sync_input_values(cx);
-                                let had_unsaved_changes = app.settings.has_unsaved_changes();
-                                if app.save_settings() && had_unsaved_changes {
+                                let had_unsaved_changes = app.has_pending_changes();
+                                if app.save_pending_changes() && had_unsaved_changes {
                                     app.start_unsaved_popup_vanish();
                                 }
                                 cx.notify();

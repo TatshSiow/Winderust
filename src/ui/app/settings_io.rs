@@ -1,6 +1,10 @@
 use crate::ui::app::*;
 
 impl WinderustApp {
+    pub(in crate::ui::app) fn has_pending_changes(&self) -> bool {
+        self.settings.has_unsaved_changes() || self.processor_power_dirty
+    }
+
     pub(in crate::ui::app) fn save_settings(&mut self) -> bool {
         match self.settings.save() {
             Ok(outcome) => {
@@ -21,6 +25,38 @@ impl WinderustApp {
                 self.status_message = err.to_string();
                 false
             }
+        }
+    }
+
+    pub(in crate::ui::app) fn save_pending_changes(&mut self) -> bool {
+        if self.settings.has_unsaved_changes() && !self.save_settings() {
+            return false;
+        }
+
+        !self.processor_power_dirty || self.save_processor_power_tuning()
+    }
+
+    pub(in crate::ui::app) fn discard_pending_changes(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let had_unsaved_changes = self.has_pending_changes();
+        let had_processor_power_changes = self.processor_power_dirty;
+        self.settings.cancel();
+        apply_language(self.settings.general.language);
+        apply_appearance_settings(&self.settings.general, window, cx);
+        self.editing_rule_title = None;
+        self.expanded_rule_cards.clear();
+        self.rebuild_inputs(window, cx);
+        self.sync_runtime_settings();
+        let tuning_discarded =
+            !had_processor_power_changes || self.sync_processor_power_values_from_target_plan(true);
+        if tuning_discarded {
+            self.status_message = t!("status.unsaved_canceled").to_string();
+        }
+        if had_unsaved_changes && !self.has_pending_changes() {
+            self.start_unsaved_popup_vanish();
         }
     }
 
@@ -113,25 +149,6 @@ impl WinderustApp {
                 | Page::ByRunningApp
                 | Page::ProcessorAffinityHard
         )
-    }
-
-    pub(in crate::ui::app) fn cancel_settings_changes(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let had_unsaved_changes = self.settings.has_unsaved_changes();
-        self.settings.cancel();
-        apply_language(self.settings.general.language);
-        apply_appearance_settings(&self.settings.general, window, cx);
-        self.status_message = t!("status.unsaved_canceled").to_string();
-        self.editing_rule_title = None;
-        self.expanded_rule_cards.clear();
-        self.rebuild_inputs(window, cx);
-        self.sync_runtime_settings();
-        if had_unsaved_changes {
-            self.start_unsaved_popup_vanish();
-        }
     }
 
     pub(in crate::ui::app) fn start_unsaved_popup_vanish(&mut self) {

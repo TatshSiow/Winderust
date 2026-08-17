@@ -121,6 +121,9 @@ impl WinderustApp {
             ListItemRemovalKind::CpuAllocationPreset => {
                 remove_at(&mut self.settings.cpu_allocation_presets, index);
             }
+            ListItemRemovalKind::AdvancedPowerPlanTuningPreset => {
+                remove_at(&mut self.settings.advanced_power_plan_tuning_presets, index);
+            }
             ListItemRemovalKind::CoreLimiterRule => {
                 if let Some(rule) = self.settings.core_limiter.rules.get(index) {
                     self.expanded_rule_cards

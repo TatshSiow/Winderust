@@ -113,6 +113,8 @@ pub(in crate::ui::app) enum SettingGroupTarget {
     MemoryTrimSafety,
     MemoryTrimThresholds,
     MemoryTrimWhen,
+    ProcessorPowerAc,
+    ProcessorPowerBattery,
     SuspensionThaw,
     SuspensionAudio,
     SuspensionNetwork,
@@ -210,6 +212,7 @@ pub(in crate::ui::app) enum NumericField {
     ProcessorDcPerformanceMin,
     ProcessorDcPerformanceMax,
     ProcessorDcBoostPolicy,
+    AdvancedPowerPlanTuningPreset(AdaptiveEngineProcessorPolicyField),
     CpuThreshold(usize),
     CpuUpperThreshold(usize),
     CpuDuration(usize),
@@ -242,34 +245,10 @@ pub(in crate::ui::app) enum ProcessorPowerSlider {
     DcBoostPolicy,
 }
 
-impl ProcessorPowerSlider {
-    pub(in crate::ui::app) const fn paired_power_source(self) -> Self {
-        match self {
-            Self::AcCoreParkingMin => Self::DcCoreParkingMin,
-            Self::AcPerformanceMin => Self::DcPerformanceMin,
-            Self::AcPerformanceMax => Self::DcPerformanceMax,
-            Self::AcBoostPolicy => Self::DcBoostPolicy,
-            Self::DcCoreParkingMin => Self::AcCoreParkingMin,
-            Self::DcPerformanceMin => Self::AcPerformanceMin,
-            Self::DcPerformanceMax => Self::AcPerformanceMax,
-            Self::DcBoostPolicy => Self::AcBoostPolicy,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::ui::app) enum ProcessorPowerSource {
     Ac,
     Dc,
-}
-
-impl ProcessorPowerSource {
-    pub(in crate::ui::app) const fn paired(self) -> Self {
-        match self {
-            Self::Ac => Self::Dc,
-            Self::Dc => Self::Ac,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -541,6 +520,12 @@ impl UiInputs {
                 "",
                 &t!("cpu_allocation.preset_name_placeholder"),
             ),
+            advanced_power_plan_tuning_preset_name: make_input(
+                window,
+                cx,
+                "",
+                &t!("processor_power.preset_name_placeholder"),
+            ),
             workload_engine_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             process_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             thread_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
@@ -698,6 +683,12 @@ impl UiInputs {
             window,
             cx,
         );
+        set_input_placeholder(
+            &self.advanced_power_plan_tuning_preset_name,
+            t!("processor_power.preset_name_placeholder"),
+            window,
+            cx,
+        );
     }
 }
 
@@ -712,6 +703,7 @@ impl WinderustApp {
         self.editing_rule_title = None;
         self.editing_numeric = None;
         self.cpu_allocation_preset_editor = None;
+        self.advanced_power_plan_tuning_preset_editor = None;
         self.expanded_rule_cards.clear();
         self.pending_list_item_removals.clear();
         self.process_catalog.selected_paths.clear();
@@ -722,6 +714,7 @@ impl WinderustApp {
         self.subscribe_to_dashboard_search_input(window, cx);
         self.subscribe_to_process_list_search_input(window, cx);
         self.subscribe_to_cpu_allocation_preset_name_input(window, cx);
+        self.subscribe_to_advanced_power_plan_tuning_preset_name_input(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
         self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         self.subscribe_to_activity_sliders(window, cx);
@@ -877,6 +870,18 @@ impl WinderustApp {
     ) {
         self._cpu_allocation_preset_name_subscription = Some(cx.subscribe_in(
             &self.inputs.cpu_allocation_preset_name,
+            window,
+            move |_, _, _: &InputEvent, _, cx| cx.notify(),
+        ));
+    }
+
+    pub(in crate::ui::app) fn subscribe_to_advanced_power_plan_tuning_preset_name_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._advanced_power_plan_tuning_preset_name_subscription = Some(cx.subscribe_in(
+            &self.inputs.advanced_power_plan_tuning_preset_name,
             window,
             move |_, _, _: &InputEvent, _, cx| cx.notify(),
         ));
@@ -1301,6 +1306,11 @@ impl WinderustApp {
                     );
                 }
             }
+            NumericField::AdvancedPowerPlanTuningPreset(field) => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.set_advanced_power_plan_tuning_preset_field_value(field, value);
+                }
+            }
             NumericField::AdaptiveEngineProcessorPolicy(field) => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_adaptive_engine_processor_policy_percent(field, value);
@@ -1602,38 +1612,5 @@ impl WinderustApp {
         if changed {
             begin_expandable_motion(format!("setting-group-{target:?}"), expanded);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn processor_power_slider_pairs_ac_and_battery_controls() {
-        assert_eq!(
-            ProcessorPowerSlider::AcCoreParkingMin.paired_power_source(),
-            ProcessorPowerSlider::DcCoreParkingMin
-        );
-        assert_eq!(
-            ProcessorPowerSlider::AcPerformanceMin.paired_power_source(),
-            ProcessorPowerSlider::DcPerformanceMin
-        );
-        assert_eq!(
-            ProcessorPowerSlider::AcPerformanceMax.paired_power_source(),
-            ProcessorPowerSlider::DcPerformanceMax
-        );
-        assert_eq!(
-            ProcessorPowerSlider::AcBoostPolicy.paired_power_source(),
-            ProcessorPowerSlider::DcBoostPolicy
-        );
-        assert_eq!(
-            ProcessorPowerSlider::DcCoreParkingMin.paired_power_source(),
-            ProcessorPowerSlider::AcCoreParkingMin
-        );
-        assert_eq!(
-            ProcessorPowerSlider::DcBoostPolicy.paired_power_source(),
-            ProcessorPowerSlider::AcBoostPolicy
-        );
     }
 }

@@ -48,6 +48,19 @@ impl WinderustApp {
     }
 
     fn set_processor_power_target_plan(&mut self, guid: String) {
+        if self
+            .processor_power_target_plan_guid
+            .as_deref()
+            .is_some_and(|current| current.eq_ignore_ascii_case(&guid))
+        {
+            self.active_power_plan_picker = None;
+            return;
+        }
+        if self.processor_power_dirty {
+            self.active_power_plan_picker = None;
+            self.status_message = t!("processor_power.save_before_changing_plan").to_string();
+            return;
+        }
         self.processor_power_target_plan_guid = Some(guid);
         self.active_power_plan_picker = None;
         self.sync_processor_power_values_from_target_plan(true);
@@ -140,23 +153,12 @@ impl WinderustApp {
         source: ProcessorPowerSource,
         boost_mode: ProcessorBoostMode,
     ) {
-        self.assign_processor_power_boost_mode(source, boost_mode);
-        if self.processor_power_link_ac_dc {
-            self.assign_processor_power_boost_mode(source.paired(), boost_mode);
-        }
-        self.active_power_plan_picker = None;
-        self.processor_power_dirty = true;
-    }
-
-    fn assign_processor_power_boost_mode(
-        &mut self,
-        source: ProcessorPowerSource,
-        boost_mode: ProcessorBoostMode,
-    ) {
         match source {
             ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode = boost_mode,
             ProcessorPowerSource::Dc => self.processor_power_dc_boost_mode = boost_mode,
         }
+        self.active_power_plan_picker = None;
+        self.processor_power_dirty = true;
     }
 
     pub(in crate::ui::app) fn set_processor_power_slider_value(
@@ -165,14 +167,6 @@ impl WinderustApp {
         value: u64,
     ) {
         let value = value.min(100);
-        self.assign_processor_power_slider_value(slider, value);
-        if self.processor_power_link_ac_dc {
-            self.assign_processor_power_slider_value(slider.paired_power_source(), value);
-        }
-        self.processor_power_dirty = true;
-    }
-
-    fn assign_processor_power_slider_value(&mut self, slider: ProcessorPowerSlider, value: u64) {
         match slider {
             ProcessorPowerSlider::AcCoreParkingMin => {
                 self.processor_power_ac_core_parking_min = value;
@@ -199,6 +193,7 @@ impl WinderustApp {
                 self.processor_power_dc_boost_policy = value;
             }
         }
+        self.processor_power_dirty = true;
     }
 
     pub(in crate::ui::app) fn adaptive_engine_processor_policy_percent(
@@ -298,29 +293,25 @@ impl WinderustApp {
         }
     }
 
-    pub(in crate::ui::app) fn fill_processor_power_preset(&mut self, preset: ProcessorPowerPreset) {
-        let values = ProcessorPowerValues::for_preset(preset);
-        self.set_processor_power_values(ProcessorPowerAcDcValues::same(values));
+    pub(in crate::ui::app) fn load_processor_power_source_preset(
+        &mut self,
+        source: ProcessorPowerSource,
+        name: String,
+        values: ProcessorPowerValues,
+    ) {
+        self.set_processor_power_values(replace_processor_power_source(
+            self.processor_power_values(),
+            source,
+            values,
+        ));
         self.processor_power_dirty = true;
-        self.status_message = t!(
-            "processor_power.loaded_preset",
-            preset = processor_power_preset_label(preset)
-        )
-        .to_string();
+        self.status_message = t!("processor_power.loaded_preset", preset = name).to_string();
     }
 
-    pub(in crate::ui::app) fn processor_power_matches_preset(
-        &self,
-        preset: ProcessorPowerPreset,
-    ) -> bool {
-        let values = ProcessorPowerValues::for_preset(preset);
-        self.processor_power_values() == ProcessorPowerAcDcValues::same(values).normalized()
-    }
-
-    pub(in crate::ui::app) fn apply_processor_power_custom(&mut self) {
+    pub(in crate::ui::app) fn save_processor_power_tuning(&mut self) -> bool {
         let Some(plan) = self.processor_power_target_plan() else {
             self.status_message = t!("processor_power.no_active_plan").to_string();
-            return;
+            return false;
         };
 
         let values = self.processor_power_values();
@@ -335,6 +326,7 @@ impl WinderustApp {
             self.processor_power_dirty = false;
         }
 
+        let applied = outcome.error.is_none();
         match outcome.error {
             None => {
                 self.processor_power_dirty = false;
@@ -346,5 +338,37 @@ impl WinderustApp {
         if outcome.applied {
             self.refresh_active_plan();
         }
+        applied
+    }
+}
+
+fn replace_processor_power_source(
+    mut current: ProcessorPowerAcDcValues,
+    source: ProcessorPowerSource,
+    values: ProcessorPowerValues,
+) -> ProcessorPowerAcDcValues {
+    match source {
+        ProcessorPowerSource::Ac => current.ac = values,
+        ProcessorPowerSource::Dc => current.dc = values,
+    }
+    current.normalized()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processor_power_presets_replace_only_the_selected_power_source() {
+        let balanced = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced);
+        let performance = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Performance);
+        let saver = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
+        let current = ProcessorPowerAcDcValues::same(balanced);
+
+        let ac = replace_processor_power_source(current, ProcessorPowerSource::Ac, performance);
+        assert_eq!(ac, ProcessorPowerAcDcValues::new(performance, balanced));
+
+        let dc = replace_processor_power_source(current, ProcessorPowerSource::Dc, saver);
+        assert_eq!(dc, ProcessorPowerAcDcValues::new(balanced, saver));
     }
 }

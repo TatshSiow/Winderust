@@ -336,7 +336,6 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
         ],
         Page::AdvancedPowerPlanTuning => vec![
             t!("processor_power.help").to_string(),
-            t!("processor_power.link_ac_dc_help").to_string(),
             t!("processor_power.performance_help").to_string(),
             t!("processor_power.balanced_help").to_string(),
             t!("processor_power.saver_help").to_string(),
