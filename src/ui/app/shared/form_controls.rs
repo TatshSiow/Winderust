@@ -1,4 +1,5 @@
 use crate::ui::app::*;
+use gpui::{KeyDownEvent, StyleRefinement};
 
 pub(in crate::ui::app) fn feature_toggle_switch(
     id: impl Into<SharedString>,
@@ -392,6 +393,7 @@ pub(in crate::ui::app) fn stable_slider(
     let drag_bounds = Rc::clone(&bounds);
     let canvas_bounds = Rc::clone(&bounds);
     let click_state = state.clone();
+    let keyboard_state = state.clone();
     let entity_id = state.entity_id();
 
     div()
@@ -405,8 +407,22 @@ pub(in crate::ui::app) fn stable_slider(
         .h(px(24.0))
         .when(enabled, |slider| {
             slider
-                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                .group("stable-slider")
+                .tab_index(0)
+                .cursor_grab()
+                .active(|style| style.cursor_grabbing())
+                .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
+                    let increase = match event.keystroke.key.as_str() {
+                        "left" | "down" => false,
+                        "right" | "up" => true,
+                        _ => return,
+                    };
                     cx.stop_propagation();
+                    keyboard_state.update(cx, |state, cx| {
+                        update_stable_slider_by_step(state, range, increase, window, cx);
+                    });
+                }))
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let bounds = *click_bounds.borrow();
                     click_state.update(cx, |state, cx| {
                         update_stable_slider_from_position(
@@ -444,11 +460,18 @@ pub(in crate::ui::app) fn stable_slider(
         })
         .child(
             div()
+                .id(("stable-slider-track", entity_id))
                 .relative()
                 .w_full()
-                .h_1p5()
-                .bg(track.opacity(0.2))
+                .h_1()
+                .bg(track.opacity(0.16))
                 .rounded_full()
+                .when(enabled, |track_bar| {
+                    let interactive_style = |style: StyleRefinement| style.bg(track.opacity(0.32));
+                    track_bar
+                        .group_hover("stable-slider", interactive_style)
+                        .group_active("stable-slider", interactive_style)
+                })
                 .child(
                     div()
                         .absolute()
@@ -461,15 +484,30 @@ pub(in crate::ui::app) fn stable_slider(
                 )
                 .child(
                     div()
+                        .id(("stable-slider-thumb", entity_id))
                         .absolute()
                         .top(px(-5.0))
                         .left(relative(percentage))
-                        .ml(-px(8.0))
-                        .size_4()
-                        .p(px(1.0))
+                        .ml(px(-7.0))
+                        .size(px(14.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .rounded_full()
                         .bg(track.opacity(0.5))
-                        .child(div().size_full().rounded_full().bg(rgb(thumb_color))),
+                        .when(enabled, |thumb| {
+                            let interactive_style = |style: StyleRefinement| {
+                                style
+                                    .top(px(-8.0))
+                                    .ml(-px(10.0))
+                                    .size(px(20.0))
+                                    .bg(track.opacity(0.72))
+                            };
+                            thumb
+                                .group_hover("stable-slider", interactive_style)
+                                .group_active("stable-slider", interactive_style)
+                        })
+                        .child(div().size(px(10.0)).rounded_full().bg(rgb(thumb_color))),
                 )
                 .child(
                     canvas(
@@ -519,6 +557,28 @@ pub(in crate::ui::app) fn update_stable_slider_from_position(
 
     state.set_value(value, window, cx);
     cx.emit(SliderEvent::Change(SliderValue::Single(value)));
+}
+
+fn update_stable_slider_by_step(
+    state: &mut SliderState,
+    range: SliderRange,
+    increase: bool,
+    window: &mut Window,
+    cx: &mut Context<SliderState>,
+) {
+    let value = stable_slider_stepped_value(state.value().end(), range, increase);
+    if value == state.value().end() {
+        return;
+    }
+
+    state.set_value(value, window, cx);
+    cx.emit(SliderEvent::Change(SliderValue::Single(value)));
+}
+
+fn stable_slider_stepped_value(value: f32, range: SliderRange, increase: bool) -> f32 {
+    let step = range.step.max(1) as f32;
+    let delta = if increase { step } else { -step };
+    (value + delta).clamp(range.min as f32, range.max as f32)
 }
 
 pub(in crate::ui::app) fn activity_slider_card(
@@ -1014,5 +1074,18 @@ mod tests {
             parse_timer_resolution_input_100ns("1000", 10_000, 160_000),
             Some(160_000)
         );
+    }
+
+    #[test]
+    fn stable_slider_arrow_step_clamps_to_range() {
+        let range = SliderRange {
+            min: 250,
+            max: 60_000,
+            step: 250,
+        };
+
+        assert_eq!(stable_slider_stepped_value(500.0, range, false), 250.0);
+        assert_eq!(stable_slider_stepped_value(59_750.0, range, true), 60_000.0);
+        assert_eq!(stable_slider_stepped_value(250.0, range, false), 250.0);
     }
 }
