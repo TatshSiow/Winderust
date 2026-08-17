@@ -183,20 +183,11 @@ impl WinderustApp {
             self.unsaved_popup_was_visible = false;
         }
 
-        let started = self.unsaved_popup_vanish_started?;
-        let duration = Duration::from_secs_f64(UNSAVED_POPUP_VANISH_SECONDS);
-        let elapsed = started.elapsed();
-        if elapsed >= duration {
+        let progress = popup_vanish_progress(&mut self.unsaved_popup_vanish_started, window);
+        if progress.is_none() {
             self.unsaved_popup_was_visible = false;
-            self.unsaved_popup_vanish_started = None;
-            None
-        } else {
-            window.request_animation_frame();
-            Some(expandable_motion_ease(
-                (elapsed.as_secs_f32() / duration.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0),
-                false,
-            ))
         }
+        progress
     }
 
     pub(in crate::ui::app) fn current_runtime_settings(&mut self) -> Arc<Settings> {

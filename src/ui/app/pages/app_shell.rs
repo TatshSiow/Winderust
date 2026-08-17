@@ -352,27 +352,7 @@ impl WinderustApp {
                     ),
             );
 
-        if let Some(progress) = vanish_progress {
-            let progress = progress.clamp(0.0, 1.0);
-            return popup
-                .block_mouse_except_scroll()
-                .cursor_default()
-                .bottom(px(54.0 - 8.0 * progress))
-                .opacity(1.0 - progress)
-                .into_any_element();
-        }
-
-        with_optional_motion(
-            popup,
-            "unsaved-popup",
-            MotionSpeed::Standard,
-            |popup| popup,
-            |popup, delta| {
-                popup
-                    .bottom(px(46.0 + 8.0 * delta))
-                    .opacity(0.18 + 0.82 * delta)
-            },
-        )
+        animated_popup(popup, "unsaved-popup", 54.0, vanish_progress)
     }
 
     pub(in crate::ui::app) fn render_update_available_modal(
@@ -473,6 +453,7 @@ impl WinderustApp {
     pub(in crate::ui::app) fn render_admin_rights_prompt(
         &self,
         bottom: f32,
+        vanish_progress: Option<f32>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let popup = v_flex()
@@ -512,7 +493,7 @@ impl WinderustApp {
                             .small()
                             .label(t!("admin_rights.ignore").to_string())
                             .on_click(cx.listener(|app, _, _, cx| {
-                                app.admin_rights_prompt_visible = false;
+                                app.dismiss_admin_rights_prompt();
                                 cx.notify();
                             })),
                     )
@@ -533,17 +514,15 @@ impl WinderustApp {
                     ),
             );
 
-        with_optional_motion(
-            popup,
-            "admin-rights-prompt",
-            MotionSpeed::Standard,
-            |popup| popup,
-            move |popup, delta| {
-                popup
-                    .bottom(px(bottom - 8.0 + 8.0 * delta))
-                    .opacity(0.18 + 0.82 * delta)
-            },
-        )
+        animated_popup(popup, "admin-rights-prompt", bottom, vanish_progress)
+    }
+
+    fn dismiss_admin_rights_prompt(&mut self) {
+        if !self.admin_rights_prompt_visible {
+            return;
+        }
+        self.admin_rights_prompt_visible = false;
+        self.admin_rights_prompt_vanish_started = ui_animations_enabled().then_some(Instant::now());
     }
 
     pub(in crate::ui::app) fn render_page(

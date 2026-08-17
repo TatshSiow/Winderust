@@ -1,5 +1,7 @@
 use crate::ui::app::*;
 
+const POPUP_VANISH_SECONDS: f64 = 0.18;
+
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) enum PageTransitionMotion {
     EnterSub,
@@ -98,6 +100,53 @@ where
     } else {
         final_state(element).into_any_element()
     }
+}
+
+pub(in crate::ui::app) fn popup_vanish_progress(
+    started: &mut Option<Instant>,
+    window: &mut Window,
+) -> Option<f32> {
+    let elapsed = started.as_ref()?.elapsed();
+    let duration = Duration::from_secs_f64(POPUP_VANISH_SECONDS);
+    if elapsed >= duration {
+        *started = None;
+        return None;
+    }
+
+    window.request_animation_frame();
+    Some(expandable_motion_ease(
+        (elapsed.as_secs_f32() / duration.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0),
+        false,
+    ))
+}
+
+pub(in crate::ui::app) fn animated_popup(
+    popup: gpui::Div,
+    id: impl Into<SharedString>,
+    bottom: f32,
+    vanish_progress: Option<f32>,
+) -> AnyElement {
+    if let Some(progress) = vanish_progress {
+        let progress = progress.clamp(0.0, 1.0);
+        return popup
+            .block_mouse_except_scroll()
+            .cursor_default()
+            .bottom(px(bottom - 8.0 * progress))
+            .opacity(1.0 - progress)
+            .into_any_element();
+    }
+
+    with_optional_motion(
+        popup,
+        id,
+        MotionSpeed::Standard,
+        |popup| popup,
+        move |popup, delta| {
+            popup
+                .bottom(px(bottom - 8.0 + 8.0 * delta))
+                .opacity(0.18 + 0.82 * delta)
+        },
+    )
 }
 
 pub(in crate::ui::app) fn begin_expandable_motion(id: impl Into<String>, expanded: bool) {
