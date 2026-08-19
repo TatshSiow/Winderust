@@ -64,4 +64,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release create "${{ github.ref_name }}" dist\Winderust-${{ github.ref_name }}-windows-x64.zip dist\Winderust-${{ github.ref_name }}-windows-x64.zip.sha256 --draft --prerelease --generate-notes --verify-tag --title "Winderust ${{ github.ref_name }}"
+          gh release create "${{ github.ref_name }}" dist\Winderust-${{ github.ref_name }}-windows-x64.zip dist\Winderust-${{ github.ref_name }}-windows-x64.zip.sha256 --draft --prerelease --generate-notes --verify-tag --title "${{ github.ref_name }}"
