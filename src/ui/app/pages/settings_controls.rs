@@ -70,9 +70,7 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.settings.general.update_channel = channel;
-                            app.latest_version = None;
-                            app.available_update = None;
-                            app.update_check_message = None;
+                            app.update.clear_results();
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),

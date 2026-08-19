@@ -1,42 +1,31 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
     time::{Duration, Instant},
 };
 
-use windows_sys::{
-    Wdk::Graphics::Direct3D::{
-        D3DKMTGetProcessSchedulingPriorityClass, D3DKMTSetProcessSchedulingPriorityClass,
-        D3DKMT_SCHEDULINGPRIORITYCLASS,
-    },
-    Win32::{
-        Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
-        System::Threading::{
-            GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION,
-        },
-    },
-};
-
-use crate::win_util::{last_error, WinHandle};
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{GpuPrioritySettings, ProcessGpuPriority, ProcessGpuPrioritySetting},
-    foreground::{
-        contains_process_name, ensure_process_action_target_access, is_foreground_process,
-        list_processes, process_count_label, process_executable_path, process_failure_key,
-        process_handle_matches_executable_path, process_session_id, same_process_name,
-        unique_app_names, visible_window_process_ids, ProcessActionAccess, ProcessActionTarget,
-        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+    config::GpuPrioritySettings,
+    control::{
+        gpu_priority::{
+            GpuPriorityApplyOutcome, GpuPriorityClaim, GpuPriorityController,
+            GpuPriorityPreservation, GpuPriorityReleaseSummary,
+        },
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
-    rules::ExecutionFailureTracker,
+    foreground::{
+        contains_process_name, is_foreground_process, process_count_label, process_executable_path,
+        process_failure_key, process_session_id, unique_app_names, ProtectedProcesses,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+    },
+    rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    runtime::observations::CycleObservations,
 };
 
 use super::PriorityProcessTier;
 
-const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
-const STATUS_INVALID_PARAMETER: u32 = 0xC000000D;
 const GPU_PRIORITY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -57,7 +46,6 @@ pub struct GpuPrioritySnapshot {
 
 #[derive(Default)]
 pub struct GpuPriorityManager {
-    adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: ExecutionFailureTracker,
     pending_context: BTreeSet<String>,
     pending_apply_log_count: usize,
@@ -67,34 +55,24 @@ pub struct GpuPriorityManager {
     last_skip_summary_logged_at: Option<Instant>,
 }
 
-#[derive(Clone)]
-struct AdjustedProcess {
-    process_name: String,
-    executable_path: String,
-    creation_time: u64,
-    previous_priority_raw: u32,
-    applied_priority: ProcessGpuPriority,
-}
-
-#[derive(Debug)]
-enum GpuPriorityError {
-    AccessDenied,
-    ProcessExited,
-    GpuContextUnavailable,
-    Failed(String),
-}
-
 impl GpuPriorityManager {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the pass-local controller and observations are clearer here than an argument bundle"
+    )]
     pub fn update(
         &mut self,
+        controller: &mut GpuPriorityController,
+        owner: ControlOwner,
         settings: &GpuPrioritySettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> GpuPrioritySnapshot {
         if !automation_enabled {
-            let failures = self.clear_all(action_log, "automation disabled");
+            let failures = self.clear_all(controller, action_log, "automation disabled");
             self.failure_suppression.clear();
             return GpuPrioritySnapshot {
                 enabled: false,
@@ -106,7 +84,7 @@ impl GpuPriorityManager {
         }
 
         if !settings.enabled {
-            let failures = self.clear_all(action_log, "GPU priority defaults disabled");
+            let failures = self.clear_all(controller, action_log, "GPU priority defaults disabled");
             self.failure_suppression.clear();
             return GpuPrioritySnapshot {
                 enabled: false,
@@ -120,7 +98,7 @@ impl GpuPriorityManager {
         let foreground_sensitive = settings.foreground_detection_enabled
             && settings.foreground_priority != settings.background_priority;
         if foreground_sensitive && foreground_process_id.is_none() {
-            let failures = self.clear_all(action_log, "foreground app is unknown");
+            let failures = self.clear_all(controller, action_log, "foreground app is unknown");
             return GpuPrioritySnapshot {
                 enabled: true,
                 failed_processes: failures.count,
@@ -133,7 +111,8 @@ impl GpuPriorityManager {
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failures = self.clear_all(action_log, "current Windows session is unknown");
+            let failures =
+                self.clear_all(controller, action_log, "current Windows session is unknown");
             return GpuPrioritySnapshot {
                 enabled: true,
                 failed_processes: failures.count,
@@ -143,10 +122,10 @@ impl GpuPriorityManager {
             };
         };
 
-        let processes = match list_processes() {
+        let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(err) => {
-                let failures = self.clear_all(action_log, "process list unavailable");
+                let failures = self.clear_all(controller, action_log, "process list unavailable");
                 return GpuPrioritySnapshot {
                     enabled: true,
                     failed_processes: failures.count,
@@ -158,8 +137,9 @@ impl GpuPriorityManager {
         };
 
         let visible_processes = if settings.visible_window_detection_enabled {
-            let Some(process_ids) = visible_window_process_ids() else {
-                let failures = self.clear_all(action_log, "visible windows are unavailable");
+            let Ok(process_ids) = observations.visible_window_process_ids() else {
+                let failures =
+                    self.clear_all(controller, action_log, "visible windows are unavailable");
                 return GpuPrioritySnapshot {
                     enabled: true,
                     failed_processes: failures.count,
@@ -168,7 +148,7 @@ impl GpuPriorityManager {
                     ..Default::default()
                 };
             };
-            ProtectedProcesses::capture(&processes, false, None, process_ids)
+            ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
             ProtectedProcesses::default()
         };
@@ -186,7 +166,7 @@ impl GpuPriorityManager {
         };
 
         let mut target_processes = BTreeMap::new();
-        for process in processes {
+        for process in processes.iter() {
             if process.id == 0
                 || process.is_critical != Some(false)
                 || !process.can_set_information
@@ -198,7 +178,10 @@ impl GpuPriorityManager {
                 continue;
             }
 
-            let Some(executable_path) = process_executable_path(&process) else {
+            let Some(executable_path) = process_executable_path(process) else {
+                continue;
+            };
+            let Some(creation_time) = process.creation_time else {
                 continue;
             };
             let foreground = settings.foreground_detection_enabled
@@ -212,15 +195,17 @@ impl GpuPriorityManager {
                 && settings.visible_window_detection_enabled
                 && visible_processes.contains(process.id, &executable_path);
             let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let configured_override =
-                settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+            let configured_override = settings.override_for(
+                executable_path.to_string_lossy().as_ref(),
+                foreground,
+                visible_window,
+            );
             let default_priority = tier.select(
                 settings.foreground_priority,
                 settings.visible_window_priority,
                 settings.background_priority,
             );
             let priority = match configured_override {
-                Some(Some(ProcessGpuPrioritySetting::Auto)) => default_priority,
                 Some(Some(priority)) => priority,
                 Some(None) => continue,
                 None => default_priority,
@@ -229,75 +214,108 @@ impl GpuPriorityManager {
                 target_processes.insert(
                     process.id,
                     (
-                        process.name,
-                        executable_path.to_string_lossy().into_owned(),
+                        process.name.clone(),
+                        executable_path,
                         priority,
                         tier,
+                        creation_time,
                     ),
                 );
             }
         }
 
-        let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(_name, path, _priority, _tier)| process_failure_key(path))
+            .map(|(_name, path, _, _, _)| process_failure_key(&path.to_string_lossy()))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
         self.pending_context
-            .retain(|process_name| active_target_names.contains(process_name));
+            .retain(|path| active_target_names.contains(path));
+        let active_targets = target_processes
+            .iter()
+            .map(
+                |(process_id, (process_name, executable_path, _, _, creation_time))| {
+                    ProcessControlTarget::automatic(
+                        *process_id,
+                        process_name.clone(),
+                        executable_path.clone(),
+                        *creation_time,
+                    )
+                    .key()
+                },
+            )
+            .collect::<BTreeSet<ProcessTargetKey>>();
 
-        let mut failures = self.release_non_targets(
-            &target_ids,
-            action_log,
-            "process is excluded or no longer matches GPU priority defaults",
-        );
         let mut skipped_processes = 0;
-        let mut pending_processes = 0;
-        let mut denied_processes = 0;
         let mut suppressed_processes = 0;
-        let mut applied_log_count = 0;
-        let mut pending_context_log_count = 0;
-        let mut access_denied_log_count = 0;
         let mut auto_excluded_processes = BTreeSet::new();
-
-        for (process_id, (process_name, executable_path, priority, tier)) in target_processes {
-            if self.is_process_suppressed(&executable_path, &mut auto_excluded_processes) {
+        let mut claims = Vec::new();
+        for (process_id, (process_name, executable_path, priority, tier, creation_time)) in
+            target_processes
+        {
+            let executable_path_text = executable_path.to_string_lossy().into_owned();
+            if self.is_process_suppressed(
+                process_id,
+                &process_name,
+                &executable_path_text,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
                 skipped_processes += 1;
                 suppressed_processes += 1;
                 continue;
             }
-
-            match self.apply_process(
-                (process_id, process_name.clone(), executable_path.clone()),
+            claims.push(GpuPriorityClaim {
+                target: ProcessControlTarget::automatic(
+                    process_id,
+                    process_name,
+                    executable_path,
+                    creation_time,
+                ),
+                owner,
                 priority,
-                tier,
-                settings.preserve_foreground_priority,
-                settings.preserve_visible_window_priority,
-                settings.preserve_background_priority,
-            ) {
-                Ok(ApplyOutcome::Applied { loggable }) => {
-                    if loggable {
-                        applied_log_count += 1;
-                    }
-                    self.clear_process_failure(&executable_path);
+                preservation: tier_preservation(settings, tier),
+            });
+        }
+
+        let mut failures = self.release_non_targets(
+            controller,
+            &active_targets,
+            action_log,
+            "process is excluded or no longer matches GPU priority defaults",
+        );
+        let mut pending_processes = 0;
+        let mut denied_processes = 0;
+        let mut applied_log_count = 0;
+        let mut pending_context_log_count = 0;
+        let mut access_denied_log_count = 0;
+        for claim in claims {
+            let process_id = claim.target.id;
+            let process_name = claim.target.name.clone();
+            let executable_path = claim.target.executable_path.to_string_lossy().into_owned();
+            match controller.apply_policy_claim(claim, allow_cross_session_process_control) {
+                Ok(GpuPriorityApplyOutcome::Applied) => {
+                    applied_log_count += 1;
+                    self.failure_suppression
+                        .clear_process_failure(&executable_path);
                     self.clear_process_pending_context(&executable_path);
                 }
-                Ok(ApplyOutcome::AlreadyApplied) => {
-                    self.clear_process_failure(&executable_path);
+                Ok(GpuPriorityApplyOutcome::Unchanged) => {
+                    self.failure_suppression
+                        .clear_process_failure(&executable_path);
                     self.clear_process_pending_context(&executable_path);
                 }
-                Ok(ApplyOutcome::Preserved) => {
+                Ok(GpuPriorityApplyOutcome::Preserved) => {
                     skipped_processes += 1;
-                    self.clear_process_failure(&executable_path);
+                    self.failure_suppression
+                        .clear_process_failure(&executable_path);
                     self.clear_process_pending_context(&executable_path);
                 }
-                Err(GpuPriorityError::ProcessExited) => {
+                Err(ProcessControlError::ProcessExited) => {
                     skipped_processes += 1;
-                    self.adjusted.remove(&process_id);
                     self.clear_process_pending_context(&executable_path);
                 }
-                Err(GpuPriorityError::AccessDenied) => {
+                Err(ProcessControlError::AccessDenied(_)) => {
                     skipped_processes += 1;
                     denied_processes += 1;
                     self.clear_process_pending_context(&executable_path);
@@ -308,17 +326,18 @@ impl GpuPriorityManager {
                         access_denied_log_count += 1;
                     }
                 }
-                Err(GpuPriorityError::GpuContextUnavailable) => {
+                Err(ProcessControlError::Unavailable(_)) => {
                     skipped_processes += 1;
                     pending_processes += 1;
                     if self.record_process_pending_context(&executable_path) {
                         pending_context_log_count += 1;
                     }
                 }
-                Err(err) => {
+                Err(error) => {
                     self.clear_process_pending_context(&executable_path);
-                    self.record_process_failure(&executable_path);
-                    failures.record("Apply", process_id, &process_name, err, action_log);
+                    self.failure_suppression
+                        .record_process_failure(&executable_path);
+                    failures.record("Apply", process_id, &process_name, error, action_log);
                 }
             }
         }
@@ -330,20 +349,17 @@ impl GpuPriorityManager {
             action_log,
         );
 
+        let adjusted_apps = controller.policy_managed_process_names();
         GpuPrioritySnapshot {
             enabled: true,
             scanned_processes,
-            adjusted_processes: self.adjusted.len(),
+            adjusted_processes: adjusted_apps.len(),
             skipped_processes,
             pending_processes,
             denied_processes,
             suppressed_processes,
             failed_processes: failures.count,
-            adjusted_apps: unique_app_names(
-                self.adjusted
-                    .values()
-                    .map(|process| process.process_name.as_str()),
-            ),
+            adjusted_apps: unique_app_names(adjusted_apps.iter().map(String::as_str)),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: gpu_priority_status_message(
                 pending_processes,
@@ -355,196 +371,132 @@ impl GpuPriorityManager {
         }
     }
 
-    fn apply_process(
-        &mut self,
-        (process_id, process_name, executable_path): (u32, String, String),
-        priority: ProcessGpuPriority,
-        tier: PriorityProcessTier,
-        preserve_foreground: bool,
-        preserve_visible_window: bool,
-        preserve_background: bool,
-    ) -> Result<ApplyOutcome, GpuPriorityError> {
-        let process = ProcessHandle::open(process_id)?;
-        if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
-            return Err(GpuPriorityError::ProcessExited);
-        }
-        let creation_time = process
-            .0
-            .process_creation_time()
-            .ok_or(GpuPriorityError::ProcessExited)?;
-        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
-            adjusted.creation_time == creation_time
-                && same_process_name(&adjusted.process_name, &process_name)
-        });
-        let current_priority_raw = process.gpu_priority_raw()?;
-        let desired_priority_raw = gpu_priority_raw(priority);
-        let baseline_priority_raw = reusable_existing
-            .map(|adjusted| adjusted.previous_priority_raw)
-            .unwrap_or(current_priority_raw);
-        if should_preserve_priority(
-            tier,
-            preserve_foreground,
-            preserve_visible_window,
-            preserve_background,
-            baseline_priority_raw,
-            desired_priority_raw,
-        ) {
-            if let Some(adjusted) = reusable_existing.cloned() {
-                process.set_gpu_priority_raw(adjusted.previous_priority_raw)?;
-                self.adjusted.remove(&process_id);
-            }
-            return Ok(ApplyOutcome::Preserved);
-        }
-
-        let changed = current_priority_raw != desired_priority_raw;
-        let loggable = reusable_existing
-            .map(|adjusted| adjusted.applied_priority != priority)
-            .unwrap_or(true);
-
-        if reusable_existing.is_some_and(|adjusted| {
-            adjusted.applied_priority == priority && current_priority_raw == desired_priority_raw
-        }) {
-            return Ok(ApplyOutcome::AlreadyApplied);
-        }
-
-        if changed {
-            process.set_gpu_priority_raw(desired_priority_raw)?;
-            let refreshed_priority_raw = process.gpu_priority_raw()?;
-            if refreshed_priority_raw != desired_priority_raw {
-                return Err(GpuPriorityError::Failed(format!(
-                    "GPU priority remained {} after requesting {}.",
-                    gpu_priority_raw_label(refreshed_priority_raw),
-                    gpu_priority_label(priority)
-                )));
-            }
-        } else if reusable_existing.is_none() {
-            return Ok(ApplyOutcome::AlreadyApplied);
-        }
-
-        self.adjusted.insert(
-            process_id,
-            AdjustedProcess {
-                process_name,
-                executable_path,
-                creation_time,
-                previous_priority_raw: baseline_priority_raw,
-                applied_priority: priority,
-            },
-        );
-        Ok(ApplyOutcome::Applied {
-            loggable: loggable && changed,
-        })
-    }
-
     fn release_non_targets(
         &mut self,
-        target_ids: &BTreeSet<u32>,
+        controller: &mut GpuPriorityController,
+        active_targets: &BTreeSet<ProcessTargetKey>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> GpuPriorityFailures {
-        let process_ids = self
-            .adjusted
-            .keys()
-            .copied()
-            .filter(|process_id| !target_ids.contains(process_id))
-            .collect::<Vec<_>>();
-        self.release_processes(&process_ids, action_log, reason)
+        let summary = controller.release_policy_except(active_targets);
+        self.record_release_summary(summary, action_log, reason)
     }
 
-    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> GpuPriorityFailures {
-        let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        let failures = self.release_processes(&process_ids, action_log, reason);
+    fn clear_all(
+        &mut self,
+        controller: &mut GpuPriorityController,
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> GpuPriorityFailures {
+        let summary = controller.release_all_policy();
+        let failures = self.record_release_summary(summary, action_log, reason);
         self.pending_context.clear();
         self.reset_log_summaries();
         failures
     }
 
-    fn release_processes(
+    fn record_release_summary(
         &mut self,
-        process_ids: &[u32],
+        summary: GpuPriorityReleaseSummary,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> GpuPriorityFailures {
         let mut failures = GpuPriorityFailures::default();
-        for process_id in process_ids {
-            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
-                continue;
-            };
-            let log_name = process_state.process_name.clone();
-            match restore_process(*process_id, &process_state) {
-                Ok(()) => {
-                    self.adjusted.remove(process_id);
-                    self.clear_process_failure(&process_state.executable_path);
+        for failure in summary.failures {
+            match failure.error {
+                ProcessControlError::ProcessExited => {}
+                ProcessControlError::AccessDenied(_) => {
+                    self.failure_suppression
+                        .record_process_failure(&failure.executable_path);
                     action_log.record(
                         ActionLogFeature::GpuPriority,
-                        Some(*process_id),
-                        log_name,
-                        ActionLogResult::Restored,
-                        format!("Restored previous GPU priority: {reason}."),
-                    );
-                }
-                Err(GpuPriorityError::ProcessExited) => {
-                    self.adjusted.remove(process_id);
-                }
-                Err(GpuPriorityError::AccessDenied) => {
-                    self.record_process_failure(&process_state.executable_path);
-                    action_log.record(
-                        ActionLogFeature::GpuPriority,
-                        Some(*process_id),
-                        log_name,
+                        Some(failure.process_id),
+                        failure.process_name,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous GPU priority because Windows denied access: {reason}."
                         ),
                     );
                 }
-                Err(GpuPriorityError::GpuContextUnavailable) => {
-                    self.record_process_failure(&process_state.executable_path);
+                ProcessControlError::Unavailable(_) => {
+                    self.failure_suppression
+                        .record_process_failure(&failure.executable_path);
                     action_log.record(
                         ActionLogFeature::GpuPriority,
-                        Some(*process_id),
-                        log_name,
+                        Some(failure.process_id),
+                        failure.process_name,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous GPU priority because GPU scheduling priority is unavailable: {reason}."
                         ),
                     );
                 }
-                Err(err) => {
-                    self.record_process_failure(&process_state.executable_path);
-                    failures.record("Restore", *process_id, &log_name, err, action_log);
+                error => {
+                    self.failure_suppression
+                        .record_process_failure(&failure.executable_path);
+                    failures.record(
+                        "Restore",
+                        failure.process_id,
+                        &failure.process_name,
+                        error,
+                        action_log,
+                    );
                 }
             }
+        }
+        if summary.restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::GpuPriority,
+                None,
+                "GPU Priority",
+                ActionLogResult::Restored,
+                format!(
+                    "Restored previous GPU priority for {}: {reason}.",
+                    process_count_label(summary.restored_processes)
+                ),
+            );
         }
         failures
     }
 
     fn is_process_suppressed(
         &mut self,
+        process_id: u32,
+        process_name: &str,
         executable_path: &str,
+        action_log: &mut ActionLog,
         auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
         let suppression = self
             .failure_suppression
             .process_suppression(executable_path);
+        if !suppression.suppressed {
+            return false;
+        }
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(executable_path.to_owned());
+            action_log.record(
+                ActionLogFeature::GpuPriority,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying GPU Priority after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
+                ),
+            );
         }
-        suppression.suppressed
+        true
     }
 
-    fn record_process_failure(&mut self, process_name: &str) -> bool {
-        self.failure_suppression
-            .record_process_failure(process_name)
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
-    }
-
-    fn record_process_pending_context(&mut self, process_name: &str) -> bool {
+    fn record_process_pending_context(&mut self, executable_path: &str) -> bool {
         self.pending_context
-            .insert(process_failure_key(process_name))
+            .insert(process_failure_key(executable_path))
+    }
+
+    fn clear_process_pending_context(&mut self, executable_path: &str) {
+        self.pending_context
+            .remove(&process_failure_key(executable_path));
     }
 
     fn record_pending_log_summaries(
@@ -589,263 +541,12 @@ impl GpuPriorityManager {
         }
     }
 
-    fn clear_process_pending_context(&mut self, process_name: &str) {
-        self.pending_context
-            .remove(&process_failure_key(process_name));
-    }
-
     fn reset_log_summaries(&mut self) {
         self.pending_apply_log_count = 0;
         self.pending_context_log_count = 0;
         self.pending_access_denied_log_count = 0;
         self.last_apply_summary_logged_at = None;
         self.last_skip_summary_logged_at = None;
-    }
-}
-
-enum ApplyOutcome {
-    Applied { loggable: bool },
-    AlreadyApplied,
-    Preserved,
-}
-
-#[derive(Default)]
-struct GpuPriorityFailures {
-    count: usize,
-    last_error: Option<String>,
-}
-
-impl GpuPriorityFailures {
-    fn record(
-        &mut self,
-        action: &str,
-        process_id: u32,
-        process_name: &str,
-        error: GpuPriorityError,
-        action_log: &mut ActionLog,
-    ) {
-        let message = gpu_priority_error_message(error);
-        if self.last_error.is_none() {
-            self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
-        }
-        self.count += 1;
-        action_log.record(
-            ActionLogFeature::GpuPriority,
-            Some(process_id),
-            process_name.to_owned(),
-            ActionLogResult::Failed,
-            message,
-        );
-    }
-}
-
-impl Drop for GpuPriorityManager {
-    fn drop(&mut self) {
-        let mut action_log = ActionLog::new(1);
-        self.clear_all(&mut action_log, stringify!(GpuPriorityManager));
-    }
-}
-
-struct ProcessHandle(WinHandle);
-
-impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, GpuPriorityError> {
-        // SAFETY: process_id came from the current process snapshot and no inherited handle is
-        // requested.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-                0,
-                process_id,
-            )
-        };
-        if !handle.is_null() {
-            Ok(Self(WinHandle::new(handle)))
-        } else {
-            Err(open_process_error(process_id, last_error()))
-        }
-    }
-
-    fn gpu_priority_raw(&self) -> Result<u32, GpuPriorityError> {
-        let mut priority = 0;
-        // SAFETY: self owns a live process handle and priority is writable for the call.
-        let status = unsafe {
-            D3DKMTGetProcessSchedulingPriorityClass(self.0.raw(), &mut priority as *mut _)
-        };
-        ntstatus_result(status).and_then(|()| {
-            u32::try_from(priority).map_err(|_| {
-                GpuPriorityError::Failed(format!("Unexpected GPU priority {priority}."))
-            })
-        })
-    }
-
-    fn set_gpu_priority_raw(&self, priority: u32) -> Result<(), GpuPriorityError> {
-        let recovery = crate::crash_recovery::record_process_change(
-            self.0.raw(),
-            crate::crash_recovery::ProcessValue::GpuPriority(self.gpu_priority_raw()?),
-            crate::crash_recovery::ProcessValue::GpuPriority(priority),
-        )
-        .map_err(GpuPriorityError::Failed)?;
-        let priority = D3DKMT_SCHEDULINGPRIORITYCLASS::try_from(priority)
-            .map_err(|_| GpuPriorityError::Failed(format!("Invalid GPU priority {priority}.")))?;
-        // SAFETY: self owns a live process handle and priority is a validated scheduling class.
-        let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(self.0.raw(), priority) };
-        ntstatus_result(status)?;
-        recovery.commit().map_err(GpuPriorityError::Failed)
-    }
-}
-
-fn restore_process(
-    process_id: u32,
-    process_state: &AdjustedProcess,
-) -> Result<(), GpuPriorityError> {
-    let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time) {
-        return Err(GpuPriorityError::ProcessExited);
-    }
-    process.set_gpu_priority_raw(process_state.previous_priority_raw)?;
-    let refreshed_priority_raw = process.gpu_priority_raw()?;
-    if refreshed_priority_raw == process_state.previous_priority_raw {
-        Ok(())
-    } else {
-        Err(GpuPriorityError::Failed(format!(
-            "GPU priority remained {} after restoring {}.",
-            gpu_priority_raw_label(refreshed_priority_raw),
-            gpu_priority_raw_label(process_state.previous_priority_raw)
-        )))
-    }
-}
-
-fn ntstatus_result(status: i32) -> Result<(), GpuPriorityError> {
-    if status >= 0 {
-        Ok(())
-    } else {
-        match status as u32 {
-            STATUS_PROCESS_IS_TERMINATING => Err(GpuPriorityError::ProcessExited),
-            STATUS_INVALID_PARAMETER => Err(GpuPriorityError::GpuContextUnavailable),
-            status => Err(GpuPriorityError::Failed(format!(
-                "NTSTATUS 0x{status:08X}."
-            ))),
-        }
-    }
-}
-
-fn open_process_error(process_id: u32, error: u32) -> GpuPriorityError {
-    match error {
-        ERROR_ACCESS_DENIED => GpuPriorityError::AccessDenied,
-        ERROR_INVALID_PARAMETER => GpuPriorityError::ProcessExited,
-        _ => GpuPriorityError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
-    }
-}
-
-fn gpu_priority_raw(priority: ProcessGpuPriority) -> u32 {
-    match priority {
-        ProcessGpuPriority::Realtime => 5,
-        ProcessGpuPriority::High => 4,
-        ProcessGpuPriority::AboveNormal => 3,
-        ProcessGpuPriority::Normal => 2,
-        ProcessGpuPriority::Idle => 0,
-        ProcessGpuPriority::BelowNormal => 1,
-    }
-}
-
-fn should_preserve_priority(
-    tier: PriorityProcessTier,
-    preserve_foreground: bool,
-    preserve_visible_window: bool,
-    preserve_background: bool,
-    current_rank: u32,
-    desired_rank: u32,
-) -> bool {
-    match tier {
-        PriorityProcessTier::Foreground => preserve_foreground && current_rank >= desired_rank,
-        PriorityProcessTier::VisibleWindow => {
-            preserve_visible_window && current_rank >= desired_rank
-        }
-        PriorityProcessTier::Background => preserve_background && current_rank <= desired_rank,
-    }
-}
-
-pub fn gpu_priority_label(priority: ProcessGpuPriority) -> &'static str {
-    match priority {
-        ProcessGpuPriority::Realtime => "Realtime",
-        ProcessGpuPriority::High => "High",
-        ProcessGpuPriority::AboveNormal => "Above Normal",
-        ProcessGpuPriority::Normal => "Normal",
-        ProcessGpuPriority::BelowNormal => "Below Normal",
-        ProcessGpuPriority::Idle => "Idle",
-    }
-}
-
-fn gpu_priority_raw_label(priority: u32) -> String {
-    match priority {
-        0 => "Idle".to_owned(),
-        1 => "Below Normal".to_owned(),
-        2 => "Normal".to_owned(),
-        3 => "Above Normal".to_owned(),
-        4 => "High".to_owned(),
-        5 => "Realtime".to_owned(),
-        other => format!("Unknown ({other})"),
-    }
-}
-
-fn gpu_priority_error_message(error: GpuPriorityError) -> String {
-    match error {
-        GpuPriorityError::AccessDenied => "Access denied.".to_owned(),
-        GpuPriorityError::ProcessExited => "Process exited.".to_owned(),
-        GpuPriorityError::GpuContextUnavailable => {
-            "GPU scheduling priority is not available yet for this process.".to_owned()
-        }
-        GpuPriorityError::Failed(message) => message,
-    }
-}
-
-pub(crate) fn current_priority(target: &ProcessActionTarget) -> Result<ProcessGpuPriority, String> {
-    let process = ProcessHandle::open(target.id).map_err(gpu_priority_error_message)?;
-    if process.0.process_creation_time() != Some(target.creation_time)
-        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
-    {
-        return Err("The selected process instance has changed.".to_owned());
-    }
-    process
-        .gpu_priority_raw()
-        .map(gpu_priority_from_raw)
-        .map_err(gpu_priority_error_message)
-}
-
-pub(crate) fn apply_once(
-    target: &ProcessActionTarget,
-    priority: ProcessGpuPriority,
-) -> Result<(), String> {
-    ensure_process_action_target_access(target, ProcessActionAccess::SetInformation)?;
-    let process = ProcessHandle::open(target.id).map_err(gpu_priority_error_message)?;
-    if process.0.process_creation_time() != Some(target.creation_time)
-        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
-    {
-        return Err("The selected process instance has changed.".to_owned());
-    }
-    let priority_raw = gpu_priority_raw(priority);
-    process
-        .set_gpu_priority_raw(priority_raw)
-        .map_err(gpu_priority_error_message)?;
-    (process
-        .gpu_priority_raw()
-        .map_err(gpu_priority_error_message)?
-        == priority_raw)
-        .then_some(())
-        .ok_or_else(|| "GPU priority did not change after request.".to_owned())
-}
-
-fn gpu_priority_from_raw(priority: u32) -> ProcessGpuPriority {
-    match priority {
-        0 => ProcessGpuPriority::Idle,
-        1 => ProcessGpuPriority::BelowNormal,
-        3 => ProcessGpuPriority::AboveNormal,
-        4 => ProcessGpuPriority::High,
-        5 => ProcessGpuPriority::Realtime,
-        _ => ProcessGpuPriority::Normal,
     }
 }
 
@@ -899,6 +600,54 @@ fn gpu_priority_status_message(
     }
 }
 
+fn tier_preservation(
+    settings: &GpuPrioritySettings,
+    tier: PriorityProcessTier,
+) -> GpuPriorityPreservation {
+    match tier {
+        PriorityProcessTier::Foreground if settings.preserve_foreground_priority => {
+            GpuPriorityPreservation::PreserveHigher
+        }
+        PriorityProcessTier::VisibleWindow if settings.preserve_visible_window_priority => {
+            GpuPriorityPreservation::PreserveHigher
+        }
+        PriorityProcessTier::Background if settings.preserve_background_priority => {
+            GpuPriorityPreservation::PreserveLower
+        }
+        _ => GpuPriorityPreservation::Exact,
+    }
+}
+
+#[derive(Default)]
+struct GpuPriorityFailures {
+    count: usize,
+    last_error: Option<String>,
+}
+
+impl GpuPriorityFailures {
+    fn record(
+        &mut self,
+        action: &str,
+        process_id: u32,
+        process_name: &str,
+        error: ProcessControlError,
+        action_log: &mut ActionLog,
+    ) {
+        let message = error.to_string();
+        if self.last_error.is_none() {
+            self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
+        }
+        self.count += 1;
+        action_log.record(
+            ActionLogFeature::GpuPriority,
+            Some(process_id),
+            process_name.to_owned(),
+            ActionLogResult::Failed,
+            message,
+        );
+    }
+}
+
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
@@ -908,83 +657,101 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gpu_priority_raw_values_match_wddm_order() {
-        assert_eq!(gpu_priority_raw(ProcessGpuPriority::Idle), 0);
-        assert_eq!(gpu_priority_raw(ProcessGpuPriority::BelowNormal), 1);
-        assert_eq!(gpu_priority_raw(ProcessGpuPriority::Normal), 2);
-        assert_eq!(gpu_priority_raw(ProcessGpuPriority::AboveNormal), 3);
-        assert_eq!(gpu_priority_raw(ProcessGpuPriority::High), 4);
-        assert_eq!(gpu_priority_raw(ProcessGpuPriority::Realtime), 5);
-    }
+    fn repeated_failures_emit_one_gpu_auto_exclusion_and_success_resets_it() {
+        let mut manager = GpuPriorityManager::default();
+        let mut log = ActionLog::new(8);
+        let mut auto_excluded = BTreeSet::new();
+        let path = r"C:\Apps\app.exe";
 
-    #[test]
-    fn d3dkmt_invalid_parameter_waits_for_gpu_context_retry() {
-        assert!(matches!(
-            ntstatus_result(STATUS_INVALID_PARAMETER as i32),
-            Err(GpuPriorityError::GpuContextUnavailable)
+        manager.failure_suppression.record_process_failure(path);
+        manager
+            .failure_suppression
+            .record_process_failure(r"C:/Apps/app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", path, &mut log, &mut auto_excluded,));
+        manager.failure_suppression.record_process_failure(path);
+        assert!(manager.is_process_suppressed(42, "app.exe", path, &mut log, &mut auto_excluded,));
+        assert!(manager.is_process_suppressed(
+            43,
+            "app.exe",
+            r"C:/Apps/app.exe",
+            &mut log,
+            &mut auto_excluded,
         ));
+        assert_eq!(auto_excluded, BTreeSet::from([path.to_owned()]));
+        assert_eq!(log.entries().len(), 1);
+        assert_eq!(log.entries()[0].feature, ActionLogFeature::GpuPriority);
+
+        manager.failure_suppression.clear_process_failure(path);
+        auto_excluded.clear();
+        assert!(!manager.is_process_suppressed(42, "app.exe", path, &mut log, &mut auto_excluded,));
     }
 
     #[test]
-    fn pending_gpu_context_does_not_suppress_future_retries() {
+    fn missing_gpu_context_is_deduplicated_without_failure_suppression() {
         let mut manager = GpuPriorityManager::default();
+        let path = r"C:\Apps\app.exe";
 
-        assert!(manager.record_process_pending_context(r"C:\Games\game.exe"));
-        assert!(!manager.record_process_pending_context(r"C:/Games/game.exe"));
+        assert!(manager.record_process_pending_context(path));
+        assert!(!manager.record_process_pending_context(r"C:/Apps/app.exe"));
+        assert!(
+            !manager
+                .failure_suppression
+                .process_suppression(path)
+                .suppressed
+        );
 
-        assert!(!manager.is_process_suppressed(r"C:\Games\game.exe", &mut BTreeSet::new()));
+        manager.clear_process_pending_context(path);
+        assert!(manager.record_process_pending_context(path));
     }
 
     #[test]
-    fn repeated_process_failures_suppress_gpu_priority_retries() {
+    fn gpu_summary_logs_are_rate_limited_and_accumulate_counts() {
         let mut manager = GpuPriorityManager::default();
-
-        assert!(manager.record_process_failure(r"C:\Apps\app.exe"));
-        assert!(!manager.record_process_failure(r"C:/Apps/app.exe"));
-        assert!(!manager.is_process_suppressed(r"C:\Apps\app.exe", &mut BTreeSet::new()));
-
-        assert!(!manager.record_process_failure(r"C:\Apps\app.exe"));
-        assert!(manager.is_process_suppressed(r"C:\Apps\app.exe", &mut BTreeSet::new()));
-        assert!(manager.is_process_suppressed(r"C:/Apps/app.exe", &mut BTreeSet::new()));
-    }
-
-    #[test]
-    fn gpu_priority_summary_messages_use_process_counts() {
-        assert_eq!(
-            gpu_priority_apply_summary_message(1),
-            "Applied GPU priority to 1 process."
-        );
-        assert_eq!(
-            gpu_priority_apply_summary_message(3),
-            "Applied GPU priority to 3 processes."
-        );
-        assert_eq!(
-            gpu_priority_skip_summary_message(2, 0),
-            "Skipped GPU priority for 2 processes: waiting for GPU scheduling context."
-        );
-        assert_eq!(
-            gpu_priority_skip_summary_message(0, 1),
-            "Skipped GPU priority for 1 process: Windows denied access."
-        );
-        assert_eq!(
-            gpu_priority_skip_summary_message(2, 1),
-            "Skipped GPU priority for 3 processes: 2 processes waiting for GPU scheduling context, 1 process denied access."
-        );
-    }
-
-    #[test]
-    fn gpu_priority_summary_log_is_rate_limited() {
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
 
-        assert!(gpu_priority_summary_log_due(None, now));
-        assert!(!gpu_priority_summary_log_due(Some(now), now));
-        assert!(!gpu_priority_summary_log_due(
-            Some(now),
-            now + GPU_PRIORITY_SUMMARY_LOG_INTERVAL - Duration::from_millis(1)
-        ));
-        assert!(gpu_priority_summary_log_due(
-            Some(now),
-            now + GPU_PRIORITY_SUMMARY_LOG_INTERVAL
-        ));
+        manager.record_pending_log_summaries(1, 1, 0, now, &mut log);
+        assert_eq!(log.entries().len(), 2);
+        manager.record_pending_log_summaries(2, 2, 1, now + Duration::from_secs(1), &mut log);
+        assert_eq!(log.entries().len(), 2);
+        manager.record_pending_log_summaries(
+            0,
+            0,
+            0,
+            now + GPU_PRIORITY_SUMMARY_LOG_INTERVAL,
+            &mut log,
+        );
+
+        assert_eq!(log.entries().len(), 4);
+        assert!(log
+            .entries()
+            .iter()
+            .any(|entry| entry.reason.contains("2 processes")));
+        assert!(log
+            .entries()
+            .iter()
+            .any(|entry| entry.reason.contains("3 processes")));
+    }
+
+    #[test]
+    fn focus_visible_and_background_preservation_directions_are_explicit() {
+        let mut settings = GpuPrioritySettings::default();
+        assert_eq!(
+            tier_preservation(&settings, PriorityProcessTier::Foreground),
+            GpuPriorityPreservation::PreserveHigher
+        );
+        assert_eq!(
+            tier_preservation(&settings, PriorityProcessTier::VisibleWindow),
+            GpuPriorityPreservation::PreserveHigher
+        );
+        assert_eq!(
+            tier_preservation(&settings, PriorityProcessTier::Background),
+            GpuPriorityPreservation::PreserveLower
+        );
+        settings.preserve_visible_window_priority = false;
+        assert_eq!(
+            tier_preservation(&settings, PriorityProcessTier::VisibleWindow),
+            GpuPriorityPreservation::Exact
+        );
     }
 }

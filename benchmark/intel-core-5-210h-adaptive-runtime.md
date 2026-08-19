@@ -8,7 +8,7 @@ power came from the RAPL `Package0` counter.
 
 Raw results are preserved in `benchmark/results/`.
 
-| Adaptive Burst policy | Median latency vs Stock | P95 latency vs Stock | Foreground throughput vs Stock | Package power vs Stock | Repeat passes won | Decision |
+| Adaptive Focus and Launch Profile | Median latency vs Stock | P95 latency vs Stock | Foreground throughput vs Stock | Package power vs Stock | Repeat passes won | Decision |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Aggressive, no explicit cooldown | -1.6% | -1.5% | -2.2% | -0.6% | 1/5 | Superseded by controlled run |
 | Efficient Aggressive, 50% parking, 15% minimum | -7.0% | -10.1% | -6.5% | -3.8% | 1/5 | Rejected and reverted |
@@ -54,7 +54,7 @@ Score component ratios from the same run, all vs paired Stock Balanced samples:
 This is a real release-binary A/B. Stock used the Windows Balanced plan with no
 Winderust process. Adaptive launched Winderust with an isolated configuration,
 cloned Windows Balanced into `Winderust Adaptive`, and ran the automation loop.
-Every adaptive pass reached the hybrid-aware Burst AC policy: 50% minimum
+Every adaptive pass reached the hybrid-aware Focus and Launch Profile A/C policy: 50% minimum
 unparked cores, 20% minimum processor state, 100% maximum processor state,
 100% boost policy, and Aggressive boost mode.
 
@@ -67,7 +67,7 @@ median changed from -4.8% to +5.2%, p95 from -3.1% to +5.6%, and throughput
 from -2.6% to +5.4%, while measured package power remained 2.6% below stock.
 It still misses the
 strict acceptance gate of at least 3% better median and p95 in two of three
-passes, with one repeat pass won. Workload Engine scheduling controls remained
+passes, with one repeat pass won. CPU Scheduler scheduling controls remained
 disabled so this test measures the adaptive power-plan controller itself.
 
 Command:

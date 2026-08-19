@@ -1,4 +1,23 @@
+use crate::config::ProcessRuleMode;
 use crate::ui::app::*;
+
+impl ProcessRuleTier {
+    const fn core_limiter_mode(self, rule: &CoreLimiterRule) -> ProcessRuleMode {
+        match self {
+            Self::Focus => rule.focus_mode,
+            Self::VisibleWindow => rule.visible_window_mode,
+            Self::Background => rule.background_mode,
+        }
+    }
+
+    fn set_core_limiter_mode(self, rule: &mut CoreLimiterRule, mode: ProcessRuleMode) {
+        match self {
+            Self::Focus => rule.focus_mode = mode,
+            Self::VisibleWindow => rule.visible_window_mode = mode,
+            Self::Background => rule.background_mode = mode,
+        }
+    }
+}
 
 impl WinderustApp {
     pub(in crate::ui::app) fn render_core_limiter_page(
@@ -112,14 +131,44 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut list = rule_list(process_rule_table_headers());
+        let mut list = rule_list(vec![
+            rule_table_active_header(),
+            rule_table_title_header(t!("process_list.app_name").to_string()),
+            rule_table_title_header(t!("process_list.executable_path").to_string()),
+            rule_table_centered_header(
+                t!("cpu_allocation.focus").to_string(),
+                DROPDOWN_SELECT_COMPACT_WIDTH,
+            ),
+            rule_table_centered_header(
+                t!("common.visible_window").to_string(),
+                DROPDOWN_SELECT_COMPACT_WIDTH,
+            ),
+            rule_table_centered_header(
+                t!("common.background_process").to_string(),
+                DROPDOWN_SELECT_COMPACT_WIDTH,
+            ),
+            rule_table_action_header(),
+        ]);
         for (index, rule) in self.settings.core_limiter.rules.iter().enumerate() {
             let process = rule.executable_path.clone();
-            let indicator = core_limiter_indicator(&self.core_limiter_status, &process);
+            let indicator = core_limiter_indicator(&self.feature_status.core_limiter, &process);
             let card_target = RuleCardTarget::CoreLimiter(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut title = h_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(self.process_rule_title(&process, cx));
+            for tier in ProcessRuleTier::ALL {
+                title = title.child(self.render_core_limiter_rule_selector(
+                    index,
+                    tier,
+                    tier.core_limiter_mode(rule),
+                    window,
+                    cx,
+                ));
+            }
             let mut card = rule_card(
-                self.process_rule_title(&process, cx),
+                title.into_any_element(),
                 rule_active_cell(
                     format!("core-limiter-rule-enabled-{index}"),
                     rule.enabled,
@@ -244,5 +293,56 @@ impl WinderustApp {
             self.render_numeric_value(field, display_value, edit_value, cx),
         )
         .into_any_element()
+    }
+
+    fn render_core_limiter_rule_selector(
+        &self,
+        index: usize,
+        tier: ProcessRuleTier,
+        selected: ProcessRuleMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tier_key = tier.key();
+        self.render_dropdown_select(
+            format!("core-limiter-{tier_key}-mode-{index}"),
+            core_limiter_rule_mode_label(selected),
+            true,
+            DropdownSelectWidth::Compact,
+            ProcessRuleMode::ALL.len(),
+            window,
+            cx,
+            move |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in ProcessRuleMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "core-limiter-{tier_key}-mode-{index}-{mode:?}"
+                            )),
+                            core_limiter_rule_mode_label(mode),
+                            selected == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.core_limiter.rules.get_mut(index) {
+                                tier.set_core_limiter_mode(rule, mode);
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+}
+
+fn core_limiter_rule_mode_label(mode: ProcessRuleMode) -> String {
+    match mode {
+        ProcessRuleMode::Default => t!("common.default").to_string(),
+        ProcessRuleMode::Enabled => t!("common.enabled").to_string(),
+        ProcessRuleMode::Disabled => t!("common.disabled").to_string(),
     }
 }

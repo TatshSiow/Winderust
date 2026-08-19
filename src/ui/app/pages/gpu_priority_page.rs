@@ -168,7 +168,6 @@ impl WinderustApp {
                 window,
                 cx,
             ))
-            .child(self.render_gpu_priority_status_card())
             .child(section_header(
                 &t!("gpu_priority.exclusions"),
                 t!("gpu_priority.exclusions_help").to_string(),
@@ -241,50 +240,6 @@ impl WinderustApp {
             window,
             cx,
         )
-    }
-
-    pub(in crate::ui::app) fn render_gpu_priority_status_card(&self) -> gpui::Div {
-        let status = &self.gpu_priority_status;
-        let message = if status.message.is_empty() {
-            t!("gpu_priority.not_checked").to_string()
-        } else {
-            localized_runtime_status(&status.message)
-        };
-        let mut rows = vec![
-            (t!("common.status").to_string(), message),
-            (
-                t!("gpu_priority.adjusted_processes").to_string(),
-                status.adjusted_processes.to_string(),
-            ),
-            (
-                t!("gpu_priority.pending_processes").to_string(),
-                status.pending_processes.to_string(),
-            ),
-            (
-                t!("gpu_priority.denied_processes").to_string(),
-                status.denied_processes.to_string(),
-            ),
-            (
-                t!("gpu_priority.suppressed_processes").to_string(),
-                status.suppressed_processes.to_string(),
-            ),
-            (
-                t!("gpu_priority.scanned_processes").to_string(),
-                status.scanned_processes.to_string(),
-            ),
-            (
-                t!("gpu_priority.skipped_processes").to_string(),
-                status.skipped_processes.to_string(),
-            ),
-            (
-                t!("gpu_priority.failed_actions").to_string(),
-                status.failed_processes.to_string(),
-            ),
-        ];
-        if let Some(error) = &status.last_error {
-            rows.push((t!("common.last_failure").to_string(), error.clone()));
-        }
-        stat_grid(rows)
     }
 
     pub(in crate::ui::app) fn render_gpu_priority_default_selector(

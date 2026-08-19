@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ProcessRuleMode;
 
 #[test]
 fn process_resource_columns_format_usage() {
@@ -40,6 +41,7 @@ fn inaccessible_process_uses_dash_for_unavailable_metrics() {
 fn inaccessible_process_filter_matches_process_action_safety() {
     let accessible = ProcessInfo {
         id: u32::MAX,
+        creation_time: Some(1),
         parent_id: None,
         session_id: Some(1),
         user_name: Some("User".to_owned()),
@@ -74,6 +76,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: Some(0),
             user_name: Some("SYSTEM".to_owned()),
@@ -85,6 +88,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: Some(1),
             user_name: Some("User".to_owned()),
@@ -173,6 +177,7 @@ fn process_list_column_layout_fits_headers_and_values() {
     let processes = vec![
         ProcessInfo {
             id: 1234,
+            creation_time: Some(1234),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -184,6 +189,7 @@ fn process_list_column_layout_fits_headers_and_values() {
         },
         ProcessInfo {
             id: 12345,
+            creation_time: Some(12345),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -231,6 +237,7 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
     let executable_path = PathBuf::from(r"C:\Apps\MixedCase\Editor.EXE");
     let processes = vec![ProcessInfo {
         id: 1,
+        creation_time: Some(1),
         parent_id: None,
         session_id: None,
         user_name: None,
@@ -280,6 +287,7 @@ fn process_list_group_actions_target_the_root_process() {
     let processes = vec![
         ProcessInfo {
             id: 10,
+            creation_time: Some(10),
             parent_id: Some(20),
             session_id: None,
             user_name: None,
@@ -291,6 +299,7 @@ fn process_list_group_actions_target_the_root_process() {
         },
         ProcessInfo {
             id: 20,
+            creation_time: Some(20),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -321,33 +330,6 @@ fn process_list_group_actions_target_the_root_process() {
 }
 
 #[test]
-fn stacked_process_actions_attempt_every_available_target() {
-    let target = |id| ProcessActionTarget {
-        id,
-        name: "editor.exe".to_owned(),
-        executable_path: PathBuf::from(r"C:\Apps\Editor\editor.exe"),
-        creation_time: u64::from(id),
-        session_id: Some(1),
-        is_service_account: Some(false),
-    };
-    let targets = vec![
-        Ok(target(10)),
-        Err(ProcessActionTargetError::ProcessUnavailable(5)),
-        Ok(target(20)),
-    ];
-    let mut applied = Vec::new();
-
-    let error = apply_process_list_targets(&targets, |target| {
-        applied.push(target.id);
-        Ok(())
-    })
-    .expect_err("one unavailable process should be reported");
-
-    assert_eq!(applied, [10, 20]);
-    assert!(error.starts_with("1 of 3 process actions failed:"));
-}
-
-#[test]
 fn stop_action_visibility_matches_process_row_shape() {
     assert_eq!(
         process_list_stop_action_visibility(true, false),
@@ -367,6 +349,7 @@ fn stop_action_visibility_matches_process_row_shape() {
 fn process_list_search_matches_name_pid_and_path() {
     let process = ProcessInfo {
         id: 4242,
+        creation_time: Some(4242),
         parent_id: None,
         session_id: None,
         user_name: None,
@@ -388,6 +371,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -399,6 +383,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -432,6 +417,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -443,6 +429,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -481,6 +468,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
     let processes = vec![
         ProcessInfo {
             id: 30,
+            creation_time: Some(30),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -492,6 +480,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
         },
         ProcessInfo {
             id: 10,
+            creation_time: Some(10),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -503,6 +492,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
         },
         ProcessInfo {
             id: 20,
+            creation_time: Some(20),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -557,6 +547,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
     let processes = vec![
         ProcessInfo {
             id: 1,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -568,6 +559,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
         },
         ProcessInfo {
             id: 2,
+            creation_time: Some(2),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -606,10 +598,7 @@ fn process_policy_summary_carries_typed_active_state() {
     assert!(summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
     assert!(!summary.value_is_active(ProcessListColumn::ProcessPriority));
 
-    settings
-        .background_efficiency
-        .custom_rules
-        .push(new_background_efficiency_rule(path));
+    set_background_efficiency_custom_rule(&mut settings.background_efficiency, path, true);
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
@@ -620,6 +609,11 @@ fn process_policy_summary_carries_typed_active_state() {
     let summary = process_policy_summary(&settings, &[], path);
     assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
     assert!(summary.value_is_active(ProcessListColumn::ProcessPriority));
+
+    settings.background_efficiency.custom_rules[0].background_efficiency_mode =
+        ProcessRuleMode::Enabled;
+    let summary = process_policy_summary(&settings, &[], path);
+    assert!(summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
 }
 
 #[test]
@@ -630,32 +624,32 @@ fn process_list_priority_rule_can_update_each_side_independently() {
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
-        Some(true),
+        Some(ProcessRuleTier::Focus),
         ProcessPrioritySetting::High,
     );
     let rule = &settings.process_priority.exclusions[0];
     assert_eq!(
-        rule.process_priority_override(true),
+        rule.process_priority_override(true, false),
         ProcessPrioritySetting::High
     );
     assert_eq!(
-        rule.process_priority_override(false),
+        rule.process_priority_override(false, false),
         ProcessPrioritySetting::Default
     );
 
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
-        Some(false),
+        Some(ProcessRuleTier::Background),
         ProcessPrioritySetting::Idle,
     );
     let rule = &settings.process_priority.exclusions[0];
     assert_eq!(
-        rule.process_priority_override(true),
+        rule.process_priority_override(true, false),
         ProcessPrioritySetting::High
     );
     assert_eq!(
-        rule.process_priority_override(false),
+        rule.process_priority_override(false, false),
         ProcessPrioritySetting::Idle
     );
 }
@@ -694,6 +688,12 @@ fn process_policy_summary_reports_priority_policy_values() {
     settings.io_priority.enabled = true;
     settings.gpu_priority.enabled = true;
     settings.memory_priority.enabled = true;
+    settings.io_priority.visible_window_detection_enabled = true;
+    settings.io_priority.visible_window_priority = ProcessIoPrioritySetting::Low;
+    settings.gpu_priority.visible_window_detection_enabled = true;
+    settings.gpu_priority.visible_window_priority = ProcessGpuPrioritySetting::BelowNormal;
+    settings.memory_priority.visible_window_detection_enabled = true;
+    settings.memory_priority.visible_window_priority = ProcessMemoryPrioritySetting::Low;
 
     let summary = process_policy_summary(&settings, &[], "editor.exe");
 
@@ -709,6 +709,16 @@ fn process_policy_summary_reports_priority_policy_values() {
         summary.memory_priority,
         memory_priority_policy_label(&settings.memory_priority)
     );
+    assert_eq!(
+        summary.io_priority,
+        format!(
+            "{} / {} / {}",
+            process_io_priority_setting_label(settings.io_priority.foreground_priority),
+            process_io_priority_setting_label(settings.io_priority.visible_window_priority),
+            process_io_priority_setting_label(settings.io_priority.background_priority)
+        )
+    );
+    assert!(process_list_priority_header_label("I/O".to_owned(), true).contains("FG/VW/BG"));
 }
 
 #[test]
@@ -717,12 +727,16 @@ fn process_policy_summary_ignores_disabled_priority_rules() {
     let path = r"C:\Apps\editor.exe";
     let mut rule = new_process_exclusion_rule(path);
     rule.enabled = false;
-    rule.set_process_priority_override(true, ProcessPrioritySetting::Idle);
-    rule.set_thread_priority_override(true, ProcessThreadPrioritySetting::Lowest);
-    rule.set_dynamic_priority_boost_override(true, ProcessDynamicPriorityBoostSetting::Disabled);
-    rule.set_io_priority_override(true, ProcessIoPrioritySetting::Low);
-    rule.set_gpu_priority_override(true, ProcessGpuPrioritySetting::BelowNormal);
-    rule.set_memory_priority_override(true, ProcessMemoryPrioritySetting::Low);
+    rule.set_process_priority_override(true, false, ProcessPrioritySetting::Idle);
+    rule.set_thread_priority_override(true, false, ProcessThreadPrioritySetting::Lowest);
+    rule.set_dynamic_priority_boost_override(
+        true,
+        false,
+        ProcessDynamicPriorityBoostSetting::Disabled,
+    );
+    rule.set_io_priority_override(true, false, ProcessIoPrioritySetting::Low);
+    rule.set_gpu_priority_override(true, false, ProcessGpuPrioritySetting::BelowNormal);
+    rule.set_memory_priority_override(true, false, ProcessMemoryPrioritySetting::Low);
 
     settings.process_priority.exclusions.push(rule.clone());
     settings.thread_priority.exclusions.push(rule.clone());
@@ -800,6 +814,22 @@ fn process_policy_summary_reports_process_rule_columns() {
 #[test]
 fn process_policy_summary_reports_include_exclude_columns() {
     let mut settings = Settings::default();
+    set_background_efficiency_custom_rule(&mut settings.background_efficiency, "editor.exe", true);
+
+    let summary = process_policy_summary(&settings, &[], "editor.exe");
+
+    assert_eq!(summary.background_efficiency, process_list_exclude_label());
+}
+
+#[test]
+fn background_efficiency_summary_resolves_default_rule_layers() {
+    let mut settings = Settings::default();
+    settings.background_efficiency.foreground_detection_enabled = true;
+    settings
+        .background_efficiency
+        .visible_window_detection_enabled = false;
+    settings.background_efficiency.foreground_efficiency_mode = false;
+    settings.background_efficiency.background_efficiency_mode = false;
     settings
         .background_efficiency
         .custom_rules
@@ -808,6 +838,7 @@ fn process_policy_summary_reports_include_exclude_columns() {
     let summary = process_policy_summary(&settings, &[], "editor.exe");
 
     assert_eq!(summary.background_efficiency, process_list_exclude_label());
+    assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
 }
 #[test]
 fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
@@ -845,7 +876,7 @@ fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
 fn new_cpu_allocation_rules_select_available_cpus() {
     let rule = new_cpu_allocation_rule(r"C:\Games\game.exe");
 
-    assert_ne!(rule.core_mask, 0);
+    assert!(rule.has_cpu_selection());
 }
 
 #[test]

@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
-    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ByRunningAppRule, ByRunningAppSettings},
     foreground::{
-        contains_process_name, list_processes, process_matches_executable_path, process_session_id,
+        contains_process_name, process_matches_executable_path, process_session_id,
         same_process_name, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
+    runtime::observations::CycleObservations,
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
@@ -40,34 +40,34 @@ impl ByRunningAppManager {
         &mut self,
         settings: &ByRunningAppSettings,
         automation_enabled: bool,
-        action_log: &mut ActionLog,
+        observations: &mut CycleObservations,
     ) -> ByRunningAppSnapshot {
         if !automation_enabled {
-            self.release(action_log, "automation disabled");
+            self.release();
             return ByRunningAppSnapshot::default();
         }
 
         if !settings.enabled {
-            self.release(action_log, "By Running App disabled");
+            self.release();
             return ByRunningAppSnapshot::default();
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            self.release(action_log, "current Windows session is unknown");
+            self.release();
             return ByRunningAppSnapshot::default();
         };
 
-        let processes = match list_processes() {
+        let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(_) => {
-                self.release(action_log, "process list unavailable");
+                self.release();
                 return ByRunningAppSnapshot::default();
             }
         };
         let eligible_processes = processes
-            .into_iter()
+            .iter()
             .filter(|process| {
                 process.id != 0
                     && process.is_critical == Some(false)
@@ -79,7 +79,7 @@ impl ByRunningAppManager {
         let matched = matching_rule_process(settings, &eligible_processes);
 
         let Some(matched) = matched else {
-            self.release(action_log, "no By Running App process is running");
+            self.release();
             return ByRunningAppSnapshot::default();
         };
 
@@ -87,22 +87,8 @@ impl ByRunningAppManager {
             return self.snapshot();
         }
 
-        action_log.record(
-            ActionLogFeature::ByRunningApp,
-            Some(matched.process_id),
-            matched.process_name.clone(),
-            ActionLogResult::Applied,
-            format!(
-                "Rule '{}' requested power plan {}.",
-                matched.rule_name, matched.target_guid
-            ),
-        );
         self.active = Some(matched);
         self.snapshot()
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.active.is_some()
     }
 
     pub fn active_process_ids(&self) -> BTreeSet<u32> {
@@ -133,18 +119,8 @@ impl ByRunningAppManager {
         })
     }
 
-    fn release(&mut self, action_log: &mut ActionLog, reason: &str) {
-        let Some(active) = self.active.take() else {
-            return;
-        };
-
-        action_log.record(
-            ActionLogFeature::ByRunningApp,
-            Some(active.process_id),
-            active.process_name,
-            ActionLogResult::Restored,
-            format!("{reason}; released By Running App decision."),
-        );
+    fn release(&mut self) {
+        self.active = None;
     }
 
     fn snapshot(&self) -> ByRunningAppSnapshot {
@@ -166,7 +142,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 
 fn matching_rule_process(
     settings: &ByRunningAppSettings,
-    processes: &[ProcessInfo],
+    processes: &[&ProcessInfo],
 ) -> Option<ActiveByRunningApp> {
     for rule in &settings.rules {
         if !rule.enabled || rule.executable_path.trim().is_empty() {
@@ -217,8 +193,9 @@ mod tests {
                 power_plan_guid: Some("custom-guid".to_owned()),
             }],
         };
-        let processes = vec![ProcessInfo {
+        let processes = [ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -228,6 +205,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
+        let processes = processes.iter().collect::<Vec<_>>();
 
         let matched = matching_rule_process(&settings, &processes).unwrap();
 
@@ -254,8 +232,9 @@ mod tests {
                 },
             ],
         };
-        let processes = vec![ProcessInfo {
+        let processes = [ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -265,6 +244,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
+        let processes = processes.iter().collect::<Vec<_>>();
 
         assert!(matching_rule_process(&settings, &processes).is_none());
     }
@@ -288,8 +268,9 @@ mod tests {
                 },
             ],
         };
-        let processes = vec![ProcessInfo {
+        let processes = [ProcessInfo {
             id: 42,
+            creation_time: Some(1),
             parent_id: None,
             session_id: None,
             user_name: None,
@@ -299,6 +280,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
+        let processes = processes.iter().collect::<Vec<_>>();
 
         let matched = matching_rule_process(&settings, &processes).unwrap();
 

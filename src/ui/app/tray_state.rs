@@ -3,7 +3,7 @@ use crate::ui::app::*;
 impl WinderustApp {
     pub(in crate::ui::app) fn sync_tray_icon(&mut self) -> bool {
         let tray_required =
-            self.settings.general.hide_to_tray || self.saved_settings.general.start_minimized;
+            self.settings.general.hide_to_tray || self.settings.persisted().general.start_minimized;
         let tray_present = self.tray_icon.is_some();
         let mut changed = false;
 
@@ -70,7 +70,7 @@ impl WinderustApp {
         }
         self.start_minimized_applied = true;
 
-        if !self.saved_settings.general.start_minimized {
+        if !self.settings.persisted().general.start_minimized {
             return false;
         }
 

@@ -340,12 +340,20 @@ pub(in crate::ui::app) fn dropdown_surface(
     cx: &mut Context<WinderustApp>,
     max_height: Pixels,
 ) -> Scrollable<gpui::Div> {
-    v_flex()
-        .w_full()
-        .max_h(max_height)
+    dropdown_surface_frame(cx, max_height)
         .overflow_y_scrollbar()
         .gap_1()
         .p_2()
+}
+
+pub(in crate::ui::app) fn dropdown_surface_frame(
+    cx: &mut Context<WinderustApp>,
+    max_height: Pixels,
+) -> gpui::Div {
+    v_flex()
+        .w_full()
+        .max_h(max_height)
+        .overflow_hidden()
         .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
         .border_color(cx.theme().border)
@@ -383,6 +391,33 @@ pub(in crate::ui::app) fn dropdown_option_row(
         })
         .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
         .cursor_pointer()
+        .child(label)
+}
+
+pub(in crate::ui::app) fn dropdown_action_row(
+    id: SharedString,
+    label: String,
+    icon: NavIcon,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(id)
+        .min_h(px(DROPDOWN_OPTION_ROW_HEIGHT))
+        .items_center()
+        .gap_2()
+        .pl_3()
+        .pr_3()
+        .rounded(px(BRAND_RADIUS_CONTROL))
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .text_color(cx.theme().popover_foreground)
+        .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
+        .cursor_pointer()
+        .child(
+            Icon::new(icon)
+                .with_size(px(16.0))
+                .text_color(cx.theme().muted_foreground),
+        )
         .child(label)
 }
 

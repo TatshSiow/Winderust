@@ -11,13 +11,14 @@ impl WinderustApp {
         let documentation_url = "https://github.com/TatshSiow/Winderust#readme";
         let license_url = "https://github.com/TatshSiow/Winderust/blob/main/LICENSE";
         let latest_version = self
+            .update
             .latest_version
             .as_deref()
             .map(|version| format!("v{version}"))
             .unwrap_or_else(|| "—".to_string());
         let updates_focused = self.about_updates_focus_handle.is_focused(window);
-        let current_status = self.latest_version.as_ref().map(|_| {
-            if self.available_update.is_some() {
+        let current_status = self.update.latest_version.as_ref().map(|_| {
+            if self.update.available.is_some() {
                 t!("about.old").to_string()
             } else {
                 t!("about.up_to_date").to_string()
@@ -134,7 +135,7 @@ impl WinderustApp {
                             .child(
                                 control_button(Button::new("check-for-updates-now"))
                                     .label(t!("about.check_for_updates").to_string())
-                                    .disabled(self.update_check_in_progress)
+                                    .disabled(self.update.check_in_progress)
                                     .on_click(cx.listener(|app, _, _, cx| {
                                         app.check_for_updates(true, cx);
                                     })),
@@ -152,8 +153,8 @@ impl WinderustApp {
                                     .items_center()
                                     .gap_2()
                                     .child(text_muted(latest_version))
-                                    .when(self.latest_version.is_some(), |row| {
-                                        if let Some(update) = self.available_update.clone() {
+                                    .when(self.update.latest_version.is_some(), |row| {
+                                        if let Some(update) = self.update.available.clone() {
                                             let url = update.url;
                                             row.child(
                                                 primary_control_button(
@@ -173,7 +174,7 @@ impl WinderustApp {
                                         }
                                     })
                                     .when_some(
-                                        self.update_check_message.clone(),
+                                        self.update.check_message.clone(),
                                         |row, message| {
                                             row.child(text_muted(format!("({message})")))
                                         },

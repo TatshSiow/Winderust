@@ -2,11 +2,9 @@ use crate::ui::app::*;
 
 impl WinderustApp {
     pub(in crate::ui::app) fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
-        if self.update_check_in_progress {
+        if !self.update.begin_check() {
             return;
         }
-        self.update_check_in_progress = true;
-        self.update_check_message = None;
         if manual {
             cx.notify();
         }
@@ -17,26 +15,22 @@ impl WinderustApp {
         cx.spawn(async move |this, cx| {
             let result = check.await;
             let _ = this.update(cx, |app, cx| {
-                app.update_check_in_progress = false;
+                app.update.finish_check();
                 if app.settings.general.update_channel != channel {
                     cx.notify();
                     return;
                 }
                 match result {
                     Ok(check) => {
-                        if should_show_startup_update_modal(
-                            manual,
-                            check.available_update.is_some(),
-                        ) {
-                            app.startup_update_modal_visible = true;
-                            app.startup_update_modal_closing = false;
-                        }
-                        app.latest_version = Some(check.latest_version);
-                        app.available_update = check.available_update;
+                        app.update.record_success(
+                            check.latest_version,
+                            check.available_update,
+                            !manual,
+                        );
                     }
                     Err(()) if manual => {
-                        app.update_check_message =
-                            Some(t!("about.update_check_failed").to_string());
+                        app.update
+                            .record_failure(t!("about.update_check_failed").to_string());
                     }
                     Err(()) => {}
                 }
@@ -47,40 +41,23 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn dismiss_startup_update_modal(&mut self, cx: &mut Context<Self>) {
-        if !self.startup_update_modal_visible || self.startup_update_modal_closing {
-            return;
-        }
-        if !ui_animations_enabled() {
-            self.startup_update_modal_visible = false;
-            cx.notify();
-            return;
+        match self.update.begin_modal_dismissal(ui_animations_enabled()) {
+            UpdateModalDismissal::NoChange => return,
+            UpdateModalDismissal::Hidden => {
+                cx.notify();
+                return;
+            }
+            UpdateModalDismissal::Closing => {}
         }
 
-        self.startup_update_modal_closing = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
             Timer::after(Duration::from_secs_f64(MOTION_FAST_SECONDS)).await;
             let _ = this.update(cx, |app, cx| {
-                app.startup_update_modal_visible = false;
-                app.startup_update_modal_closing = false;
+                app.update.finish_modal_dismissal();
                 cx.notify();
             });
         })
         .detach();
-    }
-}
-fn should_show_startup_update_modal(manual: bool, update_available: bool) -> bool {
-    !manual && update_available
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn startup_update_modal_only_follows_automatic_available_updates() {
-        assert!(should_show_startup_update_modal(false, true));
-        assert!(!should_show_startup_update_modal(true, true));
-        assert!(!should_show_startup_update_modal(false, false));
     }
 }

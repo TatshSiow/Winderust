@@ -19,7 +19,7 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - CPU Control through Core Limiter, CPU Sets (Soft), and Processor Affinity (Hard).
 - App Suspension for explicit opt-in apps.
 - Priority Control through Process Priority, Thread Priority, Dynamic Priority
-  Boost, IO Priority, GPU Priority, and Memory Priority.
+  Boost, I/O Priority, GPU Priority, and Memory Priority.
 - Memory Trim.
 - Timer Resolution rules tied to foreground apps.
 - Action Log and CSV export.
@@ -50,7 +50,6 @@ Not a goal by default:
 
 Add only when a real workflow needs them:
 
-- Process-list context actions if repeated workflows are awkward without them.
 - Gaming/work/battery presets after the current settings model stabilizes.
 - Better telemetry/export if Action Log is not enough.
 - Startup/service hardening if always-on background operation becomes a requirement.
@@ -58,7 +57,7 @@ Add only when a real workflow needs them:
 
 ## Product Rules
 
-- Runtime changes must restore cleanly when possible.
+- A reversible runtime change must capture and restore its original state or not be applied.
 - Dangerous controls need explicit user intent and conservative defaults.
 - If a feature can be a rule on an existing page, do that before adding a new top-level page.
 - If the value is only for developers, put it in `10-development-guide.md`, not here.

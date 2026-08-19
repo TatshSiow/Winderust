@@ -1,8 +1,10 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
+    fmt,
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
+        mpsc::{sync_channel, Receiver, SyncSender},
         Arc, Condvar, Mutex, MutexGuard,
     },
     thread::{self, JoinHandle},
@@ -10,23 +12,41 @@ use std::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogEntry},
+    action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
-        input_hook, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
-        IdleDetector, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
+        input_tracker, merge_activity_snapshot, ControllerActivityDetector, IdleDetector,
+        InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
     app_suspension::{AppSuspensionManager, AppSuspensionSnapshot},
+    application::settings::{AutoExclusionPatch, RuntimeSettingsSnapshot, SettingsRevision},
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     config::{
         AccentColorSource, AnimationMode, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
-        ProcessIoPriority, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        ProcessGpuPriority, ProcessIoPriority, ProcessMemoryPriority, ProcessPrioritySetting,
+        ProcessThreadPrioritySetting, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+    },
+    control::{
+        cpu_allocation::CpuAllocationCoordinator,
+        dynamic_priority_boost::{DynamicPriorityBoostController, DynamicPriorityBoostState},
+        gpu_priority::GpuPriorityController,
+        io_priority::IoPriorityController,
+        memory_priority::MemoryPriorityController,
+        memory_trim::MemoryTrimController,
+        power_plan::{AdaptivePowerPlanRequest, PowerPlanController, PowerPlanStatus},
+        priority_efficiency::PriorityEfficiencyController,
+        process::ControlOwner,
+        process_termination::{ProcessTerminationBatchResult, ProcessTerminationController},
+        suspension::SuspensionController,
+        thread_priority::ThreadPriorityController,
+        timer_resolution::TimerResolutionController,
     },
     core_limiter::{CoreLimiterManager, CoreLimiterSnapshot},
     cpu::{CpuUsageMonitor, CpuUsageSnapshot, PerProcessorUsageMonitor},
     cpu_allocation::{
-        self, CpuAllocationManager, CpuAllocationSnapshot, LogicalProcessorInfo,
-        LogicalProcessorKind,
+        self, record_cpu_allocation_reconciliation, CpuAllocationManager, CpuAllocationSnapshot,
+        LogicalProcessorInfo, LogicalProcessorKind,
     },
+    cpu_scheduler::{CpuSchedulerManager, CpuSchedulerSnapshot, CpuSchedulerUpdate},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
@@ -35,30 +55,31 @@ use crate::{
     },
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, executable_path_key,
-        foreground_process, foreground_process_id, list_processes, process_is_critical,
-        same_executable_path, shell_window_mouse_pressed, top_level_window_process_ids,
-        ProcessActionTarget,
+        process_is_critical, same_executable_path, shell_window_mouse_pressed, ProcessActionTarget,
+        ProcessActionTargetError,
     },
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},
     memory_priority::{MemoryPriorityManager, MemoryPrioritySnapshot},
     memory_trim::{MemoryTrimManager, MemoryTrimSnapshot},
     power::{
-        active_plan, adaptive_power_profile_transition, apply_processor_power_values,
-        create_adaptive_plan, delete_plan, set_active, AdaptivePowerDemand, AdaptivePowerProfile,
-        ProcessorPowerValues,
+        AdaptivePowerBoostValues, AdaptivePowerDemand, AdaptivePowerProfile, ProcessorPowerValues,
     },
     power_source,
     process_priority::{ProcessPriorityManager, ProcessPrioritySnapshot},
     rules::{
         decide, set_execution_failure_suppression_threshold, ByRunningAppDecision, DecisionInput,
-        ExecutionFailureTracker,
+        DecisionState,
     },
+    runtime::{
+        observations::CycleObservations,
+        scheduler::{RefreshDomain, RefreshScheduler, SchedulerEvent},
+    },
+    self_power::SelfPowerController,
     thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
-    tray,
+    tray::{self, TrayVisibilityWatcher},
     windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
-    workload_engine::{WorkloadEngineManager, WorkloadEngineSnapshot, WorkloadEngineUpdate},
 };
 
 mod requirements;
@@ -66,24 +87,22 @@ mod runner;
 mod status;
 mod wake;
 
-pub(crate) use requirements::foreground_lookup_required;
 use requirements::*;
 use runner::*;
 use status::*;
 use wake::*;
 
-const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(500);
 const APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL: Duration = Duration::from_millis(750);
 const CPU_ALLOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const CPU_ALLOCATION_RECONCILIATION_RETRY_MAX: Duration = Duration::from_secs(60);
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const WORKLOAD_ENGINE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
-const WORKLOAD_ENGINE_FAST_REFRESH_WINDOW: Duration = Duration::from_secs(8);
+const ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const ADAPTIVE_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const THREAD_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -98,25 +117,184 @@ const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SCHEDULE_RULE_MAX_SLEEP: Duration = Duration::from_secs(60 * 60);
-const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
+const AUTO_EXCLUSION_PATCH_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+const PROCESS_CONTROL_COMMAND_QUEUE_CAPACITY: usize = 32;
 
-pub struct BackgroundAutomation {
+pub struct RuntimeHandle {
     shared: Arc<SharedAutomationState>,
-    thread: Mutex<Option<JoinHandle<()>>>,
+    lifecycle: Mutex<()>,
+    thread: Mutex<Option<JoinHandle<Result<(), String>>>>,
     event_watcher: Mutex<Option<WindowsEventWatcher>>,
+    input_hook: Mutex<Option<InputHook>>,
+    self_power: Arc<Mutex<SelfPowerController>>,
+    tray_visibility_watcher: Mutex<Option<TrayVisibilityWatcher>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeCommandError {
+    RuntimeStopped,
+    WorkerExited,
+    QueueFull,
+    InvalidRequest(String),
+    CommandFailed(String),
+}
+
+impl fmt::Display for RuntimeCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RuntimeStopped => formatter.write_str("The automation runtime has stopped."),
+            Self::WorkerExited => {
+                formatter.write_str("The automation worker exited before processing the request.")
+            }
+            Self::QueueFull => formatter.write_str(
+                "Too many process control requests are already waiting. Try again shortly.",
+            ),
+            Self::InvalidRequest(message) | Self::CommandFailed(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for RuntimeCommandError {}
+
+#[derive(Debug)]
+pub(crate) struct ProcessControlBatchResult {
+    pub(crate) results: Vec<Result<(), String>>,
+}
+
+pub(crate) type ProcessControlActionReceiver =
+    Receiver<Result<ProcessControlBatchResult, RuntimeCommandError>>;
+pub(crate) type MemoryTrimActionReceiver =
+    Receiver<Result<MemoryTrimSnapshot, RuntimeCommandError>>;
+pub(crate) type ProcessTerminationActionReceiver =
+    Receiver<Result<ProcessTerminationBatchResult, RuntimeCommandError>>;
+pub(crate) type AppSuspensionFreezeReceiver =
+    Receiver<Result<AppSuspensionSnapshot, RuntimeCommandError>>;
+
+impl ProcessControlBatchResult {
+    pub(crate) fn into_process_list_result(self) -> Result<(), String> {
+        let target_count = self.results.len();
+        let failures = self
+            .results
+            .into_iter()
+            .filter_map(Result::err)
+            .collect::<Vec<_>>();
+        if failures.is_empty() && target_count > 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} of {target_count} process actions failed: {}",
+                failures.len(),
+                failures
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "No process targets were available.".to_owned())
+            ))
+        }
+    }
+}
+
+enum ProcessControlCommand {
+    ProcessPriority {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessPrioritySetting,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    EfficiencyMode {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        enabled: bool,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    DynamicPriorityBoost {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        state: DynamicPriorityBoostState,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    ThreadPriority {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessThreadPrioritySetting,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    IoPriority {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessIoPriority,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    GpuPriority {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessGpuPriority,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    MemoryPriority {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessMemoryPriority,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    AppSuspension {
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        suspend: bool,
+        result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
+    },
+    AppSuspensionFreezePath {
+        executable_path: String,
+        result: SyncSender<Result<AppSuspensionSnapshot, RuntimeCommandError>>,
+    },
+    MemoryTrim {
+        result: SyncSender<Result<MemoryTrimSnapshot, RuntimeCommandError>>,
+    },
+    StopProcesses {
+        targets: Vec<ProcessActionTarget>,
+        result: SyncSender<Result<ProcessTerminationBatchResult, RuntimeCommandError>>,
+    },
+}
+
+impl ProcessControlCommand {
+    fn reject(self, error: RuntimeCommandError) {
+        match self {
+            Self::ProcessPriority { result, .. }
+            | Self::EfficiencyMode { result, .. }
+            | Self::DynamicPriorityBoost { result, .. }
+            | Self::ThreadPriority { result, .. }
+            | Self::IoPriority { result, .. }
+            | Self::GpuPriority { result, .. }
+            | Self::MemoryPriority { result, .. }
+            | Self::AppSuspension { result, .. } => {
+                let _ = result.try_send(Err(error));
+            }
+            Self::MemoryTrim { result } => {
+                let _ = result.try_send(Err(error));
+            }
+            Self::StopProcesses { result, .. } => {
+                let _ = result.try_send(Err(error));
+            }
+            Self::AppSuspensionFreezePath { result, .. } => {
+                let _ = result.try_send(Err(error));
+            }
+        }
+    }
+
+    fn is_memory_trim(&self) -> bool {
+        matches!(self, Self::MemoryTrim { .. })
+    }
+
+    fn is_app_suspension(&self) -> bool {
+        matches!(
+            self,
+            Self::AppSuspension { .. } | Self::AppSuspensionFreezePath { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AutomationStatusSnapshot {
-    pub generation: u64,
-    pub worker_error: Option<String>,
+pub struct RuntimeFeatureStatus {
     pub background_efficiency: BackgroundEfficiencySnapshot,
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_sets_soft: CpuAllocationSnapshot,
     pub processor_affinity_hard: CpuAllocationSnapshot,
     pub core_limiter: CoreLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
-    pub workload_engine: WorkloadEngineSnapshot,
+    pub cpu_scheduler: CpuSchedulerSnapshot,
     pub process_priority: ProcessPrioritySnapshot,
     pub thread_priority: ThreadPrioritySnapshot,
     pub dynamic_priority_boost: DynamicPriorityBoostSnapshot,
@@ -125,7 +303,16 @@ pub struct AutomationStatusSnapshot {
     pub memory_priority: MemoryPrioritySnapshot,
     pub memory_trim: MemoryTrimSnapshot,
     pub timer_resolution: TimerResolutionSnapshot,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeStatusSnapshot {
+    pub generation: u64,
+    pub worker_error: Option<String>,
+    pub feature_status: Arc<RuntimeFeatureStatus>,
+    pub(crate) power_plan_status: Arc<PowerPlanStatus>,
     pub action_log_entries: Arc<Vec<ActionLogEntry>>,
+    pub action_log_summaries: Arc<ActionLogSummaries>,
     pub appearance_change_generation: u64,
 }
 
@@ -144,33 +331,20 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 struct AutomationWorkerState {
     settings: Arc<Settings>,
+    runtime_revision: SettingsRevision,
+    persisted_revision: SettingsRevision,
     change_generation: u64,
-    status: AutomationStatusSnapshot,
+    status: RuntimeStatusSnapshot,
 
-    pending_auto_exclusions: PendingAutoExclusions,
-    app_suspension_freeze_requests: Vec<String>,
-    app_suspension_process_requests: Vec<(ProcessActionTarget, bool)>,
-    memory_trim_now_requested: bool,
+    pending_auto_exclusions: AutoExclusionPatch,
+    pending_auto_exclusions_revision: Option<SettingsRevision>,
+    pending_auto_exclusions_retry_at: Option<Instant>,
+    process_control_commands: VecDeque<ProcessControlCommand>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
     windows_event_watcher_active: bool,
+    worker_accepting_work: bool,
     stop_requested: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PendingAutoExclusions {
-    pub app_suspension: Vec<String>,
-    pub cpu_sets_soft: Vec<String>,
-    pub processor_affinity_hard: Vec<String>,
-    pub core_limiter: Vec<String>,
-    pub workload_engine: Vec<String>,
-    pub io_priority: Vec<String>,
-    pub process_priority: Vec<String>,
-    pub thread_priority: Vec<String>,
-    pub dynamic_priority_boost: Vec<String>,
-    pub gpu_priority: Vec<String>,
-    pub memory_priority: Vec<String>,
-    pub memory_trim: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -198,60 +372,161 @@ impl AutomationWakeEvents {
     }
 }
 
-impl BackgroundAutomation {
-    pub fn start(settings: &Settings) -> Self {
+impl RuntimeHandle {
+    pub fn start(settings: &RuntimeSettingsSnapshot) -> Self {
         let shared = Arc::new(SharedAutomationState {
             state: Mutex::new(AutomationWorkerState {
-                settings: Arc::new(settings.clone()),
+                settings: Arc::clone(&settings.value),
+                runtime_revision: settings.runtime_revision,
+                persisted_revision: settings.persisted_revision,
                 change_generation: 0,
-                status: AutomationStatusSnapshot {
+                status: RuntimeStatusSnapshot {
                     generation: 1,
+                    feature_status: Arc::new(RuntimeFeatureStatus::default()),
                     ..Default::default()
                 },
 
-                pending_auto_exclusions: PendingAutoExclusions::default(),
-                app_suspension_freeze_requests: Vec::new(),
-                app_suspension_process_requests: Vec::new(),
-                memory_trim_now_requested: false,
+                pending_auto_exclusions: AutoExclusionPatch::default(),
+                pending_auto_exclusions_revision: None,
+                pending_auto_exclusions_retry_at: None,
+                process_control_commands: VecDeque::new(),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
                 windows_event_watcher_active: false,
+                worker_accepting_work: false,
                 stop_requested: false,
             }),
             changed: Condvar::new(),
             status_generation: AtomicU64::new(1),
             pending_auto_exclusions_generation: AtomicU64::new(0),
         });
+        let self_power = Arc::new(Mutex::new(SelfPowerController::default()));
+        let self_power_error = {
+            let mut controller = lock_unpoisoned(&self_power);
+            controller
+                .set_requests(
+                    tray::is_hidden_to_tray(),
+                    settings.value.adaptive_engine.enabled,
+                )
+                .err()
+        };
+        let visibility_self_power = Arc::clone(&self_power);
+        let visibility_shared = Arc::clone(&shared);
+        let tray_visibility_watcher = TrayVisibilityWatcher::start(Arc::new(move |hidden| {
+            if let Err(error) = lock_unpoisoned(&visibility_self_power).set_hidden_mode(hidden) {
+                update_worker_error(&visibility_shared, Some(error));
+            }
+        }));
         let automation = Self {
             shared,
+            lifecycle: Mutex::new(()),
             thread: Mutex::new(None),
             event_watcher: Mutex::new(None),
+            input_hook: Mutex::new(None),
+            self_power,
+            tray_visibility_watcher: Mutex::new(Some(tray_visibility_watcher)),
         };
+        if let Some(error) = self_power_error {
+            update_worker_error(&automation.shared, Some(error));
+        }
         automation.sync_worker(settings, false);
         automation.sync_windows_event_watcher(settings);
+        automation.sync_input_hook(settings);
         automation
     }
 
-    pub fn update_settings(&self, settings: &Settings) {
-        {
+    pub fn replace_settings(&self, settings: &RuntimeSettingsSnapshot) {
+        let settings_changed = {
             let mut state = lock_unpoisoned(&self.shared.state);
-            if state.settings.as_ref() == settings {
+            if state.stop_requested {
                 return;
             }
-            state.settings = Arc::new(settings.clone());
-            state.pending_events.settings_changed = true;
-            state.change_generation = state.change_generation.wrapping_add(1);
-            self.shared.changed.notify_one();
-        }
+            if state.persisted_revision != settings.persisted_revision {
+                state.persisted_revision = settings.persisted_revision;
+                if state.pending_auto_exclusions_revision.is_some() {
+                    state.pending_auto_exclusions_revision = Some(settings.persisted_revision);
+                    state.pending_auto_exclusions.base_revision = settings.persisted_revision;
+                }
+            }
+            if state.runtime_revision == settings.runtime_revision {
+                false
+            } else {
+                state.settings = Arc::clone(&settings.value);
+                state.runtime_revision = settings.runtime_revision;
+                state.pending_events.settings_changed = true;
+                state.change_generation = state.change_generation.wrapping_add(1);
+                self.shared.changed.notify_one();
+                true
+            }
+        };
 
-        self.sync_worker(settings, false);
-        self.sync_windows_event_watcher(settings);
+        if settings_changed {
+            self.sync_worker(settings, false);
+            self.sync_windows_event_watcher(settings);
+            self.sync_input_hook(settings);
+        }
+        self.sync_self_power(settings);
     }
 
-    pub fn status_snapshot_since(
-        &self,
-        observed_generation: u64,
-    ) -> Option<AutomationStatusSnapshot> {
+    pub fn shutdown(&self) -> Result<(), String> {
+        let _lifecycle = lock_unpoisoned(&self.lifecycle);
+        {
+            let mut state = lock_unpoisoned(&self.shared.state);
+            if !state.stop_requested {
+                state.stop_requested = true;
+                for command in state.process_control_commands.drain(..) {
+                    command.reject(RuntimeCommandError::RuntimeStopped);
+                }
+                self.shared.changed.notify_one();
+            }
+        }
+
+        {
+            let mut watcher = lock_unpoisoned(&self.event_watcher);
+            watcher.take();
+        }
+        {
+            let mut input_hook = lock_unpoisoned(&self.input_hook);
+            input_hook.take();
+        }
+        {
+            let mut watcher = lock_unpoisoned(&self.tray_visibility_watcher);
+            watcher.take();
+        }
+        let thread = lock_unpoisoned(&self.thread).take();
+
+        let mut errors = Vec::new();
+        if let Some(thread) = thread {
+            match thread.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => errors.push(format!(
+                    "Background automation worker shutdown failed: {error}"
+                )),
+                Err(panic) => {
+                    let reason = panic
+                        .downcast::<&str>()
+                        .map(|error| error.to_string())
+                        .or_else(|panic| panic.downcast::<String>().map(|error| *error))
+                        .unwrap_or_else(|_| "unknown panic".to_owned());
+                    errors.push(format!(
+                        "Background automation worker panicked during shutdown: {reason}"
+                    ));
+                }
+            }
+        }
+        if let Err(error) = lock_unpoisoned(&self.self_power).shutdown() {
+            errors.push(format!("Winderust self-power restoration failed: {error}"));
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            let error = errors.join(" ");
+            update_worker_error(&self.shared, Some(error.clone()));
+            Err(error)
+        }
+    }
+
+    pub fn status_snapshot_since(&self, observed_generation: u64) -> Option<RuntimeStatusSnapshot> {
         if self.shared.status_generation.load(Ordering::Acquire) == observed_generation {
             return None;
         }
@@ -267,16 +542,21 @@ impl BackgroundAutomation {
 
     pub fn clear_action_log(&self) {
         let mut state = lock_unpoisoned(&self.shared.state);
+        if state.stop_requested {
+            return;
+        }
         state.status.action_log_entries = Arc::new(Vec::new());
+        state.status.action_log_summaries = Arc::new(ActionLogSummaries::new());
+        bump_status_generation(&self.shared, &mut state);
         state.action_log_clear_requested = true;
         state.change_generation = state.change_generation.wrapping_add(1);
         self.shared.changed.notify_one();
     }
 
-    pub fn take_pending_auto_exclusions_since(
+    pub fn take_auto_exclusion_patch_since(
         &self,
         observed_generation: &mut u64,
-    ) -> Option<PendingAutoExclusions> {
+    ) -> Option<AutoExclusionPatch> {
         if self
             .shared
             .pending_auto_exclusions_generation
@@ -294,96 +574,266 @@ impl BackgroundAutomation {
         if generation == *observed_generation {
             return None;
         }
+        if state
+            .pending_auto_exclusions_retry_at
+            .is_some_and(|retry_at| Instant::now() < retry_at)
+        {
+            return None;
+        }
 
         *observed_generation = generation;
+        state.pending_auto_exclusions_revision = None;
+        state.pending_auto_exclusions_retry_at = None;
         Some(std::mem::take(&mut state.pending_auto_exclusions))
     }
 
-    pub fn request_app_suspension_freeze(&self, executable_path: &str) {
-        let executable_path = executable_path_key(Path::new(executable_path));
-        if !Path::new(&executable_path).is_absolute() {
+    pub fn requeue_auto_exclusion_patch(&self, patch: AutoExclusionPatch) {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if state.stop_requested {
             return;
         }
 
-        let settings = {
-            let mut state = lock_unpoisoned(&self.shared.state);
-            if !state.app_suspension_freeze_requests.iter().any(|existing| {
-                same_executable_path(Path::new(existing), Path::new(&executable_path))
-            }) {
-                state.app_suspension_freeze_requests.push(executable_path);
-            }
-            state.change_generation = state.change_generation.wrapping_add(1);
-            self.shared.changed.notify_one();
-            Arc::clone(&state.settings)
-        };
+        merge_auto_exclusion_patch(&mut state.pending_auto_exclusions, patch);
+        let persisted_revision = state.persisted_revision;
+        state.pending_auto_exclusions.base_revision = persisted_revision;
+        state.pending_auto_exclusions_revision = Some(persisted_revision);
+        state.pending_auto_exclusions_retry_at =
+            Some(Instant::now() + AUTO_EXCLUSION_PATCH_RETRY_INTERVAL);
+        self.shared
+            .pending_auto_exclusions_generation
+            .fetch_add(1, Ordering::Release);
+    }
 
-        self.sync_worker(
-            settings.as_ref(),
-            settings.general.enabled && settings.app_suspension.enabled,
-        );
+    pub fn request_app_suspension_freeze(
+        &self,
+        executable_path: &str,
+    ) -> Result<AppSuspensionFreezeReceiver, RuntimeCommandError> {
+        let executable_path = executable_path_key(Path::new(executable_path));
+        if !Path::new(&executable_path).is_absolute() {
+            return Err(RuntimeCommandError::InvalidRequest(
+                "App Suspension requires an absolute executable path.".to_owned(),
+            ));
+        }
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::AppSuspensionFreezePath {
+            executable_path,
+            result,
+        })?;
+        Ok(receiver)
     }
 
     pub fn request_app_suspension_process_action(
         &self,
-        target: ProcessActionTarget,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
         suspend: bool,
-    ) {
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::AppSuspension {
+            targets,
+            suspend,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    pub(crate) fn request_dynamic_priority_boost_action(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        state: DynamicPriorityBoostState,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::DynamicPriorityBoost {
+            targets,
+            state,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    pub(crate) fn request_process_priority_action(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessPrioritySetting,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::ProcessPriority {
+            targets,
+            priority,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    pub(crate) fn request_efficiency_mode_action(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        enabled: bool,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::EfficiencyMode {
+            targets,
+            enabled,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    pub(crate) fn request_thread_priority_action(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessThreadPrioritySetting,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::ThreadPriority {
+            targets,
+            priority,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    pub(crate) fn request_io_priority_action(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessIoPriority,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::IoPriority {
+            targets,
+            priority,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    pub(crate) fn request_gpu_priority_action(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessGpuPriority,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::GpuPriority {
+            targets,
+            priority,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    pub(crate) fn request_memory_priority_action(
+        &self,
+        targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
+        priority: ProcessMemoryPriority,
+    ) -> Result<ProcessControlActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::MemoryPriority {
+            targets,
+            priority,
+            result,
+        })?;
+        Ok(receiver)
+    }
+
+    fn enqueue_process_control_command(
+        &self,
+        command: ProcessControlCommand,
+    ) -> Result<(), RuntimeCommandError> {
         let settings = {
-            let mut state = lock_unpoisoned(&self.shared.state);
-            state
-                .app_suspension_process_requests
-                .retain(|(queued, _)| queued.id != target.id);
-            state
-                .app_suspension_process_requests
-                .push((target, suspend));
-            state.change_generation = state.change_generation.wrapping_add(1);
+            let mut worker = lock_unpoisoned(&self.shared.state);
+            if worker.stop_requested {
+                return Err(RuntimeCommandError::RuntimeStopped);
+            }
+            if worker.process_control_commands.len() >= PROCESS_CONTROL_COMMAND_QUEUE_CAPACITY {
+                return Err(RuntimeCommandError::QueueFull);
+            }
+            worker.process_control_commands.push_back(command);
+            worker.change_generation = worker.change_generation.wrapping_add(1);
             self.shared.changed.notify_one();
-            Arc::clone(&state.settings)
+            RuntimeSettingsSnapshot {
+                runtime_revision: worker.runtime_revision,
+                persisted_revision: worker.persisted_revision,
+                value: Arc::clone(&worker.settings),
+            }
         };
-        self.sync_worker(settings.as_ref(), true);
+        self.sync_worker(&settings, true);
+        Ok(())
     }
 
-    pub fn request_memory_trim_now(&self) {
-        let settings = {
-            let mut state = lock_unpoisoned(&self.shared.state);
-            state.memory_trim_now_requested = true;
-            state.change_generation = state.change_generation.wrapping_add(1);
-            self.shared.changed.notify_one();
-            Arc::clone(&state.settings)
-        };
-
-        self.sync_worker(settings.as_ref(), false);
+    pub(crate) fn request_memory_trim_now(
+        &self,
+    ) -> Result<MemoryTrimActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::MemoryTrim { result })?;
+        Ok(receiver)
     }
 
-    pub fn input_event_callback(&self) -> Arc<dyn Fn(InputHookEvents) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |events| notify_input_event(&shared, events))
+    pub(crate) fn request_process_termination(
+        &self,
+        targets: Vec<ProcessActionTarget>,
+    ) -> Result<ProcessTerminationActionReceiver, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::StopProcesses {
+            targets,
+            result,
+        })?;
+        Ok(receiver)
     }
 
-    fn sync_worker(&self, settings: &Settings, start_requested: bool) {
+    fn sync_worker(&self, settings: &RuntimeSettingsSnapshot, start_requested: bool) {
+        let _lifecycle = lock_unpoisoned(&self.lifecycle);
+        if lock_unpoisoned(&self.shared.state).stop_requested {
+            return;
+        }
         let mut thread = lock_unpoisoned(&self.thread);
+        let worker_accepting_work = lock_unpoisoned(&self.shared.state).worker_accepting_work;
 
         if thread.as_ref().is_some_and(|thread| thread.is_finished())
-            && thread.take().is_some_and(|thread| thread.join().is_err())
+            || (thread.is_some() && !worker_accepting_work)
         {
-            update_worker_error(
-                &self.shared,
-                Some("Background automation worker stopped unexpectedly.".to_owned()),
-            );
+            if let Some(thread) = thread.take() {
+                match thread.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => update_worker_error(
+                        &self.shared,
+                        Some(format!(
+                            "Background automation worker exited unexpectedly: {error}"
+                        )),
+                    ),
+                    Err(panic) => {
+                        let reason = panic
+                            .downcast::<&str>()
+                            .map(|error| error.to_string())
+                            .or_else(|panic| panic.downcast::<String>().map(|error| *error))
+                            .unwrap_or_else(|_| "unknown panic".to_owned());
+                        update_worker_error(
+                            &self.shared,
+                            Some(format!(
+                                "Background automation worker panicked unexpectedly: {reason}"
+                            )),
+                        );
+                    }
+                }
+            }
+            lock_unpoisoned(&self.shared.state).worker_accepting_work = false;
         }
 
-        if (start_requested || automation_worker_required(settings)) && thread.is_none() {
+        if (start_requested || automation_worker_required(&settings.value)) && thread.is_none() {
             let thread_shared = Arc::clone(&self.shared);
+            lock_unpoisoned(&self.shared.state).worker_accepting_work = true;
             *thread = Some(thread::spawn(move || {
                 run_background_automation(thread_shared)
             }));
         }
     }
 
-    fn sync_windows_event_watcher(&self, settings: &Settings) {
+    fn sync_windows_event_watcher(&self, settings: &RuntimeSettingsSnapshot) {
+        let _lifecycle = lock_unpoisoned(&self.lifecycle);
+        if lock_unpoisoned(&self.shared.state).stop_requested {
+            return;
+        }
         let mut watcher = lock_unpoisoned(&self.event_watcher);
 
-        if windows_event_watcher_required(settings) {
+        if windows_event_watcher_required(&settings.value) {
             if watcher.is_none() {
                 let shared = Arc::clone(&self.shared);
                 *watcher = WindowsEventWatcher::start(Arc::new(move |event| {
@@ -397,58 +847,99 @@ impl BackgroundAutomation {
 
         set_windows_event_watcher_active(&self.shared, watcher.is_some());
     }
-}
 
-impl Drop for BackgroundAutomation {
-    fn drop(&mut self) {
-        *lock_unpoisoned(&self.event_watcher) = None;
+    fn sync_input_hook(&self, settings: &RuntimeSettingsSnapshot) {
+        let _lifecycle = lock_unpoisoned(&self.lifecycle);
+        if lock_unpoisoned(&self.shared.state).stop_requested {
+            return;
+        }
+        let mut input_hook = lock_unpoisoned(&self.input_hook);
+        if !input_hook_required(&settings.value) {
+            input_hook.take();
+            return;
+        }
 
-        let mut state = lock_unpoisoned(&self.shared.state);
-        state.stop_requested = true;
-        self.shared.changed.notify_one();
-        drop(state);
+        let config = input_hook_config(&settings.value);
+        if input_hook
+            .as_ref()
+            .is_some_and(|input_hook| input_hook.config() == config)
+        {
+            return;
+        }
+        input_hook.take();
+        let shared = Arc::clone(&self.shared);
+        match InputHook::install(
+            config,
+            Arc::new(move |events| notify_input_event(&shared, events)),
+        ) {
+            Ok(installed) => *input_hook = Some(installed),
+            Err(error) => update_worker_error(&self.shared, Some(error)),
+        }
+    }
 
-        let thread = lock_unpoisoned(&self.thread).take();
-        if let Some(thread) = thread {
-            let _ = thread.join();
+    fn sync_self_power(&self, settings: &RuntimeSettingsSnapshot) {
+        if lock_unpoisoned(&self.shared.state).stop_requested {
+            return;
+        }
+        if let Err(error) = lock_unpoisoned(&self.self_power)
+            .set_adaptive_engine(settings.value.adaptive_engine.enabled)
+        {
+            update_worker_error(&self.shared, Some(error));
         }
     }
 }
 
-fn run_background_automation(shared: Arc<SharedAutomationState>) {
-    let mut runner = HiddenAutomationRunner::default();
-    let mut next_check = Instant::now();
-    let mut next_background_efficiency_refresh = Instant::now();
-    let mut next_app_suspension_refresh = Instant::now();
-    let mut next_app_suspension_foreground_release = Instant::now();
-    let mut next_cpu_sets_soft_refresh = Instant::now();
-    let mut next_processor_affinity_hard_refresh = Instant::now();
-    let mut next_core_limiter_refresh = Instant::now();
-    let mut next_by_running_app_refresh = Instant::now();
-    let mut next_workload_engine_refresh = Instant::now();
-    let mut next_process_priority_refresh = Instant::now();
-    let mut next_thread_priority_refresh = Instant::now();
-    let mut next_dynamic_priority_boost_refresh = Instant::now();
-    let mut next_io_priority_refresh = Instant::now();
-    let mut next_gpu_priority_refresh = Instant::now();
-    let mut next_memory_priority_refresh = Instant::now();
-    let mut next_memory_trim_refresh = Instant::now();
-    let mut next_timer_resolution_refresh = Instant::now();
-    let mut next_process_appearance_scan = Instant::now();
-    let mut next_controller_activity_poll = Instant::now();
-    let mut workload_engine_fast_until: Option<Instant> = None;
+impl Drop for RuntimeHandle {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+struct AutomationWorkerExitGuard<'a> {
+    shared: &'a SharedAutomationState,
+}
+
+impl Drop for AutomationWorkerExitGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = lock_unpoisoned(&self.shared.state);
+        let exited_while_accepting_work = state.worker_accepting_work;
+        state.worker_accepting_work = false;
+        if exited_while_accepting_work {
+            for command in state.process_control_commands.drain(..) {
+                command.reject(RuntimeCommandError::WorkerExited);
+            }
+        }
+        self.shared.changed.notify_all();
+    }
+}
+
+fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), String> {
+    let _exit_guard = AutomationWorkerExitGuard { shared: &shared };
+    let mut runner = RuntimeCore::default();
+    let mut scheduler = RefreshScheduler::new(Instant::now());
+    let mut cpu_allocation_reconciliation_retry_interval =
+        CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
 
     while let Some(snapshot) = automation_snapshot(&shared) {
+        #[cfg(feature = "architecture-diagnostics")]
+        crate::architecture_diagnostics::record_worker_pass();
         let settings = snapshot.settings;
         let change_generation = snapshot.change_generation;
-        let app_suspension_freeze_requests = snapshot.app_suspension_freeze_requests;
-        let app_suspension_process_requests = snapshot.app_suspension_process_requests;
-        let memory_trim_now_requested = snapshot.memory_trim_now_requested;
+        let cpu_allocation_release_retry_pending_at_pass_start =
+            runner.cpu_allocation_release_retry_pending();
+        let process_control_commands = snapshot.process_control_commands;
+        let memory_trim_command_requested = process_control_commands
+            .iter()
+            .any(ProcessControlCommand::is_memory_trim);
+        let app_suspension_command_requested = process_control_commands
+            .iter()
+            .any(ProcessControlCommand::is_app_suspension);
         if snapshot.action_log_clear_requested {
             runner.action_log.clear();
         }
         let wake_events = snapshot.wake_events;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
+        let mut observations = CycleObservations::default();
         let hidden_to_tray = tray::is_hidden_to_tray();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
         let background_efficiency_refresh_interval = automation_refresh_interval(
@@ -481,8 +972,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             adaptive_engine_enabled,
             PERFORMANCE_MODE_REFRESH_INTERVAL,
         );
-        let mut workload_engine_refresh_interval =
-            workload_refresh_interval(&settings, hidden_to_tray, adaptive_engine_enabled);
+        let cpu_scheduler_refresh_interval = cpu_scheduler_refresh_interval(&settings);
         let process_priority_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -536,84 +1026,59 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let event_now = Instant::now();
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
         if settings_changed {
-            for refresh_at in [
-                &mut next_check,
-                &mut next_background_efficiency_refresh,
-                &mut next_app_suspension_refresh,
-                &mut next_app_suspension_foreground_release,
-                &mut next_cpu_sets_soft_refresh,
-                &mut next_processor_affinity_hard_refresh,
-                &mut next_core_limiter_refresh,
-                &mut next_by_running_app_refresh,
-                &mut next_workload_engine_refresh,
-                &mut next_process_priority_refresh,
-                &mut next_thread_priority_refresh,
-                &mut next_dynamic_priority_boost_refresh,
-                &mut next_io_priority_refresh,
-                &mut next_gpu_priority_refresh,
-                &mut next_memory_priority_refresh,
-                &mut next_memory_trim_refresh,
-                &mut next_timer_resolution_refresh,
-                &mut next_process_appearance_scan,
-                &mut next_controller_activity_poll,
-            ] {
-                *refresh_at = event_now;
-            }
-            workload_engine_fast_until = None;
+            scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }
-        if wake_events.foreground_changed || wake_events.session_changed {
-            for refresh_at in [
-                &mut next_check,
-                &mut next_background_efficiency_refresh,
-                &mut next_cpu_sets_soft_refresh,
-                &mut next_processor_affinity_hard_refresh,
-                &mut next_core_limiter_refresh,
-                &mut next_workload_engine_refresh,
-                &mut next_process_priority_refresh,
-                &mut next_thread_priority_refresh,
-                &mut next_dynamic_priority_boost_refresh,
-                &mut next_io_priority_refresh,
-                &mut next_gpu_priority_refresh,
-                &mut next_memory_priority_refresh,
-                &mut next_memory_trim_refresh,
-                &mut next_timer_resolution_refresh,
-                &mut next_app_suspension_foreground_release,
-            ] {
-                *refresh_at = event_now;
-            }
-            workload_engine_fast_until =
-                workload_engine_fast_refresh_deadline(&settings, event_now);
+        if wake_events.foreground_changed {
+            scheduler.invalidate(SchedulerEvent::ForegroundChanged, event_now);
         }
-        if wake_events.window_created || wake_events.session_changed {
-            next_process_appearance_scan = event_now;
-            next_app_suspension_refresh = event_now;
-            workload_engine_fast_until =
-                workload_engine_fast_refresh_deadline(&settings, event_now);
+        if wake_events.window_created {
+            scheduler.invalidate(SchedulerEvent::WindowCreated, event_now);
+        }
+        if wake_events.power_changed {
+            scheduler.invalidate(SchedulerEvent::PowerChanged, event_now);
+        }
+        if wake_events.session_changed {
+            scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);
         }
         if wake_events.power_changed || wake_events.session_changed {
-            next_check = event_now;
-            runner.refresh_active_plan();
+            if let Err(error) = runner.refresh_active_plan() {
+                update_worker_error(&shared, Some(error));
+            }
         }
         if wake_events.input_activity {
-            next_check = event_now;
+            scheduler.invalidate(SchedulerEvent::InputActivity, event_now);
         }
-        let controller_poll_required =
-            hidden_to_tray && controller_activity_poll_required(&settings);
-        if controller_poll_required && event_now >= next_controller_activity_poll {
+        let controller_poll_required = controller_activity_poll_required(&settings);
+        if controller_poll_required
+            && scheduler.is_due(RefreshDomain::ControllerActivity, event_now)
+        {
             if runner.poll_controller_activity(event_now) {
-                next_check = event_now;
+                scheduler.invalidate(SchedulerEvent::ControllerActivity, event_now);
             }
-            next_controller_activity_poll = event_now + CONTROLLER_ACTIVITY_POLL_INTERVAL;
+            scheduler.schedule_after(
+                RefreshDomain::ControllerActivity,
+                event_now,
+                CONTROLLER_ACTIVITY_POLL_INTERVAL,
+            );
         } else if !controller_poll_required {
             runner.clear_controller_activity();
-            next_controller_activity_poll = event_now;
+            scheduler.schedule_now(RefreshDomain::ControllerActivity, event_now);
         }
         if wake_events.app_switch || wake_events.app_switch_mouse_click {
-            next_app_suspension_foreground_release = event_now;
-            next_timer_resolution_refresh = event_now;
-            if runner.app_suspension_manager.has_suspended_processes() {
+            scheduler.invalidate(
+                if wake_events.app_switch {
+                    SchedulerEvent::AppSwitch
+                } else {
+                    SchedulerEvent::AppSwitchMouseClick
+                },
+                event_now,
+            );
+            if runner
+                .app_suspension_manager
+                .has_suspended_processes(&runner.app_suspension_controller)
+            {
                 let app_suspension_status = if wake_events.app_switch {
-                    runner.run_app_suspension_app_switch_release()
+                    runner.run_app_suspension_app_switch_release(&mut observations)
                 } else {
                     runner.run_app_suspension_shell_click_release()
                 };
@@ -629,9 +1094,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || feature_refresh_required(&settings, settings.background_efficiency.enabled);
         let app_suspension_refresh_required = settings_changed
             || feature_refresh_required(&settings, app_suspension_required(&settings))
-            || !app_suspension_freeze_requests.is_empty()
-            || !app_suspension_process_requests.is_empty()
-            || runner.app_suspension_manager.has_suspended_processes();
+            || app_suspension_command_requested
+            || runner
+                .app_suspension_manager
+                .has_suspended_processes(&runner.app_suspension_controller);
         let cpu_sets_soft_refresh_required = settings_changed
             || feature_refresh_required(&settings, cpu_sets_soft_required(&settings));
         let processor_affinity_hard_refresh_required = settings_changed
@@ -640,11 +1106,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || feature_refresh_required(&settings, core_limiter_required(&settings));
         let by_running_app_refresh_required = settings_changed
             || feature_refresh_required(&settings, by_running_app_required(&settings));
-        let workload_engine_refresh_required = settings_changed
-            || feature_refresh_required(
-                &settings,
-                workload_engine_required(&settings) || adaptive_power_plan_required(&settings),
-            );
+        let cpu_scheduler_refresh_required = settings_changed
+            || feature_refresh_required(&settings, cpu_scheduler_required(&settings));
+        let adaptive_power_plan_refresh_required = settings_changed
+            || feature_refresh_required(&settings, adaptive_power_plan_required(&settings))
+            || runner.adaptive_power_plan_active();
         let process_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.process_priority.enabled);
         let thread_priority_refresh_required = settings_changed
@@ -658,290 +1124,480 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let memory_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.memory_priority.enabled);
         let memory_trim_refresh_required = settings_changed
-            || memory_trim_now_requested
+            || memory_trim_command_requested
             || feature_refresh_required(&settings, settings.memory_trim.enabled);
         let timer_resolution_refresh_required = settings_changed
             || feature_refresh_required(&settings, timer_resolution_required(&settings));
-        if !app_suspension_freeze_requests.is_empty() || !app_suspension_process_requests.is_empty()
-        {
-            next_app_suspension_refresh = now;
+        if app_suspension_command_requested {
+            scheduler.invalidate(SchedulerEvent::AppSuspensionRequested, now);
         }
-        if memory_trim_now_requested {
-            next_memory_trim_refresh = now;
-        }
-
-        if workload_engine_fast_refresh_active(&settings, workload_engine_fast_until, now) {
-            workload_engine_refresh_interval = WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL;
+        if memory_trim_command_requested {
+            scheduler.invalidate(SchedulerEvent::MemoryTrimRequested, now);
         }
 
-        if scan_process_appearance && now >= next_process_appearance_scan {
-            if runner.detect_process_appearance() {
-                for refresh_at in [
-                    &mut next_background_efficiency_refresh,
-                    &mut next_cpu_sets_soft_refresh,
-                    &mut next_processor_affinity_hard_refresh,
-                    &mut next_core_limiter_refresh,
-                    &mut next_by_running_app_refresh,
-                    &mut next_workload_engine_refresh,
-                    &mut next_process_priority_refresh,
-                    &mut next_thread_priority_refresh,
-                    &mut next_dynamic_priority_boost_refresh,
-                    &mut next_io_priority_refresh,
-                    &mut next_gpu_priority_refresh,
-                    &mut next_memory_priority_refresh,
-                    &mut next_memory_trim_refresh,
-                ] {
-                    *refresh_at = now;
-                }
-                workload_engine_fast_until = workload_engine_fast_refresh_deadline(&settings, now);
+        if scan_process_appearance && scheduler.is_due(RefreshDomain::ProcessAppearance, now) {
+            if runner.detect_process_appearance(&mut observations) {
+                scheduler.invalidate(SchedulerEvent::ProcessAppeared, now);
             }
-            next_process_appearance_scan = now + process_appearance_scan_interval;
+            scheduler.schedule_after(
+                RefreshDomain::ProcessAppearance,
+                now,
+                process_appearance_scan_interval,
+            );
         } else if !scan_process_appearance {
             runner.known_process_ids.clear();
-            next_process_appearance_scan = now + process_appearance_scan_interval;
+            scheduler.schedule_after(
+                RefreshDomain::ProcessAppearance,
+                now,
+                process_appearance_scan_interval,
+            );
         }
 
-        if runner.app_suspension_manager.has_suspended_processes()
-            && now >= next_app_suspension_foreground_release
+        if runner
+            .app_suspension_manager
+            .has_suspended_processes(&runner.app_suspension_controller)
+            && scheduler.is_due(RefreshDomain::AppSuspensionForegroundRelease, now)
         {
-            if let Some(app_suspension_status) = runner.run_app_suspension_foreground_release() {
+            if let Some(app_suspension_status) =
+                runner.run_app_suspension_foreground_release(&mut observations)
+            {
                 update_app_suspension_status(&shared, app_suspension_status);
             }
-            next_app_suspension_foreground_release =
-                now + app_suspension_foreground_release_interval;
-        }
-
-        if background_efficiency_refresh_required && now >= next_background_efficiency_refresh {
-            let background_efficiency_status = runner.run_background_efficiency_update(&settings);
-            update_background_efficiency_status(&shared, background_efficiency_status);
-            next_background_efficiency_refresh = now + background_efficiency_refresh_interval;
-        }
-        if workload_engine_refresh_required && now >= next_workload_engine_refresh {
-            let workload_engine_status = runner.run_workload_engine_update(&settings);
-            if workload_engine_status.foreground_boosted_process.is_some()
-                || workload_engine_status.workload_managed_processes > 0
-            {
-                workload_engine_fast_until = workload_engine_fast_refresh_deadline(&settings, now);
-            }
-            update_workload_engine_status(&shared, workload_engine_status);
-            next_workload_engine_refresh = now + workload_engine_refresh_interval;
-        }
-        if io_priority_refresh_required && now >= next_io_priority_refresh {
-            let io_priority_status = runner.run_io_priority_update(&settings);
-            update_io_priority_status(&shared, io_priority_status);
-            next_io_priority_refresh = now + io_priority_refresh_interval;
-        }
-        if process_priority_refresh_required && now >= next_process_priority_refresh {
-            let process_priority_status = runner.run_process_priority_update(&settings);
-            update_process_priority_status(&shared, process_priority_status);
-            next_process_priority_refresh = now + process_priority_refresh_interval;
-        }
-        if thread_priority_refresh_required && now >= next_thread_priority_refresh {
-            let thread_priority_status = runner.run_thread_priority_update(&settings);
-            update_thread_priority_status(&shared, thread_priority_status);
-            next_thread_priority_refresh = now + thread_priority_refresh_interval;
-        }
-        if dynamic_priority_boost_refresh_required && now >= next_dynamic_priority_boost_refresh {
-            let dynamic_priority_boost_status = runner.run_dynamic_priority_boost_update(&settings);
-            update_dynamic_priority_boost_status(&shared, dynamic_priority_boost_status);
-            next_dynamic_priority_boost_refresh = now + dynamic_priority_boost_refresh_interval;
-        }
-        if gpu_priority_refresh_required && now >= next_gpu_priority_refresh {
-            let gpu_priority_status = runner.run_gpu_priority_update(&settings);
-            update_gpu_priority_status(&shared, gpu_priority_status);
-            next_gpu_priority_refresh = now + gpu_priority_refresh_interval;
-        }
-        if memory_priority_refresh_required && now >= next_memory_priority_refresh {
-            let memory_priority_status = runner.run_memory_priority_update(&settings);
-            update_memory_priority_status(&shared, memory_priority_status);
-            next_memory_priority_refresh = now + memory_priority_refresh_interval;
-        }
-        if app_suspension_refresh_required && now >= next_app_suspension_refresh {
-            let app_suspension_status = runner.run_app_suspension_update(
-                &settings,
-                &app_suspension_freeze_requests,
-                &app_suspension_process_requests,
+            scheduler.schedule_after(
+                RefreshDomain::AppSuspensionForegroundRelease,
+                now,
+                app_suspension_foreground_release_interval,
             );
-            update_app_suspension_status(&shared, app_suspension_status);
-            next_app_suspension_refresh = now + app_suspension_refresh_interval;
-            if runner.app_suspension_manager.has_suspended_processes() {
-                next_app_suspension_foreground_release = now;
-            }
-        }
-        if cpu_sets_soft_refresh_required && now >= next_cpu_sets_soft_refresh {
-            let status = runner.run_cpu_sets_soft_update(&settings);
-            update_cpu_sets_soft_status(&shared, status);
-            next_cpu_sets_soft_refresh = now + cpu_sets_soft_refresh_interval;
-        }
-        if processor_affinity_hard_refresh_required && now >= next_processor_affinity_hard_refresh {
-            let status = runner.run_processor_affinity_hard_update(&settings);
-            update_processor_affinity_hard_status(&shared, status);
-            next_processor_affinity_hard_refresh = now + processor_affinity_hard_refresh_interval;
-        }
-        if core_limiter_refresh_required && now >= next_core_limiter_refresh {
-            let core_limiter_status = runner.run_core_limiter_update(&settings);
-            update_core_limiter_status(&shared, core_limiter_status);
-            next_core_limiter_refresh = now + core_limiter_refresh_interval;
-        }
-        if by_running_app_refresh_required && now >= next_by_running_app_refresh {
-            let by_running_app_status = runner.run_by_running_app_update(&settings);
-            update_by_running_app_status(&shared, by_running_app_status);
-            next_by_running_app_refresh = now + by_running_app_refresh_interval;
-        }
-        if memory_trim_refresh_required && now >= next_memory_trim_refresh {
-            let memory_trim_status = if memory_trim_now_requested {
-                runner.run_memory_trim_now(&settings)
-            } else {
-                runner.run_memory_trim_update(&settings)
-            };
-            update_memory_trim_status(&shared, memory_trim_status);
-            next_memory_trim_refresh = now + memory_trim_refresh_interval;
-        }
-        if timer_resolution_refresh_required && now >= next_timer_resolution_refresh {
-            let timer_resolution_status = runner.run_timer_resolution_update(&settings);
-            update_timer_resolution_status(&shared, timer_resolution_status);
-            next_timer_resolution_refresh = now + timer_resolution_refresh_interval;
         }
 
-        runner.publish_action_log_if_changed(&shared);
+        if background_efficiency_refresh_required
+            && scheduler.is_due(RefreshDomain::BackgroundEfficiency, now)
+        {
+            let background_efficiency_status =
+                runner.run_background_efficiency_update(&settings, &mut observations);
+            update_background_efficiency_status(&shared, background_efficiency_status);
+            scheduler.schedule_after(
+                RefreshDomain::BackgroundEfficiency,
+                now,
+                background_efficiency_refresh_interval,
+            );
+        }
+        if cpu_scheduler_refresh_required && scheduler.is_due(RefreshDomain::CpuScheduler, now) {
+            let cpu_scheduler_status =
+                runner.run_cpu_scheduler_update(&settings, &mut observations);
+            update_cpu_scheduler_status(&shared, cpu_scheduler_status);
+            scheduler.schedule_after(
+                RefreshDomain::CpuScheduler,
+                now,
+                cpu_scheduler_refresh_interval,
+            );
+        }
+        if adaptive_power_plan_refresh_required
+            && scheduler.is_due(RefreshDomain::AdaptivePowerPlan, now)
+        {
+            if let Err(error) = runner.run_adaptive_power_plan_update(&settings, &mut observations)
+            {
+                update_worker_error(&shared, Some(error));
+            }
+            scheduler.schedule_after(
+                RefreshDomain::AdaptivePowerPlan,
+                now,
+                ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
+            );
+        }
+        if io_priority_refresh_required && scheduler.is_due(RefreshDomain::IoPriority, now) {
+            let io_priority_status = runner.run_io_priority_update(&settings, &mut observations);
+            update_io_priority_status(&shared, io_priority_status);
+            scheduler.schedule_after(RefreshDomain::IoPriority, now, io_priority_refresh_interval);
+        }
+        if process_priority_refresh_required
+            && scheduler.is_due(RefreshDomain::ProcessPriority, now)
+        {
+            let process_priority_status =
+                runner.run_process_priority_update(&settings, &mut observations);
+            update_process_priority_status(&shared, process_priority_status);
+            scheduler.schedule_after(
+                RefreshDomain::ProcessPriority,
+                now,
+                process_priority_refresh_interval,
+            );
+        }
+        if thread_priority_refresh_required && scheduler.is_due(RefreshDomain::ThreadPriority, now)
+        {
+            let thread_priority_status =
+                runner.run_thread_priority_update(&settings, &mut observations);
+            update_thread_priority_status(&shared, thread_priority_status);
+            scheduler.schedule_after(
+                RefreshDomain::ThreadPriority,
+                now,
+                thread_priority_refresh_interval,
+            );
+        }
+        if dynamic_priority_boost_refresh_required
+            && scheduler.is_due(RefreshDomain::DynamicPriorityBoost, now)
+        {
+            let dynamic_priority_boost_status =
+                runner.run_dynamic_priority_boost_update(&settings, &mut observations);
+            update_dynamic_priority_boost_status(&shared, dynamic_priority_boost_status);
+            scheduler.schedule_after(
+                RefreshDomain::DynamicPriorityBoost,
+                now,
+                dynamic_priority_boost_refresh_interval,
+            );
+        }
+        if gpu_priority_refresh_required && scheduler.is_due(RefreshDomain::GpuPriority, now) {
+            let gpu_priority_status = runner.run_gpu_priority_update(&settings, &mut observations);
+            update_gpu_priority_status(&shared, gpu_priority_status);
+            scheduler.schedule_after(
+                RefreshDomain::GpuPriority,
+                now,
+                gpu_priority_refresh_interval,
+            );
+        }
+        if memory_priority_refresh_required && scheduler.is_due(RefreshDomain::MemoryPriority, now)
+        {
+            let memory_priority_status =
+                runner.run_memory_priority_update(&settings, &mut observations);
+            update_memory_priority_status(&shared, memory_priority_status);
+            scheduler.schedule_after(
+                RefreshDomain::MemoryPriority,
+                now,
+                memory_priority_refresh_interval,
+            );
+        }
+        let command_statuses = if process_control_commands.is_empty() {
+            ProcessControlCommandStatuses::default()
+        } else {
+            runner.run_process_control_commands(
+                &settings,
+                process_control_commands,
+                &mut observations,
+            )
+        };
+        let manual_memory_trim_processed = command_statuses.memory_trim.is_some();
+        if let Some(status) = command_statuses.memory_trim {
+            update_memory_trim_status(&shared, status);
+            scheduler.schedule_after(RefreshDomain::MemoryTrim, now, memory_trim_refresh_interval);
+        }
+        if let Some(status) = command_statuses.app_suspension {
+            update_app_suspension_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::AppSuspension,
+                now,
+                app_suspension_refresh_interval,
+            );
+        }
+        if app_suspension_refresh_required && scheduler.is_due(RefreshDomain::AppSuspension, now) {
+            let app_suspension_status =
+                runner.run_app_suspension_update(&settings, &[], &mut observations);
+            update_app_suspension_status(&shared, app_suspension_status);
+            scheduler.schedule_after(
+                RefreshDomain::AppSuspension,
+                now,
+                app_suspension_refresh_interval,
+            );
+            if runner
+                .app_suspension_manager
+                .has_suspended_processes(&runner.app_suspension_controller)
+            {
+                scheduler.schedule_now(RefreshDomain::AppSuspensionForegroundRelease, now);
+            }
+        }
+        if cpu_sets_soft_refresh_required && scheduler.is_due(RefreshDomain::CpuSetsSoft, now) {
+            let status = runner.run_cpu_sets_soft_update(&settings, &mut observations);
+            update_cpu_sets_soft_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::CpuSetsSoft,
+                now,
+                cpu_sets_soft_refresh_interval,
+            );
+        }
+        if processor_affinity_hard_refresh_required
+            && scheduler.is_due(RefreshDomain::ProcessorAffinityHard, now)
+        {
+            let status = runner.run_processor_affinity_hard_update(&settings, &mut observations);
+            update_processor_affinity_hard_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::ProcessorAffinityHard,
+                now,
+                processor_affinity_hard_refresh_interval,
+            );
+        }
+        if core_limiter_refresh_required && scheduler.is_due(RefreshDomain::CoreLimiter, now) {
+            let core_limiter_status = runner.run_core_limiter_update(&settings, &mut observations);
+            update_core_limiter_status(&shared, core_limiter_status);
+            scheduler.schedule_after(
+                RefreshDomain::CoreLimiter,
+                now,
+                core_limiter_refresh_interval,
+            );
+        }
+        let immediate_cpu_allocation_reconciliation =
+            runner.cpu_allocation_immediate_reconciliation_pending();
+        let cpu_allocation_release_retry_due = cpu_allocation_release_retry_pending_at_pass_start
+            && scheduler.is_due(RefreshDomain::CpuAllocationReconciliation, now);
+        if immediate_cpu_allocation_reconciliation || cpu_allocation_release_retry_due {
+            runner.run_cpu_allocation_reconciliation(&settings, cpu_allocation_release_retry_due);
+        }
+        let cpu_allocation_release_retry_pending = runner.cpu_allocation_release_retry_pending();
+        if cpu_allocation_release_retry_due {
+            if cpu_allocation_release_retry_pending {
+                scheduler.schedule_after(
+                    RefreshDomain::CpuAllocationReconciliation,
+                    now,
+                    cpu_allocation_reconciliation_retry_interval,
+                );
+                cpu_allocation_reconciliation_retry_interval =
+                    next_cpu_allocation_reconciliation_retry_interval(
+                        cpu_allocation_reconciliation_retry_interval,
+                    );
+            } else {
+                cpu_allocation_reconciliation_retry_interval =
+                    CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
+                scheduler.schedule_now(RefreshDomain::CpuAllocationReconciliation, now);
+            }
+        } else if !cpu_allocation_release_retry_pending_at_pass_start
+            && cpu_allocation_release_retry_pending
+        {
+            cpu_allocation_reconciliation_retry_interval =
+                next_cpu_allocation_reconciliation_retry_interval(
+                    CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL,
+                );
+            scheduler.schedule_after(
+                RefreshDomain::CpuAllocationReconciliation,
+                now,
+                CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL,
+            );
+        } else if !cpu_allocation_release_retry_pending {
+            cpu_allocation_reconciliation_retry_interval =
+                CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
+            scheduler.schedule_now(RefreshDomain::CpuAllocationReconciliation, now);
+        }
+        if by_running_app_refresh_required && scheduler.is_due(RefreshDomain::ByRunningApp, now) {
+            let by_running_app_status =
+                runner.run_by_running_app_update(&settings, &mut observations);
+            update_by_running_app_status(&shared, by_running_app_status);
+            scheduler.schedule_after(
+                RefreshDomain::ByRunningApp,
+                now,
+                by_running_app_refresh_interval,
+            );
+        }
+        if !manual_memory_trim_processed
+            && memory_trim_refresh_required
+            && scheduler.is_due(RefreshDomain::MemoryTrim, now)
+        {
+            let memory_trim_status = runner.run_memory_trim_update(&settings, &mut observations);
+            update_memory_trim_status(&shared, memory_trim_status);
+            scheduler.schedule_after(RefreshDomain::MemoryTrim, now, memory_trim_refresh_interval);
+        }
+        if timer_resolution_refresh_required
+            && scheduler.is_due(RefreshDomain::TimerResolution, now)
+        {
+            let timer_resolution_status =
+                runner.run_timer_resolution_update(&settings, &mut observations);
+            update_timer_resolution_status(&shared, timer_resolution_status);
+            scheduler.schedule_after(
+                RefreshDomain::TimerResolution,
+                now,
+                timer_resolution_refresh_interval,
+            );
+        }
 
         let wait_now = Instant::now();
-        let mut wait_for = if hidden_to_tray {
-            if power_plan_checks_required {
-                let input_events = input_hook::take_pending_events();
-                if input_hook_should_check(&settings, input_events) {
-                    next_check = wait_now;
+        let mut wait_for = if power_plan_checks_required {
+            if scheduler.is_due(RefreshDomain::PowerPlanCheck, wait_now) {
+                if let Err(error) = runner.run_check(&settings, &mut observations) {
+                    update_worker_error(&shared, Some(error));
                 }
+            }
 
-                if wait_now >= next_check && !runner.by_running_app_manager.is_active() {
-                    runner.run_check(&settings);
-                }
-
-                if let Some(delay) =
-                    hidden_power_plan_check_delay(&settings, windows_event_watcher_active)
-                {
-                    next_check = wait_now + delay;
-                    Some(next_check.saturating_duration_since(wait_now))
-                } else {
-                    next_check = wait_now;
-                    None
-                }
+            if let Some(delay) = power_plan_check_delay(&settings, windows_event_watcher_active) {
+                scheduler.schedule_after(RefreshDomain::PowerPlanCheck, wait_now, delay);
+                Some(delay)
             } else {
-                next_check = wait_now;
+                scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
                 None
             }
         } else {
-            next_check = wait_now;
+            scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
             None
         };
+        runner.publish_action_log_if_changed(&shared);
+        update_power_plan_status(&shared, runner.power_plan_status());
 
-        for (required, refresh_at, interval) in [
-            (
-                background_efficiency_refresh_required,
-                next_background_efficiency_refresh,
-                background_efficiency_refresh_interval,
-            ),
-            (
-                app_suspension_refresh_required,
-                next_app_suspension_refresh,
-                app_suspension_refresh_interval,
-            ),
-            (
-                cpu_sets_soft_refresh_required,
-                next_cpu_sets_soft_refresh,
-                cpu_sets_soft_refresh_interval,
-            ),
-            (
-                processor_affinity_hard_refresh_required,
-                next_processor_affinity_hard_refresh,
-                processor_affinity_hard_refresh_interval,
-            ),
-            (
-                core_limiter_refresh_required,
-                next_core_limiter_refresh,
-                core_limiter_refresh_interval,
-            ),
-            (
-                by_running_app_refresh_required,
-                next_by_running_app_refresh,
-                by_running_app_refresh_interval,
-            ),
-            (
-                workload_engine_refresh_required,
-                next_workload_engine_refresh,
-                workload_engine_refresh_interval,
-            ),
-            (
-                process_priority_refresh_required,
-                next_process_priority_refresh,
-                process_priority_refresh_interval,
-            ),
-            (
-                thread_priority_refresh_required,
-                next_thread_priority_refresh,
-                thread_priority_refresh_interval,
-            ),
-            (
-                dynamic_priority_boost_refresh_required,
-                next_dynamic_priority_boost_refresh,
-                dynamic_priority_boost_refresh_interval,
-            ),
-            (
-                io_priority_refresh_required,
-                next_io_priority_refresh,
-                io_priority_refresh_interval,
-            ),
-            (
-                gpu_priority_refresh_required,
-                next_gpu_priority_refresh,
-                gpu_priority_refresh_interval,
-            ),
-            (
-                memory_priority_refresh_required,
-                next_memory_priority_refresh,
-                memory_priority_refresh_interval,
-            ),
-            (
-                memory_trim_refresh_required,
-                next_memory_trim_refresh,
-                memory_trim_refresh_interval,
-            ),
-            (
-                timer_resolution_refresh_required,
-                next_timer_resolution_refresh,
-                timer_resolution_refresh_interval,
-            ),
-            (
-                scan_process_appearance,
-                next_process_appearance_scan,
-                process_appearance_scan_interval,
-            ),
-            (
-                controller_poll_required,
-                next_controller_activity_poll,
-                CONTROLLER_ACTIVITY_POLL_INTERVAL,
-            ),
-            (
-                runner.app_suspension_manager.has_suspended_processes(),
-                next_app_suspension_foreground_release,
-                app_suspension_foreground_release_interval,
-            ),
-        ] {
-            if required {
-                wait_for = Some(min_worker_wait(
-                    wait_for,
-                    refresh_at.saturating_duration_since(wait_now).min(interval),
-                ));
-            }
+        wait_for = scheduler.minimum_wait(
+            wait_for,
+            wait_now,
+            [
+                (
+                    background_efficiency_refresh_required,
+                    RefreshDomain::BackgroundEfficiency,
+                    background_efficiency_refresh_interval,
+                ),
+                (
+                    app_suspension_refresh_required,
+                    RefreshDomain::AppSuspension,
+                    app_suspension_refresh_interval,
+                ),
+                (
+                    cpu_sets_soft_refresh_required,
+                    RefreshDomain::CpuSetsSoft,
+                    cpu_sets_soft_refresh_interval,
+                ),
+                (
+                    processor_affinity_hard_refresh_required,
+                    RefreshDomain::ProcessorAffinityHard,
+                    processor_affinity_hard_refresh_interval,
+                ),
+                (
+                    core_limiter_refresh_required,
+                    RefreshDomain::CoreLimiter,
+                    core_limiter_refresh_interval,
+                ),
+                (
+                    runner.cpu_allocation_release_retry_pending(),
+                    RefreshDomain::CpuAllocationReconciliation,
+                    cpu_allocation_reconciliation_retry_interval,
+                ),
+                (
+                    by_running_app_refresh_required,
+                    RefreshDomain::ByRunningApp,
+                    by_running_app_refresh_interval,
+                ),
+                (
+                    cpu_scheduler_refresh_required,
+                    RefreshDomain::CpuScheduler,
+                    cpu_scheduler_refresh_interval,
+                ),
+                (
+                    adaptive_power_plan_refresh_required,
+                    RefreshDomain::AdaptivePowerPlan,
+                    ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
+                ),
+                (
+                    process_priority_refresh_required,
+                    RefreshDomain::ProcessPriority,
+                    process_priority_refresh_interval,
+                ),
+                (
+                    thread_priority_refresh_required,
+                    RefreshDomain::ThreadPriority,
+                    thread_priority_refresh_interval,
+                ),
+                (
+                    dynamic_priority_boost_refresh_required,
+                    RefreshDomain::DynamicPriorityBoost,
+                    dynamic_priority_boost_refresh_interval,
+                ),
+                (
+                    io_priority_refresh_required,
+                    RefreshDomain::IoPriority,
+                    io_priority_refresh_interval,
+                ),
+                (
+                    gpu_priority_refresh_required,
+                    RefreshDomain::GpuPriority,
+                    gpu_priority_refresh_interval,
+                ),
+                (
+                    memory_priority_refresh_required,
+                    RefreshDomain::MemoryPriority,
+                    memory_priority_refresh_interval,
+                ),
+                (
+                    memory_trim_refresh_required,
+                    RefreshDomain::MemoryTrim,
+                    memory_trim_refresh_interval,
+                ),
+                (
+                    timer_resolution_refresh_required,
+                    RefreshDomain::TimerResolution,
+                    timer_resolution_refresh_interval,
+                ),
+                (
+                    scan_process_appearance,
+                    RefreshDomain::ProcessAppearance,
+                    process_appearance_scan_interval,
+                ),
+                (
+                    controller_poll_required,
+                    RefreshDomain::ControllerActivity,
+                    CONTROLLER_ACTIVITY_POLL_INTERVAL,
+                ),
+                (
+                    runner
+                        .app_suspension_manager
+                        .has_suspended_processes(&runner.app_suspension_controller),
+                    RefreshDomain::AppSuspensionForegroundRelease,
+                    app_suspension_foreground_release_interval,
+                ),
+            ],
+        );
+        if runner.cpu_allocation_immediate_reconciliation_pending() {
+            wait_for = Some(min_worker_wait(wait_for, Duration::ZERO));
         }
-        if wait_for.is_none() && !automation_worker_required(&settings) {
-            break;
+        if automation_worker_can_exit(
+            wait_for,
+            automation_worker_required(&settings),
+            runner.has_managed_process_control_state(),
+        ) {
+            if !worker_exit_is_still_idle(&shared, change_generation) {
+                continue;
+            }
+            let shutdown_result = runner.shutdown();
+            if commit_worker_exit(&shared, change_generation) {
+                return shutdown_result;
+            }
+            if let Err(error) = shutdown_result {
+                update_worker_error(
+                    &shared,
+                    Some(format!(
+                        "Background automation worker handoff cleanup failed: {error}"
+                    )),
+                );
+            }
+            runner = RuntimeCore::default();
+            scheduler = RefreshScheduler::new(Instant::now());
+            cpu_allocation_reconciliation_retry_interval =
+                CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
+            continue;
         }
 
         if wait_for_wake(&shared, wait_for, change_generation) {
             break;
         }
     }
+
+    runner.shutdown()
+}
+
+fn next_cpu_allocation_reconciliation_retry_interval(current: Duration) -> Duration {
+    current
+        .saturating_mul(2)
+        .min(CPU_ALLOCATION_RECONCILIATION_RETRY_MAX)
+}
+
+fn worker_exit_is_still_idle(shared: &SharedAutomationState, observed_generation: u64) -> bool {
+    let state = lock_unpoisoned(&shared.state);
+    state.stop_requested || state.change_generation == observed_generation
+}
+
+fn commit_worker_exit(shared: &SharedAutomationState, observed_generation: u64) -> bool {
+    let mut state = lock_unpoisoned(&shared.state);
+    if !state.stop_requested && state.change_generation != observed_generation {
+        return false;
+    }
+    state.worker_accepting_work = false;
+    true
+}
+
+fn automation_worker_can_exit(
+    wait_for: Option<Duration>,
+    automation_required: bool,
+    has_managed_process_state: bool,
+) -> bool {
+    wait_for.is_none() && !automation_required && !has_managed_process_state
 }
 
 fn min_worker_wait(current: Option<Duration>, candidate: Duration) -> Duration {

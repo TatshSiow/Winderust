@@ -153,7 +153,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_home_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        let settings = &self.saved_settings;
+        let settings = self.settings.persisted();
         let mut section_cards = h_flex()
             .w_full()
             .min_w(px(0.0))
@@ -233,7 +233,8 @@ impl WinderustApp {
             items.push((
                 Some(Page::ByRunningApp),
                 t!("nav.by_running_app").to_string(),
-                self.by_running_app_status
+                self.feature_status
+                    .by_running_app
                     .active_process
                     .clone()
                     .unwrap_or_else(|| rule_count_label(settings.by_running_app.rules.len())),
@@ -243,7 +244,7 @@ impl WinderustApp {
             items.push((
                 Some(Page::ByCpuLoad),
                 t!("nav.by_cpu_load").to_string(),
-                cpu_usage_label(self.cpu_usage.percent),
+                cpu_usage_label(self.dashboard.cpu.percent),
             ));
         }
         if settings.by_activity.enabled {
@@ -266,7 +267,7 @@ impl WinderustApp {
                 t!("nav.core_limiter").to_string(),
                 t!(
                     "home.limited_count",
-                    count = self.core_limiter_status.limited_processes
+                    count = self.feature_status.core_limiter.limited_processes
                 )
                 .to_string(),
             ));
@@ -277,7 +278,7 @@ impl WinderustApp {
                 t!("nav.cpu_sets_soft").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.cpu_sets_soft_status.adjusted_processes
+                    count = self.feature_status.cpu_sets_soft.adjusted_processes
                 )
                 .to_string(),
             ));
@@ -288,7 +289,10 @@ impl WinderustApp {
                 t!("nav.background_efficiency").to_string(),
                 t!(
                     "home.throttled_count",
-                    count = self.background_efficiency_status.throttled_processes
+                    count = self
+                        .feature_status
+                        .background_efficiency
+                        .throttled_processes
                 )
                 .to_string(),
             ));
@@ -299,27 +303,33 @@ impl WinderustApp {
                 t!("nav.app_suspension").to_string(),
                 t!(
                     "home.suspended_count",
-                    count = self.app_suspension_status.suspended_processes
+                    count = self.feature_status.app_suspension.suspended_processes
                 )
                 .to_string(),
             ));
         }
         if settings.adaptive_engine.enabled {
-            let workload_engine_status = if self.workload_engine_status.launch_boost_active {
-                t!("home.launch_boost").to_string()
-            } else if !settings.workload_engine.enabled {
+            let cpu_scheduler_status = if self
+                .feature_status
+                .cpu_scheduler
+                .focus_and_launch_profile_active
+            {
+                t!("home.focus_and_launch_profile").to_string()
+            } else if !settings.cpu_scheduler.cpu_pressure_restraint_enabled
+                && !settings.cpu_scheduler.limit_background_processors_enabled
+            {
                 t!("common.enabled").to_string()
             } else {
                 t!(
                     "home.adjusted_count",
-                    count = self.workload_engine_status.background_adjusted_processes
+                    count = self.feature_status.cpu_scheduler.adjusted_processes
                 )
                 .to_string()
             };
             items.push((
                 Some(Page::AdaptiveEngine),
                 t!("nav.adaptive_engine").to_string(),
-                workload_engine_status,
+                cpu_scheduler_status,
             ));
         }
         if settings.io_priority.enabled {
@@ -328,7 +338,7 @@ impl WinderustApp {
                 t!("nav.io_priority").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.io_priority_status.adjusted_processes
+                    count = self.feature_status.io_priority.adjusted_processes
                 )
                 .to_string(),
             ));
@@ -339,7 +349,7 @@ impl WinderustApp {
                 t!("nav.memory_priority").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.memory_priority_status.adjusted_processes
+                    count = self.feature_status.memory_priority.adjusted_processes
                 )
                 .to_string(),
             ));
@@ -350,7 +360,7 @@ impl WinderustApp {
                 t!("nav.memory_trim").to_string(),
                 t!(
                     "home.trimmed_count",
-                    count = self.memory_trim_status.trimmed_processes
+                    count = self.feature_status.memory_trim.trimmed_processes
                 )
                 .to_string(),
             ));
@@ -361,7 +371,10 @@ impl WinderustApp {
                 t!("nav.processor_affinity_hard").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.processor_affinity_hard_status.adjusted_processes
+                    count = self
+                        .feature_status
+                        .processor_affinity_hard
+                        .adjusted_processes
                 )
                 .to_string(),
             ));
@@ -371,7 +384,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_cpu_usage_summary(&self) -> gpui::Div {
-        let graph = self.render_cpu_history_graph("cpu", &self.cpu_usage_history);
+        let graph = self.render_cpu_history_graph("cpu", &self.dashboard.cpu_history);
         let body = v_flex()
             .w_full()
             .h_full()
@@ -383,12 +396,12 @@ impl WinderustApp {
             .child(dashboard_split_value_row([
                 dashboard_split_value(
                     t!("home.cpu_load").to_string(),
-                    cpu_usage_label(self.cpu_usage.percent),
+                    cpu_usage_label(self.dashboard.cpu.percent),
                     dashboard_primary_series_color(),
                 ),
                 dashboard_split_value(
                     t!("home.cpu_frequency").to_string(),
-                    cpu_frequency_label(self.cpu_usage.frequency_mhz),
+                    cpu_frequency_label(self.dashboard.cpu.frequency_mhz),
                     dashboard_secondary_series_color(),
                 ),
             ]))
@@ -397,7 +410,7 @@ impl WinderustApp {
         dashboard_summary_card(
             t!("home.by_cpu_load").to_string(),
             Some(
-                dashboard_summary_header_value(cpu_usage_label(self.cpu_usage.percent))
+                dashboard_summary_header_value(cpu_usage_label(self.dashboard.cpu.percent))
                     .into_any_element(),
             ),
             body.into_any_element(),
@@ -405,7 +418,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_memory_usage_summary(&self) -> gpui::Div {
-        let graph = self.render_memory_history_graph("memory", &self.memory_usage_history);
+        let graph = self.render_memory_history_graph("memory", &self.dashboard.memory_history);
         let body = v_flex()
             .w_full()
             .h_full()
@@ -417,12 +430,12 @@ impl WinderustApp {
             .child(dashboard_split_value_row([
                 dashboard_split_value(
                     t!("home.memory_used").to_string(),
-                    memory_usage_value_label(self.memory_usage),
+                    memory_usage_value_label(self.dashboard.memory),
                     dashboard_primary_series_color(),
                 ),
                 dashboard_split_value(
                     t!("home.memory_cache").to_string(),
-                    memory_cache_value_label(self.memory_usage),
+                    memory_cache_value_label(self.dashboard.memory),
                     dashboard_secondary_series_color(),
                 ),
             ]))
@@ -431,7 +444,7 @@ impl WinderustApp {
         dashboard_summary_card(
             t!("home.memory_usage").to_string(),
             Some(
-                dashboard_summary_header_value(memory_usage_label(self.memory_usage.percent))
+                dashboard_summary_header_value(memory_usage_label(self.dashboard.memory.percent))
                     .into_any_element(),
             ),
             body.into_any_element(),
@@ -439,12 +452,12 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_io_usage_summary(&self) -> gpui::Div {
-        let graph = self.render_io_history_graph("io", &self.io_usage_history);
+        let graph = self.render_io_history_graph("io", &self.dashboard.io_history);
 
         dashboard_summary_card(
             t!("home.io_usage").to_string(),
             Some(
-                dashboard_summary_header_value(io_usage_label(self.io_usage.bytes_per_second))
+                dashboard_summary_header_value(io_usage_label(self.dashboard.io.bytes_per_second))
                     .into_any_element(),
             ),
             v_flex()
@@ -458,12 +471,12 @@ impl WinderustApp {
                 .child(dashboard_split_value_row([
                     io_usage_split_value(
                         t!("home.io_read").to_string(),
-                        self.io_usage.read_bytes_per_second,
+                        self.dashboard.io.read_bytes_per_second,
                         dashboard_primary_series_color(),
                     ),
                     io_usage_split_value(
                         t!("home.io_write").to_string(),
-                        self.io_usage.write_bytes_per_second,
+                        self.dashboard.io.write_bytes_per_second,
                         dashboard_secondary_series_color(),
                     ),
                 ]))
@@ -473,13 +486,15 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn render_network_usage_summary(&self) -> gpui::Div {
-        let graph = self.render_network_history_graph("network", &self.network_usage_history);
+        let graph = self.render_network_history_graph("network", &self.dashboard.network_history);
 
         dashboard_summary_card(
             t!("home.network_usage").to_string(),
             Some(
-                dashboard_summary_header_value(io_usage_label(self.network_usage.bytes_per_second))
-                    .into_any_element(),
+                dashboard_summary_header_value(io_usage_label(
+                    self.dashboard.network.bytes_per_second,
+                ))
+                .into_any_element(),
             ),
             v_flex()
                 .w_full()
@@ -492,12 +507,12 @@ impl WinderustApp {
                 .child(dashboard_split_value_row([
                     io_usage_split_value(
                         t!("home.network_download").to_string(),
-                        self.network_usage.download_bytes_per_second,
+                        self.dashboard.network.download_bytes_per_second,
                         dashboard_primary_series_color(),
                     ),
                     io_usage_split_value(
                         t!("home.network_upload").to_string(),
-                        self.network_usage.upload_bytes_per_second,
+                        self.dashboard.network.upload_bytes_per_second,
                         dashboard_secondary_series_color(),
                     ),
                 ]))
@@ -513,7 +528,7 @@ impl WinderustApp {
     ) -> gpui::Div {
         self.render_dual_line_history_graph(
             graph_id,
-            dashboard_cpu_dual_line_points(history, self.cpu_usage.base_frequency_mhz),
+            dashboard_cpu_dual_line_points(history, self.dashboard.cpu.base_frequency_mhz),
             dashboard_primary_series_color(),
             dashboard_secondary_series_color(),
             t!("home.cpu_load").to_string(),

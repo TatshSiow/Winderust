@@ -1,13 +1,23 @@
 # Adaptive Engine Benchmark Guide
 
-This guide documents the synthetic benchmark used to tune Adaptive Engine
-operating profiles and its internal Workload Engine scheduling presets.
+This guide documents the real-runtime and synthetic benchmarks used to tune
+Adaptive Engine presets and CPU Scheduler scheduling presets.
+Synthetic results isolate mechanisms; release-binary runtime A/B results are
+the primary acceptance evidence.
 
 ## What This Measures
 
 The default benchmark measures foreground CPU work completion time while
 temporary background CPU workers compete for scheduler time. Lower milliseconds
 are better.
+
+Benchmark workers use a temporary hidden `cscript.exe` workload distinct from
+the visible benchmark shell. They are created through the local WMI process
+provider so they are not descendants of that foreground shell; otherwise
+Winderust's foreground process-group protection would correctly protect the
+generated load. The runner also clears inherited Power Throttling before each
+measurement. Runtime results are rejected unless Windows reports an actual
+priority change on one of those workers.
 
 The optional `IoLoop` foreground scenario measures foreground temp-file
 read/write completion time and reports foreground IOPS under the same generated
@@ -45,7 +55,7 @@ microbenchmarks are not included because Windows PowerShell/.NET Framework does
 not expose those as dependency-free benchmark APIs. Use an external native
 runner if those exact formats or instruction sets need certification.
 
-It is not a full Winderust automation benchmark. It does not launch the app or
+The synthetic runner is not a full Winderust automation benchmark. It does not launch the app or
 exercise the real automation loop. It models the preset scheduler effects with:
 
 - process priority,
@@ -79,15 +89,14 @@ Do not treat one local benchmark as universal. Record the CPU model, logical
 processor count, Windows power mode, and whether the machine has Intel-style
 P-cores plus E-cores or an all-P-core layout such as most AMD desktop CPUs.
 
-Adaptive Engine's internal Workload Engine masking is topology-aware:
+Adaptive Engine's internal CPU Scheduler masking is topology-aware:
 
-- Hybrid CPUs: background affinity candidates prefer E-cores, then choose the
-  least-loaded allowed E-cores when load data is available.
-- All-P-core CPUs: background affinity candidates use all logical processors
-  and choose the least-loaded allowed cores when load data is available.
-- Automatic CPU-share floors are intentionally different: hybrid systems prefer
-  E-cores, while all-P-core systems reserve a clearer foreground lane without
-  going as far as Max Foreground.
+- Least-used selection ranks the configured All, P-core, or E-core logical-processor pool by
+  sampled load and assigns the configured processor-limit share with rebalance hysteresis.
+- Fixed selections can target P-cores, E-cores, all/P/E cores without SMT, or an exact custom
+  processor mask.
+- The per-app CPU threshold controls when a background app becomes eligible; the foreground or
+  system threshold still controls when pressure restraint is active.
 
 Benchmark matrix for preset changes:
 
@@ -101,17 +110,66 @@ If only one hardware class is available, document that limitation and avoid
 changing global preset constants unless the result is clearly supported by code
 reasoning and topology-specific unit tests.
 
+## Scheduling principles used for tuning
+
+Winderust cannot reproduce Linux scheduling on Windows, but the upstream Linux
+design provides useful policy constraints:
+
+- [EEVDF](https://docs.kernel.org/scheduler/sched-eevdf.html) uses eligibility,
+  virtual deadlines, and decaying lag to balance fairness with latency. Winderust
+  therefore must not let an unbounded lifetime history permanently dominate
+  current CPU demand.
+- [Utilization clamping](https://docs.kernel.org/scheduler/sched-util-clamp.html)
+  treats minimum and maximum performance as hints in a feedback loop and warns
+  that static values are not portable. Winderust should adapt CPU Sets to
+  measured pressure rather than treat a preset percentage as a universal cap.
+- [Energy Aware Scheduling](https://docs.kernel.org/scheduler/sched-energy.html)
+  uses energy-aware placement below its overutilization point, then falls back
+  to normal load balancing when capacity is saturated. Winderust similarly
+  releases CPU-set placement at foreground saturation. While pressure remains
+  active, it keeps the configured priority and EcoQoS hints across eligible
+  Visible Window and Background processes; only selected hot Background
+  candidates receive processor-allocation escalation.
+- [cgroup v2 CPU control](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+  distinguishes work-conserving weights from hard bandwidth limits. Winderust
+  keeps visible-window restraint soft; selected background apps can receive the
+  configured processor restriction in the same pressure pass.
+- Keep total pressure as whole-machine utilization, but measure a hot process
+  against one logical processor's capacity. Otherwise the same single-threaded
+  offender appears colder merely because the PC has more logical processors.
+
+The Windows mapping follows Microsoft's own guidance: [Quality of Service](https://learn.microsoft.com/en-us/windows/win32/procthread/quality-of-service)
+already distinguishes focused, visible, and background work; [CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
+provide soft affinity; and Microsoft advises that [hard affinity should generally
+be avoided](https://learn.microsoft.com/en-us/windows/win32/procthread/multiple-processors)
+because it can interfere with scheduler placement.
+
+## Validation hierarchy
+
+| Stage | Purpose | Acceptance rule |
+| --- | --- | --- |
+| Policy unit tests | Prove pressure, saturation, restoration, bounded history, and topology decisions. | All deterministic state transitions pass. |
+| Synthetic mechanism matrix | Isolate priority, QoS, CPU Sets, affinity, and processor-policy effects. | Median and P95 improve in at least 2/3 paired passes; absolute values are used for direct preset ranking. |
+| Release-runtime A/B | Exercise the real automation loop and current serialized preset. | Required before accepting a global preset change. Run CPU, I/O, and message-loop scenarios; the runner fails unless it directly observes a generated worker priority change. |
+| Hardware matrix | Check topology portability. | At least Intel hybrid plus AMD/all-P evidence before claiming a universal default. |
+
+Do not rank presets as a linear slow-to-fast ladder. Compare foreground latency,
+background retained throughput, package power, and action stability as a Pareto
+trade-off. A higher paired percentage does not mean one preset beats another
+when each percentage has a different adjacent Stock denominator.
+
 ## Current Adaptive Engine Preset Model
 
-Keep this in sync with the Adaptive Engine preset values in `src/ui/app.rs`.
+Keep this in sync with the Adaptive Engine preset values in
+`src/ui/app/shared/presets.rs`.
 
 | Preset | Benchmark model |
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
-| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, background efficiency, Idle process priority, Low IO/memory priority, and BelowNormal GPU/thread priority. |
-| Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling/priority assists with a higher processor ceiling than Powersave. |
-| Performance | High processor policy (`min 25`, `max 100`, efficient aggressive boost) plus active Foreground First CPU-pressure scheduling, background efficiency, Idle process priority, VeryLow background IO, Low memory priority, and BelowNormal GPU/thread priority. |
-| Speed | Aggressive processor policy (`parking 100`, `min 25`, `max 100`, aggressive boost) plus active Max Foreground CPU-pressure scheduling, a stricter 6% background CPU target, foreground AboveNormal/High assists, and VeryLow/Idle background IO/memory/GPU/thread priority. |
+| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, EcoQoS, Below Normal background process priority, and targeted restraint of at most 4 workers. Priority assists are disabled. |
+| Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling with a higher processor ceiling than Powersave. |
+| Performance | High processor policy (`min 25`, `max 100`, efficient aggressive boost) plus Foreground First scheduling, EcoQoS, Below Normal background process priority, Very Low background I/O and memory priority, Below Normal background thread/GPU priority, and at most 8 restrained workers. |
+| Speed | Aggressive processor policy (`parking 100`, `min 25`, `max 100`, aggressive boost) plus Maximum Foreground scheduling, a 10% background CPU target, foreground Above Normal/High assists, Very Low/Idle background assists, and at most 12 restrained workers. |
 
 For launch foreground scenarios, preset cases intentionally use launch grace:
 foreground launch priority is raised to `AboveNormal`, while background
@@ -123,7 +181,7 @@ Run from the repository root:
 
 ```powershell
 cargo check --locked
-cargo test --locked workload_engine
+cargo test --locked cpu_scheduler
 ```
 
 For cleaner benchmark results:
@@ -140,11 +198,68 @@ and kills the workers during cleanup.
 
 ## Benchmark Command
 
-Preferred repeat-loop command:
+Primary real-runtime Balanced/Low Impact A/B matrix:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+.\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario CpuLoop -Passes 4 -Rounds 5
+.\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario IoLoop -Passes 4 -Rounds 5
+.\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 4 -Rounds 5
 ```
+
+Use `-DisableBackgroundProcessorLimit`,
+`-ProcessRestraintThresholdPercent <1-100>`, or
+`-MaximumRestrainedApps <1-32>` only for controlled tuning variants. Use
+`-ForegroundOrSystemCpuThresholdPercent <1-100>` to force a known activation
+threshold during controlled CPU Scheduler comparisons; the
+default command keeps the serialized Low Impact values.
+
+Use `-BackgroundPressureAcBoostPolicy <0-100>` and
+`-BackgroundPressureAcBoostMode <mode>` to screen an A/C Background Pressure
+profile without changing the app defaults. The selected values are written into
+the JSON report. Focus and Launch remains at its default profile values.
+
+Use `-MinimumPowerSavingPercent 20` only when testing an explicit power-saving
+objective. The default remains `-2`, which rejects a package-power regression
+beyond 2% without pretending that every responsiveness preset must save 20% in
+a foreground-contended Focus and Launch workload.
+
+The runtime benchmark uses an isolated portable configuration with the current
+500 ms Processor Power cadence and 1.5 second Low Impact CPU Scheduler reaction
+interval. It explicitly enables the current Balanced processor policy and Low
+Impact CPU Scheduler preset. Use an even pass count of at least four so
+Stock-first and Adaptive-first orders are equally represented. Stock and
+Adaptive cases receive the same 100-second background-load warmup and 30-second
+cooldown before measurement. The JSON validation gate requires observed
+CPU Scheduler priority control, at least 3% aggregate median and P95
+improvement, at least 85% retained background throughput, and no package-power
+regression beyond 2%. A run that only creates the adaptive power plan without
+changing a generated worker priority is invalid for scheduler tuning.
+
+The JSON also records `worker_efficiency_enabled_counts` and
+`worker_efficiency_coverage_percent` from direct Windows Power Throttling
+queries. Use them to distinguish a missing EcoQoS application from a valid
+control whose measured package-power effect simply misses the selected gate.
+
+The runner adds the exact PowerShell benchmark-host path to CPU Scheduler
+exclusions. Every case is rejected if that host leaves Normal priority or if any
+generated worker exits before measurement completes. These are benchmark
+integrity requirements: without them, Winderust can restrain the workload being
+treated as foreground or a dead worker can create a false latency win.
+
+Synthetic mechanism-isolation command:
+
+```powershell
+.\scripts\cpu_scheduler_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+```
+
+Use `-ProcessTier Focus`, `-ProcessTier VisibleWindow`, or
+`-ProcessTier Background` to benchmark the corresponding current preset tier.
+The default is `Focus`.
+
+For pressure-transition validation, include moderate load, foreground
+saturation at 85% or more of whole-machine CPU, and recovery below the restore
+band. At saturation, priority and EcoQoS must remain active while automatic CPU
+Sets relax to 100%; recovery must not oscillate before the recovery period expires.
 
 The score suite runs by default. Use `-ScoreIterations`, `-ScoreDataKb`, and
 `-ScoreRounds` to scale it, or `-SkipScoreBenchmark` when validating only the
@@ -153,19 +268,19 @@ older foreground-latency path.
 Foreground file-I/O scenario:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
+.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
 ```
 
 Foreground message-loop scenario:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
+.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
 ```
 
 Winderust launch scenario:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
 ```
 
 Power-drain benchmark:
@@ -267,102 +382,11 @@ Prefer changes that improve median and p95 together. Ignore one-off wins where
 average improves only because of a single outlier. If a preset is slower by less
 than about 3%, treat it as neutral unless repeated runs show the same direction.
 
-Previous reference run after the one-parameter optimization pass:
+## Saved Results
 
-| Case | Average foreground time | Median foreground time | P95 foreground time | Average vs Off |
-| --- | ---: | ---: | ---: | ---: |
-| Off | 289.93 ms | 288.64 ms | 297.23 ms | baseline |
-| Low Impact | 261.99 ms | 263.03 ms | 268.07 ms | 9.6% faster |
-| Foreground First | 148.42 ms | 145.27 ms | 151.42 ms | 48.8% faster |
-
-Richer reference run with stability and background-throughput metrics:
-
-| Case | Average foreground time | P95 foreground time | Foreground jitter | P95 minus median | Foreground iterations/sec | Background throughput retained vs Off |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Off | 844.28 ms | 892.48 ms | 59.31 ms | 71.09 ms | 1,480,548 | baseline |
-| Low Impact | 826.93 ms | 853.80 ms | 19.35 ms | 36.50 ms | 1,511,608 | 96.1% |
-| Foreground First | 251.25 ms | 256.34 ms | 6.07 ms | 2.87 ms | 4,975,123 | 84.2% |
-
-That richer run shows why a single compact score is risky: Foreground First
-improved both speed and stability, while Low Impact mostly improved stability.
-
-Previous paired methodology validation on Intel Core 5 210H, 12 logical processors:
-
-| Case | Median improvement avg | P95 improvement avg | Repeat passes won |
-| --- | ---: | ---: | ---: |
-| Low Impact | -0.7% | -2.2% | 0/3 |
-| Foreground First | 60.1% | 54.9% | 3/3 |
-
-Use this result to avoid over-tuning Low Impact from this synthetic loop. It
-validates the method for large scheduling changes, but priority-only changes
-need longer runs, more hardware, or real app traces before changing global
-defaults.
-
-Previous paired validation after adding background-throughput measurement on the same CPU:
-
-| Case | Median improvement avg | P95 improvement avg | Background throughput retained avg |
-| --- | ---: | ---: | ---: |
-| Low Impact | 10.8% | 41.5% | 100.0% |
-| Foreground First | 72.9% | 84.7% | 29.5% |
-
-This shows the foreground/background cost directly: Foreground First is the
-only large foreground win, but it deliberately gives up background throughput.
-Low Impact may be useful for a light touch.
-
-Latest CPU-loop validation after standard/all-P topology tuning on AMD Ryzen 7 7735HS, 16 logical processors:
-
-| Case | Median improvement avg | P95 improvement avg | Background throughput retained avg | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: |
-| Low Impact | 34.3% | 44.1% | 91.0% | 3/3 |
-| Foreground First | 49.9% | 52.9% | 66.2% | 3/3 |
-| Max Foreground | 50.5% | 55.5% | 16.6% | 3/3 |
-
-This run used the standard/all-P benchmark approximation: Low Impact limited
-background workers to 11 logical processors, Foreground First to 8, and Max
-Foreground to 1.
-
-Latest Adaptive Engine preset CPU-loop check on AMD Ryzen 7 7735HS, 16 logical
-processors, 3 passes, 5 rounds, 1,000,000 foreground iterations per round, with
-the score suite and RAPL package-power sampling:
-
-| Case | Median latency vs Off | P95 latency vs Off | Foreground throughput vs Off | Background retained vs Off | Background latency vs Off | Package power vs Off | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Off | 228.67 ms | 239.84 ms | 4,540,008 iter/s | 100.0% | 1.00x | 63.90 W | baseline |
-| Powersave | 377.30 ms (-70.6%) | 378.55 ms (-65.1%) | 2,643,422 iter/s (-41.8%) | 82.7% | 1.21x (+20.9%) | 10.97 W (-82.8%) | 0/3 |
-| Balanced | 181.46 ms (+24.2%) | 187.33 ms (+24.7%) | 5,423,882 iter/s (+19.5%) | 83.2% | 1.20x (+20.3%) | 21.16 W (-66.9%) | 3/3 |
-| Performance | 123.99 ms (+47.1%) | 125.15 ms (+50.4%) | 8,033,565 iter/s (+76.9%) | 66.6% | 1.50x (+50.2%) | 57.91 W (-9.4%) | 3/3 |
-| Speed | 119.07 ms (+44.7%) | 119.35 ms (+47.6%) | 8,410,122 iter/s (+85.2%) | 8.3% | 12.05x (+1,105.4%) | 22.65 W (-64.5%) | 3/3 |
-
-This run validates the current split with broader coverage: Balanced clears the
-repeat-pass gate and saves package power but gives up score throughput,
-Performance keeps a larger background lane while improving several score components,
-and Speed now wins every score component in this run while making the
-background lane much slower by design.
-
-Native WinSAT D3D was checked on the same machine, but this Windows build no
-longer runs the D3D assessment. The XML reports `NoD3DTestRun` and hardcoded
-sentinel values, so it is not a valid gaming/GPU benchmark.
-
-Latest foreground I/O-loop validation on Intel Core 5 210H, 12 logical processors:
-
-| Case | Avg latency vs Off | Foreground IOPS vs Off | Median latency vs Off | P95 latency vs Off | Interactivity vs no-load | Background throughput vs Off | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Off | 74.61 ms | 55,604 | 75.45 ms | 80.11 ms | 36.7% | 100.0% | baseline |
-| Low Impact | 52.38 ms (+29.8%) | 76,377 (+37.4%) | 54.79 ms (+27.4%) | 55.68 ms (+30.5%) | 52.3% | 75.2% | 3/3 |
-| Foreground First | 27.43 ms (+63.2%) | 145,830 (+162.3%) | 27.43 ms (+63.6%) | 27.85 ms (+65.2%) | 99.8% | 19.8% | 3/3 |
-| Max Foreground | 27.15 ms (+63.6%) | 147,368 (+165.0%) | 27.09 ms (+64.1%) | 27.56 ms (+65.6%) | 100.8% | 19.6% | 3/3 |
-
-Latest Winderust launch scenario on AMD Ryzen 7 7735HS after launch-grace tuning:
-
-| Case | Median improvement avg | Median improvement min | P95 improvement avg | P95 improvement min | Background throughput retained avg | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Low Impact | 3.8% | 0.0% | 3.8% | 0.0% | 99.8% | 1/3 |
-| Foreground First | -4.8% | -12.5% | -4.8% | -12.5% | 99.9% | 1/3 |
-
-Launch grace keeps background throughput intact while the foreground app starts,
-but this app-launch scenario still does not validate stronger Foreground First
-launch behavior. Treat the CPU-loop wins as scheduler headroom, not guaranteed
-app-startup improvement.
+Machine-specific reports and their raw JSON live in [`benchmark/`](../benchmark/README.md). Keep
+this guide focused on methodology; add new measurements to a dated hardware report instead of
+embedding a moving "latest result" here.
 
 ## Known Limitations
 
@@ -377,10 +401,9 @@ app-startup improvement.
   CPU-only work may not have a GPU context, so `gpu_priority_unavailable` is
   expected on many systems.
 - It does not test real foreground-app detection, Winderust exclusions, restore,
-  cooldown, launch boost,
+  cooldown, the Focus and Launch profile,
   or failure handling.
-- Hard affinity may make CPU-share behavior look harsher than Winderust Soft CPU
-  Sets.
+- Hard affinity may make CPU-share behavior look harsher than Winderust CPU Sets (Soft).
 - Thermal throttling and Windows background services can move results by several
   percent.
 - The power-drain benchmark needs a Windows `Energy Meter` or `Power Meter`
@@ -393,7 +416,7 @@ Run:
 
 ```powershell
 cargo check --locked
-cargo test --locked workload_engine
+cargo test --locked cpu_scheduler
 cargo test --locked
 git diff --check
 ```

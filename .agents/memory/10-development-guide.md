@@ -134,7 +134,11 @@ and the corrected commit must be the tagged source.
 ## Source Map
 
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
-- `src/ui/app.rs`: `WinderustApp` state, construction, rendering, teardown, and app-level tests. Operational method groups live in `src/ui/app/*.rs` (`runtime`, `settings_io`, `process_refresh`, `tray_state`, navigation, removal, and update checks).
+- `src/ui/app.rs`: the single GPUI `WinderustApp` composition root, construction, rendering,
+  teardown, and app-level tests. Operational method groups live in `src/ui/app/*.rs`. Plain
+  transition/read models are `shell_model.rs`, `dashboard_model.rs`, `process_models.rs`, and
+  `update_model.rs`; sampling, queries, icons, GPUI timers, tray, dialogs, focus, and motion remain
+  at the composition root rather than moving into `RuntimeCore`.
 - `src/ui/app/pages/`: page and shell renderers. `src/ui/app/shared/`: reusable UI components, state helpers, formatting, policies, and shared feature logic. Page dispatch is
   in `app_shell.rs`; process add/check and rule-construction helpers are in
   `process_policies.rs`. Process List table grouping, sorting, and layout live in
@@ -142,11 +146,80 @@ and the corrected commit must be the tagged source.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
-- `src/backend/automation.rs`: background service lifecycle and worker scheduling loop. Runtime feature execution and adaptive/static power-plan ownership live in `src/backend/automation/runner.rs`; wake/event decisions live in `wake.rs`; status fan-out lives in `status.rs`; activation predicates and refresh timing live in `requirements.rs`.
+- `src/application/settings.rs`: `SettingsEditor`, the sole settings draft/revision/persistence and
+  startup-intent application boundary. `src/application/win32_priority_separation.rs` and
+  `src/application/advanced_power_plan_tuning.rs` own their explicit persistent Windows
+  operations and typed staged errors; neither is temporary managed or crash-recovery state.
+- `src/backend/automation.rs`: `RuntimeHandle`, event-source lifecycle, and worker scheduling loop. Runtime feature execution and power-plan policy state live in `src/backend/automation/runner.rs`; wake/event decisions live in `wake.rs`; status fan-out lives in `status.rs`; activation predicates and refresh timing live in `requirements.rs`.
+- `src/control/power_plan.rs`: sole automatic power-plan mutation owner, including ordinary and temporary Adaptive plan baselines, verification, recovery sequencing, compensation, and release.
+- `src/control/process.rs`: exact process-instance identity and shared
+  process-control safety boundary. `src/control/dynamic_priority_boost.rs`,
+  `src/control/thread_priority.rs`, `src/control/io_priority.rs`, and
+  `src/control/gpu_priority.rs`, and `src/control/memory_priority.rs` are the
+  sole live state, baseline, owner, compensation, and clean-release controllers
+  for their properties. Dynamic Priority Boost's query/set calls are isolated in
+  `src/platform/windows/dynamic_priority_boost.rs`; its controller still owns the
+  complete recovery transaction.
+  Memory Priority's raw class conversion and query/set calls are isolated in
+  `src/platform/windows/memory_priority.rs`; its controller preserves unknown raw baselines and
+  owns the recovery transaction.
+  GPU Priority's D3DKMT calls and NTSTATUS classification are isolated in
+  `src/platform/windows/gpu_priority.rs`; its controller owns policy-independent state and recovery.
+  I/O Priority's NT declarations, information class, calls, and status classification are isolated
+  in `src/platform/windows/io_priority.rs`; its controller preserves unknown raw baselines.
+  Thread Priority's enumeration, raw thread handle operations, identity reads, and priority
+  query/set calls are isolated in `src/platform/windows/thread_priority.rs`; its controller owns
+  exact process/thread identities and the recovery transaction.
+  `src/control/priority_efficiency.rs` jointly owns Process Priority and process
+  Power Throttling so compound Efficiency Mode transitions share one rollback
+  boundary. `src/platform/windows/priority_efficiency.rs` owns their raw priority-class and
+  Power Throttling constants, conversion, queries, and writes. Policy remains in the matching
+  feature modules. Thread Priority
+  keys ownership by exact process identity plus thread ID and thread creation
+  time.
+- `src/control/cpu_allocation.rs`: sole live CPU Sets and process-affinity baseline, claim
+  arbitration, compensation, and clean-release boundary for CPU Sets (Soft), Processor Affinity
+  (Hard), Core Limiter, and CPU Scheduler CPU allocation. Its precedence is CPU Sets (Soft) >
+  Processor Affinity (Hard) > Core Limiter > Adaptive Engine.
+  `src/platform/windows/cpu_allocation.rs` owns the raw affinity/CPU Set query and write calls plus
+  packed system CPU Set topology conversion.
+- `src/control/memory_trim.rs` and `src/control/process_termination.rs`: sole
+  irreversible working-set trim and process-termination adapters. They use the
+  bounded runtime command queue, exact process-instance validation, current
+  cross-session policy, and typed completion results; they intentionally have
+  no recovery or restoration ownership. Stop Tree keeps its captured exact
+  roots through confirmation, aborts if a root instance changes, and accepts a
+  numeric parent edge only when both creation times are known and the child is
+  not older than the parent.
+- `src/control/timer_resolution.rs`: sole WinMM capability/query and process-lifetime request
+  boundary. It owns the active period, exact begin/end pairing, switching, explicit shutdown, and
+  Drop backstop; foreground matching and Action Log policy stay in the Timer Resolution feature.
+- `src/control/suspension.rs`: sole normal App Suspension process/job handle,
+  freeze/thaw transaction, retry, and clean-release boundary. Automatic rules,
+  App-page Freeze, and Process List Suspend/Resume share its typed RuntimeCore
+  routes. Pending compensation and journal cleanup reconcile on later feature
+  passes; feature records retain exact creation time and are pruned when the
+  controller no longer owns a frozen exact instance. The feature manager owns
+  rule/grace/wake/reporting policy only. `src/platform/windows/suspension.rs` owns raw Job Object
+  creation, assignment, membership, freeze/thaw, and the shared compatibility-sensitive layout.
+- `src/backend/self_power.rs`: instance-owned composition, verification, compensation, retry, and
+  restoration of Winderust's hidden/Adaptive process priority and Power Throttling state.
+  `src/platform/windows/self_power.rs` is the sole raw current-process query/set adapter; this
+  process-lifetime state intentionally has no crash-recovery journal.
 - `src/backend/file_dialog.rs`: native settings and Action Log file dialogs.
 - `src/backend/update_checker.rs`: GitHub release checks and Stable/Pre-release filtering.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
-- Feature backends use the UI names. CPU Sets (Soft) and Processor Affinity (Hard) share only the Win32 mechanism layer in `cpu_allocation.rs`; their settings, page state, status, rules, and Action Log ownership remain separate. Workload Engine Win32 process control lives in `workload_engine/process_control.rs`; pure workload decisions and core-selection calculations live in `workload_engine/policy.rs`; stateful manager lifecycle remains in `workload_engine.rs`.
+- Feature backends use the UI names. CPU Sets (Soft) and Processor Affinity
+  (Hard) retain separate settings, pages, rules, status, and Action Log labels;
+  `src/features/cpu_control/cpu_allocation.rs` owns their discovery, topology,
+  tier selection, and reporting policy, while the typed controller owns the shared
+  Windows mechanism and restoration state. Core Limiter retains sampling and
+  hysteresis only. CPU Scheduler retains pressure, selection, and tuning only.
+  CPU Scheduler process sampling and identity helpers live in
+  `cpu_scheduler/process_control.rs`; its Process Priority, Power Throttling,
+  and Memory Priority mutations route through typed controllers. Pure workload
+  decisions and core-selection calculations live in `cpu_scheduler/policy.rs`;
+  stateful policy lifecycle remains in `cpu_scheduler.rs`.
 
 ## Navigation
 
@@ -187,7 +260,7 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
 - Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CoreLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
-- Workload Engine is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
+- CPU Scheduler is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
 - Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, Background CPU Restriction, Core Steering, Soft CPU Sets, Hard CPU Affinity, or CPU Limiter feature names. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 
@@ -211,13 +284,18 @@ Process-control features must keep these defaults:
   be preserved.
 - On clean shutdown, stop applying new work and restore overlapping changes in
   reverse application order so one feature cannot restore another feature's
-  intermediate value. `HiddenAutomationRunner::shutdown` owns the automation
-  order; `WinderustApp` owns the reverse-order Process List quick-action stack.
+  intermediate value. `RuntimeCore::shutdown` and `PowerPlanController` own the
+  automatic restoration order; `RuntimeHandle` restores Winderust self-power;
+  reversible Process List actions are owned and restored by `RuntimeCore`.
 - Before every reversible process, thread, App Suspension, or automatic
   power-plan mutation, synchronously send the captured original and expected
   state to the external crash-recovery watchdog and wait for its acknowledgement.
   Block the mutation if the watchdog is unavailable. For App Suspension, the
-  watchdog must retain its own Job Object handle before acknowledging the freeze.
+  watchdog must retain its own exact named Job Object handle before acknowledging
+  the freeze. Recovery thaws that helper-held job even if the recorded root exits,
+  because inherited children may remain frozen. Acquire new suspension jobs under
+  the current cross-session/session/service/protection/access policy; always allow
+  cleanup of an already-owned exact job.
   Recovery must revalidate process/thread identity and
   only unwind a journal segment while its expected state still matches.
 - Restore the power plan that preceded Winderust's first automatic switch.
@@ -243,11 +321,34 @@ Process-control features must keep these defaults:
 
 ## Windows APIs
 
-- Power plan and processor tuning: `src/power/powercfg.rs`.
+- Power plan and processor tuning: lifecycle/application semantics in `src/control/power_plan.rs`,
+  `src/application/advanced_power_plan_tuning.rs`, and `src/power/powercfg.rs`; raw GUID,
+  power-scheme, processor-setting, and effective-mode calls in
+  `src/platform/windows/power_plan.rs`.
 - Foreground and process enumeration: `src/foreground/`.
 - Idle and input hooks: `src/activity/`.
 - Tray behavior: `src/backend/tray.rs`.
-- Timer resolution: `src/features/advanced_controls/timer_resolution.rs`.
+- Timer Resolution: policy in `src/features/advanced_controls/timer_resolution.rs`, lifecycle
+  ownership in `src/control/timer_resolution.rs`, and raw WinMM calls in
+  `src/platform/windows/timer_resolution.rs`.
+- Irreversible process commands: typed orchestration in `src/control/memory_trim.rs` and
+  `src/control/process_termination.rs`; raw calls in the matching `src/platform/windows/` modules.
+- Shared process-control acquisition: typed identity/safety validation in `src/control/process.rs`;
+  minimal mutation/command access masks and raw `OpenProcess` in
+  `src/platform/windows/process.rs`. Read-only Process List, Core Limiter, and CPU Scheduler
+  sampling remains observation input and cannot authorize a write; every mutation reopens the
+  exact target through the shared control boundary.
+- Process Priority and Power Throttling: shared lifecycle/arbitration in
+  `src/control/priority_efficiency.rs`; raw priority-class and `ProcessPowerThrottling` calls in
+  `src/platform/windows/priority_efficiency.rs`.
+- Thread Priority: exact process/thread identity and lifecycle in
+  `src/control/thread_priority.rs`; Toolhelp enumeration and raw thread operations in
+  `src/platform/windows/thread_priority.rs`.
+- CPU Sets and affinity: shared arbitration/restoration in `src/control/cpu_allocation.rs`; raw
+  affinity, CPU Set, and system CPU Set topology calls in
+  `src/platform/windows/cpu_allocation.rs`.
+- App Suspension: exact lifecycle/recovery transaction in `src/control/suspension.rs`; raw named
+  Job Object operations and freeze layout in `src/platform/windows/suspension.rs`.
 - Win32 Priority Separation: page logic in
   `src/ui/app/pages/win32_priority_separation_page.rs`, bit/value helpers in
   `src/ui/app/shared/appearance.rs`, and registry access in

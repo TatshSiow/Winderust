@@ -53,11 +53,9 @@ impl WinderustApp {
         enabled: bool,
     ) {
         let rule = match kind {
-            ListItemRemovalKind::WorkloadEngineExclusion => self
-                .settings
-                .workload_engine
-                .workload_engine_exclusions
-                .get_mut(index),
+            ListItemRemovalKind::CpuSchedulerCustomRule => {
+                self.settings.cpu_scheduler.custom_rules.get_mut(index)
+            }
             ListItemRemovalKind::MemoryTrimExclusion => {
                 self.settings.memory_trim.exclusions.get_mut(index)
             }
@@ -372,7 +370,8 @@ impl WinderustApp {
         let id = id.into();
         let query = query.trim().to_ascii_lowercase();
         let mut matches = self
-            .process_candidates
+            .process_catalog
+            .candidates
             .iter()
             .filter(|process| {
                 query.is_empty()
@@ -389,18 +388,21 @@ impl WinderustApp {
         let selected_index = matches
             .iter()
             .position(|process| process_candidate_can_accept(target, &self.settings, process));
-        let mut suggestions = dropdown_surface(cx, max_height);
+        let mut process_list = v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scrollbar()
+            .gap_1()
+            .p_2();
         if matches.is_empty() {
-            suggestions = suggestions.child(dropdown_empty_row(
-                process_load_state_message(&self.process_candidate_load_state).unwrap_or_else(
-                    || {
-                        if self.process_candidates.is_empty() {
-                            t!("common.no_running_apps_loaded").to_string()
-                        } else {
-                            t!("common.no_matching_apps").to_string()
-                        }
-                    },
-                ),
+            process_list = process_list.child(dropdown_empty_row(
+                process_load_state_message(&self.process_catalog.load_state).unwrap_or_else(|| {
+                    if self.process_catalog.candidates.is_empty() {
+                        t!("common.no_running_apps_loaded").to_string()
+                    } else {
+                        t!("common.no_matching_apps").to_string()
+                    }
+                }),
                 cx,
             ));
         }
@@ -414,7 +416,7 @@ impl WinderustApp {
                 !enabled,
                 cx,
             );
-            suggestions = suggestions.child(if enabled {
+            process_list = process_list.child(if enabled {
                 row.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
@@ -429,12 +431,53 @@ impl WinderustApp {
             });
         }
 
-        suggestions.into_any_element()
+        let browse = dropdown_action_row(
+            SharedString::from(format!("{id}-browse-executable")),
+            t!("common.browse_executable").to_string(),
+            NavIcon::Plus,
+            cx,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                window.blur();
+                let hwnd = app.hwnd;
+                cx.spawn_in(window, async move |this, cx| {
+                    let Some(path) = choose_executable_file(hwnd).await else {
+                        return;
+                    };
+                    let executable_path = executable_path_key(&path);
+                    let _ = cx.update(move |window, app_cx| {
+                        if let Some(this) = this.upgrade() {
+                            this.update(app_cx, |app, cx| {
+                                app.apply_process_suggestion(target, &executable_path, window, cx);
+                                cx.notify();
+                            });
+                        }
+                    });
+                })
+                .detach();
+            }),
+        );
+
+        dropdown_surface_frame(cx, max_height)
+            .child(process_list)
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .px_2()
+                    .child(browse),
+            )
+            .into_any_element()
     }
 
     pub(in crate::ui::app) fn process_icon_for_path(&self, process: &str) -> Option<&Arc<Image>> {
         let process = Path::new(process.trim());
-        self.process_candidates
+        self.process_catalog
+            .candidates
             .iter()
             .find(|candidate| same_executable_path(&candidate.image_path, process))
             .and_then(|candidate| candidate.icon.as_ref())
@@ -451,19 +494,19 @@ impl WinderustApp {
             .unwrap_or(process)
             .to_owned();
         let status_id = SharedString::from(format!("process-rule-status-{process}"));
-        let running_count =
-            (self.running_process_load_state == ProcessLoadState::Loaded).then(|| {
-                self.running_processes
-                    .iter()
-                    .filter(|running| {
-                        running
-                            .image_path
-                            .as_deref()
-                            .is_some_and(|path| same_executable_path(path, Path::new(process)))
-                    })
-                    .count()
-            });
-        h_flex()
+        let running_count = (self.process_list.load_state == ProcessLoadState::Loaded).then(|| {
+            self.process_list
+                .processes
+                .iter()
+                .filter(|running| {
+                    running
+                        .image_path
+                        .as_deref()
+                        .is_some_and(|path| same_executable_path(path, Path::new(process)))
+                })
+                .count()
+        });
+        let app_name = h_flex()
             .flex_1()
             .min_w(px(0.0))
             .overflow_hidden()
@@ -501,7 +544,15 @@ impl WinderustApp {
                     .text_size(px(TEXT_HEADER_SIZE))
                     .line_height(px(TEXT_HEADER_LINE_HEIGHT))
                     .child(display_name),
-            )
+            );
+
+        h_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .items_center()
+            .gap_2()
+            .child(app_name)
             .child(self.process_rule_path(process))
             .into_any_element()
     }
@@ -539,7 +590,8 @@ impl WinderustApp {
         };
         let normalized_query = query.trim().to_ascii_lowercase();
         let suggestion_count = self
-            .process_candidates
+            .process_catalog
+            .candidates
             .iter()
             .filter(|process| {
                 normalized_query.is_empty()
@@ -555,12 +607,13 @@ impl WinderustApp {
             })
             .filter(|process| process_candidate_is_visible(target, &self.settings, process))
             .count()
-            .max(1);
+            .max(1)
+            + 1;
         let selected_path = self.process_picker_path(target, input, cx);
         let input_detail = if !selected_path.is_empty() {
             Some(selected_path)
         } else {
-            process_load_state_message(&self.process_candidate_load_state)
+            process_load_state_message(&self.process_catalog.load_state)
         };
         let placement =
             self.dropdown_placement(&id, dropdown_list_height(suggestion_count), window);
@@ -612,7 +665,8 @@ impl WinderustApp {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(process);
-        self.selected_process_paths
+        self.process_catalog
+            .selected_paths
             .insert(target, process.to_owned());
         let input = target.input(&self.inputs).clone();
         clear_input_to(&input, display_name, window, cx);
@@ -625,7 +679,8 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> String {
         let display_name = input.read(cx).value();
-        self.selected_process_paths
+        self.process_catalog
+            .selected_paths
             .get(&target)
             .filter(|path| process_path_matches_display_name(path, display_name.as_ref()))
             .cloned()

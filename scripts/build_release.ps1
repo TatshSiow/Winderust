@@ -1,5 +1,6 @@
 param(
-    [string]$TargetDir = "target"
+    [string]$TargetDir = "target",
+    [string[]]$Features = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,5 +29,9 @@ if (-not $env:GPUI_FXC_PATH -or -not (Test-Path -LiteralPath $env:GPUI_FXC_PATH)
 }
 
 Write-Host "Using fxc.exe at $env:GPUI_FXC_PATH"
-& cargo build --release --locked --target-dir $TargetDir
+$cargoArguments = @('build', '--release', '--locked', '--target-dir', $TargetDir)
+if ($Features.Count -gt 0) {
+    $cargoArguments += @('--features', ($Features -join ','))
+}
+& cargo @cargoArguments
 exit $LASTEXITCODE

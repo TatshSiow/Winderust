@@ -4,28 +4,26 @@ use std::{
     time::{Duration, Instant},
 };
 
-use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
-    System::{
-        SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
-        Threading::{
-            GetCurrentProcessId, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_QUOTA,
-        },
-    },
+use windows_sys::Win32::System::{
+    SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
+    Threading::GetCurrentProcessId,
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::MemoryTrimSettings,
+    control::{
+        memory_trim::MemoryTrimController,
+        process::{ProcessControlError, ProcessControlTarget},
+    },
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, list_processes, process_executable_path, process_failure_key,
-        process_handle_matches_executable_path, process_session_id, same_executable_path,
+        contains_process_name, process_executable_path, process_failure_key, same_executable_path,
         should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
-    win_util::{filetime_to_u64, last_error, WinHandle},
+    runtime::observations::CycleObservations,
+    win_util::last_error,
 };
 
 const MB: u64 = 1024 * 1024;
@@ -63,61 +61,72 @@ struct TrackedProcess {
     trimmed_while_idle: bool,
 }
 
-#[derive(Clone, Copy)]
-struct ProcessMemorySample {
-    working_set_bytes: u64,
-}
-
-enum MemoryTrimError {
-    AccessDenied,
-    ProcessExited,
-    Failed(String),
-}
-
 impl MemoryTrimManager {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the policy pass keeps its typed controller and pass-local observations explicit"
+    )]
     pub fn update(
         &mut self,
+        controller: &mut MemoryTrimController,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
         self.update_with_mode(
+            controller,
             settings,
             automation_enabled,
             allow_cross_session_process_control,
             foreground_process_id,
             MemoryTrimMode::Automatic,
+            observations,
             action_log,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the policy pass keeps its typed controller and pass-local observations explicit"
+    )]
     pub fn trim_now(
         &mut self,
+        controller: &mut MemoryTrimController,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
         self.update_with_mode(
+            controller,
             settings,
             automation_enabled,
             allow_cross_session_process_control,
             foreground_process_id,
             MemoryTrimMode::Manual,
+            observations,
             action_log,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the pass-local observation dependency is clearer here than an unrelated argument bundle"
+    )]
     fn update_with_mode(
         &mut self,
+        controller: &mut MemoryTrimController,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         mode: MemoryTrimMode,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
         if !automation_enabled {
@@ -175,17 +184,8 @@ impl MemoryTrimManager {
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
-        let Some(current_session_id) = process_session_id(current_process_id) else {
-            self.clear_tracking();
-            return MemoryTrimSnapshot {
-                enabled: true,
-                memory_load_percent: Some(memory_load_percent),
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                ..Default::default()
-            };
-        };
 
-        let processes = match list_processes() {
+        let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(err) => {
                 self.clear_tracking();
@@ -207,19 +207,19 @@ impl MemoryTrimManager {
         });
 
         let mut target_processes = BTreeMap::new();
-        for process in processes {
+        for process in processes.iter() {
             if process.id == 0
                 || process.is_critical != Some(false)
-                || !process.can_set_information
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || (!allow_cross_session_process_control
-                    && process_session_id(process.id) != Some(current_session_id))
             {
                 continue;
             }
 
-            let Some(executable_path) = process_executable_path(&process) else {
+            let Some(creation_time) = process.creation_time else {
+                continue;
+            };
+            let Some(executable_path) = process_executable_path(process) else {
                 continue;
             };
             if should_ignore_foreground_process(
@@ -235,7 +235,12 @@ impl MemoryTrimManager {
 
             target_processes.insert(
                 process.id,
-                (process.name, executable_path.to_string_lossy().into_owned()),
+                ProcessControlTarget::automatic(
+                    process.id,
+                    process.name.clone(),
+                    executable_path,
+                    creation_time,
+                ),
             );
         }
 
@@ -244,7 +249,7 @@ impl MemoryTrimManager {
             .retain(|process_id, _| target_ids.contains(process_id));
         let active_target_names = target_processes
             .values()
-            .map(|(_name, path)| process_failure_key(path))
+            .map(|target| process_failure_key(target.executable_path.to_string_lossy().as_ref()))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -256,7 +261,10 @@ impl MemoryTrimManager {
         let mut auto_excluded_processes = BTreeSet::new();
         let now = Instant::now();
 
-        for (process_id, (process_name, executable_path)) in target_processes {
+        for target in target_processes.into_values() {
+            let process_id = target.id;
+            let process_name = target.name.clone();
+            let executable_path = target.executable_path.to_string_lossy().into_owned();
             if self.is_process_suppressed(
                 process_id,
                 &process_name,
@@ -268,7 +276,14 @@ impl MemoryTrimManager {
                 continue;
             }
 
-            match self.update_process(process_id, executable_path.clone(), settings, mode, now) {
+            match self.update_process(
+                controller,
+                &target,
+                allow_cross_session_process_control,
+                settings,
+                mode,
+                now,
+            ) {
                 Ok(ProcessUpdate::Waiting) => {
                     self.clear_process_failure(&executable_path);
                 }
@@ -289,11 +304,11 @@ impl MemoryTrimManager {
                         trim_reason(mode, freed_bytes),
                     );
                 }
-                Err(MemoryTrimError::ProcessExited) => {
+                Err(ProcessControlError::ProcessExited) => {
                     skipped_processes += 1;
                     self.tracked.remove(&process_id);
                 }
-                Err(MemoryTrimError::AccessDenied) => {
+                Err(ProcessControlError::AccessDenied(_)) => {
                     skipped_processes += 1;
                     self.failure_suppression
                         .suppress_process_failure(&executable_path);
@@ -332,46 +347,39 @@ impl MemoryTrimManager {
 
     fn update_process(
         &mut self,
-        process_id: u32,
-        executable_path: String,
+        controller: &mut MemoryTrimController,
+        target: &ProcessControlTarget,
+        allow_cross_session_process_control: bool,
         settings: &MemoryTrimSettings,
         mode: MemoryTrimMode,
         now: Instant,
-    ) -> Result<ProcessUpdate, MemoryTrimError> {
-        let process = ProcessHandle::open(process_id)?;
-        if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
-            return Err(MemoryTrimError::ProcessExited);
-        }
-        let creation_time = process
-            .0
-            .process_creation_time()
-            .ok_or(MemoryTrimError::ProcessExited)?;
-        let memory = process.memory_sample()?;
+    ) -> Result<ProcessUpdate, ProcessControlError> {
+        let process_id = target.id;
+        let executable_path = target.executable_path.to_string_lossy().into_owned();
+        let sample = controller.sample(
+            target,
+            allow_cross_session_process_control,
+            mode == MemoryTrimMode::Automatic,
+        )?;
         let threshold_bytes = settings.process_working_set_threshold_mb.saturating_mul(MB);
-        if memory.working_set_bytes < threshold_bytes {
+        if sample.working_set_bytes < threshold_bytes {
             self.tracked.remove(&process_id);
             return Ok(ProcessUpdate::Waiting);
         }
 
         if mode == MemoryTrimMode::Manual {
-            let before = memory.working_set_bytes;
-            process.empty_working_set()?;
-            let after = process
-                .memory_sample()
-                .map(|sample| sample.working_set_bytes)
-                .unwrap_or(0);
+            let outcome = controller.trim(target, allow_cross_session_process_control)?;
             return Ok(ProcessUpdate::Trimmed {
-                freed_bytes: before.saturating_sub(after),
+                freed_bytes: outcome.freed_bytes,
             });
         }
 
-        let cpu_sample = process.cpu_sample()?;
+        let cpu_sample = sample.cpu.ok_or_else(|| {
+            ProcessControlError::Failed("Memory Trim CPU sample is unavailable.".to_owned())
+        })?;
         if self.tracked.get(&process_id).is_some_and(|state| {
-            state.creation_time != creation_time
-                || !same_executable_path(
-                    Path::new(&state.executable_path),
-                    Path::new(&executable_path),
-                )
+            state.creation_time != target.creation_time
+                || !same_executable_path(Path::new(&state.executable_path), &target.executable_path)
         }) {
             self.tracked.remove(&process_id);
         }
@@ -380,7 +388,7 @@ impl MemoryTrimManager {
             .entry(process_id)
             .or_insert_with(|| TrackedProcess {
                 executable_path: executable_path.clone(),
-                creation_time,
+                creation_time: target.creation_time,
                 previous_cpu_time: None,
                 idle_since: None,
                 trimmed_while_idle: false,
@@ -404,15 +412,10 @@ impl MemoryTrimManager {
             return Ok(ProcessUpdate::Candidate);
         }
 
-        let before = memory.working_set_bytes;
-        process.empty_working_set()?;
-        let after = process
-            .memory_sample()
-            .map(|sample| sample.working_set_bytes)
-            .unwrap_or(0);
+        let outcome = controller.trim(target, allow_cross_session_process_control)?;
         state.trimmed_while_idle = true;
         Ok(ProcessUpdate::Trimmed {
-            freed_bytes: before.saturating_sub(after),
+            freed_bytes: outcome.freed_bytes,
         })
     }
 
@@ -475,7 +478,7 @@ enum MemoryTrimMode {
 enum ProcessUpdate {
     Waiting,
     Candidate,
-    Trimmed { freed_bytes: u64 },
+    Trimmed { freed_bytes: Option<u64> },
 }
 
 fn ready_to_trim(
@@ -496,16 +499,14 @@ fn ready_to_trim(
     let idle_since = *state.idle_since.get_or_insert(now);
     now.duration_since(idle_since) >= idle_duration
 }
-fn trim_reason(mode: MemoryTrimMode, freed_bytes: u64) -> String {
-    match mode {
-        MemoryTrimMode::Automatic => format!(
-            "Trimmed working set; estimated freed {}.",
-            size_label(freed_bytes)
-        ),
-        MemoryTrimMode::Manual => format!(
-            "Manually trimmed working set; estimated freed {}.",
-            size_label(freed_bytes)
-        ),
+fn trim_reason(mode: MemoryTrimMode, freed_bytes: Option<u64>) -> String {
+    let action = match mode {
+        MemoryTrimMode::Automatic => "Trimmed working set",
+        MemoryTrimMode::Manual => "Manually trimmed working set",
+    };
+    match freed_bytes {
+        Some(freed_bytes) => format!("{action}; estimated freed {}.", size_label(freed_bytes)),
+        None => format!("{action}; freed-memory estimate unavailable."),
     }
 }
 
@@ -520,13 +521,13 @@ impl MemoryTrimFailures {
         &mut self,
         process_id: u32,
         process_name: &str,
-        error: MemoryTrimError,
+        error: ProcessControlError,
         action_log: &mut ActionLog,
     ) {
-        if matches!(&error, MemoryTrimError::ProcessExited) {
+        if matches!(&error, ProcessControlError::ProcessExited) {
             return;
         }
-        let message = memory_trim_error_message(error);
+        let message = error.to_string();
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(format!("Trim {process_name} ({process_id}): {message}"));
@@ -538,96 +539,6 @@ impl MemoryTrimFailures {
             ActionLogResult::Failed,
             message,
         );
-    }
-}
-
-struct ProcessHandle(WinHandle);
-
-impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, MemoryTrimError> {
-        // SAFETY: process_id came from the current process snapshot and no inherited handle is
-        // requested.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA,
-                0,
-                process_id,
-            )
-        };
-        if !handle.is_null() {
-            Ok(Self(WinHandle::new(handle)))
-        } else {
-            Err(open_process_error(process_id, last_error()))
-        }
-    }
-
-    fn memory_sample(&self) -> Result<ProcessMemorySample, MemoryTrimError> {
-        let mut counters = ProcessMemoryCounters {
-            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
-            ..Default::default()
-        };
-        // SAFETY: self owns a live process handle and counters is writable for exactly the
-        // supplied structure size.
-        let ok = unsafe {
-            K32GetProcessMemoryInfo(
-                self.0.raw(),
-                &mut counters,
-                std::mem::size_of::<ProcessMemoryCounters>() as u32,
-            )
-        };
-        if ok == 0 {
-            Err(MemoryTrimError::Failed(format!(
-                "K32GetProcessMemoryInfo failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(ProcessMemorySample {
-                working_set_bytes: counters.working_set_size as u64,
-            })
-        }
-    }
-
-    fn cpu_sample(&self) -> Result<ProcessCpuSample, MemoryTrimError> {
-        let mut creation = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
-        // call.
-        let ok = unsafe {
-            GetProcessTimes(
-                self.0.raw(),
-                &mut creation,
-                &mut exit,
-                &mut kernel,
-                &mut user,
-            )
-        };
-        if ok == 0 {
-            Err(MemoryTrimError::Failed(format!(
-                "GetProcessTimes failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(ProcessCpuSample {
-                cpu_time_100ns: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
-                sampled_at: Instant::now(),
-            })
-        }
-    }
-
-    fn empty_working_set(&self) -> Result<(), MemoryTrimError> {
-        // SAFETY: self owns a live process handle; both usize::MAX values are the documented
-        // request to empty the working set.
-        let ok = unsafe { SetProcessWorkingSetSize(self.0.raw(), usize::MAX, usize::MAX) };
-        if ok == 0 {
-            Err(MemoryTrimError::Failed(format!(
-                "SetProcessWorkingSetSize failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(())
-        }
     }
 }
 
@@ -652,59 +563,12 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
-fn open_process_error(process_id: u32, error: u32) -> MemoryTrimError {
-    match error {
-        ERROR_ACCESS_DENIED => MemoryTrimError::AccessDenied,
-        ERROR_INVALID_PARAMETER => MemoryTrimError::ProcessExited,
-        _ => MemoryTrimError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
-    }
-}
-
-fn memory_trim_error_message(error: MemoryTrimError) -> String {
-    match error {
-        MemoryTrimError::AccessDenied => "Access denied.".to_owned(),
-        MemoryTrimError::ProcessExited => "Process exited.".to_owned(),
-        MemoryTrimError::Failed(message) => message,
-    }
-}
-
 fn size_label(bytes: u64) -> String {
     if bytes >= MB {
         format!("{} MiB", bytes / MB)
     } else {
         format!("{} KiB", bytes / 1024)
     }
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct ProcessMemoryCounters {
-    cb: u32,
-    page_fault_count: u32,
-    peak_working_set_size: usize,
-    working_set_size: usize,
-    quota_peak_paged_pool_usage: usize,
-    quota_paged_pool_usage: usize,
-    quota_peak_non_paged_pool_usage: usize,
-    quota_non_paged_pool_usage: usize,
-    pagefile_usage: usize,
-    peak_pagefile_usage: usize,
-}
-
-unsafe extern "system" {
-    fn K32GetProcessMemoryInfo(
-        Process: HANDLE,
-        Counters: *mut ProcessMemoryCounters,
-        Size: u32,
-    ) -> i32;
-
-    fn SetProcessWorkingSetSize(
-        hProcess: HANDLE,
-        dwMinimumWorkingSetSize: usize,
-        dwMaximumWorkingSetSize: usize,
-    ) -> i32;
 }
 
 impl Default for MemoryTrimSnapshot {

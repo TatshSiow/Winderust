@@ -1,5 +1,7 @@
 use crate::ui::app::*;
 
+const POPUP_VANISH_SECONDS: f64 = 0.18;
+
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) enum PageTransitionMotion {
     EnterSub,
@@ -98,6 +100,53 @@ where
     } else {
         final_state(element).into_any_element()
     }
+}
+
+pub(in crate::ui::app) fn popup_vanish_progress(
+    started: &mut Option<Instant>,
+    window: &mut Window,
+) -> Option<f32> {
+    let elapsed = started.as_ref()?.elapsed();
+    let duration = Duration::from_secs_f64(POPUP_VANISH_SECONDS);
+    if elapsed >= duration {
+        *started = None;
+        return None;
+    }
+
+    window.request_animation_frame();
+    Some(expandable_motion_ease(
+        (elapsed.as_secs_f32() / duration.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0),
+        false,
+    ))
+}
+
+pub(in crate::ui::app) fn animated_popup(
+    popup: gpui::Div,
+    id: impl Into<SharedString>,
+    bottom: f32,
+    vanish_progress: Option<f32>,
+) -> AnyElement {
+    if let Some(progress) = vanish_progress {
+        let progress = progress.clamp(0.0, 1.0);
+        return popup
+            .block_mouse_except_scroll()
+            .cursor_default()
+            .bottom(px(bottom - 8.0 * progress))
+            .opacity(1.0 - progress)
+            .into_any_element();
+    }
+
+    with_optional_motion(
+        popup,
+        id,
+        MotionSpeed::Standard,
+        |popup| popup,
+        move |popup, delta| {
+            popup
+                .bottom(px(bottom - 8.0 + 8.0 * delta))
+                .opacity(0.18 + 0.82 * delta)
+        },
+    )
 }
 
 pub(in crate::ui::app) fn begin_expandable_motion(id: impl Into<String>, expanded: bool) {
@@ -540,15 +589,6 @@ pub(in crate::ui::app) fn animated_expanded_child(
     }
 }
 
-pub(in crate::ui::app) fn expanded_child(child: AnyElement) -> AnyElement {
-    div()
-        .w_full()
-        .min_w(px(0.0))
-        .overflow_hidden()
-        .child(child)
-        .into_any_element()
-}
-
 pub(in crate::ui::app) fn animated_expanded_child_with_height(
     id: impl Into<SharedString>,
     target_height: f32,
@@ -579,11 +619,6 @@ pub(in crate::ui::app) fn animated_expanded_child_with_height(
     } else {
         container.into_any_element()
     }
-}
-
-pub(in crate::ui::app) fn remember_expanded_child_hidden(id: impl Into<SharedString>) {
-    let id = id.into();
-    let _ = control_motion_generation(&format!("expanded-child-{id}"), "hidden");
 }
 
 pub(in crate::ui::app) fn animated_rule_card_body_child(
@@ -631,25 +666,6 @@ pub(in crate::ui::app) fn animated_rule_card_body_child_with_height(
 
 pub(in crate::ui::app) fn rule_card_body_height(row_count: usize) -> f32 {
     CARD_ROW_HEIGHT * row_count.max(1) as f32
-}
-
-pub(in crate::ui::app) fn cpu_allocation_selector_body_height(processor_count: usize) -> f32 {
-    rule_card_body_height(1)
-        + px_spacing(3) * 2.0
-        + TEXT_BODY_LINE_HEIGHT
-        + px_spacing(2)
-        + core_tile_grid_height(processor_count)
-}
-
-pub(in crate::ui::app) fn core_tile_grid_height(processor_count: usize) -> f32 {
-    let grid_rows =
-        processor_count.saturating_add(CORE_TILE_GRID_COLUMNS - 1) / CORE_TILE_GRID_COLUMNS;
-    if grid_rows == 0 {
-        TEXT_BODY_LINE_HEIGHT
-    } else {
-        let row_gaps = grid_rows.saturating_sub(1) as f32 * CORE_TILE_GRID_GAP;
-        grid_rows as f32 * CORE_TILE_HEIGHT + row_gaps
-    }
 }
 
 pub(in crate::ui::app) fn px_spacing(slot: usize) -> f32 {

@@ -1,4 +1,5 @@
 use crate::ui::app::*;
+use gpui::{KeyDownEvent, StyleRefinement};
 
 pub(in crate::ui::app) fn feature_toggle_switch(
     id: impl Into<SharedString>,
@@ -163,7 +164,11 @@ pub(in crate::ui::app) fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcPerformanceMin
         | NumericField::ProcessorDcPerformanceMax
         | NumericField::ProcessorDcBoostPolicy
-        | NumericField::AdaptiveEngineProcessorPolicy(_)
+        | NumericField::AdvancedPowerPlanTuningPreset(_)
+        | NumericField::AdaptiveEngineTuning(
+            _,
+            AdaptiveEngineTuningNumericField::ProcessorPowerPolicy(_),
+        )
         | NumericField::MemoryTrimMemoryLoadThreshold
         | NumericField::CoreLimiterThreshold(_)
         | NumericField::CoreLimiterMaxProcessors(_) => 76.0,
@@ -210,7 +215,7 @@ pub(in crate::ui::app) fn processor_power_column_header(
         .child(value.into())
 }
 
-pub(in crate::ui::app) fn processor_power_slider(
+pub(in crate::ui::app) fn processor_power_group_slider(
     id: impl Into<SharedString>,
     label: &str,
     value_element: AnyElement,
@@ -219,7 +224,7 @@ pub(in crate::ui::app) fn processor_power_slider(
     cx: &mut Context<WinderustApp>,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    percent_slider_row(
+    percent_slider_group_row(
         SliderRowSpec {
             id: id.into(),
             label: SharedString::from(label.to_owned()),
@@ -232,46 +237,6 @@ pub(in crate::ui::app) fn processor_power_slider(
         cx,
         handler,
     )
-}
-
-pub(in crate::ui::app) fn processor_power_setting_row(
-    id: &'static str,
-    label: impl Into<SharedString>,
-    value_element: AnyElement,
-) -> AnyElement {
-    h_flex()
-        .id(id)
-        .w_full()
-        .min_w(px(0.0))
-        .h(px(CARD_ROW_HEIGHT))
-        .items_center()
-        .justify_between()
-        .gap_2()
-        .py_3()
-        .px_4()
-        .relative()
-        .overflow_hidden()
-        .rounded(px(BRAND_RADIUS_SURFACE))
-        .bg(rgb(settings_card_color()))
-        .text_color(rgb(primary_text_color()))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .child(
-            div()
-                .w(px(180.0))
-                .min_w(px(120.0))
-                .flex_shrink_0()
-                .truncate()
-                .child(label.into()),
-        )
-        .child(
-            h_flex()
-                .flex_1()
-                .min_w(px(0.0))
-                .justify_end()
-                .child(value_element),
-        )
-        .into_any_element()
 }
 
 pub(in crate::ui::app) fn win32_priority_registry_value_row(
@@ -392,6 +357,7 @@ pub(in crate::ui::app) fn stable_slider(
     let drag_bounds = Rc::clone(&bounds);
     let canvas_bounds = Rc::clone(&bounds);
     let click_state = state.clone();
+    let keyboard_state = state.clone();
     let entity_id = state.entity_id();
 
     div()
@@ -405,8 +371,22 @@ pub(in crate::ui::app) fn stable_slider(
         .h(px(24.0))
         .when(enabled, |slider| {
             slider
-                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                .group("stable-slider")
+                .tab_index(0)
+                .cursor_grab()
+                .active(|style| style.cursor_grabbing())
+                .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
+                    let increase = match event.keystroke.key.as_str() {
+                        "left" | "down" => false,
+                        "right" | "up" => true,
+                        _ => return,
+                    };
                     cx.stop_propagation();
+                    keyboard_state.update(cx, |state, cx| {
+                        update_stable_slider_by_step(state, range, increase, window, cx);
+                    });
+                }))
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let bounds = *click_bounds.borrow();
                     click_state.update(cx, |state, cx| {
                         update_stable_slider_from_position(
@@ -444,11 +424,18 @@ pub(in crate::ui::app) fn stable_slider(
         })
         .child(
             div()
+                .id(("stable-slider-track", entity_id))
                 .relative()
                 .w_full()
-                .h_1p5()
-                .bg(track.opacity(0.2))
+                .h_1()
+                .bg(track.opacity(0.16))
                 .rounded_full()
+                .when(enabled, |track_bar| {
+                    let interactive_style = |style: StyleRefinement| style.bg(track.opacity(0.32));
+                    track_bar
+                        .group_hover("stable-slider", interactive_style)
+                        .group_active("stable-slider", interactive_style)
+                })
                 .child(
                     div()
                         .absolute()
@@ -461,15 +448,30 @@ pub(in crate::ui::app) fn stable_slider(
                 )
                 .child(
                     div()
+                        .id(("stable-slider-thumb", entity_id))
                         .absolute()
                         .top(px(-5.0))
                         .left(relative(percentage))
-                        .ml(-px(8.0))
-                        .size_4()
-                        .p(px(1.0))
+                        .ml(px(-7.0))
+                        .size(px(14.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .rounded_full()
                         .bg(track.opacity(0.5))
-                        .child(div().size_full().rounded_full().bg(rgb(thumb_color))),
+                        .when(enabled, |thumb| {
+                            let interactive_style = |style: StyleRefinement| {
+                                style
+                                    .top(px(-8.0))
+                                    .ml(-px(10.0))
+                                    .size(px(20.0))
+                                    .bg(track.opacity(0.72))
+                            };
+                            thumb
+                                .group_hover("stable-slider", interactive_style)
+                                .group_active("stable-slider", interactive_style)
+                        })
+                        .child(div().size(px(10.0)).rounded_full().bg(rgb(thumb_color))),
                 )
                 .child(
                     canvas(
@@ -521,6 +523,130 @@ pub(in crate::ui::app) fn update_stable_slider_from_position(
     cx.emit(SliderEvent::Change(SliderValue::Single(value)));
 }
 
+fn update_stable_slider_by_step(
+    state: &mut SliderState,
+    range: SliderRange,
+    increase: bool,
+    window: &mut Window,
+    cx: &mut Context<SliderState>,
+) {
+    let value = stable_slider_stepped_value(state.value().end(), range, increase);
+    if value == state.value().end() {
+        return;
+    }
+
+    state.set_value(value, window, cx);
+    cx.emit(SliderEvent::Change(SliderValue::Single(value)));
+}
+
+fn stable_slider_stepped_value(value: f32, range: SliderRange, increase: bool) -> f32 {
+    let step = range.step.max(1) as f32;
+    let delta = if increase { step } else { -step };
+    (value + delta).clamp(range.min as f32, range.max as f32)
+}
+
+struct SliderStepControlsSpec<'a, T> {
+    id: SharedString,
+    value_element: AnyElement,
+    state: &'a Entity<SliderState>,
+    enabled: bool,
+    delta: T,
+    range: SliderRange,
+    width: f32,
+}
+
+fn slider_step_controls<T>(
+    spec: SliderStepControlsSpec<'_, T>,
+    window: &mut Window,
+    cx: &mut Context<WinderustApp>,
+    handler: impl Fn(&StepChange<T>, &mut Window, &mut App) + 'static,
+) -> AnyElement
+where
+    T: Copy + 'static,
+{
+    let SliderStepControlsSpec {
+        id,
+        value_element,
+        state,
+        enabled,
+        delta,
+        range,
+        width,
+    } = spec;
+    let handler: StepChangeHandler<T> = Rc::new(handler);
+    let down = Rc::clone(&handler);
+    let track_color = if enabled {
+        accent_color()
+    } else {
+        disabled_slider_track_color()
+    };
+    let thumb_color = if enabled {
+        windows_slider_thumb_color()
+    } else {
+        disabled_slider_thumb_color()
+    };
+
+    h_flex()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .child(
+            control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                .label("-")
+                .disabled(!enabled)
+                .on_click(move |_, window, cx| {
+                    down(
+                        &StepChange {
+                            delta,
+                            increase: false,
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+        )
+        .child(
+            div()
+                .w(px(width))
+                .px(px(8.0))
+                .flex_none()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .child(stable_slider(
+                    state,
+                    StableSliderSpec {
+                        range,
+                        enabled,
+                        track_color,
+                        thumb_color,
+                    },
+                    window,
+                    cx,
+                )),
+        )
+        .child(
+            control_button(Button::new((gpui::ElementId::from(id), "up")))
+                .label("+")
+                .disabled(!enabled)
+                .on_click(move |_, window, cx| {
+                    handler(
+                        &StepChange {
+                            delta,
+                            increase: true,
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+        )
+        .child(value_element)
+        .into_any_element()
+}
+
 pub(in crate::ui::app) fn activity_slider_card(
     spec: ActivitySliderCardSpec<'_>,
     window: &mut Window,
@@ -535,82 +661,23 @@ pub(in crate::ui::app) fn activity_slider_card(
         enabled,
         range,
     } = spec;
-    let handler: StepChangeHandler<u64> = Rc::new(handler);
-    let down = Rc::clone(&handler);
-    let delta = range.step;
-    let slider_track_color = if enabled {
-        accent_color()
-    } else {
-        disabled_slider_track_color()
-    };
-    let slider_thumb_color = if enabled {
-        windows_slider_thumb_color()
-    } else {
-        disabled_slider_thumb_color()
-    };
-
     setting_action_card(
         id.clone(),
         label.to_owned(),
-        h_flex()
-            .items_center()
-            .justify_end()
-            .gap_2()
-            .min_w(px(0.0))
-            .flex_shrink_0()
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
-                    .label("-")
-                    .disabled(!enabled)
-                    .on_click(move |_, window, cx| {
-                        down(
-                            &StepChange {
-                                delta,
-                                increase: false,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .w(px(260.0))
-                    .px(px(8.0))
-                    .flex_none()
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(stable_slider(
-                        state,
-                        StableSliderSpec {
-                            range,
-                            enabled,
-                            track_color: slider_track_color,
-                            thumb_color: slider_thumb_color,
-                        },
-                        window,
-                        cx,
-                    )),
-            )
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id), "up")))
-                    .label("+")
-                    .disabled(!enabled)
-                    .on_click(move |_, window, cx| {
-                        handler(
-                            &StepChange {
-                                delta,
-                                increase: true,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(value_element)
-            .into_any_element(),
+        slider_step_controls(
+            SliderStepControlsSpec {
+                id,
+                value_element,
+                state,
+                enabled,
+                delta: range.step,
+                range,
+                width: 260.0,
+            },
+            window,
+            cx,
+            handler,
+        ),
     )
     .into_any_element()
 }
@@ -632,98 +699,39 @@ where
         enabled,
         delta,
     } = spec;
-    let handler: StepChangeHandler<T> = Rc::new(handler);
-    let down = Rc::clone(&handler);
-    let down_delta = delta;
-    let up_delta = delta;
     let label_color = if enabled {
         primary_text_color()
     } else {
         dim_text_color()
     };
-    let slider_track_color = if enabled {
-        accent_color()
-    } else {
-        disabled_slider_track_color()
-    };
-    let slider_thumb_color = if enabled {
-        windows_slider_thumb_color()
-    } else {
-        disabled_slider_thumb_color()
-    };
 
     rule_action_row_with_title_color(
         id.clone(),
         label,
-        h_flex()
-            .items_center()
-            .justify_end()
-            .gap_2()
-            .min_w(px(0.0))
-            .flex_shrink_0()
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
-                    .label("-")
-                    .disabled(!enabled)
-                    .on_click(move |_, window, cx| {
-                        down(
-                            &StepChange {
-                                delta: down_delta,
-                                increase: false,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .w(px(220.0))
-                    .px(px(8.0))
-                    .flex_none()
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(stable_slider(
-                        state,
-                        StableSliderSpec {
-                            range: SliderRange {
-                                min: 0,
-                                max: 100,
-                                step: 1,
-                            },
-                            enabled,
-                            track_color: slider_track_color,
-                            thumb_color: slider_thumb_color,
-                        },
-                        window,
-                        cx,
-                    )),
-            )
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id), "up")))
-                    .label("+")
-                    .disabled(!enabled)
-                    .on_click(move |_, window, cx| {
-                        handler(
-                            &StepChange {
-                                delta: up_delta,
-                                increase: true,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(value_element)
-            .into_any_element(),
+        slider_step_controls(
+            SliderStepControlsSpec {
+                id,
+                value_element,
+                state,
+                enabled,
+                delta,
+                range: SliderRange {
+                    min: 0,
+                    max: 100,
+                    step: 1,
+                },
+                width: 220.0,
+            },
+            window,
+            cx,
+            handler,
+        ),
         label_color,
     )
     .into_any_element()
 }
 
-pub(in crate::ui::app) fn percent_slider_row<T>(
+fn percent_slider_group_row<T>(
     spec: SliderRowSpec<'_, T>,
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
@@ -740,115 +748,42 @@ where
         enabled,
         delta,
     } = spec;
-    let handler: StepChangeHandler<T> = Rc::new(handler);
-    let down = Rc::clone(&handler);
-    let down_delta = delta;
-    let up_delta = delta;
     let label_color = if enabled {
         primary_text_color()
     } else {
         dim_text_color()
     };
-    let slider_track_color = if enabled {
-        accent_color()
-    } else {
-        disabled_slider_track_color()
-    };
-    let slider_thumb_color = if enabled {
-        windows_slider_thumb_color()
-    } else {
-        disabled_slider_thumb_color()
-    };
 
-    h_flex()
-        .id(id.clone())
-        .w_full()
-        .h(px(CARD_ROW_HEIGHT))
-        .items_center()
-        .justify_between()
-        .gap_2()
-        .py_3()
-        .px_4()
-        .relative()
-        .overflow_hidden()
-        .rounded(px(BRAND_RADIUS_SURFACE))
-        .bg(rgb(settings_card_color()))
-        .text_color(rgb(primary_text_color()))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .truncate()
-                .text_color(rgb(label_color))
-                .child(label),
-        )
-        .child(
-            h_flex()
-                .items_center()
-                .justify_end()
-                .gap_2()
-                .min_w(px(0.0))
-                .flex_shrink_0()
-                .child(
-                    control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
-                        .label("-")
-                        .disabled(!enabled)
-                        .on_click(move |_, window, cx| {
-                            down(
-                                &StepChange {
-                                    delta: down_delta,
-                                    increase: false,
-                                },
-                                window,
-                                cx,
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .w(px(220.0))
-                        .px(px(8.0))
-                        .flex_none()
-                        .occlude()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation();
-                        })
-                        .child(stable_slider(
-                            state,
-                            StableSliderSpec {
-                                range: SliderRange {
-                                    min: 0,
-                                    max: 100,
-                                    step: 1,
-                                },
-                                enabled,
-                                track_color: slider_track_color,
-                                thumb_color: slider_thumb_color,
-                            },
-                            window,
-                            cx,
-                        )),
-                )
-                .child(
-                    control_button(Button::new((gpui::ElementId::from(id), "up")))
-                        .label("+")
-                        .disabled(!enabled)
-                        .on_click(move |_, window, cx| {
-                            handler(
-                                &StepChange {
-                                    delta: up_delta,
-                                    increase: true,
-                                },
-                                window,
-                                cx,
-                            )
-                        }),
-                )
-                .child(value_element),
-        )
-        .into_any_element()
+    setting_group_action_row_element(
+        id.clone(),
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .text_color(rgb(label_color))
+            .child(label)
+            .into_any_element(),
+        slider_step_controls(
+            SliderStepControlsSpec {
+                id,
+                value_element,
+                state,
+                enabled,
+                delta,
+                range: SliderRange {
+                    min: 0,
+                    max: 100,
+                    step: 1,
+                },
+                width: 220.0,
+            },
+            window,
+            cx,
+            handler,
+        ),
+        false,
+    )
+    .into_any_element()
 }
 
 pub(in crate::ui::app) fn u64_step(value: u64) -> u64 {
@@ -1014,5 +949,18 @@ mod tests {
             parse_timer_resolution_input_100ns("1000", 10_000, 160_000),
             Some(160_000)
         );
+    }
+
+    #[test]
+    fn stable_slider_arrow_step_clamps_to_range() {
+        let range = SliderRange {
+            min: 250,
+            max: 60_000,
+            step: 250,
+        };
+
+        assert_eq!(stable_slider_stepped_value(500.0, range, false), 250.0);
+        assert_eq!(stable_slider_stepped_value(59_750.0, range, true), 60_000.0);
+        assert_eq!(stable_slider_stepped_value(250.0, range, false), 250.0);
     }
 }

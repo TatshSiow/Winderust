@@ -1,8 +1,5 @@
 > [!IMPORTANT]
-> Discuss with me on [Discord](http://discord.com/invite/M7nctFZUxX)!\
-> Join the community!
-
-
+> Join the [Winderust Discord community](https://discord.com/invite/M7nctFZUxX).
 
 > [!WARNING]  
 > Alpha state, expects things to break,imperfect or not nicely handled.
@@ -27,12 +24,16 @@ Windows Performance & Power Manager. A system engine to improve your Windows exp
 - etc. 
 
 ## Documentation
-(Soon)
+
+- [Architecture](docs/architecture.md)
+- [Adaptive Engine implementation](docs/adaptive-engine-implementation.md)
+- [Release checklist](docs/release-checklist.md)
 
 ## Benchmark
-- Although I do benchmarks for the presets, but the base entry is still too small for a nice experience.
-- This is adaptive engine benchmark results, mostly sacrificing background jobs for smoother foreground jobs.
-Benchmark are in [`benchmark/`](benchmark/README.md).
+
+Adaptive Engine benchmarks compare foreground responsiveness, retained background throughput,
+and package power on specific hardware. See [`benchmark/`](benchmark/README.md) for reports and
+methodology limits.
 
 ## Run/Build it yourself
 - [Prerequisites](https://rustup.rs)
@@ -67,4 +68,4 @@ See
 ## License
 
 Copyright (C) 2026 Tatsh Siow.
-License under [GPLv3.0](LICENSE).
+Licensed under [GPL-3.0-only](LICENSE).

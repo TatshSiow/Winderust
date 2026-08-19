@@ -16,7 +16,10 @@ Prefer visible state, compact controls, and predictable rows over large illustra
   searchable when expanded and keeps a search action in its remembered compact
   icon rail; the quiet navigation-styled toggle stays below a divider in normal
   sidebar flow rather than floating over content. Keep icon and row geometry
-  stable across the animated expanded/compact transition.
+  stable across the animated expanded/compact transition; selected and hover
+  surfaces retain rounded compact-row geometry instead of being edge-clipped.
+  Search remains one persistent field across both states so its icon, text
+  metrics, focus, and rounded surface never swap or reflow during the motion.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs`.
@@ -63,6 +66,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Respect `AnimationMode`: system/on/off flows through `ui_animations_enabled()`.
 - Use existing motion helpers such as `with_optional_motion`, `begin_expandable_motion`, `begin_control_motion`, hover layers, and collapsible chevrons.
 - Motion should clarify state changes: selected navigation, hover, dropdowns, popovers, switches, collapsible groups, and process groups.
+- Right-side status and preset rails slide at the window edge using the shared control-motion timing, collapse to the same 64 px action-row pattern as navigation, and retain their content only until an exit transition completes.
 - Keep animation IDs stable and bounded. Do not create unbounded global motion state keyed by volatile data.
 
 ## Process List
@@ -84,11 +88,51 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## Settings Pages
 
-- Adaptive Engine is the parent of Workload Engine. Workload Engine may retain its child configuration while the parent is off, but it must not run or appear as independently enabled.
+- Adaptive Engine is the parent of CPU Scheduler. CPU Scheduler has no separate master switch;
+  CPU Pressure Restraint and Limit Background Processors own independent switches and retain their
+  configuration while Adaptive Engine is off.
+- Adaptive Engine uses the right-rail Status / Presets tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
+- Adaptive Engine and preset details share CPU Behaviour, Processor Power, and Priority Control tuning tabs; the live page also exposes Custom Rules. The right-rail Presets panel is the single preset entry point. Processor Power uses separate setting cards rather than a collapsible group; turning its policy off dims and disables the value cards while leaving the policy switch available. CPU Pressure Restraint and Limit Background Processors likewise dim and disable only their own setting rows when off; preset-only CPU Pressure tuning remains editable because presets do not own its operational switch. Adaptive Engine does not manage timer-resolution behavior. Priority Control is a Focus / Visible Window / Background table with full-width table dropdowns. Each row switch dims and disables that row's three dropdowns while remaining interactive. Its Process Priority row reuses the safe automatic subset of the main Process Priority choices; High and Realtime remain manual-only. Adaptive Background Efficiency is another row in that table; `Default` makes Focus or Visible Window inherit the Background value. Memory Priority supports `Default` in every tier, meaning Adaptive Engine submits no Memory Priority claim for that tier. While CPU Pressure Restraint is enabled and pressure is active, eligible Visible Window and Background processes receive their configured priority, efficiency, and memory policy. Limit Background Processors independently limits hot Background processes and does not activate those softer controls. It owns the per-app CPU threshold, CPU Sets (Soft) or Processor Affinity (Hard) method, and processor selection: least-used across All, P-core, or E-core pools; fixed P/E/no-SMT topology; or an exact custom logical-processor mask. Only least-used selections expose a processor-limit percentage and rebalance. Recovery removes background processor limits before restoring the softer pressure-wide controls. Focus processes remain protected. Preset details keep tuning values editable without changing operational switches, and built-in presets remain read-only.
+- Processor Power exposes separate editable A/C and Battery boost policy/mode values for Background Pressure and Focus and Launch. Background-dominant pressure selects Background Pressure; app launches and genuinely heavy Focus App demand select Focus and Launch. These values are part of Adaptive Engine presets rather than hidden runtime constants.
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
 - Put explanatory text in muted helper labels or info popovers, not large instruction blocks.
 - Settings that affect Windows behavior should show conservative defaults and explicit enable controls.
+
+### CPU Allocation
+
+- Runtime-backed feature pages use a fixed status rail at the right edge instead of interrupting
+  the settings flow. Every rail uses the same Running / Not running / Unknown state, process
+  counts, and latest success/failure Action Log summary; unavailable snapshot metrics show an
+  em dash rather than a fabricated zero. Action counts and latest outcomes are runtime telemetry,
+  independent of Action Log visibility mode and its bounded visible history; clearing the Action
+  Log resets both.
+- By Foreground, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
+  every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
+  Power-plan actions are recorded only after the controller verifies the Windows plan transition.
+- CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
+  tabs, matching the navigation panel structure.
+- Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
+  delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
+  edit, and view use the existing full-window modal style.
+- Rule tables use Active, App Name, Executable Path, Focus, Visible Window, Background, and Actions
+  columns. Each policy column selects a Core or custom preset; do not restore expandable per-rule
+  CPU grids.
+
+### Background Efficiency
+
+- The master group owns the Background Efficiency Mode default. Foreground Detection and Visible
+  Window Detection use the same collapsible toggle-plus-value pattern as Priority Control.
+- Custom rules use the same compact Active, App Name, Executable Path, Focus, Visible Window,
+  Background, and Actions table pattern as CPU allocation. Each policy column selects Default,
+  Enabled, or Disabled; Default inherits the matching page-wide Efficiency Mode value.
+
+### Priority Control and Core Limiter
+
+- Priority Control custom rules use the same three policy columns and independently select the
+  priority for Focus, Visible Window, and Background.
+- Core Limiter uses the same three policy columns with Default, Enabled, and Disabled. Threshold,
+  sustain, cooldown, and processor-limit controls remain in the expandable rule details.
 
 ## Localization
 

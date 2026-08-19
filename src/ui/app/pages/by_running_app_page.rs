@@ -46,10 +46,8 @@ impl WinderustApp {
                                     &app.settings.by_running_app,
                                     &process,
                                 ) {
-                                    app.settings
-                                        .by_running_app
-                                        .rules
-                                        .push(app.new_by_running_app_rule(&process));
+                                    let rule = app.new_by_running_app_rule(&process);
+                                    app.settings.by_running_app.rules.push(rule);
                                     app.inputs.ensure_for_settings(window, cx, &app.settings);
                                     clear_input(&app.inputs.performance_process, window, cx);
                                 }

@@ -102,7 +102,7 @@ impl WinderustApp {
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalKind::BackgroundEfficiencyExclusion => {
+            ListItemRemovalKind::BackgroundEfficiencyRule => {
                 remove_at(&mut self.settings.background_efficiency.custom_rules, index);
             }
             ListItemRemovalKind::AppSuspensionRule => {
@@ -113,20 +113,19 @@ impl WinderustApp {
                 remove_at(&mut self.settings.app_suspension.suspendable_apps, index);
             }
             ListItemRemovalKind::CpuSetsSoftRule => {
-                if let Some(rule) = self.settings.cpu_sets_soft.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::CpuSetsSoft(rule.executable_path.clone()));
-                }
                 remove_at(&mut self.settings.cpu_sets_soft.rules, index);
             }
             ListItemRemovalKind::ProcessorAffinityHardRule => {
-                if let Some(rule) = self.settings.processor_affinity_hard.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::ProcessorAffinityHard(
-                            rule.executable_path.clone(),
-                        ));
-                }
                 remove_at(&mut self.settings.processor_affinity_hard.rules, index);
+            }
+            ListItemRemovalKind::AdaptiveEnginePreset => {
+                remove_at(&mut self.settings.adaptive_engine_presets, index);
+            }
+            ListItemRemovalKind::CpuAllocationPreset => {
+                remove_at(&mut self.settings.cpu_allocation_presets, index);
+            }
+            ListItemRemovalKind::AdvancedPowerPlanTuningPreset => {
+                remove_at(&mut self.settings.advanced_power_plan_tuning_presets, index);
             }
             ListItemRemovalKind::CoreLimiterRule => {
                 if let Some(rule) = self.settings.core_limiter.rules.get(index) {
@@ -140,11 +139,8 @@ impl WinderustApp {
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalKind::WorkloadEngineExclusion => {
-                remove_at(
-                    &mut self.settings.workload_engine.workload_engine_exclusions,
-                    index,
-                );
+            ListItemRemovalKind::CpuSchedulerCustomRule => {
+                remove_at(&mut self.settings.cpu_scheduler.custom_rules, index);
             }
             ListItemRemovalKind::ProcessPriorityExclusion => {
                 remove_at(&mut self.settings.process_priority.exclusions, index);

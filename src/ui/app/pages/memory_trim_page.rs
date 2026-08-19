@@ -146,66 +146,6 @@ impl WinderustApp {
                 ],
                 window,
                 cx,
-            ))
-            .child(setting_group_with_help(
-                SettingGroupTarget::MemoryTrimMonitoring,
-                (
-                    t!("memory_trim.category_monitoring").to_string(),
-                    t!("memory_trim.category_monitoring_help").to_string(),
-                ),
-                primary_control_button(Button::new("memory-trim-now"), cx)
-                    .label(t!("memory_trim.trim_now").to_string())
-                    .disabled(!enabled)
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        app.background_automation.request_memory_trim_now();
-                        app.status_message = t!("memory_trim.trim_now_requested").to_string();
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                self.is_setting_group_collapsed(SettingGroupTarget::MemoryTrimMonitoring),
-                vec![stat_grid(vec![
-                    (
-                        t!("memory_trim.status").to_string(),
-                        localized_runtime_status(&self.memory_trim_status.message),
-                    ),
-                    (
-                        t!("memory_trim.memory_load").to_string(),
-                        self.memory_trim_status
-                            .memory_load_percent
-                            .map(|percent| format!("{percent}%"))
-                            .unwrap_or_else(|| t!("common.unknown").to_string()),
-                    ),
-                    (
-                        t!("memory_trim.trimmed_processes").to_string(),
-                        self.memory_trim_status.trimmed_processes.to_string(),
-                    ),
-                    (
-                        t!("memory_trim.candidate_processes").to_string(),
-                        self.memory_trim_status.candidate_processes.to_string(),
-                    ),
-                    (
-                        t!("memory_trim.scanned_processes").to_string(),
-                        self.memory_trim_status.scanned_processes.to_string(),
-                    ),
-                    (
-                        t!("memory_trim.skipped_processes").to_string(),
-                        self.memory_trim_status.skipped_processes.to_string(),
-                    ),
-                    (
-                        t!("memory_trim.failed_actions").to_string(),
-                        self.memory_trim_status.failed_processes.to_string(),
-                    ),
-                    (
-                        t!("common.last_failure").to_string(),
-                        self.memory_trim_status
-                            .last_error
-                            .clone()
-                            .unwrap_or_else(|| t!("common.none").to_string()),
-                    ),
-                ])
-                .into_any_element()],
-                window,
-                cx,
             ));
         self.page_shell(Page::MemoryTrim, cx)
             .child(feature_toggle_switch_with_help(
@@ -223,6 +163,61 @@ impl WinderustApp {
                 }),
             ))
             .child(disabled_feature_body("memory-trim-body", body, enabled, cx))
+            .into_any_element()
+    }
+
+    pub(in crate::ui::app) fn render_memory_trim_status_card(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let enabled = self.settings.memory_trim.enabled;
+        v_flex()
+            .gap_3()
+            .child(
+                self.render_normalized_feature_status(Page::MemoryTrim)
+                    .expect("Memory Trim always has normalized runtime status"),
+            )
+            .child(
+                primary_control_button(Button::new("memory-trim-now"), cx)
+                    .w_full()
+                    .label(t!("memory_trim.trim_now").to_string())
+                    .disabled(!enabled)
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        let receiver = match app.runtime_handle.request_memory_trim_now() {
+                            Ok(receiver) => receiver,
+                            Err(error) => {
+                                app.status_message = error.to_string();
+                                cx.notify();
+                                return;
+                            }
+                        };
+                        app.status_message = t!("memory_trim.trim_now_requested").to_string();
+                        let result = cx.background_executor().spawn(async move {
+                            receiver
+                                .recv()
+                                .map_err(|_| {
+                                    "The Memory Trim worker stopped before replying.".to_owned()
+                                })?
+                                .map_err(|error| error.to_string())
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let result = result.await;
+                            let _ = this.update(cx, |app, cx| {
+                                match result {
+                                    Ok(status) => {
+                                        app.status_message =
+                                            localized_runtime_status(&status.message);
+                                        Arc::make_mut(&mut app.feature_status).memory_trim = status;
+                                    }
+                                    Err(error) => app.status_message = error,
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                        cx.notify();
+                    })),
+            )
             .into_any_element()
     }
 

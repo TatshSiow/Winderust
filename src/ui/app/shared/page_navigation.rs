@@ -291,7 +291,7 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             "power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc".to_string(),
         ],
         Page::WinderustFeatures => vec![
-            "winderust features background efficiency background_efficiency workload engine foreground interactivity memory trim working set memory ram background restraint".to_string(),
+            "winderust features background efficiency background_efficiency CPU Scheduler foreground interactivity memory trim working set memory ram background restraint".to_string(),
         ],
         Page::CpuControl => vec![
             "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
@@ -336,7 +336,6 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
         ],
         Page::AdvancedPowerPlanTuning => vec![
             t!("processor_power.help").to_string(),
-            t!("processor_power.link_ac_dc_help").to_string(),
             t!("processor_power.performance_help").to_string(),
             t!("processor_power.balanced_help").to_string(),
             t!("processor_power.saver_help").to_string(),
@@ -383,15 +382,14 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             t!("adaptive_engine.intro_1").to_string(),
             t!("adaptive_engine.intro_2").to_string(),
             t!("adaptive_engine.intro_3").to_string(),
-            t!("adaptive_engine.timer_requests_help").to_string(),
-            "adaptive engine power saving background_efficiency timer resolution audio guard workload engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background".to_string(),
+            "adaptive engine power saving background_efficiency CPU Scheduler cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background".to_string(),
         ],
         Page::BackgroundEfficiency => vec![
             t!("background_efficiency.intro_1").to_string(),
             t!("background_efficiency.intro_2").to_string(),
             t!("background_efficiency.intro_3").to_string(),
-            t!("common.protect_foreground_app_help").to_string(),
-            t!("common.protect_visible_window_apps_help").to_string(),
+            t!("background_efficiency.foreground_detection_help").to_string(),
+            t!("common.visible_window_detection_help").to_string(),
             t!("background_efficiency.custom_rules_help").to_string(),
             "efficiency mode background_efficiency qos throttle background priority exclusion custom_rules".to_string(),
         ],

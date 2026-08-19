@@ -1,7 +1,11 @@
 use std::{
     mem::{size_of, transmute},
+    panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
-    sync::atomic::{AtomicBool, AtomicIsize, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicIsize, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -23,7 +27,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::{self_power, win_util::wide_null};
+use crate::win_util::wide_null;
 
 const TRAY_UID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -35,6 +39,37 @@ static HIDE_ON_CLOSE: AtomicBool = AtomicBool::new(false);
 static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTORE_REQUESTED: AtomicBool = AtomicBool::new(false);
+static VISIBILITY_CALLBACK: Mutex<Option<VisibilityCallback>> = Mutex::new(None);
+
+type VisibilityCallback = Arc<dyn Fn(bool) + Send + Sync>;
+
+pub struct TrayVisibilityWatcher {
+    callback: VisibilityCallback,
+}
+
+impl TrayVisibilityWatcher {
+    pub fn start(callback: VisibilityCallback) -> Self {
+        let mut slot = VISIBILITY_CALLBACK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(Arc::clone(&callback));
+        Self { callback }
+    }
+}
+
+impl Drop for TrayVisibilityWatcher {
+    fn drop(&mut self) {
+        let mut slot = VISIBILITY_CALLBACK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot
+            .as_ref()
+            .is_some_and(|callback| Arc::ptr_eq(callback, &self.callback))
+        {
+            *slot = None;
+        }
+    }
+}
 
 pub struct TrayIcon {
     hwnd: HWND,
@@ -113,8 +148,7 @@ pub fn is_hidden_to_tray() -> bool {
 }
 
 pub fn hide_window(hwnd: HWND) {
-    HIDDEN_TO_TRAY.store(true, Ordering::Relaxed);
-    let _ = self_power::enable_hidden_mode();
+    set_hidden_to_tray(true);
     // SAFETY: hwnd is obtained from the live GPUI window; ShowWindow does not retain pointers.
     unsafe { ShowWindow(hwnd, SW_HIDE) };
 }
@@ -202,8 +236,7 @@ unsafe extern "system" fn tray_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_CLOSE && HIDE_ON_CLOSE.load(Ordering::Relaxed) {
-        HIDDEN_TO_TRAY.store(true, Ordering::Relaxed);
-        let _ = self_power::enable_hidden_mode();
+        set_hidden_to_tray(true);
         // SAFETY: hwnd is the window associated with this active window procedure callback.
         unsafe { ShowWindow(hwnd, SW_HIDE) };
         return 0;
@@ -243,9 +276,8 @@ unsafe extern "system" fn tray_wnd_proc(
 }
 
 fn show_window(hwnd: HWND) {
-    HIDDEN_TO_TRAY.store(false, Ordering::Relaxed);
+    set_hidden_to_tray(false);
     RESTORE_REQUESTED.store(true, Ordering::Relaxed);
-    let _ = self_power::disable_hidden_mode();
     // SAFETY: hwnd is the live application window supplied by its window procedure callback.
     unsafe {
         ShowWindow(hwnd, SW_SHOW);
@@ -302,14 +334,28 @@ fn show_tray_menu(hwnd: HWND) {
 
 fn quit_window(hwnd: HWND) {
     HIDE_ON_CLOSE.store(false, Ordering::Relaxed);
-    HIDDEN_TO_TRAY.store(false, Ordering::Relaxed);
+    set_hidden_to_tray(false);
     QUIT_REQUESTED.store(true, Ordering::Relaxed);
-    let _ = self_power::disable_hidden_mode();
 
     // SAFETY: hwnd is the live application window supplied by its window procedure callback.
     unsafe {
         ShowWindow(hwnd, SW_SHOWNA);
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+}
+
+fn set_hidden_to_tray(hidden: bool) {
+    if HIDDEN_TO_TRAY.swap(hidden, Ordering::Relaxed) == hidden {
+        return;
+    }
+    let callback = VISIBILITY_CALLBACK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(callback) = callback {
+        if catch_unwind(AssertUnwindSafe(|| callback(hidden))).is_err() {
+            eprintln!("Tray visibility callback panicked.");
+        }
     }
 }
 #[cfg(test)]

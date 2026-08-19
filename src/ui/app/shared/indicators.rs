@@ -7,19 +7,6 @@ pub(in crate::ui::app) struct SuspensionIndicator {
     pub(in crate::ui::app) hover: String,
 }
 
-pub(in crate::ui::app) struct AffinityIndicator {
-    pub(in crate::ui::app) label: String,
-    pub(in crate::ui::app) bg: u32,
-    pub(in crate::ui::app) fg: u32,
-    pub(in crate::ui::app) hover: String,
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::ui::app) enum CoreTileGridAction {
-    CpuSetsSoftRule { index: usize },
-    ProcessorAffinityHardRule { index: usize },
-}
-
 pub(in crate::ui::app) fn app_suspension_indicator(
     status: &AppSuspensionSnapshot,
     process: &str,
@@ -107,49 +94,8 @@ pub(in crate::ui::app) fn app_suspension_indicator(
     }
 }
 
-pub(in crate::ui::app) fn cpu_allocation_indicator(
-    status: &CpuAllocationSnapshot,
-    process: &str,
-) -> AffinityIndicator {
-    let accent = accent_color();
-    let accent_bg = settings_card_hover_color();
-    if cpu_allocation::is_builtin_excluded(process) {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.protected").to_string(),
-            bg: accent_bg,
-            fg: accent,
-            hover: t!("cpu_allocation.indicator.protected_help").to_string(),
-        }
-    } else if cpu_allocation::contains_process(&status.adjusted_apps, process) {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.pinned").to_string(),
-            bg: success_bg_color(),
-            fg: success_text_color(),
-            hover: t!("cpu_allocation.indicator.pinned_help").to_string(),
-        }
-    } else if status.enabled {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.ready").to_string(),
-            bg: panel_active_color(),
-            fg: muted_text_color(),
-            hover: t!("cpu_allocation.indicator.ready_help").to_string(),
-        }
-    } else {
-        AffinityIndicator {
-            label: t!("cpu_allocation.indicator.off").to_string(),
-            bg: panel_active_color(),
-            fg: dim_text_color(),
-            hover: t!("cpu_allocation.indicator.off_help").to_string(),
-        }
-    }
-}
-
 pub(in crate::ui::app) fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
     status.enabled && !app_suspension::contains_process(&status.suspended_apps, process)
-}
-
-pub(in crate::ui::app) fn logical_core_count() -> usize {
-    cpu_allocation::logical_processors().len().clamp(1, 64)
 }
 
 pub(in crate::ui::app) fn action_log_mode_label(mode: ActionLogMode) -> String {
@@ -170,30 +116,19 @@ pub(in crate::ui::app) fn action_log_mode_help(mode: ActionLogMode) -> String {
     }
 }
 
-pub(in crate::ui::app) fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -> String {
+pub(in crate::ui::app) fn cpu_allocation_method_label(mode: CpuAllocationMethod) -> String {
     match mode {
-        CpuRestrictionMode::SoftCpuSets => {
+        CpuAllocationMethod::CpuSetsSoft => {
             t!("background_efficiency.cpu_restriction_soft").to_string()
         }
-        CpuRestrictionMode::HardAffinity => {
+        CpuAllocationMethod::ProcessorAffinityHard => {
             t!("background_efficiency.cpu_restriction_hard").to_string()
         }
     }
 }
 
 pub(in crate::ui::app) fn default_affinity_mask() -> u64 {
-    let processors = cpu_allocation::logical_processors();
-    let mask = cpu_allocation_processors_mask(&processors);
-    if mask == 0 {
-        let core_count = logical_core_count();
-        if core_count >= 64 {
-            u64::MAX
-        } else {
-            (1_u64 << core_count) - 1
-        }
-    } else {
-        mask
-    }
+    cpu_allocation::default_cpu_mask()
 }
 
 pub(in crate::ui::app) fn affinity_mask_contains(mask: u64, core: usize) -> bool {
@@ -213,47 +148,35 @@ pub(in crate::ui::app) fn toggle_affinity_core(mask: &mut u64, core: usize) {
     }
 }
 
+pub(in crate::ui::app) fn toggle_specific_processor(processors: &mut Vec<u8>, index: usize) {
+    let Ok(index) = u8::try_from(index) else {
+        return;
+    };
+    if let Some(position) = processors.iter().position(|processor| *processor == index) {
+        processors.remove(position);
+    } else {
+        processors.push(index);
+        processors.sort_unstable();
+    }
+}
+
 pub(in crate::ui::app) fn cpu_allocation_processors_mask(
     processors: &[LogicalProcessorInfo],
 ) -> u64 {
-    processors
-        .iter()
-        .filter_map(|processor| cpu_allocation_processor_bit(processor.index))
-        .fold(0, |mask, bit| mask | bit)
+    cpu_allocation::logical_processor_mask(processors)
 }
 
 pub(in crate::ui::app) fn cpu_allocation_processors_kind_mask(
     processors: &[LogicalProcessorInfo],
     kind: LogicalProcessorKind,
 ) -> u64 {
-    processors
-        .iter()
-        .filter(|processor| processor.kind == kind)
-        .filter_map(|processor| cpu_allocation_processor_bit(processor.index))
-        .fold(0, |mask, bit| mask | bit)
+    cpu_allocation::logical_processor_kind_mask(processors, kind)
 }
 
 pub(in crate::ui::app) fn cpu_allocation_processors_no_smt_mask(
     processors: &[LogicalProcessorInfo],
 ) -> u64 {
-    let mut seen_cores = Vec::new();
-    let mut mask = 0;
-
-    for processor in processors {
-        if seen_cores.contains(&processor.core_index) {
-            continue;
-        }
-        seen_cores.push(processor.core_index);
-        if let Some(bit) = cpu_allocation_processor_bit(processor.index) {
-            mask |= bit;
-        }
-    }
-
-    mask
-}
-
-pub(in crate::ui::app) fn cpu_allocation_processor_bit(index: usize) -> Option<u64> {
-    (index < 64).then_some(1_u64 << index)
+    cpu_allocation::logical_processor_no_smt_mask(processors)
 }
 
 pub(in crate::ui::app) fn core_tile_kind_label(processor: &LogicalProcessorInfo) -> String {
@@ -314,7 +237,7 @@ pub(in crate::ui::app) const fn processor_boost_mode_picker_id(
 ) -> &'static str {
     match source {
         ProcessorPowerSource::Ac => "processor-power-ac-boost-mode-picker",
-        ProcessorPowerSource::Dc => "processor-power-dc-boost-mode-picker",
+        ProcessorPowerSource::Battery => "processor-power-battery-boost-mode-picker",
     }
 }
 

@@ -1,0 +1,13 @@
+pub(crate) mod cpu_allocation;
+pub(crate) mod dynamic_priority_boost;
+pub(crate) mod gpu_priority;
+pub(crate) mod io_priority;
+pub(crate) mod memory_priority;
+pub(crate) mod memory_trim;
+pub(crate) mod power_plan;
+pub(crate) mod priority_efficiency;
+pub(crate) mod process;
+pub(crate) mod process_termination;
+pub(crate) mod suspension;
+pub(crate) mod thread_priority;
+pub(crate) mod timer_resolution;

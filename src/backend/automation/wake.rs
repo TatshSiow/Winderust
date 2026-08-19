@@ -10,22 +10,35 @@ pub(super) fn wait_for_wake(
         return true;
     }
     if state.change_generation != observed_generation {
+        #[cfg(feature = "architecture-diagnostics")]
+        crate::architecture_diagnostics::record_signal_wake();
         return false;
     }
 
     if let Some(wait_for) = wait_for {
-        shared
+        let (state, _wait_result) = shared
             .changed
             .wait_timeout(state, wait_for)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0
-            .stop_requested
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(feature = "architecture-diagnostics")]
+        if !state.stop_requested {
+            if _wait_result.timed_out() {
+                crate::architecture_diagnostics::record_timeout_wake();
+            } else {
+                crate::architecture_diagnostics::record_signal_wake();
+            }
+        }
+        state.stop_requested
     } else {
-        shared
+        let state = shared
             .changed
             .wait(state)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stop_requested
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(feature = "architecture-diagnostics")]
+        if !state.stop_requested {
+            crate::architecture_diagnostics::record_signal_wake();
+        }
+        state.stop_requested
     }
 }
 pub(super) fn input_hook_should_check(settings: &Settings, events: InputHookEvents) -> bool {

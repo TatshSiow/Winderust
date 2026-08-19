@@ -2,10 +2,7 @@ use std::{
     cell::RefCell,
     panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
-    sync::{
-        atomic::{AtomicU8, Ordering},
-        mpsc, Arc,
-    },
+    sync::{mpsc, Arc},
     thread::{self, JoinHandle},
 };
 
@@ -34,8 +31,6 @@ const LLKHF_INJECTED: u32 = 0x0000_0010;
 const LLKHF_INJECTED_LOWER_IL: u32 = 0x0000_0002;
 const LLMHF_INJECTED: u32 = 0x0000_0001;
 const LLMHF_INJECTED_LOWER_IL: u32 = 0x0000_0002;
-
-static INPUT_EVENTS: AtomicU8 = AtomicU8::new(0);
 
 type EventCallback = Arc<dyn Fn(InputHookEvents) + Send + Sync>;
 
@@ -259,7 +254,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 }
 
 fn record_input_event(event: u8) {
-    INPUT_EVENTS.fetch_or(event, Ordering::Relaxed);
     let events = input_events_from_bits(event);
     INPUT_EVENT_CALLBACK.with(|slot| {
         if let Some(callback) = slot.borrow().as_ref() {
@@ -268,15 +262,6 @@ fn record_input_event(event: u8) {
             }
         }
     });
-}
-
-pub fn take_pending_events() -> InputHookEvents {
-    let events = if INPUT_EVENTS.load(Ordering::Relaxed) == 0 {
-        0
-    } else {
-        INPUT_EVENTS.swap(0, Ordering::Relaxed)
-    };
-    input_events_from_bits(events)
 }
 
 fn input_events_from_bits(events: u8) -> InputHookEvents {
@@ -350,7 +335,6 @@ mod tests {
         INPUT_EVENT_CALLBACK.with(|slot| {
             *slot.borrow_mut() = None;
         });
-        take_pending_events();
     }
 
     #[test]

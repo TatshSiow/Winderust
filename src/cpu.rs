@@ -245,6 +245,21 @@ pub fn process_cpu_usage_percent(
     previous: ProcessCpuSample,
     current: ProcessCpuSample,
 ) -> Option<f32> {
+    process_cpu_time_percent(previous, current, logical_processor_count())
+}
+
+pub fn process_cpu_demand_percent(
+    previous: ProcessCpuSample,
+    current: ProcessCpuSample,
+) -> Option<f32> {
+    process_cpu_time_percent(previous, current, 1)
+}
+
+fn process_cpu_time_percent(
+    previous: ProcessCpuSample,
+    current: ProcessCpuSample,
+    processor_count: usize,
+) -> Option<f32> {
     let elapsed = current.sampled_at.duration_since(previous.sampled_at);
     let elapsed_100ns = elapsed.as_nanos() / 100;
     if elapsed_100ns == 0 {
@@ -254,8 +269,10 @@ pub fn process_cpu_usage_percent(
     let cpu_delta = current
         .cpu_time_100ns
         .saturating_sub(previous.cpu_time_100ns) as f64;
-    let processor_count = logical_processor_count() as f64;
-    Some(((cpu_delta / (elapsed_100ns as f64 * processor_count)) * 100.0).clamp(0.0, 100.0) as f32)
+    Some(
+        ((cpu_delta / (elapsed_100ns as f64 * processor_count.max(1) as f64)) * 100.0)
+            .clamp(0.0, 100.0) as f32,
+    )
 }
 
 fn read_system_cpu_times() -> Option<CpuTimeCounters> {

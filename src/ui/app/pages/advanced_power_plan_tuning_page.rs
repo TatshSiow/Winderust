@@ -11,6 +11,679 @@ impl WinderustApp {
             .into_any_element()
     }
 
+    pub(in crate::ui::app) fn render_advanced_power_plan_tuning_side_panel(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let header = h_flex()
+            .min_h(px(48.0))
+            .px_3()
+            .child(section_title_text(
+                t!("processor_power.presets").to_string(),
+            ))
+            .into_any_element();
+        let row_hover = cx.theme().secondary_hover;
+        let mut presets = v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .min_w(px(0.0))
+            .overflow_y_scrollbar()
+            .gap_4()
+            .p_3();
+        let mut built_in_presets = v_flex().w_full().gap_1().child(
+            text_muted(t!("processor_power.built_in_presets").to_string())
+                .px_1()
+                .pb_1(),
+        );
+        for preset in processor_power_builtin_presets() {
+            built_in_presets = built_in_presets.child(
+                h_flex()
+                    .id(SharedString::from(format!(
+                        "advanced-power-plan-tuning-built-in-preset-{preset:?}"
+                    )))
+                    .w_full()
+                    .min_w(px(0.0))
+                    .h(px(40.0))
+                    .gap_2()
+                    .px_2()
+                    .rounded(px(BRAND_RADIUS_CONTROL))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .hover(move |style| style.bg(row_hover))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(processor_power_preset_label(preset)),
+                    )
+                    .child(
+                        control_button(
+                            Button::new(SharedString::from(format!(
+                                "view-advanced-power-plan-tuning-built-in-preset-{preset:?}"
+                            )))
+                            .ghost(),
+                        )
+                        .with_size(px(28.0))
+                        .icon(Icon::new(NavIcon::Info).with_size(px(12.0)))
+                        .tooltip(t!("processor_power.view_preset").to_string())
+                        .on_click(cx.listener(
+                            move |app, _, window, cx| {
+                                app.open_advanced_power_plan_tuning_preset_editor(
+                                    AdvancedPowerPlanTuningPresetEditorTarget::BuiltIn(preset),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                    ),
+            );
+        }
+        presets = presets.child(built_in_presets);
+
+        let mut custom_presets = v_flex().w_full().gap_1().child(
+            text_muted(t!("processor_power.custom_presets").to_string())
+                .px_1()
+                .pb_1(),
+        );
+        for (index, preset) in self
+            .settings
+            .advanced_power_plan_tuning_presets
+            .iter()
+            .enumerate()
+        {
+            let removal_target = ListItemRemovalTarget::new(
+                ListItemRemovalKind::AdvancedPowerPlanTuningPreset,
+                index,
+            );
+            let row = h_flex()
+                .id(SharedString::from(format!(
+                    "advanced-power-plan-tuning-custom-preset-row-{index}"
+                )))
+                .w_full()
+                .min_w(px(0.0))
+                .h(px(40.0))
+                .gap_2()
+                .px_2()
+                .rounded(px(BRAND_RADIUS_CONTROL))
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                .hover(move |style| style.bg(row_hover))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .child(advanced_power_plan_tuning_preset_label(&preset.name)),
+                )
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_1()
+                        .child(
+                            control_button(
+                                Button::new(SharedString::from(format!(
+                                    "edit-advanced-power-plan-tuning-preset-{index}"
+                                )))
+                                .ghost(),
+                            )
+                            .with_size(px(28.0))
+                            .icon(Icon::new(NavIcon::SquarePen).with_size(px(12.0)))
+                            .tooltip(t!("common.edit").to_string())
+                            .on_click(cx.listener(
+                                move |app, _, window, cx| {
+                                    app.open_advanced_power_plan_tuning_preset_editor(
+                                        AdvancedPowerPlanTuningPresetEditorTarget::Custom(Some(
+                                            index,
+                                        )),
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            )),
+                        )
+                        .child(
+                            remove_control_button(Button::new(SharedString::from(format!(
+                                "remove-advanced-power-plan-tuning-preset-{index}"
+                            ))))
+                            .with_size(px(28.0))
+                            .icon(Icon::new(NavIcon::Trash2).with_size(px(12.0)))
+                            .on_click(cx.listener(
+                                move |app, _, _, cx| {
+                                    app.request_list_item_removal(removal_target, cx);
+                                },
+                            )),
+                        ),
+                )
+                .into_any_element();
+            custom_presets = custom_presets.child(self.animated_list_item(
+                removal_target,
+                SharedString::from(format!("advanced-power-plan-tuning-preset-{index}")),
+                row,
+            ));
+        }
+        if self.settings.advanced_power_plan_tuning_presets.is_empty() {
+            custom_presets = custom_presets.child(
+                text_muted(t!("processor_power.no_custom_presets").to_string())
+                    .px_1()
+                    .py_2(),
+            );
+        }
+        presets = presets.child(custom_presets);
+
+        let body = v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(presets)
+            .child(
+                div()
+                    .w_full()
+                    .p_3()
+                    .border_t_1()
+                    .border_color(rgb(border_color()))
+                    .child(
+                        primary_control_button(
+                            Button::new("add-advanced-power-plan-tuning-preset"),
+                            cx,
+                        )
+                        .w_full()
+                        .icon(Icon::new(NavIcon::Plus).with_size(px(14.0)))
+                        .label(t!("processor_power.add_preset").to_string())
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.open_advanced_power_plan_tuning_preset_editor(
+                                AdvancedPowerPlanTuningPresetEditorTarget::Custom(None),
+                                window,
+                                cx,
+                            );
+                        })),
+                    ),
+            )
+            .into_any_element();
+
+        page_side_panel(header, body)
+    }
+
+    fn open_advanced_power_plan_tuning_preset_editor(
+        &mut self,
+        target: AdvancedPowerPlanTuningPresetEditorTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (name, values) = match target {
+            AdvancedPowerPlanTuningPresetEditorTarget::BuiltIn(preset) => {
+                (None, ProcessorPowerValues::for_preset(preset))
+            }
+            AdvancedPowerPlanTuningPresetEditorTarget::Custom(Some(index)) => {
+                let Some(preset) = self.settings.advanced_power_plan_tuning_presets.get(index)
+                else {
+                    return;
+                };
+                (
+                    Some(preset.name.clone()),
+                    advanced_power_plan_tuning_preset_values(preset),
+                )
+            }
+            AdvancedPowerPlanTuningPresetEditorTarget::Custom(None) => {
+                (Some(String::new()), self.processor_power_values().ac)
+            }
+        };
+
+        let sliders = [
+            make_processor_power_slider(cx, u64::from(values.core_parking_min)),
+            make_processor_power_slider(cx, u64::from(values.performance_min)),
+            make_processor_power_slider(cx, u64::from(values.performance_max)),
+            make_processor_power_slider(cx, u64::from(values.boost_policy)),
+        ];
+        let slider_subscriptions = ADVANCED_POWER_PLAN_TUNING_PRESET_FIELDS
+            .into_iter()
+            .zip(sliders.iter())
+            .map(|(field, slider)| {
+                cx.subscribe_in(slider, window, move |app, _, event: &SliderEvent, _, cx| {
+                    let SliderEvent::Change(value) = event;
+                    app.set_advanced_power_plan_tuning_preset_field_value(
+                        field,
+                        value.end().round() as u64,
+                    );
+                    cx.notify();
+                })
+            })
+            .collect();
+        self.advanced_power_plan_tuning_preset_editor = Some(AdvancedPowerPlanTuningPresetEditor {
+            target,
+            values,
+            sliders,
+            _slider_subscriptions: slider_subscriptions,
+        });
+        self.active_power_plan_picker = None;
+        if let Some(name) = name {
+            clear_input_to(
+                &self.inputs.advanced_power_plan_tuning_preset_name,
+                &name,
+                window,
+                cx,
+            );
+            self.inputs
+                .advanced_power_plan_tuning_preset_name
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window);
+        }
+        cx.notify();
+    }
+
+    pub(in crate::ui::app) fn close_advanced_power_plan_tuning_preset_editor(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        self.advanced_power_plan_tuning_preset_editor = None;
+        self.editing_numeric = None;
+        self.active_power_plan_picker = None;
+        cx.notify();
+    }
+
+    fn save_advanced_power_plan_tuning_preset(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.advanced_power_plan_tuning_preset_editor.as_ref() else {
+            return;
+        };
+        let AdvancedPowerPlanTuningPresetEditorTarget::Custom(index) = editor.target else {
+            return;
+        };
+        let name = self
+            .inputs
+            .advanced_power_plan_tuning_preset_name
+            .read(cx)
+            .value()
+            .to_string();
+        if upsert_advanced_power_plan_tuning_preset(
+            &mut self.settings.advanced_power_plan_tuning_presets,
+            index,
+            &name,
+            editor.values,
+        ) {
+            self.close_advanced_power_plan_tuning_preset_editor(cx);
+        }
+    }
+
+    fn step_advanced_power_plan_tuning_preset_value(
+        &mut self,
+        field: AdaptiveEngineProcessorPowerPolicyField,
+        change: &StepChange<u64>,
+    ) {
+        let Some(editor) = self.advanced_power_plan_tuning_preset_editor.as_mut() else {
+            return;
+        };
+        let current = advanced_power_plan_tuning_preset_field_value(editor.values, field);
+        let value = apply_u64_step(current, change, 0, 100);
+        self.set_advanced_power_plan_tuning_preset_field_value(field, value);
+    }
+
+    pub(in crate::ui::app) fn set_advanced_power_plan_tuning_preset_field_value(
+        &mut self,
+        field: AdaptiveEngineProcessorPowerPolicyField,
+        value: u64,
+    ) {
+        let Some(editor) = self.advanced_power_plan_tuning_preset_editor.as_mut() else {
+            return;
+        };
+        set_advanced_power_plan_tuning_preset_field_value(
+            &mut editor.values,
+            field,
+            value.min(100) as u32,
+        );
+        editor.values = editor.values.normalized();
+    }
+
+    fn set_advanced_power_plan_tuning_preset_boost_mode(&mut self, boost_mode: ProcessorBoostMode) {
+        let Some(editor) = self.advanced_power_plan_tuning_preset_editor.as_mut() else {
+            return;
+        };
+        editor.values.boost_mode = boost_mode;
+    }
+
+    fn render_advanced_power_plan_tuning_preset_values(
+        &self,
+        editable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let editor = self
+            .advanced_power_plan_tuning_preset_editor
+            .as_ref()
+            .expect("processor tuning preset values require an editor");
+        let values = editor.values;
+        for (field, slider) in ADVANCED_POWER_PLAN_TUNING_PRESET_FIELDS
+            .into_iter()
+            .zip(editor.sliders.iter())
+        {
+            let value = advanced_power_plan_tuning_preset_field_value(values, field) as f32;
+            slider.update(cx, |state, cx| {
+                if (state.value().end() - value).abs() > f32::EPSILON {
+                    state.set_value(value, window, cx);
+                }
+            });
+        }
+        let rows = [
+            (
+                AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin,
+                t!("processor_power.core_parking_min").to_string(),
+                values.core_parking_min,
+                &editor.sliders[0],
+            ),
+            (
+                AdaptiveEngineProcessorPowerPolicyField::PerformanceMin,
+                t!("processor_power.processor_min").to_string(),
+                values.performance_min,
+                &editor.sliders[1],
+            ),
+            (
+                AdaptiveEngineProcessorPowerPolicyField::PerformanceMax,
+                t!("processor_power.processor_max").to_string(),
+                values.performance_max,
+                &editor.sliders[2],
+            ),
+            (
+                AdaptiveEngineProcessorPowerPolicyField::BoostPolicy,
+                t!("processor_power.boost_policy").to_string(),
+                values.boost_policy,
+                &editor.sliders[3],
+            ),
+        ];
+        let mut panel = branded_panel();
+        for (index, (field, label, value, slider)) in rows.into_iter().enumerate() {
+            let id = SharedString::from(format!("advanced-power-plan-tuning-preset-{field:?}"));
+            panel = panel.child(if editable {
+                processor_power_group_slider(
+                    id,
+                    &label,
+                    self.render_numeric_value(
+                        NumericField::AdvancedPowerPlanTuningPreset(field),
+                        format!("{value}%"),
+                        value.to_string(),
+                        cx,
+                    ),
+                    slider,
+                    window,
+                    cx,
+                    cx.listener(move |app, change: &StepChange<u64>, _, cx| {
+                        app.step_advanced_power_plan_tuning_preset_value(field, change);
+                        cx.notify();
+                    }),
+                )
+            } else {
+                win32_priority_registry_value_row(id, label, None, format!("{value}%"), index != 0)
+            });
+        }
+        panel = panel.child(if editable {
+            setting_group_action_row(
+                "advanced-power-plan-tuning-preset-boost-mode",
+                t!("processor_power.boost_mode").to_string(),
+                self.render_advanced_power_plan_tuning_preset_boost_mode_picker(window, cx),
+                true,
+            )
+            .into_any_element()
+        } else {
+            win32_priority_registry_value_row(
+                "advanced-power-plan-tuning-preset-boost-mode",
+                t!("processor_power.boost_mode").to_string(),
+                None,
+                processor_boost_mode_label(values.boost_mode),
+                true,
+            )
+        });
+
+        panel.into_any_element()
+    }
+
+    fn render_advanced_power_plan_tuning_preset_boost_mode_picker(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let picker_id = "advanced-power-plan-tuning-preset-boost-mode-picker";
+        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id);
+        let placement = self.dropdown_placement(
+            picker_id,
+            dropdown_list_height(ProcessorBoostMode::ALL.len()),
+            window,
+        );
+        let editor = self
+            .advanced_power_plan_tuning_preset_editor
+            .as_ref()
+            .expect("processor tuning preset boost picker requires an editor");
+        let selected = editor.values.boost_mode;
+        let mut options = dropdown_surface(cx, placement.max_height);
+        for boost_mode in ProcessorBoostMode::ALL {
+            options = options.child(
+                dropdown_option_row(
+                    SharedString::from(format!("{picker_id}-option-{boost_mode:?}")),
+                    processor_boost_mode_label(boost_mode),
+                    selected == boost_mode,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.set_advanced_power_plan_tuning_preset_boost_mode(boost_mode);
+                    app.active_power_plan_picker = None;
+                    cx.notify();
+                })),
+            );
+        }
+
+        let phase = dropdown_popup_phase(picker_id, is_open, cx);
+        dropdown_select_container(DropdownSelectWidth::Wide)
+            .child(
+                dropdown_select_control(
+                    SharedString::from(format!("{picker_id}-control")),
+                    processor_boost_mode_label(selected),
+                    true,
+                    is_open,
+                    phase,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                        != Some(picker_id))
+                    .then_some(picker_id.to_owned());
+                    cx.notify();
+                })),
+            )
+            .child(dropdown_anchor_sensor(
+                picker_id,
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
+            .child(dropdown_popup_or_empty(
+                picker_id.into(),
+                phase,
+                placement,
+                options,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    pub(in crate::ui::app) fn render_advanced_power_plan_tuning_preset_modal(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let editor = self
+            .advanced_power_plan_tuning_preset_editor
+            .as_ref()
+            .expect("processor tuning preset modal requires an editor");
+        let input = &self.inputs.advanced_power_plan_tuning_preset_name;
+        let name = input.read(cx).value().to_string();
+        let custom_index = match editor.target {
+            AdvancedPowerPlanTuningPresetEditorTarget::BuiltIn(_) => None,
+            AdvancedPowerPlanTuningPresetEditorTarget::Custom(index) => index,
+        };
+        let edits_custom = matches!(
+            editor.target,
+            AdvancedPowerPlanTuningPresetEditorTarget::Custom(_)
+        );
+        let duplicate_name = edits_custom
+            && advanced_power_plan_tuning_preset_name_exists(
+                &self.settings.advanced_power_plan_tuning_presets,
+                custom_index,
+                &name,
+            );
+        let can_save = !name.trim().is_empty() && !duplicate_name;
+        let name_focused = input.read(cx).focus_handle(cx).is_focused(window);
+        let title = match editor.target {
+            AdvancedPowerPlanTuningPresetEditorTarget::BuiltIn(preset) => format!(
+                "{}: {}",
+                t!("processor_power.view_preset"),
+                processor_power_preset_label(preset)
+            ),
+            AdvancedPowerPlanTuningPresetEditorTarget::Custom(Some(_)) => {
+                t!("processor_power.edit_preset").to_string()
+            }
+            AdvancedPowerPlanTuningPresetEditorTarget::Custom(None) => {
+                t!("processor_power.add_preset").to_string()
+            }
+        };
+        let name_help = if duplicate_name {
+            text_warning(t!("processor_power.duplicate_preset_name").to_string())
+        } else {
+            text_muted(t!("processor_power.preset_name_help").to_string())
+        };
+        let mut content = v_flex().w_full().min_w(px(0.0)).gap_4().p_4();
+        if edits_custom {
+            content = content.child(
+                branded_panel()
+                    .child(setting_group_stacked_action_row(
+                        "advanced-power-plan-tuning-preset-name-row",
+                        t!("processor_power.preset_name").to_string(),
+                        app_input(input, name_focused, cx).into_any_element(),
+                        false,
+                    ))
+                    .child(name_help.px_4().pb_3()),
+            );
+        }
+        content = content.child(self.render_advanced_power_plan_tuning_preset_values(
+            edits_custom,
+            window,
+            cx,
+        ));
+
+        let mut footer = h_flex()
+            .w_full()
+            .flex_shrink_0()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .p_4()
+            .border_t_1()
+            .border_color(rgb(border_color()));
+        if edits_custom {
+            footer = footer
+                .child(
+                    control_button(Button::new("cancel-advanced-power-plan-tuning-preset"))
+                        .label(t!("common.cancel").to_string())
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.close_advanced_power_plan_tuning_preset_editor(cx);
+                        })),
+                )
+                .child(
+                    primary_control_button(
+                        Button::new("save-advanced-power-plan-tuning-preset"),
+                        cx,
+                    )
+                    .label(t!("common.save").to_string())
+                    .disabled(!can_save)
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.save_advanced_power_plan_tuning_preset(cx);
+                    })),
+                );
+        } else {
+            footer = footer.child(
+                primary_control_button(
+                    Button::new("close-advanced-power-plan-tuning-preset-view"),
+                    cx,
+                )
+                .label(t!("common.done").to_string())
+                .on_click(cx.listener(|app, _, _, cx| {
+                    app.close_advanced_power_plan_tuning_preset_editor(cx);
+                })),
+            );
+        }
+
+        let modal = v_flex()
+            .w_full()
+            .max_w(px(760.0))
+            .h_full()
+            .max_h(px(620.0))
+            .overflow_hidden()
+            .rounded(px(BRAND_RADIUS_OVERLAY))
+            .border_1()
+            .border_color(rgb(border_color()))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .p_4()
+                    .border_b_1()
+                    .border_color(rgb(border_color()))
+                    .child(section_title_text(title))
+                    .child(
+                        control_button(Button::new("close-advanced-power-plan-tuning-preset"))
+                            .with_size(px(32.0))
+                            .icon(Icon::new(NavIcon::X).with_size(px(14.0)))
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.close_advanced_power_plan_tuning_preset_editor(cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("advanced-power-plan-tuning-preset-scroll")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scrollbar()
+                    .child(content),
+            )
+            .child(footer);
+        let modal = with_optional_motion(
+            modal,
+            "advanced-power-plan-tuning-preset-modal-open",
+            MotionSpeed::Standard,
+            |modal| modal,
+            |modal, delta| {
+                modal
+                    .relative()
+                    .top(px(10.0 * (1.0 - delta)))
+                    .opacity(0.18 + 0.82 * delta)
+            },
+        );
+        let backdrop = h_flex()
+            .absolute()
+            .inset_0()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .bg(rgba(0x0000008c))
+            .occlude()
+            .on_any_mouse_down(cx.listener(|app, _, _, cx| {
+                app.close_advanced_power_plan_tuning_preset_editor(cx);
+            }))
+            .child(modal);
+
+        with_optional_motion(
+            backdrop,
+            "advanced-power-plan-tuning-preset-backdrop-open",
+            MotionSpeed::Fast,
+            |backdrop| backdrop,
+            |backdrop, delta| backdrop.opacity(delta),
+        )
+    }
+
     pub(in crate::ui::app) fn render_processor_power_card(
         &self,
         window: &mut Window,
@@ -19,45 +692,6 @@ impl WinderustApp {
         self.sync_processor_power_slider_states(window, cx);
         let has_target_plan = self.processor_power_target_plan().is_some();
         let target_plan_notice = self.processor_power_target_plan_notice();
-        let processor_power_presets = [
-            ProcessorPowerPreset::Performance,
-            ProcessorPowerPreset::Balanced,
-            ProcessorPowerPreset::Saver,
-        ];
-        let selected_preset = processor_power_presets
-            .iter()
-            .copied()
-            .find(|preset| self.processor_power_matches_preset(*preset));
-        let preset_dropdown = self.render_dropdown_select(
-            "processor-power-preset",
-            selected_preset
-                .map(processor_power_preset_label)
-                .unwrap_or_else(|| t!("common.custom").to_string()),
-            true,
-            DropdownSelectWidth::Standard,
-            processor_power_presets.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for preset in processor_power_presets {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("processor-power-preset-option-{preset:?}")),
-                            processor_power_preset_label(preset),
-                            selected_preset == Some(preset),
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.fill_processor_power_preset(preset);
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
 
         v_flex()
             .w_full()
@@ -72,298 +706,223 @@ impl WinderustApp {
                     card.child(text_muted(notice))
                 }
             })
-            .child(feature_toggle_switch(
-                "processor-power-link-ac-dc",
-                t!("processor_power.link_ac_dc").to_string(),
-                self.processor_power_link_ac_dc,
-                cx.listener(|app, checked: &bool, _, cx| {
-                    app.processor_power_link_ac_dc = *checked;
-                    if *checked {
-                        let values = app.processor_power_values();
-                        app.set_processor_power_values(ProcessorPowerAcDcValues::same(values.ac));
-                        app.processor_power_dirty = true;
-                    }
-                    cx.notify();
-                }),
-            ))
-            .child(setting_action_card(
-                "processor-power-presets-card",
-                t!("processor_power.presets").to_string(),
-                preset_dropdown,
+            .child(self.render_processor_power_source_group(ProcessorPowerSource::Ac, window, cx))
+            .child(self.render_processor_power_source_group(
+                ProcessorPowerSource::Battery,
+                window,
+                cx,
             ))
             .child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .child(processor_power_column_header(
-                                t!("processor_power.ac_values").to_string(),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-ac-core-parking-min",
-                                &t!("processor_power.core_parking_min"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorAcCoreParkingMin,
-                                    format!("{}%", self.processor_power_ac_core_parking_min),
-                                    self.processor_power_ac_core_parking_min.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_ac_core_parking_min,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_ac_core_parking_min,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::AcCoreParkingMin,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-ac-performance-min",
-                                &t!("processor_power.processor_min"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorAcPerformanceMin,
-                                    format!("{}%", self.processor_power_ac_performance_min),
-                                    self.processor_power_ac_performance_min.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_ac_performance_min,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_ac_performance_min,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::AcPerformanceMin,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-ac-performance-max",
-                                &t!("processor_power.processor_max"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorAcPerformanceMax,
-                                    format!("{}%", self.processor_power_ac_performance_max),
-                                    self.processor_power_ac_performance_max.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_ac_performance_max,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_ac_performance_max,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::AcPerformanceMax,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-ac-boost-policy",
-                                &t!("processor_power.boost_policy"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorAcBoostPolicy,
-                                    format!("{}%", self.processor_power_ac_boost_policy),
-                                    self.processor_power_ac_boost_policy.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_ac_boost_policy,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_ac_boost_policy,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::AcBoostPolicy,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_setting_row(
-                                "processor-power-ac-boost-mode",
-                                t!("processor_power.boost_mode").to_string(),
-                                self.render_processor_boost_mode_picker(
-                                    ProcessorPowerSource::Ac,
-                                    window,
-                                    cx,
-                                ),
-                            )),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .child(processor_power_column_header(
-                                t!("processor_power.dc_values").to_string(),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-dc-core-parking-min",
-                                &t!("processor_power.core_parking_min"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorDcCoreParkingMin,
-                                    format!("{}%", self.processor_power_dc_core_parking_min),
-                                    self.processor_power_dc_core_parking_min.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_dc_core_parking_min,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_dc_core_parking_min,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::DcCoreParkingMin,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-dc-performance-min",
-                                &t!("processor_power.processor_min"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorDcPerformanceMin,
-                                    format!("{}%", self.processor_power_dc_performance_min),
-                                    self.processor_power_dc_performance_min.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_dc_performance_min,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_dc_performance_min,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::DcPerformanceMin,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-dc-performance-max",
-                                &t!("processor_power.processor_max"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorDcPerformanceMax,
-                                    format!("{}%", self.processor_power_dc_performance_max),
-                                    self.processor_power_dc_performance_max.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_dc_performance_max,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_dc_performance_max,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::DcPerformanceMax,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_slider(
-                                "processor-power-dc-boost-policy",
-                                &t!("processor_power.boost_policy"),
-                                self.render_numeric_value(
-                                    NumericField::ProcessorDcBoostPolicy,
-                                    format!("{}%", self.processor_power_dc_boost_policy),
-                                    self.processor_power_dc_boost_policy.to_string(),
-                                    cx,
-                                ),
-                                &self.inputs.processor_power_dc_boost_policy,
-                                window,
-                                cx,
-                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                                    let value = apply_u64_step(
-                                        app.processor_power_dc_boost_policy,
-                                        change,
-                                        0,
-                                        100,
-                                    );
-                                    app.set_processor_power_slider_value(
-                                        ProcessorPowerSlider::DcBoostPolicy,
-                                        value,
-                                    );
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(processor_power_setting_row(
-                                "processor-power-dc-boost-mode",
-                                t!("processor_power.boost_mode").to_string(),
-                                self.render_processor_boost_mode_picker(
-                                    ProcessorPowerSource::Dc,
-                                    window,
-                                    cx,
-                                ),
-                            )),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        control_button(Button::new("processor-power-refresh-values"))
-                            .label(t!("processor_power.refresh_values").to_string())
-                            .disabled(!has_target_plan)
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.refresh_processor_power_values();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        primary_control_button(Button::new("processor-power-apply-custom"), cx)
-                            .label(t!("processor_power.apply_custom").to_string())
-                            .disabled(!has_target_plan)
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.apply_processor_power_custom();
-                                cx.notify();
-                            })),
-                    ),
+                h_flex().justify_end().child(
+                    control_button(Button::new("processor-power-refresh-values"))
+                        .label(t!("processor_power.refresh_values").to_string())
+                        .disabled(!has_target_plan)
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.refresh_processor_power_values();
+                            cx.notify();
+                        })),
+                ),
             )
             .into_any_element()
+    }
+
+    fn render_processor_power_source_group(
+        &self,
+        source: ProcessorPowerSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (target, title, boost_mode_id, rows) = match source {
+            ProcessorPowerSource::Ac => (
+                SettingGroupTarget::ProcessorPowerAc,
+                t!("processor_power.ac_preset").to_string(),
+                "processor-power-ac-boost-mode",
+                [
+                    (
+                        "processor-power-ac-core-parking-min",
+                        t!("processor_power.core_parking_min").to_string(),
+                        NumericField::ProcessorAcCoreParkingMin,
+                        ProcessorPowerSlider::AcCoreParkingMin,
+                        self.processor_power_ac_core_parking_min,
+                    ),
+                    (
+                        "processor-power-ac-performance-min",
+                        t!("processor_power.processor_min").to_string(),
+                        NumericField::ProcessorAcPerformanceMin,
+                        ProcessorPowerSlider::AcPerformanceMin,
+                        self.processor_power_ac_performance_min,
+                    ),
+                    (
+                        "processor-power-ac-performance-max",
+                        t!("processor_power.processor_max").to_string(),
+                        NumericField::ProcessorAcPerformanceMax,
+                        ProcessorPowerSlider::AcPerformanceMax,
+                        self.processor_power_ac_performance_max,
+                    ),
+                    (
+                        "processor-power-ac-boost-policy",
+                        t!("processor_power.boost_policy").to_string(),
+                        NumericField::ProcessorAcBoostPolicy,
+                        ProcessorPowerSlider::AcBoostPolicy,
+                        self.processor_power_ac_boost_policy,
+                    ),
+                ],
+            ),
+            ProcessorPowerSource::Battery => (
+                SettingGroupTarget::ProcessorPowerBattery,
+                t!("processor_power.battery_preset").to_string(),
+                "processor-power-battery-boost-mode",
+                [
+                    (
+                        "processor-power-battery-core-parking-min",
+                        t!("processor_power.core_parking_min").to_string(),
+                        NumericField::ProcessorDcCoreParkingMin,
+                        ProcessorPowerSlider::BatteryCoreParkingMin,
+                        self.processor_power_battery_core_parking_min,
+                    ),
+                    (
+                        "processor-power-battery-performance-min",
+                        t!("processor_power.processor_min").to_string(),
+                        NumericField::ProcessorDcPerformanceMin,
+                        ProcessorPowerSlider::BatteryPerformanceMin,
+                        self.processor_power_battery_performance_min,
+                    ),
+                    (
+                        "processor-power-battery-performance-max",
+                        t!("processor_power.processor_max").to_string(),
+                        NumericField::ProcessorDcPerformanceMax,
+                        ProcessorPowerSlider::BatteryPerformanceMax,
+                        self.processor_power_battery_performance_max,
+                    ),
+                    (
+                        "processor-power-battery-boost-policy",
+                        t!("processor_power.boost_policy").to_string(),
+                        NumericField::ProcessorDcBoostPolicy,
+                        ProcessorPowerSlider::BatteryBoostPolicy,
+                        self.processor_power_battery_boost_policy,
+                    ),
+                ],
+            ),
+        };
+        let mut controls = Vec::with_capacity(rows.len() + 1);
+        for (id, label, numeric_field, slider, value) in rows {
+            controls.push(processor_power_group_slider(
+                id,
+                &label,
+                self.render_numeric_value(
+                    numeric_field,
+                    format!("{value}%"),
+                    value.to_string(),
+                    cx,
+                ),
+                &processor_power_slider_input(&self.inputs, slider),
+                window,
+                cx,
+                cx.listener(move |app, change: &StepChange<u64>, _, cx| {
+                    app.set_processor_power_slider_value(
+                        slider,
+                        apply_u64_step(value, change, 0, 100),
+                    );
+                    cx.notify();
+                }),
+            ));
+        }
+        controls.push(
+            setting_group_action_row(
+                boost_mode_id,
+                t!("processor_power.boost_mode").to_string(),
+                self.render_processor_boost_mode_picker(source, window, cx),
+                false,
+            )
+            .into_any_element(),
+        );
+
+        setting_group(
+            target,
+            title,
+            self.render_processor_power_preset_picker(source, window, cx),
+            self.is_setting_group_collapsed(target),
+            controls,
+            window,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    fn render_processor_power_preset_picker(
+        &self,
+        source: ProcessorPowerSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let current = match source {
+            ProcessorPowerSource::Ac => self.processor_power_values().ac,
+            ProcessorPowerSource::Battery => self.processor_power_values().battery,
+        };
+        let mut presets = processor_power_builtin_presets()
+            .into_iter()
+            .map(|preset| {
+                (
+                    processor_power_preset_label(preset),
+                    ProcessorPowerValues::for_preset(preset),
+                )
+            })
+            .collect::<Vec<_>>();
+        let custom_start = presets.len();
+        presets.extend(
+            self.settings
+                .advanced_power_plan_tuning_presets
+                .iter()
+                .map(|preset| {
+                    (
+                        advanced_power_plan_tuning_preset_label(&preset.name),
+                        preset.values.normalized(),
+                    )
+                }),
+        );
+        let selected_index = (custom_start..presets.len())
+            .find(|index| presets[*index].1 == current)
+            .or_else(|| (0..custom_start).find(|index| presets[*index].1 == current));
+        let selected = selected_index
+            .and_then(|index| presets.get(index))
+            .map(|(label, _)| label.clone())
+            .unwrap_or_else(|| t!("common.custom").to_string());
+        let picker_id = format!("processor-power-{source:?}-preset-picker");
+
+        self.render_dropdown_select(
+            picker_id.clone(),
+            selected,
+            true,
+            DropdownSelectWidth::Wide,
+            presets.len(),
+            window,
+            cx,
+            move |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for (index, (label, values)) in presets.into_iter().enumerate() {
+                    let status_label = label.clone();
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{picker_id}-option-{index}")),
+                            label,
+                            selected_index == Some(index),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.load_processor_power_source_preset(
+                                source,
+                                status_label.clone(),
+                                values,
+                            );
+                            app.active_power_plan_picker = None;
+                            cx.stop_propagation();
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
     }
 
     pub(in crate::ui::app) fn effective_power_mode_status(&self) -> String {
@@ -415,7 +974,7 @@ impl WinderustApp {
         );
         let selected = match source {
             ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode,
-            ProcessorPowerSource::Dc => self.processor_power_dc_boost_mode,
+            ProcessorPowerSource::Battery => self.processor_power_battery_boost_mode,
         };
         let mut options = dropdown_surface(cx, placement.max_height);
         for boost_mode in ProcessorBoostMode::ALL {
@@ -581,5 +1140,128 @@ impl WinderustApp {
         );
 
         picker
+    }
+}
+
+const fn processor_power_builtin_presets() -> [ProcessorPowerPreset; 3] {
+    [
+        ProcessorPowerPreset::Performance,
+        ProcessorPowerPreset::Balanced,
+        ProcessorPowerPreset::Saver,
+    ]
+}
+
+fn advanced_power_plan_tuning_preset_values(
+    preset: &AdvancedPowerPlanTuningPreset,
+) -> ProcessorPowerValues {
+    preset.values.normalized()
+}
+
+fn advanced_power_plan_tuning_preset_label(name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        t!("processor_power.unnamed_preset").to_string()
+    } else {
+        name.to_owned()
+    }
+}
+
+const ADVANCED_POWER_PLAN_TUNING_PRESET_FIELDS: [AdaptiveEngineProcessorPowerPolicyField; 4] = [
+    AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin,
+    AdaptiveEngineProcessorPowerPolicyField::PerformanceMin,
+    AdaptiveEngineProcessorPowerPolicyField::PerformanceMax,
+    AdaptiveEngineProcessorPowerPolicyField::BoostPolicy,
+];
+
+fn advanced_power_plan_tuning_preset_field_value(
+    values: ProcessorPowerValues,
+    field: AdaptiveEngineProcessorPowerPolicyField,
+) -> u64 {
+    u64::from(match field {
+        AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin => values.core_parking_min,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMin => values.performance_min,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMax => values.performance_max,
+        AdaptiveEngineProcessorPowerPolicyField::BoostPolicy => values.boost_policy,
+    })
+}
+
+fn set_advanced_power_plan_tuning_preset_field_value(
+    values: &mut ProcessorPowerValues,
+    field: AdaptiveEngineProcessorPowerPolicyField,
+    value: u32,
+) {
+    match field {
+        AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin => values.core_parking_min = value,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMin => values.performance_min = value,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMax => values.performance_max = value,
+        AdaptiveEngineProcessorPowerPolicyField::BoostPolicy => values.boost_policy = value,
+    }
+}
+
+fn advanced_power_plan_tuning_preset_name_exists(
+    presets: &[AdvancedPowerPlanTuningPreset],
+    editing_index: Option<usize>,
+    name: &str,
+) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && presets.iter().enumerate().any(|(index, preset)| {
+            Some(index) != editing_index && preset.name.trim().eq_ignore_ascii_case(name)
+        })
+}
+
+fn upsert_advanced_power_plan_tuning_preset(
+    presets: &mut Vec<AdvancedPowerPlanTuningPreset>,
+    editing_index: Option<usize>,
+    name: &str,
+    values: ProcessorPowerValues,
+) -> bool {
+    let name = name.trim();
+    if name.is_empty()
+        || advanced_power_plan_tuning_preset_name_exists(presets, editing_index, name)
+    {
+        return false;
+    }
+
+    let values = values.normalized();
+    let preset = AdvancedPowerPlanTuningPreset {
+        name: name.to_owned(),
+        values,
+    };
+    match editing_index {
+        Some(index) => {
+            let Some(existing) = presets.get_mut(index) else {
+                return false;
+            };
+            *existing = preset;
+        }
+        None => presets.push(preset),
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_processor_power_presets_store_one_reusable_value_set() {
+        let values = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Performance);
+        let mut presets = Vec::new();
+
+        assert!(upsert_advanced_power_plan_tuning_preset(
+            &mut presets,
+            None,
+            "  Performance custom  ",
+            values,
+        ));
+        assert_eq!(presets[0].name, "Performance custom");
+        assert_eq!(presets[0].values, values);
+        assert!(!upsert_advanced_power_plan_tuning_preset(
+            &mut presets,
+            None,
+            "performance CUSTOM",
+            values,
+        ));
     }
 }

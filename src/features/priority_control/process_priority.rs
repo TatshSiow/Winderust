@@ -1,31 +1,24 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::{collections::BTreeSet, path::PathBuf};
 
-use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
-    System::Threading::{
-        GetCurrentProcessId, GetPriorityClass, OpenProcess, SetPriorityClass,
-        ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
-        IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
-    },
-};
-
-use crate::win_util::{last_error, WinHandle};
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ProcessPrioritySetting, ProcessPrioritySettings},
+    control::{
+        priority_efficiency::{
+            PriorityClassClaim, PriorityClassPreservation, PriorityClassValue,
+            PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
+            ProcessPropertyApplyOutcome,
+        },
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+    },
     foreground::{
-        ensure_process_action_target_access, is_foreground_process, list_processes,
-        process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, same_process_name, unique_app_names, visible_window_process_ids,
-        ProcessActionAccess, ProcessActionTarget, ProtectedProcesses,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
+        unique_app_names, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    runtime::observations::CycleObservations,
 };
 
 use super::PriorityProcessTier;
@@ -45,261 +38,263 @@ pub struct ProcessPrioritySnapshot {
 
 #[derive(Default)]
 pub struct ProcessPriorityManager {
-    adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: ExecutionFailureTracker,
 }
 
-#[derive(Clone)]
-struct AdjustedProcess {
+struct ProcessPriorityTarget {
+    process_id: u32,
     process_name: String,
     executable_path: String,
     creation_time: u64,
-    previous_priority_class: u32,
-    applied_priority_class: u32,
-}
-
-#[derive(Debug)]
-enum ProcessPriorityError {
-    AccessDenied,
-    ProcessExited,
-    Failed(String),
+    priority: PriorityClassValue,
+    tier: PriorityProcessTier,
 }
 
 impl ProcessPriorityManager {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the policy boundary receives shared observations, exclusions, and its controller"
+    )]
     pub(crate) fn update(
         &mut self,
+        controller: &mut PriorityEfficiencyController,
         settings: &ProcessPrioritySettings,
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         excluded_process_ids: &BTreeSet<u32>,
+        observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> ProcessPrioritySnapshot {
         if !automation_enabled {
-            let failures = self.clear_all(action_log, "automation disabled");
-            self.failure_suppression.clear();
-            return ProcessPrioritySnapshot {
-                enabled: false,
-                failed_processes: failures.count,
-                message: "Automation disabled.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.disabled_snapshot(controller, action_log, "automation disabled");
         }
-
         if !settings.enabled {
-            let failures = self.clear_all(action_log, "Process priority defaults disabled");
-            self.failure_suppression.clear();
-            return ProcessPrioritySnapshot {
-                enabled: false,
-                failed_processes: failures.count,
-                message: "Process priority defaults disabled.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.disabled_snapshot(
+                controller,
+                action_log,
+                "Process priority defaults disabled",
+            );
         }
 
         let foreground_sensitive = settings.foreground_detection_enabled
             && settings.foreground_priority != settings.background_priority;
         if foreground_sensitive && foreground_process_id.is_none() {
-            let failures = self.clear_all(action_log, "foreground app is unknown");
-            return ProcessPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: foreground app is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "foreground app is unknown",
+                "Paused: foreground app is unknown.",
+            );
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failures = self.clear_all(action_log, "current Windows session is unknown");
-            return ProcessPrioritySnapshot {
-                enabled: true,
-                failed_processes: failures.count,
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                last_error: failures.last_error,
-                ..Default::default()
-            };
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "current Windows session is unknown",
+                "Paused: current Windows session is unknown.",
+            );
         };
 
-        let processes = match list_processes() {
+        let processes = match observations.processes() {
             Ok(processes) => processes,
-            Err(err) => {
-                let failures = self.clear_all(action_log, "process list unavailable");
-                return ProcessPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: err,
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+            Err(error) => {
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "process list unavailable",
+                    &error,
+                );
             }
         };
-
+        let scanned_processes = processes.len();
         let visible_processes = if settings.visible_window_detection_enabled {
-            let Some(process_ids) = visible_window_process_ids() else {
-                let failures = self.clear_all(action_log, "visible windows are unavailable");
-                return ProcessPrioritySnapshot {
-                    enabled: true,
-                    failed_processes: failures.count,
-                    message: "Paused: visible windows are unavailable.".to_owned(),
-                    last_error: failures.last_error,
-                    ..Default::default()
-                };
+            let Ok(process_ids) = observations.visible_window_process_ids() else {
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "visible windows are unavailable",
+                    "Paused: visible windows are unavailable.",
+                );
             };
-            ProtectedProcesses::capture(&processes, false, None, process_ids)
+            ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
             ProtectedProcesses::default()
         };
-
-        let scanned_processes = processes.len();
-        let foreground_executable_path = if settings.foreground_detection_enabled {
+        let foreground_executable_path = settings.foreground_detection_enabled.then(|| {
             foreground_process_id.and_then(|id| {
                 processes
                     .iter()
                     .find(|process| process.id == id)
                     .and_then(process_executable_path)
             })
-        } else {
-            None
-        };
+        });
+        let foreground_executable_path = foreground_executable_path.flatten();
 
-        let mut target_processes = BTreeMap::new();
-        for process in processes {
-            if process.id == 0
-                || process.is_critical != Some(false)
-                || !process.can_set_information
-                || process.id == current_process_id
-                || excluded_process_ids.contains(&process.id)
-                || (!allow_cross_session_process_control
-                    && process_session_id(process.id) != Some(current_session_id))
-                || is_builtin_excluded(&process.name)
-            {
-                continue;
-            }
-
-            let Some(executable_path) = process_executable_path(&process) else {
-                continue;
-            };
-            let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
-                    &executable_path,
-                    foreground_process_id,
-                    foreground_executable_path.as_deref(),
+        let targets = processes
+            .iter()
+            .filter_map(|process| {
+                if process.id == 0
+                    || process.id == current_process_id
+                    || process.is_critical != Some(false)
+                    || !process.can_set_information
+                    || excluded_process_ids.contains(&process.id)
+                    || (!allow_cross_session_process_control
+                        && process_session_id(process.id) != Some(current_session_id))
+                    || is_builtin_excluded(&process.name)
+                {
+                    return None;
+                }
+                let executable_path = process_executable_path(process)?;
+                let creation_time = process.creation_time?;
+                let foreground = settings.foreground_detection_enabled
+                    && is_foreground_process(
+                        process.id,
+                        &executable_path,
+                        foreground_process_id,
+                        foreground_executable_path.as_deref(),
+                    );
+                let visible_window = !foreground
+                    && settings.visible_window_detection_enabled
+                    && visible_processes.contains(process.id, &executable_path);
+                let tier = PriorityProcessTier::from_flags(foreground, visible_window);
+                let default_priority = tier.select(
+                    settings.foreground_priority,
+                    settings.visible_window_priority,
+                    settings.background_priority,
                 );
-            let visible_window = !foreground
-                && settings.visible_window_detection_enabled
-                && visible_processes.contains(process.id, &executable_path);
-            let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-            let configured_override =
-                settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
-            let default_priority = tier.select(
-                settings.foreground_priority,
-                settings.visible_window_priority,
-                settings.background_priority,
-            );
-            let priority = match configured_override {
-                Some(Some(ProcessPrioritySetting::Auto)) => default_priority,
-                Some(Some(priority)) => priority,
-                Some(None) => continue,
-                None => default_priority,
-            };
-            if let Some(priority_class) = priority_class(priority) {
-                target_processes.insert(
-                    process.id,
-                    (
-                        process.name,
-                        executable_path.to_string_lossy().into_owned(),
-                        priority_class,
-                        tier,
-                    ),
+                let configured_override = settings.override_for(
+                    executable_path.to_string_lossy().as_ref(),
+                    foreground,
+                    visible_window,
                 );
-            }
-        }
+                let priority = match configured_override {
+                    Some(Some(priority)) => priority,
+                    Some(None) => return None,
+                    None => default_priority,
+                };
+                PriorityClassValue::from_setting(priority).map(|priority| ProcessPriorityTarget {
+                    process_id: process.id,
+                    process_name: process.name.clone(),
+                    executable_path: executable_path.to_string_lossy().into_owned(),
+                    creation_time,
+                    priority,
+                    tier,
+                })
+            })
+            .collect::<Vec<_>>();
 
-        let mut target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
-        target_ids.extend(
-            excluded_process_ids
-                .iter()
-                .filter(|process_id| self.adjusted.contains_key(process_id))
-                .copied(),
+        #[cfg(feature = "architecture-diagnostics")]
+        crate::architecture_diagnostics::record_process_priority_cycle(
+            scanned_processes,
+            targets.len(),
         );
-        let active_target_names = target_processes
-            .values()
-            .map(|(_name, path, _priority, _tier)| process_failure_key(path))
+        let active_targets = targets
+            .iter()
+            .map(process_priority_target_key)
+            .collect::<BTreeSet<_>>();
+        let active_target_names = targets
+            .iter()
+            .map(|target| process_failure_key(&target.executable_path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
-        let mut failures = self.release_non_targets(
-            &target_ids,
+        let mut failures = ProcessPriorityFailures::default();
+        self.merge_release_summary(
+            controller
+                .release_priority_policy_except(ControlOwner::ProcessPriority, &active_targets),
             action_log,
             "process is excluded or no longer matches Process Priority defaults",
+            &mut failures,
         );
         let mut skipped_processes = 0;
         let mut applied_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (process_id, (process_name, executable_path, priority_class, tier)) in target_processes
-        {
+        for target in targets {
             if self.is_process_suppressed(
-                process_id,
-                &process_name,
-                &executable_path,
+                target.process_id,
+                &target.process_name,
+                &target.executable_path,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
                 skipped_processes += 1;
                 continue;
             }
-
-            match self.apply_process(
-                (process_id, process_name.clone(), executable_path.clone()),
-                priority_class,
-                tier,
-                settings.preserve_foreground_priority,
-                settings.preserve_visible_window_priority,
-                settings.preserve_background_priority,
-            ) {
-                Ok(ApplyOutcome::Applied { loggable }) => {
-                    if loggable {
-                        applied_processes += 1;
-                    }
+            let claim = PriorityClassClaim {
+                target: ProcessControlTarget::automatic(
+                    target.process_id,
+                    target.process_name.clone(),
+                    PathBuf::from(&target.executable_path),
+                    target.creation_time,
+                ),
+                owner: ControlOwner::ProcessPriority,
+                priority: target.priority,
+                preservation: priority_preservation(
+                    target.tier,
+                    settings.preserve_foreground_priority,
+                    settings.preserve_visible_window_priority,
+                    settings.preserve_background_priority,
+                ),
+            };
+            match controller.apply_priority_claim(claim, allow_cross_session_process_control) {
+                Ok(ProcessPropertyApplyOutcome::Applied) => {
+                    #[cfg(feature = "architecture-diagnostics")]
+                    crate::architecture_diagnostics::record_process_priority_applied();
+                    applied_processes += 1;
                     self.failure_suppression
-                        .clear_process_failure(&executable_path);
+                        .clear_process_failure(&target.executable_path);
                 }
-                Ok(ApplyOutcome::AlreadyApplied) => {
+                Ok(
+                    ProcessPropertyApplyOutcome::Unchanged | ProcessPropertyApplyOutcome::Shadowed,
+                ) => {
+                    #[cfg(feature = "architecture-diagnostics")]
+                    crate::architecture_diagnostics::record_process_priority_already_applied();
                     self.failure_suppression
-                        .clear_process_failure(&executable_path);
+                        .clear_process_failure(&target.executable_path);
                 }
-                Ok(ApplyOutcome::Preserved) => {
+                Ok(ProcessPropertyApplyOutcome::Preserved) => {
+                    #[cfg(feature = "architecture-diagnostics")]
+                    crate::architecture_diagnostics::record_process_priority_preserved();
                     skipped_processes += 1;
                     self.failure_suppression
-                        .clear_process_failure(&executable_path);
+                        .clear_process_failure(&target.executable_path);
                 }
-                Err(ProcessPriorityError::ProcessExited) => {
+                Err(ProcessControlError::ProcessExited) => {
+                    #[cfg(feature = "architecture-diagnostics")]
+                    crate::architecture_diagnostics::record_process_priority_exit_failure();
                     skipped_processes += 1;
-                    self.adjusted.remove(&process_id);
                 }
-                Err(ProcessPriorityError::AccessDenied) => {
+                Err(ProcessControlError::AccessDenied(message)) => {
+                    #[cfg(feature = "architecture-diagnostics")]
+                    crate::architecture_diagnostics::record_process_priority_access_failure();
                     skipped_processes += 1;
                     self.failure_suppression
-                        .suppress_process_failure(&executable_path);
+                        .suppress_process_failure(&target.executable_path);
                     action_log.record(
                         ActionLogFeature::ProcessPriority,
-                        Some(process_id),
-                        process_name,
+                        Some(target.process_id),
+                        target.process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        message,
                     );
                 }
-                Err(err) => {
+                Err(error) => {
+                    #[cfg(feature = "architecture-diagnostics")]
+                    crate::architecture_diagnostics::record_process_priority_other_failure();
                     self.failure_suppression
-                        .record_process_failure(&executable_path);
-                    failures.record("Apply", process_id, &process_name, err, action_log);
+                        .record_process_failure(&target.executable_path);
+                    failures.record(
+                        "Apply",
+                        target.process_id,
+                        &target.process_name,
+                        error,
+                        action_log,
+                    );
                 }
             }
         }
@@ -316,13 +311,15 @@ impl ProcessPriorityManager {
         ProcessPrioritySnapshot {
             enabled: true,
             scanned_processes,
-            adjusted_processes: self.adjusted.len(),
+            adjusted_processes: controller
+                .policy_managed_process_count(ControlOwner::ProcessPriority),
             skipped_processes,
             failed_processes: failures.count,
             adjusted_apps: unique_app_names(
-                self.adjusted
-                    .values()
-                    .map(|process| process.process_name.as_str()),
+                controller
+                    .policy_managed_process_names(ControlOwner::ProcessPriority)
+                    .iter()
+                    .map(String::as_str),
             ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Process priority defaults active.".to_owned(),
@@ -330,147 +327,86 @@ impl ProcessPriorityManager {
         }
     }
 
-    fn apply_process(
+    fn disabled_snapshot(
         &mut self,
-        (process_id, process_name, executable_path): (u32, String, String),
-        priority_class: u32,
-        tier: PriorityProcessTier,
-        preserve_foreground: bool,
-        preserve_visible_window: bool,
-        preserve_background: bool,
-    ) -> Result<ApplyOutcome, ProcessPriorityError> {
-        let process = ProcessHandle::open(process_id)?;
-        if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
-            return Err(ProcessPriorityError::ProcessExited);
-        }
-        let creation_time = process
-            .0
-            .process_creation_time()
-            .ok_or(ProcessPriorityError::ProcessExited)?;
-        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
-            adjusted.creation_time == creation_time
-                && same_process_name(&adjusted.process_name, &process_name)
-        });
-        let current_priority_class = process.priority_class()?;
-
-        if current_priority_class == REALTIME_PRIORITY_CLASS {
-            return Err(ProcessPriorityError::AccessDenied);
-        }
-
-        let baseline_priority_class = reusable_existing
-            .map(|adjusted| adjusted.previous_priority_class)
-            .unwrap_or(current_priority_class);
-        if should_preserve_priority(
-            tier,
-            preserve_foreground,
-            preserve_visible_window,
-            preserve_background,
-            process_priority_rank(baseline_priority_class),
-            process_priority_rank(priority_class),
-        ) {
-            if let Some(adjusted) = reusable_existing.cloned() {
-                process.set_priority_class(adjusted.previous_priority_class)?;
-                self.adjusted.remove(&process_id);
-            }
-            return Ok(ApplyOutcome::Preserved);
-        }
-
-        if reusable_existing.is_some_and(|adjusted| {
-            adjusted.applied_priority_class == priority_class
-                && current_priority_class == priority_class
-        }) {
-            return Ok(ApplyOutcome::AlreadyApplied);
-        }
-
-        if current_priority_class != priority_class {
-            process.set_priority_class(priority_class)?;
-            let refreshed_priority_class = process.priority_class()?;
-            if refreshed_priority_class != priority_class {
-                return Err(ProcessPriorityError::Failed(format!(
-                    "Process priority remained {} after requesting {}.",
-                    priority_class_label(refreshed_priority_class),
-                    priority_class_label(priority_class)
-                )));
-            }
-        }
-
-        self.adjusted.insert(
-            process_id,
-            AdjustedProcess {
-                process_name,
-                executable_path,
-                creation_time,
-                previous_priority_class: baseline_priority_class,
-                applied_priority_class: priority_class,
-            },
-        );
-        Ok(ApplyOutcome::Applied {
-            loggable: current_priority_class != priority_class,
-        })
-    }
-
-    fn release_non_targets(
-        &mut self,
-        target_ids: &BTreeSet<u32>,
+        controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> ProcessPriorityFailures {
-        let process_ids = self
-            .adjusted
-            .keys()
-            .copied()
-            .filter(|process_id| !target_ids.contains(process_id))
-            .collect::<Vec<_>>();
-        self.release_processes(&process_ids, action_log, reason)
-    }
-
-    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> ProcessPriorityFailures {
-        let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, action_log, reason)
-    }
-
-    fn release_processes(
-        &mut self,
-        process_ids: &[u32],
-        action_log: &mut ActionLog,
-        reason: &str,
-    ) -> ProcessPriorityFailures {
+    ) -> ProcessPrioritySnapshot {
         let mut failures = ProcessPriorityFailures::default();
-        let mut restored_processes = 0;
-        for process_id in process_ids {
-            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
-                continue;
-            };
-            let log_name = process_state.process_name.clone();
-            match restore_process(*process_id, &process_state) {
-                Ok(()) => {
-                    self.adjusted.remove(process_id);
-                    self.failure_suppression
-                        .clear_process_failure(&process_state.executable_path);
-                    restored_processes += 1;
-                }
-                Err(ProcessPriorityError::ProcessExited) => {
-                    self.adjusted.remove(process_id);
-                }
-                Err(err) => {
-                    self.failure_suppression
-                        .record_process_failure(&process_state.executable_path);
-                    failures.record("Restore", *process_id, &log_name, err, action_log);
-                }
-            }
+        self.merge_release_summary(
+            controller.release_all_priority_policy(ControlOwner::ProcessPriority),
+            action_log,
+            reason,
+            &mut failures,
+        );
+        self.failure_suppression.clear();
+        ProcessPrioritySnapshot {
+            enabled: false,
+            failed_processes: failures.count,
+            message: if reason == "automation disabled" {
+                "Automation disabled.".to_owned()
+            } else {
+                "Process priority defaults disabled.".to_owned()
+            },
+            last_error: failures.last_error,
+            ..Default::default()
         }
-        if restored_processes > 0 {
+    }
+
+    fn paused_snapshot(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        reason: &str,
+        message: &str,
+    ) -> ProcessPrioritySnapshot {
+        let mut failures = ProcessPriorityFailures::default();
+        self.merge_release_summary(
+            controller.release_all_priority_policy(ControlOwner::ProcessPriority),
+            action_log,
+            reason,
+            &mut failures,
+        );
+        ProcessPrioritySnapshot {
+            enabled: true,
+            failed_processes: failures.count,
+            message: message.to_owned(),
+            last_error: failures.last_error,
+            ..Default::default()
+        }
+    }
+
+    fn merge_release_summary(
+        &mut self,
+        summary: PriorityEfficiencyReleaseSummary,
+        action_log: &mut ActionLog,
+        reason: &str,
+        failures: &mut ProcessPriorityFailures,
+    ) {
+        if summary.restored_processes > 0 {
             action_log.record(
                 ActionLogFeature::ProcessPriority,
                 None,
                 "Process Priority",
                 ActionLogResult::Restored,
                 format!(
-                    "Restored process priority for {restored_processes} process(es): {reason}."
+                    "Restored process priority for {} process(es): {reason}.",
+                    summary.restored_processes
                 ),
             );
         }
-        failures
+        for failure in summary.failures {
+            self.failure_suppression
+                .record_process_failure(&failure.executable_path);
+            failures.record(
+                &format!("Restore {}", failure.property),
+                failure.process_id,
+                &failure.process_name,
+                failure.error,
+                action_log,
+            );
+        }
     }
 
     fn is_process_suppressed(
@@ -487,7 +423,6 @@ impl ProcessPriorityManager {
         if !suppression.suppressed {
             return false;
         }
-
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
@@ -501,22 +436,8 @@ impl ProcessPriorityManager {
                 ),
             );
         }
-
         true
     }
-}
-
-impl Drop for ProcessPriorityManager {
-    fn drop(&mut self) {
-        let mut action_log = ActionLog::new(1);
-        self.clear_all(&mut action_log, stringify!(ProcessPriorityManager));
-    }
-}
-
-enum ApplyOutcome {
-    Applied { loggable: bool },
-    AlreadyApplied,
-    Preserved,
 }
 
 #[derive(Default)]
@@ -531,10 +452,10 @@ impl ProcessPriorityFailures {
         action: &str,
         process_id: u32,
         process_name: &str,
-        error: ProcessPriorityError,
+        error: ProcessControlError,
         action_log: &mut ActionLog,
     ) {
-        let message = process_priority_error_message(error);
+        let message = error.to_string();
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -549,233 +470,50 @@ impl ProcessPriorityFailures {
     }
 }
 
-struct ProcessHandle(WinHandle);
-
-impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, ProcessPriorityError> {
-        // SAFETY: process_id came from the current process snapshot and no inherited handle is
-        // requested.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-                0,
-                process_id,
-            )
-        };
-        if !handle.is_null() {
-            Ok(Self(WinHandle::new(handle)))
-        } else {
-            Err(open_process_error(process_id, last_error()))
-        }
-    }
-
-    fn priority_class(&self) -> Result<u32, ProcessPriorityError> {
-        // SAFETY: self owns a live process handle.
-        let priority_class = unsafe { GetPriorityClass(self.0.raw()) };
-        if priority_class != 0 {
-            Ok(priority_class)
-        } else {
-            Err(ProcessPriorityError::Failed(format!(
-                "GetPriorityClass failed with error {}.",
-                last_error()
-            )))
-        }
-    }
-
-    fn set_priority_class(&self, priority_class: u32) -> Result<(), ProcessPriorityError> {
-        let recovery = crate::crash_recovery::record_process_change(
-            self.0.raw(),
-            crate::crash_recovery::ProcessValue::PriorityClass(self.priority_class()?),
-            crate::crash_recovery::ProcessValue::PriorityClass(priority_class),
-        )
-        .map_err(ProcessPriorityError::Failed)?;
-        // SAFETY: self owns a live process handle and priority_class is a documented class chosen
-        // by the validated settings mapping.
-        if unsafe { SetPriorityClass(self.0.raw(), priority_class) } != 0 {
-            recovery.commit().map_err(ProcessPriorityError::Failed)?;
-            Ok(())
-        } else {
-            Err(ProcessPriorityError::Failed(format!(
-                "SetPriorityClass failed with error {}.",
-                last_error()
-            )))
-        }
-    }
+fn process_priority_target_key(
+    target: &ProcessPriorityTarget,
+) -> crate::control::process::ProcessTargetKey {
+    ProcessControlTarget::automatic(
+        target.process_id,
+        target.process_name.clone(),
+        PathBuf::from(&target.executable_path),
+        target.creation_time,
+    )
+    .key()
 }
 
-fn restore_process(
-    process_id: u32,
-    process_state: &AdjustedProcess,
-) -> Result<(), ProcessPriorityError> {
-    let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time) {
-        return Err(ProcessPriorityError::ProcessExited);
-    }
-    if process.priority_class()? == REALTIME_PRIORITY_CLASS {
-        return Ok(());
-    }
-    process.set_priority_class(process_state.previous_priority_class)?;
-    let refreshed_priority_class = process.priority_class()?;
-    if refreshed_priority_class == process_state.previous_priority_class {
-        Ok(())
-    } else {
-        Err(ProcessPriorityError::Failed(format!(
-            "Process priority remained {} after restoring {}.",
-            priority_class_label(refreshed_priority_class),
-            priority_class_label(process_state.previous_priority_class)
-        )))
-    }
-}
-
-fn open_process_error(process_id: u32, error: u32) -> ProcessPriorityError {
-    match error {
-        ERROR_ACCESS_DENIED => ProcessPriorityError::AccessDenied,
-        ERROR_INVALID_PARAMETER => ProcessPriorityError::ProcessExited,
-        _ => ProcessPriorityError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
-    }
-}
-
-fn priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
-    match priority {
-        ProcessPrioritySetting::Default | ProcessPrioritySetting::Auto => None,
-        ProcessPrioritySetting::Realtime => Some(REALTIME_PRIORITY_CLASS),
-        ProcessPrioritySetting::High => Some(HIGH_PRIORITY_CLASS),
-        ProcessPrioritySetting::AboveNormal => Some(ABOVE_NORMAL_PRIORITY_CLASS),
-        ProcessPrioritySetting::Normal => Some(NORMAL_PRIORITY_CLASS),
-        ProcessPrioritySetting::BelowNormal => Some(BELOW_NORMAL_PRIORITY_CLASS),
-        ProcessPrioritySetting::Idle => Some(IDLE_PRIORITY_CLASS),
-    }
-}
-
-pub(crate) fn apply_once(
-    target: &ProcessActionTarget,
-    priority: ProcessPrioritySetting,
-) -> Result<&'static str, String> {
-    let priority_class = quick_apply_priority_class(priority)
-        .ok_or_else(|| "This priority is not available as a quick action.".to_owned())?;
-    ensure_process_action_target_access(target, ProcessActionAccess::SetInformation)?;
-    let process = ProcessHandle::open(target.id).map_err(process_priority_error_message)?;
-    if process.0.process_creation_time() != Some(target.creation_time)
-        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
-    {
-        return Err("The selected process instance has changed.".to_owned());
-    }
-    if process
-        .priority_class()
-        .map_err(process_priority_error_message)?
-        == REALTIME_PRIORITY_CLASS
-    {
-        return Err("Realtime processes are not changed by quick actions.".to_owned());
-    }
-    process
-        .set_priority_class(priority_class)
-        .map_err(process_priority_error_message)?;
-    let applied = process
-        .priority_class()
-        .map_err(process_priority_error_message)?;
-    if applied != priority_class {
-        return Err(format!(
-            "Process priority remained {}.",
-            priority_class_label(applied)
-        ));
-    }
-    Ok(priority_class_label(applied))
-}
-
-pub(crate) fn current_priority(
-    target: &ProcessActionTarget,
-) -> Result<ProcessPrioritySetting, String> {
-    let process = ProcessHandle::open(target.id).map_err(process_priority_error_message)?;
-    if process.0.process_creation_time() != Some(target.creation_time)
-        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
-    {
-        return Err("The selected process instance has changed.".to_owned());
-    }
-    process
-        .priority_class()
-        .map_err(process_priority_error_message)
-        .map(|priority| match priority {
-            REALTIME_PRIORITY_CLASS => ProcessPrioritySetting::Realtime,
-            HIGH_PRIORITY_CLASS => ProcessPrioritySetting::High,
-            ABOVE_NORMAL_PRIORITY_CLASS => ProcessPrioritySetting::AboveNormal,
-            BELOW_NORMAL_PRIORITY_CLASS => ProcessPrioritySetting::BelowNormal,
-            IDLE_PRIORITY_CLASS => ProcessPrioritySetting::Idle,
-            _ => ProcessPrioritySetting::Normal,
-        })
-}
-
-fn quick_apply_priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
-    match priority {
-        ProcessPrioritySetting::Idle => Some(IDLE_PRIORITY_CLASS),
-        ProcessPrioritySetting::BelowNormal => Some(BELOW_NORMAL_PRIORITY_CLASS),
-        ProcessPrioritySetting::Normal => Some(NORMAL_PRIORITY_CLASS),
-        ProcessPrioritySetting::AboveNormal => Some(ABOVE_NORMAL_PRIORITY_CLASS),
-        ProcessPrioritySetting::Default
-        | ProcessPrioritySetting::Auto
-        | ProcessPrioritySetting::High
-        | ProcessPrioritySetting::Realtime => None,
-    }
-}
-
-pub(crate) fn can_apply_once(priority: ProcessPrioritySetting) -> bool {
-    quick_apply_priority_class(priority).is_some()
-}
-
-fn priority_class_label(priority_class: u32) -> &'static str {
-    match priority_class {
-        HIGH_PRIORITY_CLASS => "High",
-        REALTIME_PRIORITY_CLASS => "Realtime",
-        ABOVE_NORMAL_PRIORITY_CLASS => "Above Normal",
-        NORMAL_PRIORITY_CLASS => "Normal",
-        BELOW_NORMAL_PRIORITY_CLASS => "Below Normal",
-        IDLE_PRIORITY_CLASS => "Idle",
-        _ => "Unknown",
-    }
-}
-
-fn process_priority_rank(priority_class: u32) -> i32 {
-    match priority_class {
-        IDLE_PRIORITY_CLASS => 0,
-        BELOW_NORMAL_PRIORITY_CLASS => 1,
-        NORMAL_PRIORITY_CLASS => 2,
-        ABOVE_NORMAL_PRIORITY_CLASS => 3,
-        HIGH_PRIORITY_CLASS => 4,
-        REALTIME_PRIORITY_CLASS => 5,
-        _ => 2,
-    }
-}
-
-fn should_preserve_priority(
+fn priority_preservation(
     tier: PriorityProcessTier,
     preserve_foreground: bool,
     preserve_visible_window: bool,
     preserve_background: bool,
-    current_rank: i32,
-    desired_rank: i32,
-) -> bool {
+) -> PriorityClassPreservation {
     match tier {
-        PriorityProcessTier::Foreground => preserve_foreground && current_rank >= desired_rank,
-        PriorityProcessTier::VisibleWindow => {
-            preserve_visible_window && current_rank >= desired_rank
+        PriorityProcessTier::Foreground if preserve_foreground => {
+            PriorityClassPreservation::PreserveHigher
         }
-        PriorityProcessTier::Background => preserve_background && current_rank <= desired_rank,
+        PriorityProcessTier::VisibleWindow if preserve_visible_window => {
+            PriorityClassPreservation::PreserveHigher
+        }
+        PriorityProcessTier::Background if preserve_background => {
+            PriorityClassPreservation::PreserveLower
+        }
+        _ => PriorityClassPreservation::Exact,
     }
 }
 
-fn process_priority_error_message(error: ProcessPriorityError) -> String {
-    match error {
-        ProcessPriorityError::AccessDenied => "Access denied.".to_owned(),
-        ProcessPriorityError::ProcessExited => "Process exited.".to_owned(),
-        ProcessPriorityError::Failed(message) => message,
-    }
+pub(crate) fn can_apply_once(priority: ProcessPrioritySetting) -> bool {
+    matches!(
+        priority,
+        ProcessPrioritySetting::Idle
+            | ProcessPrioritySetting::BelowNormal
+            | ProcessPrioritySetting::Normal
+            | ProcessPrioritySetting::AboveNormal
+    )
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    CORE_BUILT_IN_PROCESS_EXCLUSIONS
-        .iter()
-        .any(|excluded| same_process_name(excluded, process_name))
+    crate::foreground::contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
 
 #[cfg(test)]
@@ -784,25 +522,40 @@ mod tests {
 
     #[test]
     fn quick_apply_only_accepts_safe_concrete_priorities() {
-        assert_eq!(
-            quick_apply_priority_class(ProcessPrioritySetting::BelowNormal),
-            Some(BELOW_NORMAL_PRIORITY_CLASS)
-        );
-        assert_eq!(
-            quick_apply_priority_class(ProcessPrioritySetting::Normal),
-            Some(NORMAL_PRIORITY_CLASS)
-        );
-        assert_eq!(
-            quick_apply_priority_class(ProcessPrioritySetting::AboveNormal),
-            Some(ABOVE_NORMAL_PRIORITY_CLASS)
-        );
-        assert_eq!(
-            quick_apply_priority_class(ProcessPrioritySetting::High),
-            None
-        );
-        assert_eq!(
-            quick_apply_priority_class(ProcessPrioritySetting::Realtime),
-            None
-        );
+        assert!(can_apply_once(ProcessPrioritySetting::BelowNormal));
+        assert!(can_apply_once(ProcessPrioritySetting::Normal));
+        assert!(can_apply_once(ProcessPrioritySetting::AboveNormal));
+        assert!(!can_apply_once(ProcessPrioritySetting::High));
+        assert!(!can_apply_once(ProcessPrioritySetting::Realtime));
+    }
+
+    #[test]
+    fn repeated_failures_emit_one_process_priority_auto_exclusion_and_success_resets_it() {
+        let mut manager = ProcessPriorityManager::default();
+        let mut log = ActionLog::new(8);
+        let mut auto_excluded = BTreeSet::new();
+        let path = r"C:\Apps\app.exe";
+
+        manager.failure_suppression.record_process_failure(path);
+        manager
+            .failure_suppression
+            .record_process_failure(r"C:/Apps/app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", path, &mut log, &mut auto_excluded,));
+        manager.failure_suppression.record_process_failure(path);
+        assert!(manager.is_process_suppressed(42, "app.exe", path, &mut log, &mut auto_excluded,));
+        assert!(manager.is_process_suppressed(
+            43,
+            "app.exe",
+            r"C:/Apps/app.exe",
+            &mut log,
+            &mut auto_excluded,
+        ));
+        assert_eq!(auto_excluded, BTreeSet::from([path.to_owned()]));
+        assert_eq!(log.entries().len(), 1);
+        assert_eq!(log.entries()[0].feature, ActionLogFeature::ProcessPriority);
+
+        manager.failure_suppression.clear_process_failure(path);
+        auto_excluded.clear();
+        assert!(!manager.is_process_suppressed(42, "app.exe", path, &mut log, &mut auto_excluded,));
     }
 }

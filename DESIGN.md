@@ -2,9 +2,13 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-04
+- Last refreshed: 2026-08-13
 - Primary product surfaces: Windows desktop app shell, process controls, automation settings, status dashboard, and Action Log.
-- Evidence reviewed: `.agents/memory/15-design-spec.md`, `src/ui.rs`, `src/ui/app/pages/`, `src/ui/app/shared/`, `locales/`, and the current CPU-control backends.
+- Evidence reviewed: `.agents/memory/15-design-spec.md`, `.agents/memory/20-project-scope.md`,
+  `src/application/`, `src/runtime/`, `src/control/`, `src/platform/windows/`,
+  `src/backend/automation.rs`, `src/backend/automation/runner.rs`,
+  `src/backend/crash_recovery.rs`, `src/ui/app.rs`, `src/ui/app/`, `locales/`, and the current
+  feature-policy modules.
 
 ## Brand
 - Personality: Calm, elegant, sleek, operational, and recognizably Winderust.
@@ -25,11 +29,15 @@
 - Primary navigation: Home, Process List, Winderust Features, Power Plan Control, Priority Control, CPU Control, Action Log, Settings, About, and Advanced.
 - Core routes/screens: Dense operational pages grouped by feature ownership.
 - Content hierarchy: Feature enablement, concise explanation, controls/rules, current status, then exceptions or advanced details.
-- CPU allocation: CPU Sets (Soft) and Processor Affinity (Hard) are separate per-app pages. There is no blanket background restriction, mixed-mode rule, or Efficiency Mode Off allocation rule.
+- CPU allocation: CPU Sets (Soft) and Processor Affinity (Hard) are separate per-app pages. Adaptive Engine may temporarily limit hot background apps through its lower-precedence CPU Scheduler policy.
 
 ## Design principles
 - One owner per mechanism: A page and its settings own one Windows mechanism.
-- Explicit CPU allocation rules take precedence over Workload Engine CPU allocation for the same process.
+- CPU allocation uses one runtime coordinator for CPU Sets and affinity. Its order is CPU Sets
+  (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / CPU Scheduler.
+- Feature modules own discovery and policy state; only the coordinator owns Windows baselines,
+  mutations, compensation, arbitration, and restoration. Releasing one producer queues the exact
+  process key; the runtime re-resolves it once after every CPU producer has processed that pass.
 - Scope before detail: Show which applications are targeted before processor selection.
 - Safe by default: Present CPU Sets (Soft) as recommended; clearly warn that Processor Affinity (Hard) is strict.
 - Tradeoffs: Separate pages add one navigation item but remove mode ambiguity and conflicting ownership.
@@ -87,5 +95,14 @@
 - Compatibility constraints: Public pre-release; do not add legacy settings aliases or migrations. Preserve process identity validation and restoration. CPU selection currently covers the first processor group and discloses that limit on multi-group systems.
 - Test/screenshot expectations: Keep settings round-trip, navigation, rule construction, manager lifecycle, and mask-selection tests aligned.
 
-## Open questions
-- None for the approved CPU Sets (Soft) and Processor Affinity (Hard) split.
+## Architecture direction
+- Canonical architecture: `docs/architecture.md`.
+- Keep UI flow one-way: send typed settings or commands and consume published read models. Process
+  List enumeration and presentation remain a separate read-side query.
+- Keep `SettingsEditor` as the sole settings draft and persistence boundary. Persistent Windows
+  configuration uses typed application services rather than runtime claims.
+- Feature managers own policy and reporting; typed controllers own live state, restoration, and
+  recovery intent; `src/platform/windows/` owns raw Windows calls.
+- Classify each Windows write as temporary, process-lifetime, persistent, or irreversible before
+  routing it. Preserve exact-identity validation, access barriers, verification, compensation,
+  and conservative restoration.

@@ -17,10 +17,10 @@ use windows_sys::{
         D3DKMT_SCHEDULINGPRIORITYCLASS,
     },
     Win32::{
-        Foundation::{ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
         System::{
             JobObjects::{OpenJobObjectW, SetInformationJobObject},
-            SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_SET_ATTRIBUTES},
+            SystemServices::JOB_OBJECT_SET_ATTRIBUTES,
             Threading::{
                 GetPriorityClass, GetProcessAffinityMask, GetProcessDefaultCpuSets, GetProcessId,
                 GetProcessInformation, GetProcessPriorityBoost, GetProcessTimes, GetThreadId,
@@ -28,8 +28,9 @@ use windows_sys::{
                 ProcessPowerThrottling, QueryFullProcessImageNameW, SetPriorityClass,
                 SetProcessAffinityMask, SetProcessDefaultCpuSets, SetProcessInformation,
                 SetProcessPriorityBoost, SetThreadPriority, MEMORY_PRIORITY_INFORMATION,
-                PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION,
-                PROCESS_SET_INFORMATION, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
+                PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_STATE,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+                THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
             },
         },
     },
@@ -37,15 +38,19 @@ use windows_sys::{
 
 use crate::{
     foreground::same_executable_path,
+    platform::windows::suspension::{
+        JobObjectFreezeInformation, JOB_OBJECT_FREEZE_INFORMATION_CLASS,
+    },
     power::powercfg::{active_plan, restore_stale_adaptive_plans, set_active},
     win_util::{last_error, WinHandle},
 };
 
+#[cfg(test)]
+use windows_sys::Win32::System::Threading::PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+
 const WATCHDOG_ARGUMENT: &str = "--winderust-recovery-watchdog";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROCESS_IO_PRIORITY: u32 = 33;
-const JOB_OBJECT_FREEZE_INFORMATION_CLASS: i32 = 18;
-const JOB_OBJECT_FREEZE_OPERATION: u32 = 1;
 const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
 
 static RUNTIME: Mutex<Option<RecoveryRuntime>> = Mutex::new(None);
@@ -60,13 +65,33 @@ struct RecoveryRuntime {
     next_intent_id: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 enum RecoveryCommand {
-    Begin { id: u64, entry: RecoveryEntry },
-    Commit { id: u64 },
-    Cancel { id: u64 },
-    ForgetJob { name: String },
+    Begin {
+        id: u64,
+        entry: RecoveryEntry,
+    },
+    Commit {
+        id: u64,
+    },
+    Cancel {
+        id: u64,
+    },
+    ForgetProcess {
+        process_id: u32,
+        creation_time: u64,
+        value: ProcessValue,
+    },
+    ForgetThreadPriority {
+        process_id: u32,
+        process_creation_time: u64,
+        thread_id: u32,
+        thread_creation_time: u64,
+    },
+    ForgetJob {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,7 +141,7 @@ impl ProcessValue {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "target", rename_all = "snake_case")]
 enum RecoveryEntry {
     Process {
@@ -196,20 +221,17 @@ impl RecoveryEntry {
         match self {
             Self::Process {
                 identity, expected, ..
-            } => format!(
-                "process:{}:{}:{}",
-                identity.id,
-                identity.creation_time,
-                expected.kind()
-            ),
+            } => process_recovery_key(identity.id, identity.creation_time, expected),
             Self::ThreadPriority {
                 process,
                 thread_id,
                 thread_creation_time,
                 ..
-            } => format!(
-                "thread:{}:{}:{thread_id}:{thread_creation_time}",
-                process.id, process.creation_time
+            } => thread_recovery_key(
+                process.id,
+                process.creation_time,
+                *thread_id,
+                *thread_creation_time,
             ),
             Self::PowerPlan { .. } => "power_plan".to_owned(),
             Self::SuspendedJob { name, .. } => format!("job:{name}"),
@@ -217,14 +239,17 @@ impl RecoveryEntry {
     }
 }
 
-#[repr(C)]
-struct JobObjectFreezeInformation {
-    flags: u32,
-    freeze: u8,
-    swap: u8,
-    spare: u16,
-    wake_filter_high: u32,
-    wake_filter_low: u32,
+fn process_recovery_key(process_id: u32, creation_time: u64, value: &ProcessValue) -> String {
+    format!("process:{process_id}:{creation_time}:{}", value.kind())
+}
+
+fn thread_recovery_key(
+    process_id: u32,
+    process_creation_time: u64,
+    thread_id: u32,
+    thread_creation_time: u64,
+) -> String {
+    format!("thread:{process_id}:{process_creation_time}:{thread_id}:{thread_creation_time}")
 }
 
 pub(crate) fn run_watchdog_if_requested() -> bool {
@@ -274,11 +299,21 @@ fn apply_watchdog_command(
     pending: &mut Vec<(u64, RecoveryEntry)>,
     jobs: &mut HashMap<String, WinHandle>,
 ) -> Result<(), String> {
+    apply_watchdog_command_with_open_job(command, entries, pending, jobs, open_job)
+}
+
+fn apply_watchdog_command_with_open_job(
+    command: RecoveryCommand,
+    entries: &mut Vec<RecoveryEntry>,
+    pending: &mut Vec<(u64, RecoveryEntry)>,
+    jobs: &mut HashMap<String, WinHandle>,
+    open_suspension_job: impl FnOnce(&str) -> Result<WinHandle, String>,
+) -> Result<(), String> {
     match command {
         RecoveryCommand::Begin { id, entry } => {
             if let RecoveryEntry::SuspendedJob { name, .. } = &entry {
                 if !jobs.contains_key(name) {
-                    jobs.insert(name.clone(), open_job(name)?);
+                    jobs.insert(name.clone(), open_suspension_job(name)?);
                 }
             }
             pending.push((id, entry));
@@ -301,6 +336,30 @@ fn apply_watchdog_command(
                     }
                 }
             }
+        }
+        RecoveryCommand::ForgetProcess {
+            process_id,
+            creation_time,
+            value,
+        } => {
+            let key = process_recovery_key(process_id, creation_time, &value);
+            entries.retain(|entry| entry.key() != key);
+            pending.retain(|(_, entry)| entry.key() != key);
+        }
+        RecoveryCommand::ForgetThreadPriority {
+            process_id,
+            process_creation_time,
+            thread_id,
+            thread_creation_time,
+        } => {
+            let key = thread_recovery_key(
+                process_id,
+                process_creation_time,
+                thread_id,
+                thread_creation_time,
+            );
+            entries.retain(|entry| entry.key() != key);
+            pending.retain(|(_, entry)| entry.key() != key);
         }
         RecoveryCommand::ForgetJob { name } => {
             let key = format!("job:{name}");
@@ -336,9 +395,53 @@ fn recover_with_retry(entries: &[RecoveryEntry]) -> Result<(), String> {
     Err(last_error.unwrap_or_else(|| "Unknown recovery failure.".to_owned()))
 }
 
-pub(crate) fn initialize() {
-    if let Err(error) = initialize_inner() {
-        set_startup_error(format!("Crash recovery protection is unavailable: {error}"));
+pub(crate) struct RecoveryClient {
+    active: bool,
+}
+
+impl RecoveryClient {
+    pub(crate) fn start() -> Self {
+        match initialize_inner() {
+            Ok(()) => Self { active: true },
+            Err(error) => {
+                set_startup_error(format!("Crash recovery protection is unavailable: {error}"));
+                Self { active: false }
+            }
+        }
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<(), String> {
+        if !self.active {
+            return Ok(());
+        }
+
+        let runtime = RUNTIME
+            .lock()
+            .map_err(|_| "Crash recovery state is poisoned.".to_owned())?
+            .take();
+        self.active = false;
+        runtime.map_or(Ok(()), finish_recovery_runtime)
+    }
+}
+
+fn finish_recovery_runtime(mut runtime: RecoveryRuntime) -> Result<(), String> {
+    drop(runtime.stdin);
+    let status = runtime
+        .child
+        .wait()
+        .map_err(|error| format!("Failed to wait for crash recovery helper: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "Crash recovery helper exited unexpectedly with status code {}.",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(())
+}
+
+impl Drop for RecoveryClient {
+    fn drop(&mut self) {
+        let _ = self.finish();
     }
 }
 
@@ -356,14 +459,6 @@ fn initialize_inner() -> Result<(), String> {
         .map_err(|_| "Crash recovery state is poisoned.".to_owned())?
         .replace(runtime);
     Ok(())
-}
-
-pub(crate) fn finish_clean_shutdown() {
-    let runtime = RUNTIME.lock().ok().and_then(|mut runtime| runtime.take());
-    if let Some(mut runtime) = runtime {
-        drop(runtime.stdin);
-        let _ = runtime.child.wait();
-    }
 }
 
 pub(crate) fn startup_error() -> Option<String> {
@@ -455,6 +550,128 @@ pub(crate) fn forget_suspended_job(name: &str) -> Result<(), String> {
         },
     )?;
     let key = format!("job:{name}");
+    runtime.entries.retain(|entry| entry.key() != key);
+    Ok(())
+}
+
+pub(crate) fn forget_dynamic_priority_boost_change(
+    process_id: u32,
+    creation_time: u64,
+) -> Result<(), String> {
+    forget_process_change(
+        process_id,
+        creation_time,
+        ProcessValue::DynamicPriorityBoostDisabled(false),
+    )
+}
+
+pub(crate) fn forget_priority_class_change(
+    process_id: u32,
+    creation_time: u64,
+) -> Result<(), String> {
+    forget_process_change(process_id, creation_time, ProcessValue::PriorityClass(0))
+}
+
+pub(crate) fn forget_power_throttling_change(
+    process_id: u32,
+    creation_time: u64,
+) -> Result<(), String> {
+    forget_process_change(
+        process_id,
+        creation_time,
+        ProcessValue::PowerThrottling {
+            version: 0,
+            control_mask: 0,
+            state_mask: 0,
+        },
+    )
+}
+
+pub(crate) fn forget_affinity_change(process_id: u32, creation_time: u64) -> Result<(), String> {
+    forget_process_change(process_id, creation_time, ProcessValue::Affinity(0))
+}
+
+pub(crate) fn forget_cpu_sets_change(process_id: u32, creation_time: u64) -> Result<(), String> {
+    forget_process_change(process_id, creation_time, ProcessValue::CpuSets(Vec::new()))
+}
+
+pub(crate) fn forget_io_priority_change(process_id: u32, creation_time: u64) -> Result<(), String> {
+    forget_process_change(process_id, creation_time, ProcessValue::IoPriority(0))
+}
+
+pub(crate) fn forget_gpu_priority_change(
+    process_id: u32,
+    creation_time: u64,
+) -> Result<(), String> {
+    forget_process_change(process_id, creation_time, ProcessValue::GpuPriority(0))
+}
+
+pub(crate) fn forget_memory_priority_change(
+    process_id: u32,
+    creation_time: u64,
+) -> Result<(), String> {
+    forget_process_change(process_id, creation_time, ProcessValue::MemoryPriority(0))
+}
+
+pub(crate) fn forget_thread_priority_change(
+    process_id: u32,
+    process_creation_time: u64,
+    thread_id: u32,
+    thread_creation_time: u64,
+) -> Result<(), String> {
+    let mut runtime = RUNTIME
+        .lock()
+        .map_err(|_| "Crash recovery state is poisoned.".to_owned())?;
+    let Some(runtime) = runtime.as_mut() else {
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        return Err("The external recovery watchdog is unavailable.".to_owned());
+    };
+    send_command(
+        &mut runtime.stdin,
+        &mut runtime.stdout,
+        &RecoveryCommand::ForgetThreadPriority {
+            process_id,
+            process_creation_time,
+            thread_id,
+            thread_creation_time,
+        },
+    )?;
+    let key = thread_recovery_key(
+        process_id,
+        process_creation_time,
+        thread_id,
+        thread_creation_time,
+    );
+    runtime.entries.retain(|entry| entry.key() != key);
+    Ok(())
+}
+
+fn forget_process_change(
+    process_id: u32,
+    creation_time: u64,
+    value: ProcessValue,
+) -> Result<(), String> {
+    let mut runtime = RUNTIME
+        .lock()
+        .map_err(|_| "Crash recovery state is poisoned.".to_owned())?;
+    let Some(runtime) = runtime.as_mut() else {
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        return Err("The external recovery watchdog is unavailable.".to_owned());
+    };
+    send_command(
+        &mut runtime.stdin,
+        &mut runtime.stdout,
+        &RecoveryCommand::ForgetProcess {
+            process_id,
+            creation_time,
+            value: value.clone(),
+        },
+    )?;
+    let key = process_recovery_key(process_id, creation_time, &value);
     runtime.entries.retain(|entry| entry.key() != key);
     Ok(())
 }
@@ -586,7 +803,7 @@ fn recover_entry(
             ..
         } => recover_thread_key(key, process, *thread_id, *thread_creation_time, entries),
         RecoveryEntry::PowerPlan { .. } => recover_power_plan_key(key, entries),
-        RecoveryEntry::SuspendedJob { name, process } => thaw_job(name, process),
+        RecoveryEntry::SuspendedJob { name, .. } => thaw_job(name),
     }
 }
 
@@ -736,7 +953,10 @@ fn query_process_value(handle: HANDLE, kind: &ProcessValue) -> Result<ProcessVal
                 .ok_or_else(|| format!("GetPriorityClass failed with error {}.", last_error()))
         }
         ProcessValue::PowerThrottling { .. } => {
-            let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+            let mut state = PROCESS_POWER_THROTTLING_STATE {
+                Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                ..Default::default()
+            };
             // SAFETY: state is writable for exactly the supplied structure size.
             let ok = unsafe {
                 GetProcessInformation(
@@ -1002,7 +1222,15 @@ fn thread_creation_time(handle: HANDLE) -> Result<u64, String> {
 fn query_cpu_sets(handle: HANDLE) -> Result<Vec<u32>, String> {
     let mut required = 0;
     // SAFETY: a null buffer with zero capacity requests the required count.
-    unsafe { GetProcessDefaultCpuSets(handle, null_mut(), 0, &mut required) };
+    let probe_ok = unsafe { GetProcessDefaultCpuSets(handle, null_mut(), 0, &mut required) };
+    if probe_ok == 0 {
+        let error = last_error();
+        if error != ERROR_INSUFFICIENT_BUFFER {
+            return Err(format!(
+                "GetProcessDefaultCpuSets failed with error {error}."
+            ));
+        }
+    }
     if required == 0 {
         return Ok(Vec::new());
     }
@@ -1021,39 +1249,12 @@ fn query_cpu_sets(handle: HANDLE) -> Result<Vec<u32>, String> {
     Ok(ids)
 }
 
-fn thaw_job(name: &str, process: &ProcessIdentity) -> Result<(), String> {
+fn thaw_job(name: &str) -> Result<(), String> {
     let handle = open_job(name)?;
-    let Some(process_handle) =
-        open_matching_process_with_access(process, PROCESS_QUERY_LIMITED_INFORMATION)?
-    else {
-        return Ok(());
-    };
-    let mut assigned = 0;
-    // SAFETY: both handles are live and assigned is writable for this call.
-    let checked = unsafe {
-        windows_sys::Win32::System::JobObjects::IsProcessInJob(
-            process_handle.raw(),
-            handle.raw(),
-            &mut assigned,
-        )
-    };
-    if checked == 0 {
-        return Err(format!(
-            "IsProcessInJob failed with error {}.",
-            last_error()
-        ));
-    }
-    if assigned == 0 {
-        return Ok(());
-    }
-    let mut info = JobObjectFreezeInformation {
-        flags: JOB_OBJECT_FREEZE_OPERATION,
-        freeze: 0,
-        swap: 0,
-        spare: 0,
-        wake_filter_high: 0,
-        wake_filter_low: 0,
-    };
+    // The recovery helper opened and retained this exact named Job Object before acknowledging
+    // Begin. Its root process may have exited while inherited children remain frozen, so root
+    // identity is not a prerequisite for thawing the helper-owned job.
+    let mut info = JobObjectFreezeInformation::new(false);
     // SAFETY: handle is live and info is writable for exactly the supplied structure size.
     let ok = unsafe {
         SetInformationJobObject(
@@ -1074,13 +1275,7 @@ fn open_job(name: &str) -> Result<WinHandle, String> {
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
     // SAFETY: wide is terminated UTF-16 and the returned handle is owned here.
-    let handle = unsafe {
-        OpenJobObjectW(
-            JOB_OBJECT_QUERY | JOB_OBJECT_SET_ATTRIBUTES,
-            0,
-            wide.as_ptr(),
-        )
-    };
+    let handle = unsafe { OpenJobObjectW(JOB_OBJECT_SET_ATTRIBUTES, 0, wide.as_ptr()) };
     if handle.is_null() {
         return Err(format!(
             "OpenJobObjectW failed with error {}.",
@@ -1113,8 +1308,8 @@ fn spawn_watchdog() -> Result<(Child, ChildStdin, BufReader<ChildStdout>), Strin
 }
 
 fn send_command(
-    stdin: &mut ChildStdin,
-    stdout: &mut BufReader<ChildStdout>,
+    stdin: &mut impl Write,
+    stdout: &mut impl BufRead,
     command: &RecoveryCommand,
 ) -> Result<(), String> {
     let bytes = serde_json::to_vec(command)
@@ -1179,6 +1374,171 @@ unsafe extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::Cursor,
+        process::{Child, Command, Stdio},
+    };
+
+    use windows_sys::Win32::{
+        Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
+                THREADENTRY32,
+            },
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+                QueryInformationJobObject, TerminateJobObject,
+                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+            },
+            Threading::{
+                CreateEventW, CreateProcessW, ResumeThread, WaitForSingleObject,
+                BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, IDLE_PRIORITY_CLASS,
+                PROCESS_INFORMATION, STARTUPINFOW, THREAD_PRIORITY_BELOW_NORMAL,
+                THREAD_PRIORITY_LOWEST,
+            },
+        },
+    };
+
+    struct FrozenJobCleanup {
+        job: WinHandle,
+    }
+
+    impl Drop for FrozenJobCleanup {
+        fn drop(&mut self) {
+            let mut thaw = JobObjectFreezeInformation::new(false);
+            // SAFETY: the test owns this live Job Object handle and thaw has the exact buffer
+            // layout required by the same contract exercised by the test.
+            let _ = unsafe {
+                SetInformationJobObject(
+                    self.job.raw(),
+                    JOB_OBJECT_FREEZE_INFORMATION_CLASS,
+                    (&mut thaw as *mut JobObjectFreezeInformation).cast(),
+                    std::mem::size_of::<JobObjectFreezeInformation>() as u32,
+                )
+            };
+            // SAFETY: the test owns this disposable Job Object and terminates only its test tree.
+            let _ = unsafe { TerminateJobObject(self.job.raw(), 1) };
+        }
+    }
+
+    fn resume_disposable_root(process: &WinHandle, thread: &WinHandle) {
+        // SAFETY: both handles belong to the suspended disposable process created by the test.
+        let _ = unsafe { ResumeThread(thread.raw()) };
+        // SAFETY: process is a live disposable handle; this bounded wait retains no pointer.
+        let _ = unsafe { WaitForSingleObject(process.raw(), 5_000) };
+    }
+
+    struct DisposableChild {
+        child: Child,
+    }
+
+    impl DisposableChild {
+        fn spawn() -> Result<Self, String> {
+            let system_root = std::env::var_os("SystemRoot")
+                .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
+            let executable = Path::new(&system_root).join("System32").join("ping.exe");
+            let child = Command::new(executable)
+                .args(["127.0.0.1", "-n", "120", "-w", "1000"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("Failed to start disposable test process: {error}"))?;
+            Ok(Self { child })
+        }
+
+        fn process_handle(&self) -> Result<WinHandle, String> {
+            // SAFETY: child.id identifies the disposable process created by this test.
+            let handle = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
+                    0,
+                    self.child.id(),
+                )
+            };
+            (!handle.is_null())
+                .then(|| WinHandle::new(handle))
+                .ok_or_else(|| {
+                    format!(
+                        "OpenProcess(test child) failed with error {}.",
+                        last_error()
+                    )
+                })
+        }
+    }
+
+    impl Drop for DisposableChild {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    fn test_runtime(mut child: Child) -> Result<RecoveryRuntime, String> {
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "The recovery helper stdin pipe is unavailable.".to_owned())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "The recovery helper stdout pipe is unavailable.".to_owned())?;
+        Ok(RecoveryRuntime {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            entries: Vec::new(),
+            next_intent_id: 1,
+        })
+    }
+
+    fn spawn_test_helper(command: &str, args: &[&str]) -> Result<Child, String> {
+        Command::new("cmd")
+            .arg("/C")
+            .arg(format!("{command} {}", args.join(" ")))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Failed to spawn test recovery helper: {error}"))
+    }
+
+    fn test_thread_handle(process_id: u32) -> Result<WinHandle, String> {
+        // SAFETY: a thread snapshot takes no borrowed pointers and returns an owned handle.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "CreateToolhelp32Snapshot failed with error {}.",
+                last_error()
+            ));
+        }
+        let snapshot = WinHandle::new(snapshot);
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: snapshot is live and entry has its required initialized size.
+        let mut present = unsafe { Thread32First(snapshot.raw(), &mut entry) } != 0;
+        while present {
+            if entry.th32OwnerProcessID == process_id {
+                // SAFETY: the thread ID came from the current system snapshot.
+                let thread = unsafe {
+                    OpenThread(
+                        THREAD_QUERY_INFORMATION | THREAD_SET_INFORMATION,
+                        0,
+                        entry.th32ThreadID,
+                    )
+                };
+                if !thread.is_null() {
+                    return Ok(WinHandle::new(thread));
+                }
+            }
+            // SAFETY: snapshot remains live and entry remains writable for the next record.
+            present = unsafe { Thread32Next(snapshot.raw(), &mut entry) } != 0;
+        }
+        Err("No queryable thread was found for the disposable test process.".to_owned())
+    }
 
     fn identity() -> ProcessIdentity {
         ProcessIdentity {
@@ -1186,6 +1546,30 @@ mod tests {
             creation_time: 11,
             executable_path: "C:\\app.exe".to_owned(),
         }
+    }
+
+    #[test]
+    fn recovery_client_finish_is_idempotent_without_an_active_runtime() {
+        let mut client = RecoveryClient { active: false };
+        assert!(client.finish().is_ok());
+        assert!(client.finish().is_ok());
+    }
+
+    #[test]
+    fn recovery_runtime_finish_accepts_successful_helper_exit() -> Result<(), String> {
+        let runtime = test_runtime(spawn_test_helper("exit", &["0"])?)?;
+        finish_recovery_runtime(runtime)
+    }
+
+    #[test]
+    fn recovery_runtime_finish_reports_helper_exit_code() -> Result<(), String> {
+        let helper = spawn_test_helper("exit", &["11"])?;
+        let result = finish_recovery_runtime(test_runtime(helper)?);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Crash recovery helper exited unexpectedly with status code 11."));
+        Ok(())
     }
 
     #[test]
@@ -1269,5 +1653,1022 @@ mod tests {
             },
         );
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn every_process_value_kind_compacts_and_returns_to_its_baseline() {
+        let cases = [
+            (
+                ProcessValue::PriorityClass(1),
+                ProcessValue::PriorityClass(2),
+                ProcessValue::PriorityClass(3),
+            ),
+            (
+                ProcessValue::PowerThrottling {
+                    version: 1,
+                    control_mask: 1,
+                    state_mask: 0,
+                },
+                ProcessValue::PowerThrottling {
+                    version: 1,
+                    control_mask: 1,
+                    state_mask: 1,
+                },
+                ProcessValue::PowerThrottling {
+                    version: 1,
+                    control_mask: 3,
+                    state_mask: 1,
+                },
+            ),
+            (
+                ProcessValue::Affinity(1),
+                ProcessValue::Affinity(3),
+                ProcessValue::Affinity(7),
+            ),
+            (
+                ProcessValue::CpuSets(vec![]),
+                ProcessValue::CpuSets(vec![1]),
+                ProcessValue::CpuSets(vec![1, 2]),
+            ),
+            (
+                ProcessValue::DynamicPriorityBoostDisabled(false),
+                ProcessValue::DynamicPriorityBoostDisabled(true),
+                ProcessValue::DynamicPriorityBoostDisabled(true),
+            ),
+            (
+                ProcessValue::IoPriority(0),
+                ProcessValue::IoPriority(1),
+                ProcessValue::IoPriority(2),
+            ),
+            (
+                ProcessValue::GpuPriority(0),
+                ProcessValue::GpuPriority(1),
+                ProcessValue::GpuPriority(2),
+            ),
+            (
+                ProcessValue::MemoryPriority(1),
+                ProcessValue::MemoryPriority(2),
+                ProcessValue::MemoryPriority(3),
+            ),
+        ];
+
+        for (baseline, middle, final_value) in cases {
+            let mut entries = Vec::new();
+            compact_or_push(
+                &mut entries,
+                RecoveryEntry::Process {
+                    identity: identity(),
+                    original: baseline.clone(),
+                    expected: middle.clone(),
+                },
+            );
+            compact_or_push(
+                &mut entries,
+                RecoveryEntry::Process {
+                    identity: identity(),
+                    original: middle,
+                    expected: final_value.clone(),
+                },
+            );
+            assert_eq!(entries.len(), usize::from(baseline != final_value));
+            compact_or_push(
+                &mut entries,
+                RecoveryEntry::Process {
+                    identity: identity(),
+                    original: final_value,
+                    expected: baseline,
+                },
+            );
+            assert!(entries.is_empty());
+        }
+    }
+
+    #[test]
+    fn thread_and_power_plan_changes_compact_to_the_original_baseline() {
+        let mut thread_entries = Vec::new();
+        compact_or_push(
+            &mut thread_entries,
+            RecoveryEntry::ThreadPriority {
+                process: identity(),
+                thread_id: 13,
+                thread_creation_time: 17,
+                original: 0,
+                expected: 1,
+            },
+        );
+        compact_or_push(
+            &mut thread_entries,
+            RecoveryEntry::ThreadPriority {
+                process: identity(),
+                thread_id: 13,
+                thread_creation_time: 17,
+                original: 1,
+                expected: 2,
+            },
+        );
+        assert!(matches!(
+            thread_entries.as_slice(),
+            [RecoveryEntry::ThreadPriority {
+                original: 0,
+                expected: 2,
+                ..
+            }]
+        ));
+        compact_or_push(
+            &mut thread_entries,
+            RecoveryEntry::ThreadPriority {
+                process: identity(),
+                thread_id: 13,
+                thread_creation_time: 17,
+                original: 2,
+                expected: 0,
+            },
+        );
+        assert!(thread_entries.is_empty());
+
+        let mut plan_entries = Vec::new();
+        compact_or_push(
+            &mut plan_entries,
+            RecoveryEntry::PowerPlan {
+                original_guid: "plan-a".to_owned(),
+                expected_guid: "plan-b".to_owned(),
+            },
+        );
+        compact_or_push(
+            &mut plan_entries,
+            RecoveryEntry::PowerPlan {
+                original_guid: "PLAN-B".to_owned(),
+                expected_guid: "plan-c".to_owned(),
+            },
+        );
+        assert!(matches!(
+            plan_entries.as_slice(),
+            [RecoveryEntry::PowerPlan {
+                original_guid,
+                expected_guid,
+            }] if original_guid == "plan-a" && expected_guid == "plan-c"
+        ));
+        compact_or_push(
+            &mut plan_entries,
+            RecoveryEntry::PowerPlan {
+                original_guid: "PLAN-C".to_owned(),
+                expected_guid: "PLAN-A".to_owned(),
+            },
+        );
+        assert!(plan_entries.is_empty());
+    }
+
+    #[test]
+    fn watchdog_commands_cover_begin_cancel_commit_replacement_and_clean_release() {
+        let entry = RecoveryEntry::Process {
+            identity: identity(),
+            original: ProcessValue::PriorityClass(1),
+            expected: ProcessValue::PriorityClass(2),
+        };
+        let mut entries = Vec::new();
+        let mut pending = Vec::new();
+        let mut jobs = HashMap::new();
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Begin {
+                id: 1,
+                entry: entry.clone(),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("process entries must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(pending, vec![(1, entry.clone())]);
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Cancel { id: 1 },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("cancel must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert!(pending.is_empty());
+        assert!(entries.is_empty());
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Begin {
+                id: 2,
+                entry: entry.clone(),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("process entries must not open jobs".to_owned()),
+        )
+        .unwrap();
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Commit { id: 2 },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("commit must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+
+        let release = RecoveryEntry::Process {
+            identity: identity(),
+            original: ProcessValue::PriorityClass(2),
+            expected: ProcessValue::PriorityClass(1),
+        };
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Begin {
+                id: 3,
+                entry: release,
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("process entries must not open jobs".to_owned()),
+        )
+        .unwrap();
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Commit { id: 3 },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("commit must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert!(entries.is_empty());
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn suspended_job_begin_requires_a_retained_handle_before_acknowledgement() {
+        let entry = RecoveryEntry::SuspendedJob {
+            name: "Local\\Winderust.Suspend.test".to_owned(),
+            process: identity(),
+        };
+        let mut entries = Vec::new();
+        let mut pending = Vec::new();
+        let mut jobs = HashMap::new();
+
+        let error = apply_watchdog_command_with_open_job(
+            RecoveryCommand::Begin {
+                id: 1,
+                entry: entry.clone(),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("job open failed".to_owned()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "job open failed");
+        assert!(pending.is_empty());
+        assert!(jobs.is_empty());
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Begin {
+                id: 2,
+                entry: entry.clone(),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| {
+                // SAFETY: null security attributes/name are allowed; the returned owned event
+                // handle is used only as a deterministic stand-in for the retained Job handle.
+                let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+                (!handle.is_null())
+                    .then(|| WinHandle::new(handle))
+                    .ok_or_else(|| "CreateEventW failed".to_owned())
+            },
+        )
+        .unwrap();
+        assert_eq!(pending, vec![(2, entry)]);
+        assert!(jobs.contains_key("Local\\Winderust.Suspend.test"));
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Commit { id: 2 },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("commit must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::ForgetJob {
+                name: "Local\\Winderust.Suspend.test".to_owned(),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("forget must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert!(entries.is_empty());
+        assert!(jobs.is_empty());
+    }
+
+    #[test]
+    fn forget_process_removes_only_the_exact_instance_property() {
+        let process = identity();
+        let boost = RecoveryEntry::Process {
+            identity: process.clone(),
+            original: ProcessValue::DynamicPriorityBoostDisabled(false),
+            expected: ProcessValue::DynamicPriorityBoostDisabled(true),
+        };
+        let priority = RecoveryEntry::Process {
+            identity: process.clone(),
+            original: ProcessValue::PriorityClass(1),
+            expected: ProcessValue::PriorityClass(2),
+        };
+        let mut replacement = process.clone();
+        replacement.creation_time += 1;
+        let replacement_boost = RecoveryEntry::Process {
+            identity: replacement,
+            original: ProcessValue::DynamicPriorityBoostDisabled(false),
+            expected: ProcessValue::DynamicPriorityBoostDisabled(true),
+        };
+        let mut entries = vec![boost.clone(), priority.clone()];
+        let mut pending = vec![(7, boost), (8, replacement_boost.clone())];
+        let mut jobs = HashMap::new();
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::ForgetProcess {
+                process_id: process.id,
+                creation_time: process.creation_time,
+                value: ProcessValue::DynamicPriorityBoostDisabled(false),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("forget process must not open jobs".to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(entries, vec![priority]);
+        assert_eq!(pending, vec![(8, replacement_boost)]);
+    }
+
+    #[test]
+    fn forget_thread_priority_removes_only_the_exact_thread_instance() {
+        let process = identity();
+        let target = RecoveryEntry::ThreadPriority {
+            process: process.clone(),
+            thread_id: 13,
+            thread_creation_time: 17,
+            original: 0,
+            expected: 1,
+        };
+        let replacement_thread = RecoveryEntry::ThreadPriority {
+            process: process.clone(),
+            thread_id: 13,
+            thread_creation_time: 18,
+            original: 0,
+            expected: 1,
+        };
+        let other_thread = RecoveryEntry::ThreadPriority {
+            process: process.clone(),
+            thread_id: 14,
+            thread_creation_time: 17,
+            original: 0,
+            expected: 1,
+        };
+        let mut entries = vec![target.clone(), replacement_thread.clone()];
+        let mut pending = vec![(7, target), (8, other_thread.clone())];
+        let mut jobs = HashMap::new();
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::ForgetThreadPriority {
+                process_id: process.id,
+                process_creation_time: process.creation_time,
+                thread_id: 13,
+                thread_creation_time: 17,
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_| Err("forget thread priority must not open jobs".to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(entries, vec![replacement_thread]);
+        assert_eq!(pending, vec![(8, other_thread)]);
+    }
+
+    #[test]
+    fn recovery_transport_requires_an_acknowledgement_before_returning_success() {
+        let command = RecoveryCommand::Begin {
+            id: 9,
+            entry: RecoveryEntry::Process {
+                identity: identity(),
+                original: ProcessValue::PriorityClass(1),
+                expected: ProcessValue::PriorityClass(2),
+            },
+        };
+        let mut written = Vec::new();
+        let mut ok = Cursor::new(b"ok\n");
+        send_command(&mut written, &mut ok, &command).unwrap();
+        let encoded = String::from_utf8(written).unwrap();
+        assert!(encoded.ends_with('\n'));
+        assert_eq!(
+            serde_json::from_str::<RecoveryCommand>(encoded.trim()).unwrap(),
+            command
+        );
+
+        let mut written = Vec::new();
+        let mut rejected = Cursor::new(b"error:watchdog rejected Begin\n");
+        assert_eq!(
+            send_command(&mut written, &mut rejected, &command).unwrap_err(),
+            "watchdog rejected Begin"
+        );
+
+        let mut written = Vec::new();
+        let mut invalid = Cursor::new(b"maybe\n");
+        assert_eq!(
+            send_command(&mut written, &mut invalid, &command).unwrap_err(),
+            "Invalid recovery watchdog response: maybe"
+        );
+    }
+
+    #[test]
+    fn failed_clean_process_release_keeps_journal_for_helper_recovery() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let original = query_process_value(process.raw(), &ProcessValue::PriorityClass(0))?;
+        let original_priority = match original {
+            ProcessValue::PriorityClass(priority) => priority,
+            _ => unreachable!("priority query must produce a priority value"),
+        };
+        let expected_priority = if original_priority != BELOW_NORMAL_PRIORITY_CLASS {
+            BELOW_NORMAL_PRIORITY_CLASS
+        } else {
+            IDLE_PRIORITY_CLASS
+        };
+        let expected = ProcessValue::PriorityClass(expected_priority);
+        let original = ProcessValue::PriorityClass(original_priority);
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        assert_eq!(
+            query_process_value(process.raw(), &expected)?,
+            expected,
+            "the disposable process must reach the journal's expected state"
+        );
+
+        let mut entries = Vec::new();
+        let mut pending = Vec::new();
+        let mut jobs = HashMap::new();
+        apply_watchdog_command(
+            RecoveryCommand::Begin {
+                id: 1,
+                entry: entry.clone(),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+        )?;
+        apply_watchdog_command(
+            RecoveryCommand::Commit { id: 1 },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+        )?;
+
+        let failed_release = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: expected.clone(),
+            expected: original.clone(),
+        };
+        apply_watchdog_command(
+            RecoveryCommand::Begin {
+                id: 2,
+                entry: failed_release,
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+        )?;
+        // A clean restore that fails drops its uncommitted intent, which sends Cancel. The
+        // earlier committed mutation must remain available to the helper when its pipe closes.
+        apply_watchdog_command(
+            RecoveryCommand::Cancel { id: 2 },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+        )?;
+        assert_eq!(entries, vec![entry]);
+        assert!(pending.is_empty());
+
+        recover_journal(&entries)?;
+        assert_eq!(
+            query_process_value(process.raw(), &expected)?,
+            original,
+            "recovery must restore the captured process baseline"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn power_throttling_recovery_restores_a_disposable_process() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let probe = ProcessValue::PowerThrottling {
+            version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            control_mask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            state_mask: 0,
+        };
+        let original = query_process_value(process.raw(), &probe)?;
+        let ProcessValue::PowerThrottling {
+            version,
+            control_mask,
+            state_mask,
+        } = original
+        else {
+            unreachable!("power-throttling query must produce a power value")
+        };
+        let expected = ProcessValue::PowerThrottling {
+            version,
+            control_mask: control_mask | PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            state_mask: state_mask ^ PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        };
+        let original = ProcessValue::PowerThrottling {
+            version,
+            control_mask,
+            state_mask,
+        };
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        assert_eq!(query_process_value(process.raw(), &expected)?, expected);
+        recover_journal(&[entry])?;
+        assert_eq!(query_process_value(process.raw(), &original)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_priority_boost_recovery_restores_a_disposable_process() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let probe = ProcessValue::DynamicPriorityBoostDisabled(false);
+        let original = query_process_value(process.raw(), &probe)?;
+        let ProcessValue::DynamicPriorityBoostDisabled(original_disabled) = original else {
+            unreachable!("dynamic priority boost query must produce a boost value");
+        };
+        let original = ProcessValue::DynamicPriorityBoostDisabled(original_disabled);
+        let expected = ProcessValue::DynamicPriorityBoostDisabled(!original_disabled);
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        assert_eq!(query_process_value(process.raw(), &expected)?, expected);
+
+        recover_journal(&[entry])?;
+
+        assert_eq!(query_process_value(process.raw(), &original)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn affinity_recovery_restores_a_disposable_process() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let probe = ProcessValue::Affinity(0);
+        let original = query_process_value(process.raw(), &probe)?;
+        let ProcessValue::Affinity(original_mask) = original else {
+            unreachable!("affinity query must produce an affinity value");
+        };
+        if original_mask.count_ones() <= 1 {
+            return Ok(());
+        }
+        let expected = ProcessValue::Affinity(original_mask & original_mask.wrapping_neg());
+        let original = ProcessValue::Affinity(original_mask);
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        let recovery_result = recover_journal(&[entry]);
+        let observed = query_process_value(process.raw(), &original);
+        let cleanup_result = match &observed {
+            Ok(value) if value == &original => Ok(()),
+            _ => apply_process_value(process.raw(), &original),
+        };
+        recovery_result?;
+        let observed = observed?;
+        cleanup_result?;
+        if observed != original {
+            return Err(format!(
+                "Processor Affinity recovery returned {observed:?}, expected {original:?}."
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_sets_recovery_restores_a_disposable_process() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let probe = ProcessValue::CpuSets(Vec::new());
+        let original = query_process_value(process.raw(), &probe)?;
+        let ProcessValue::CpuSets(mut original_ids) = original else {
+            unreachable!("CPU Sets query must produce CPU Set IDs");
+        };
+        original_ids.sort_unstable();
+        original_ids.dedup();
+        let expected_ids = (0..64).find_map(|bit| {
+            let mut ids =
+                crate::platform::windows::cpu_allocation::cpu_set_ids_for_mask(1_u64 << bit)
+                    .ok()?;
+            ids.sort_unstable();
+            ids.dedup();
+            (!ids.is_empty() && ids != original_ids).then_some(ids)
+        });
+        let Some(expected_ids) = expected_ids else {
+            return Ok(());
+        };
+        let original = ProcessValue::CpuSets(original_ids);
+        let expected = ProcessValue::CpuSets(expected_ids);
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        let recovery_result = recover_journal(&[entry]);
+        let observed = query_process_value(process.raw(), &original);
+        let cleanup_result = match &observed {
+            Ok(value) if value == &original => Ok(()),
+            _ => apply_process_value(process.raw(), &original),
+        };
+        recovery_result?;
+        let observed = observed?;
+        cleanup_result?;
+        if observed != original {
+            return Err(format!(
+                "CPU Sets recovery returned {observed:?}, expected {original:?}."
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn io_priority_recovery_restores_a_disposable_process() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let probe = ProcessValue::IoPriority(0);
+        let original = query_process_value(process.raw(), &probe)?;
+        let ProcessValue::IoPriority(original_priority) = original else {
+            unreachable!("I/O priority query must produce an I/O priority value");
+        };
+        let original = ProcessValue::IoPriority(original_priority);
+        let expected = ProcessValue::IoPriority(if original_priority == 0 { 1 } else { 0 });
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        assert_eq!(query_process_value(process.raw(), &expected)?, expected);
+
+        recover_journal(&[entry])?;
+
+        assert_eq!(query_process_value(process.raw(), &original)?, original);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "modifies and restores the explicit WINDERUST_GPU_TEST_PID target; run in integration QA"]
+    fn gpu_priority_recovery_restores_an_explicit_gpu_process() -> Result<(), String> {
+        let process_id = std::env::var("WINDERUST_GPU_TEST_PID")
+            .map_err(|_| {
+                "Set WINDERUST_GPU_TEST_PID to a disposable GPU-using process.".to_owned()
+            })?
+            .parse::<u32>()
+            .map_err(|error| format!("WINDERUST_GPU_TEST_PID is invalid: {error}"))?;
+        let executable_path = std::env::var_os("WINDERUST_GPU_TEST_PATH").ok_or_else(|| {
+            "Set WINDERUST_GPU_TEST_PATH to that process's absolute executable path.".to_owned()
+        })?;
+        let target = crate::foreground::capture_process_action_target(
+            process_id,
+            Path::new(&executable_path),
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+        // SAFETY: target is an exact, validated live process instance captured for this test.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
+                0,
+                target.id,
+            )
+        };
+        if handle.is_null() {
+            return Err(format!(
+                "OpenProcess(GPU test target) failed with error {}.",
+                last_error()
+            ));
+        }
+        let process = WinHandle::new(handle);
+        let probe = ProcessValue::GpuPriority(0);
+        let original = query_process_value(process.raw(), &probe)?;
+        let ProcessValue::GpuPriority(original_priority) = original else {
+            unreachable!("GPU priority query must produce a GPU priority value");
+        };
+        let original = ProcessValue::GpuPriority(original_priority);
+        let expected = ProcessValue::GpuPriority(if original_priority == 0 { 1 } else { 0 });
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        let recovery_result = recover_journal(&[entry]);
+        let observed = query_process_value(process.raw(), &original);
+        let cleanup_result = match &observed {
+            Ok(value) if value == &original => Ok(()),
+            _ => apply_process_value(process.raw(), &original),
+        };
+        recovery_result?;
+        let observed = observed?;
+        cleanup_result?;
+        if observed != original {
+            return Err(format!(
+                "GPU priority recovery returned {observed:?}, expected {original:?}."
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
+    fn memory_priority_recovery_restores_an_explicit_process() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let probe = ProcessValue::MemoryPriority(0);
+        let original = query_process_value(process.raw(), &probe)?;
+        let ProcessValue::MemoryPriority(original_priority) = original else {
+            unreachable!("Memory Priority query must produce a Memory Priority value");
+        };
+        let original = ProcessValue::MemoryPriority(original_priority);
+        let expected = ProcessValue::MemoryPriority(if original_priority == 1 { 2 } else { 1 });
+        let entry = RecoveryEntry::Process {
+            identity: process_identity(process.raw())?,
+            original: original.clone(),
+            expected: expected.clone(),
+        };
+
+        apply_process_value(process.raw(), &expected)?;
+        let recovery_result = recover_journal(&[entry]);
+        let observed = query_process_value(process.raw(), &original);
+        let cleanup_result = match &observed {
+            Ok(value) if value == &original => Ok(()),
+            _ => apply_process_value(process.raw(), &original),
+        };
+        recovery_result?;
+        let observed = observed?;
+        cleanup_result?;
+        if observed != original {
+            return Err(format!(
+                "Memory Priority recovery returned {observed:?}, expected {original:?}."
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn thread_priority_recovery_restores_a_disposable_process_thread_after_the_expected_mutation(
+    ) -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let thread = test_thread_handle(child.child.id())?;
+        // SAFETY: thread is a live, queryable thread owned by the disposable test process.
+        let original = unsafe { GetThreadPriority(thread.raw()) };
+        if original == THREAD_PRIORITY_ERROR_RETURN {
+            return Err(format!(
+                "GetThreadPriority failed with error {}.",
+                last_error()
+            ));
+        }
+        let expected = if original != THREAD_PRIORITY_BELOW_NORMAL {
+            THREAD_PRIORITY_BELOW_NORMAL
+        } else {
+            THREAD_PRIORITY_LOWEST
+        };
+        let entry = RecoveryEntry::ThreadPriority {
+            process: process_identity(process.raw())?,
+            thread_id: thread_id(thread.raw())?,
+            thread_creation_time: thread_creation_time(thread.raw())?,
+            original,
+            expected,
+        };
+
+        // SAFETY: thread is a live, queryable thread owned by the disposable test process.
+        if unsafe { SetThreadPriority(thread.raw(), expected) } == 0 {
+            return Err(format!(
+                "SetThreadPriority failed with error {}.",
+                last_error()
+            ));
+        }
+        // SAFETY: thread remains live and is still owned by the disposable process.
+        assert_eq!(unsafe { GetThreadPriority(thread.raw()) }, expected);
+        recover_journal(&[entry])?;
+        // SAFETY: thread remains live and is still owned by the disposable process.
+        assert_eq!(unsafe { GetThreadPriority(thread.raw()) }, original);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "uses the undocumented JobObjectFreezeInformation contract; run in explicit Windows integration QA"]
+    fn suspended_job_recovery_thaws_descendants_after_the_recorded_root_exits() -> Result<(), String>
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
+        let command = Path::new(&system_root).join("System32").join("cmd.exe");
+        let wide_command = command
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut command_line = "cmd.exe /D /C start \"\" /B ping.exe 127.0.0.1 -n 15 -w 1000"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let startup = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
+        let mut process_information = PROCESS_INFORMATION::default();
+        // SAFETY: all pointers reference live, correctly sized buffers; the mutable command line
+        // is terminated UTF-16 and the returned handles are owned by this test.
+        let created = unsafe {
+            CreateProcessW(
+                wide_command.as_ptr(),
+                command_line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                std::ptr::null(),
+                std::ptr::null(),
+                &startup,
+                &mut process_information,
+            )
+        };
+        if created == 0 {
+            return Err(format!(
+                "CreateProcessW(test root) failed with error {}.",
+                last_error()
+            ));
+        }
+        let process = WinHandle::new(process_information.hProcess);
+        let thread = WinHandle::new(process_information.hThread);
+        let identity = match process_identity(process.raw()) {
+            Ok(identity) => identity,
+            Err(error) => {
+                resume_disposable_root(&process, &thread);
+                return Err(error);
+            }
+        };
+        let name = suspension_job_name(identity.id, identity.creation_time);
+        let wide_name = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: wide_name is terminated UTF-16 and the returned handle is owned by this test.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), wide_name.as_ptr()) };
+        if job.is_null() {
+            let error = last_error();
+            resume_disposable_root(&process, &thread);
+            return Err(format!("CreateJobObjectW failed with error {error}."));
+        }
+        let job = WinHandle::new(job);
+        // SAFETY: job and process are live handles owned by this test.
+        if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
+            let error = last_error();
+            resume_disposable_root(&process, &thread);
+            return Err(format!(
+                "AssignProcessToJobObject failed with error {error}."
+            ));
+        }
+        let cleanup = FrozenJobCleanup { job };
+        // SAFETY: thread is the suspended primary thread created above and has not been resumed.
+        if unsafe { ResumeThread(thread.raw()) } == u32::MAX {
+            return Err(format!(
+                "ResumeThread(test root) failed with error {}.",
+                last_error()
+            ));
+        }
+        // SAFETY: process is a live disposable handle; this bounded wait retains no pointer.
+        if unsafe { WaitForSingleObject(process.raw(), 5_000) } != WAIT_OBJECT_0 {
+            return Err("The disposable Job Object root did not exit in time.".to_owned());
+        }
+        let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        // SAFETY: cleanup owns the live Job Object handle and accounting is writable for the
+        // exact information-class buffer size.
+        if unsafe {
+            QueryInformationJobObject(
+                cleanup.job.raw(),
+                JobObjectBasicAccountingInformation,
+                (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(format!(
+                "QueryInformationJobObject failed with error {}.",
+                last_error()
+            ));
+        }
+        if accounting.ActiveProcesses == 0 {
+            return Err(
+                "The disposable root did not leave an inherited child in the job.".to_owned(),
+            );
+        }
+        let mut freeze = JobObjectFreezeInformation::new(true);
+        // SAFETY: job is live and freeze is writable for exactly the supplied structure size.
+        if unsafe {
+            SetInformationJobObject(
+                cleanup.job.raw(),
+                JOB_OBJECT_FREEZE_INFORMATION_CLASS,
+                (&mut freeze as *mut JobObjectFreezeInformation).cast(),
+                std::mem::size_of::<JobObjectFreezeInformation>() as u32,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "SetInformationJobObject(freeze) failed with error {}.",
+                last_error()
+            ));
+        }
+
+        recover_journal(&[RecoveryEntry::SuspendedJob {
+            name,
+            process: identity,
+        }])?;
+        Ok(())
+    }
+
+    struct PowerPlanCleanup {
+        original_guid: String,
+        disposable_guid: Option<String>,
+    }
+
+    impl PowerPlanCleanup {
+        fn restore_and_delete(&mut self) -> Result<(), String> {
+            set_active(&self.original_guid)?;
+            if let Some(guid) = self.disposable_guid.as_deref() {
+                crate::power::powercfg::delete_plan(guid)?;
+                self.disposable_guid = None;
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for PowerPlanCleanup {
+        fn drop(&mut self) {
+            let _ = set_active(&self.original_guid);
+            if let Some(guid) = self.disposable_guid.take() {
+                let _ = crate::power::powercfg::delete_plan(&guid);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "changes the machine-wide active Windows power plan; run manually on a disposable Windows session"]
+    fn power_plan_recovery_restores_the_original_plan_and_deletes_the_disposable_plan(
+    ) -> Result<(), String> {
+        let original_guid = active_plan()?.guid;
+        let disposable_guid = crate::power::powercfg::create_adaptive_plan(&original_guid)?;
+        let mut cleanup = PowerPlanCleanup {
+            original_guid: original_guid.clone(),
+            disposable_guid: Some(disposable_guid.clone()),
+        };
+
+        set_active(&disposable_guid)?;
+        recover_journal(&[RecoveryEntry::PowerPlan {
+            original_guid: original_guid.clone(),
+            expected_guid: disposable_guid,
+        }])?;
+        assert!(active_plan()?.guid.eq_ignore_ascii_case(&original_guid));
+        cleanup.restore_and_delete()?;
+        Ok(())
     }
 }
