@@ -1177,7 +1177,7 @@ impl Render for WinderustApp {
                 } else if app.cpu_allocation_preset_editor.is_some() {
                     app.close_cpu_allocation_preset_editor(cx);
                 } else if app.process_list.details.is_some() {
-                    app.save_process_details(cx);
+                    app.close_process_details(cx);
                 } else {
                     clear_input(&app.inputs.dashboard_search, window, cx);
                 }

@@ -39,14 +39,8 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(in crate::ui::app) fn save_process_details(&mut self, cx: &mut Context<Self>) {
-        let details = self.process_list.details.take();
-        if details.is_none() {
-            return;
-        }
-        if !self.save_settings() {
-            self.process_list.details = details;
-        }
+    pub(in crate::ui::app) fn close_process_details(&mut self, cx: &mut Context<Self>) {
+        self.process_list.details = None;
         self.active_power_plan_picker = None;
         cx.notify();
     }

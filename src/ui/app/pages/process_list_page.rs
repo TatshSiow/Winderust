@@ -367,7 +367,7 @@ impl WinderustApp {
                         control_button(Button::new("close-process-details"))
                             .icon(Icon::new(NavIcon::X).with_size(px(14.0)))
                             .on_click(cx.listener(|app, _, _, cx| {
-                                app.save_process_details(cx);
+                                app.close_process_details(cx);
                             })),
                     ),
             )
@@ -403,7 +403,7 @@ impl WinderustApp {
             .bg(rgba(0x0000008c))
             .occlude()
             .on_any_mouse_down(cx.listener(|app, _, _, cx| {
-                app.save_process_details(cx);
+                app.close_process_details(cx);
             }))
             .child(modal);
 
