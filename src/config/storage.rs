@@ -93,22 +93,21 @@ mod tests {
     use super::*;
 
     use crate::config::{
-        AccentSettings, ActionLogMode, AdaptiveEngineSettings, AdvancedPowerPlanTuningPreset,
-        AdvancedSettings, AnimationMode, AppLanguage, AppSuspensionRule, AppSuspensionSettings,
-        AppThemeMode, BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule,
-        BackgroundEfficiencySettings, ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings,
-        ByForegroundRule, ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule,
-        ByTimeSettings, CoreLimiterRule, CoreLimiterSettings, CpuAllocationPreset,
-        CpuAllocationRule, CpuAllocationSettings, CpuRestrictionMode, CpuUsageComparison,
-        DynamicPriorityBoostSettings, ForegroundBoostPriority, GeneralSettings,
-        GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
-        MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings, PriorityRule,
-        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
-        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
-        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPrioritySetting,
-        ProcessPrioritySettings, ProcessRuleMode, ProcessThreadPrioritySetting,
-        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
-        WorkloadEngineSettings,
+        AccentSettings, ActionLogMode, AdaptiveEnginePreset, AdaptiveEngineSettings,
+        AdvancedPowerPlanTuningPreset, AdvancedSettings, AnimationMode, AppLanguage,
+        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
+        BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
+        ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule,
+        ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings,
+        CoreLimiterRule, CoreLimiterSettings, CpuAllocationMethod, CpuAllocationPreset,
+        CpuAllocationRule, CpuAllocationSettings, CpuSchedulerSettings, CpuUsageComparison,
+        DynamicPriorityBoostSettings, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
+        IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        PowerPlanSettings, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+        ProcessGpuPrioritySetting, ProcessIoPrioritySetting, ProcessMemoryPrioritySetting,
+        ProcessPrioritySetting, ProcessPrioritySettings, ProcessRuleMode,
+        ProcessThreadPrioritySetting, ThreadPrioritySettings, TimerResolutionRule,
+        TimerResolutionSettings, WeekdaySetting,
     };
 
     #[test]
@@ -189,8 +188,8 @@ mod tests {
             },
             adaptive_engine: AdaptiveEngineSettings {
                 enabled: true,
-                processor_policy_enabled: true,
-                processor_policy_values:
+                processor_power_policy_enabled: true,
+                base_processor_policy:
                     crate::power::plan::ProcessorPowerValues::new_with_boost_mode(
                         0,
                         5,
@@ -198,7 +197,26 @@ mod tests {
                         0,
                         crate::power::plan::ProcessorBoostMode::Disabled,
                     ),
+                background_pressure_profile:
+                    crate::power::AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
+                focus_and_launch_profile: crate::power::AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
             },
+            adaptive_engine_presets: vec![AdaptiveEnginePreset {
+                name: "Quiet work".to_owned(),
+                processor_power_policy_enabled: true,
+                base_processor_policy:
+                    crate::power::plan::ProcessorPowerValues::new_with_boost_mode(
+                        25,
+                        5,
+                        80,
+                        40,
+                        crate::power::plan::ProcessorBoostMode::EfficientEnabled,
+                    ),
+                background_pressure_profile:
+                    crate::power::AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
+                focus_and_launch_profile: crate::power::AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
+                cpu_scheduler: CpuSchedulerSettings::default(),
+            }],
             by_activity: ByActivitySettings {
                 enabled: true,
                 idle_timeout_seconds: 12,
@@ -381,53 +399,42 @@ mod tests {
                     power_plan_guid: Some("gaming-guid".to_owned()),
                 }],
             },
-            workload_engine: WorkloadEngineSettings {
-                enabled: true,
-                lower_background_apps: true,
-                workload_engine_background_efficiency_enabled: true,
-                workload_engine_foreground_detection_enabled: true,
-                workload_engine_visible_window_detection_enabled: true,
-                workload_engine_foreground_efficiency_mode: false,
-                workload_engine_visible_window_efficiency_mode: false,
-                workload_engine_background_priority: ProcessPriority::BelowNormal,
-                workload_engine_visible_window_priority: ProcessPriority::Normal,
-                lower_background_io_priority_enabled: true,
-                lower_background_io_priority: ProcessIoPriority::VeryLow,
-                workload_engine_io_priority: IoPrioritySettings::default(),
-                workload_engine_thread_priority: crate::config::ThreadPrioritySettings::default(),
-                workload_engine_dynamic_priority_boost: DynamicPriorityBoostSettings::default(),
-                workload_engine_gpu_priority: GpuPrioritySettings::default(),
-                workload_engine_memory_priority_enabled: true,
-                workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
-                workload_engine_visible_window_memory_priority:
-                    ProcessMemoryPrioritySetting::Medium,
-                workload_engine_memory_priority: ProcessMemoryPriority::Low,
-                lower_background_auto_cpu_percent: true,
-                workload_engine_enabled: true,
-                workload_engine_advanced_settings_enabled: true,
-                workload_engine_affinity_escalation_enabled: true,
-                workload_engine_affinity_mode: CpuRestrictionMode::SoftCpuSets,
-                workload_engine_cpu_percent: 50,
-                workload_engine_max_logical_processors: 0,
-                workload_engine_total_threshold_percent: 70,
-                workload_engine_threshold_percent: 25,
-                workload_engine_restore_threshold_percent: 5,
-                workload_engine_sustain_seconds: 2,
-                workload_engine_minimum_restraint_seconds: 4,
-                workload_engine_cooldown_seconds: 10,
-                workload_engine_max_targeted_processes: 6,
-                workload_engine_exclusions: vec![ProcessExclusionRule {
+            cpu_scheduler: CpuSchedulerSettings {
+                process_priority_enabled: true,
+                background_efficiency_enabled: true,
+                focus_process_background_efficiency_override_enabled: true,
+                visible_window_background_efficiency_override_enabled: true,
+                focus_process_background_efficiency_mode: false,
+                visible_window_background_efficiency_mode: false,
+                background_efficiency_mode: true,
+                focus_process_priority: ProcessPrioritySetting::AboveNormal,
+                background_priority: ProcessPrioritySetting::BelowNormal,
+                visible_window_priority: ProcessPrioritySetting::Normal,
+                io_priority: IoPrioritySettings::default(),
+                thread_priority: crate::config::ThreadPrioritySettings::default(),
+                dynamic_priority_boost: DynamicPriorityBoostSettings::default(),
+                gpu_priority: GpuPrioritySettings::default(),
+                memory_priority_enabled: true,
+                focus_process_memory_priority: ProcessMemoryPrioritySetting::Normal,
+                visible_window_memory_priority: ProcessMemoryPrioritySetting::Medium,
+                background_memory_priority: ProcessMemoryPrioritySetting::Low,
+                cpu_pressure_restraint_enabled: true,
+                limit_background_processors_enabled: true,
+                cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
+                background_processor_selection: BackgroundProcessorSelection::LeastUsed,
+                processor_limit_percent: 50,
+                specific_processors: vec![0, 2],
+                foreground_or_system_cpu_threshold_percent: 70,
+                background_app_cpu_threshold_percent: 25,
+                cpu_recovery_threshold_percent: 5,
+                reaction_time_ms: 750,
+                cpu_restraint_time_seconds: 4,
+                cpu_recovery_time_seconds: 10,
+                maximum_restrained_apps: 6,
+                custom_rules: vec![ProcessExclusionRule {
                     enabled: true,
                     executable_path: "C:\\Games\\game.exe".to_owned(),
                     ..Default::default()
-                }],
-                boost_foreground_app: true,
-                foreground_boost: ForegroundBoostPriority::AboveNormal,
-                foreground_stability_delay_ms: 750,
-                rules: vec![PriorityRule {
-                    enabled: true,
-                    executable_path: "backup.exe".to_owned(),
-                    priority: ProcessPriority::BelowNormal,
                 }],
             },
             process_priority: ProcessPrioritySettings {
@@ -564,6 +571,62 @@ mod tests {
             parsed.memory_priority.foreground_priority,
             ProcessMemoryPrioritySetting::Default
         );
+    }
+
+    #[test]
+    fn adaptive_base_processor_policy_serializes() {
+        let raw = toml::to_string_pretty(&Settings::default())
+            .expect("default settings should serialize");
+
+        assert!(raw.contains("[adaptive_engine.base_processor_policy]"));
+        assert!(!raw.contains("processor_policy_values"));
+    }
+
+    #[test]
+    fn retired_adaptive_engine_schema_is_rejected() {
+        let raw = toml::to_string_pretty(&Settings::default())
+            .expect("default settings should serialize");
+
+        let old_processor_policy = raw.replace(
+            "adaptive_engine.base_processor_policy",
+            "adaptive_engine.processor_power_policy_values",
+        );
+        assert!(toml::from_str::<Settings>(&old_processor_policy).is_err());
+
+        let removed_cpu_scheduler_schema = raw.replacen(
+            "[cpu_scheduler]",
+            "[cpu_scheduler]\nlower_background_io_priority_enabled = true\nlower_background_io_priority = \"very_low\"",
+            1,
+        );
+        assert!(toml::from_str::<Settings>(&removed_cpu_scheduler_schema).is_err());
+
+        let removed_cpu_scheduler_gate =
+            raw.replacen("[cpu_scheduler]", "[cpu_scheduler]\nenabled = true", 1);
+        assert!(toml::from_str::<Settings>(&removed_cpu_scheduler_gate).is_err());
+
+        let old_restriction_mode = raw.replace(
+            "cpu_allocation_method = \"cpu_sets_soft\"",
+            concat!("cpu_allocation_method = \"soft", "_cpu_sets\""),
+        );
+        assert!(toml::from_str::<Settings>(&old_restriction_mode).is_err());
+
+        let old_auto_priority = raw.replace(
+            "focus_process_priority = \"above_normal\"",
+            "focus_process_priority = \"auto\"",
+        );
+        assert!(toml::from_str::<Settings>(&old_auto_priority).is_err());
+
+        let old_process_priority_toggle = raw.replace(
+            "process_priority_enabled = true",
+            "lower_background_apps = true",
+        );
+        assert!(toml::from_str::<Settings>(&old_process_priority_toggle).is_err());
+
+        let old_pressure_toggle = raw.replace(
+            "cpu_pressure_restraint_enabled = false",
+            "cpu_scheduler_enabled = false",
+        );
+        assert!(toml::from_str::<Settings>(&old_pressure_toggle).is_err());
     }
 
     #[test]

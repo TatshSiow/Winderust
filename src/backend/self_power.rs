@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::platform::windows::self_power::{
     self as windows_self_power, PowerThrottlingState, SelfPowerState, POWER_CURRENT_VERSION,
-    POWER_EXECUTION_SPEED, POWER_IGNORE_TIMER_RESOLUTION, PRIORITY_IDLE,
+    POWER_EXECUTION_SPEED, PRIORITY_IDLE,
 };
 
 const SELF_POWER_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -159,10 +159,7 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
 
         let desired = SelfPowerState {
             power_throttling: if enabled {
-                power_throttling_enabled_state(
-                    state.baseline.power_throttling,
-                    self.adaptive_engine,
-                )
+                power_throttling_enabled_state(state.baseline.power_throttling)
             } else {
                 state.baseline.power_throttling
             },
@@ -279,32 +276,25 @@ fn same_power_state(left: PowerThrottlingState, right: PowerThrottlingState) -> 
 fn power_throttling_disabled_state() -> PowerThrottlingState {
     PowerThrottlingState {
         version: POWER_CURRENT_VERSION,
-        control_mask: POWER_EXECUTION_SPEED | POWER_IGNORE_TIMER_RESOLUTION,
+        control_mask: POWER_EXECUTION_SPEED,
         state_mask: 0,
     }
 }
 
-fn power_throttling_enabled_state(
-    previous: PowerThrottlingState,
-    ignore_timer_resolution: bool,
-) -> PowerThrottlingState {
-    let previous_ignored_timer = previous.state_mask & POWER_IGNORE_TIMER_RESOLUTION != 0;
+fn power_throttling_enabled_state(previous: PowerThrottlingState) -> PowerThrottlingState {
     let mut state = previous;
     state.version = POWER_CURRENT_VERSION;
-    state.control_mask |= POWER_EXECUTION_SPEED | POWER_IGNORE_TIMER_RESOLUTION;
+    state.control_mask |= POWER_EXECUTION_SPEED;
     state.state_mask |= POWER_EXECUTION_SPEED;
-    if ignore_timer_resolution || previous_ignored_timer {
-        state.state_mask |= POWER_IGNORE_TIMER_RESOLUTION;
-    } else {
-        state.state_mask &= !POWER_IGNORE_TIMER_RESOLUTION;
-    }
     state
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::windows::priority_efficiency::PRIORITY_NORMAL;
+    use crate::platform::windows::priority_efficiency::{
+        POWER_IGNORE_TIMER_RESOLUTION, PRIORITY_NORMAL,
+    };
 
     struct FakePlatform {
         snapshot: SelfPowerState,
@@ -373,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_and_adaptive_requests_compose_and_restore_exact_baseline() {
+    fn hidden_and_adaptive_requests_compose_without_changing_timer_resolution() {
         let mut controller = SelfPowerController::with_platform(FakePlatform::new());
         let baseline = controller.platform.snapshot;
 
@@ -385,7 +375,7 @@ mod tests {
         );
 
         controller.set_adaptive_engine(true).unwrap();
-        assert_ne!(
+        assert_eq!(
             controller.platform.snapshot.power_throttling.state_mask
                 & POWER_IGNORE_TIMER_RESOLUTION,
             0
@@ -410,7 +400,7 @@ mod tests {
         assert_eq!(controller.platform.power_writes, 1);
         assert_eq!(controller.platform.priority_writes, 1);
         assert_eq!(controller.platform.snapshot.priority_class, PRIORITY_IDLE);
-        assert_ne!(
+        assert_eq!(
             controller.platform.snapshot.power_throttling.state_mask
                 & POWER_IGNORE_TIMER_RESOLUTION,
             0

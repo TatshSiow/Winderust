@@ -309,25 +309,27 @@ impl WinderustApp {
             ));
         }
         if settings.adaptive_engine.enabled {
-            let workload_engine_status = if self.feature_status.workload_engine.launch_boost_active
+            let cpu_scheduler_status = if self
+                .feature_status
+                .cpu_scheduler
+                .focus_and_launch_profile_active
             {
-                t!("home.launch_boost").to_string()
-            } else if !settings.workload_engine.enabled {
+                t!("home.focus_and_launch_profile").to_string()
+            } else if !settings.cpu_scheduler.cpu_pressure_restraint_enabled
+                && !settings.cpu_scheduler.limit_background_processors_enabled
+            {
                 t!("common.enabled").to_string()
             } else {
                 t!(
                     "home.adjusted_count",
-                    count = self
-                        .feature_status
-                        .workload_engine
-                        .background_adjusted_processes
+                    count = self.feature_status.cpu_scheduler.adjusted_processes
                 )
                 .to_string()
             };
             items.push((
                 Some(Page::AdaptiveEngine),
                 t!("nav.adaptive_engine").to_string(),
-                workload_engine_status,
+                cpu_scheduler_status,
             ));
         }
         if settings.io_priority.enabled {

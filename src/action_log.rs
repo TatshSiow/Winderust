@@ -31,7 +31,7 @@ pub enum ActionLogFeature {
     ByCpuLoad,
     ByActivity,
     ByTime,
-    WorkloadEngine,
+    CpuScheduler,
     ProcessPriority,
     ThreadPriority,
     DynamicPriorityBoost,

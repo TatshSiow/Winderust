@@ -123,11 +123,11 @@ Assert-NoSourceMatch `
     -Paths @('src/features/winderust_features/background_efficiency.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'legacy Workload Engine priority or Power Throttling owner' `
+    -Boundary 'legacy CPU Scheduler priority or Power Throttling owner' `
     -Pattern 'struct AdjustedProcess|struct BoostedProcess|previous_priority|applied_priority|restore_adjusted|restore_boosted|GetPriorityClass|SetPriorityClass|GetProcessInformation|SetProcessInformation|record_process_change|ProcessValue::PriorityClass|ProcessValue::power_throttling' `
     -Paths @(
-        'src/features/winderust_features/workload_engine.rs',
-        'src/features/winderust_features/workload_engine/process_control.rs'
+        'src/features/winderust_features/cpu_scheduler.rs',
+        'src/features/winderust_features/cpu_scheduler/process_control.rs'
     )
 
 Assert-NoSourceMatch `
@@ -161,11 +161,11 @@ Assert-NoSourceMatch `
     -Paths @('src/ui/app/pages/process_list_page.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'Workload Engine does not own a Memory Priority writer' `
+    -Boundary 'CPU Scheduler does not own a Memory Priority writer' `
     -Pattern 'MEMORY_PRIORITY_INFORMATION|ProcessMemoryPriorityClass|ProcessValue::MemoryPriority' `
     -Paths @(
-        'src/features/winderust_features/workload_engine.rs',
-        'src/features/winderust_features/workload_engine/process_control.rs'
+        'src/features/winderust_features/cpu_scheduler.rs',
+        'src/features/winderust_features/cpu_scheduler/process_control.rs'
     )
 
 Assert-SourceMatchCount `
@@ -250,11 +250,11 @@ Assert-NoSourceMatch `
     -Paths @('src/features/priority_control/dynamic_priority_boost.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'legacy Dynamic Priority Boost Workload Engine capability' `
+    -Boundary 'legacy Dynamic Priority Boost CPU Scheduler capability' `
     -Pattern 'previous_dynamic_priority_boost_disabled|applied_dynamic_priority_boost_disabled|disable_dynamic_priority_boost|GetProcessPriorityBoost|SetProcessPriorityBoost' `
     -Paths @(
-        'src/features/winderust_features/workload_engine.rs',
-        'src/features/winderust_features/workload_engine/process_control.rs'
+        'src/features/winderust_features/cpu_scheduler.rs',
+        'src/features/winderust_features/cpu_scheduler/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -284,11 +284,11 @@ Assert-NoSourceMatch `
     -Paths @('src/ui/app/pages/process_list_page.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'Workload Engine does not own an I/O Priority writer' `
+    -Boundary 'CPU Scheduler does not own an I/O Priority writer' `
     -Pattern 'previous_io_priority|applied_io_priority|set_io_priority|NtSetInformationProcess' `
     -Paths @(
-        'src/features/winderust_features/workload_engine.rs',
-        'src/features/winderust_features/workload_engine/process_control.rs'
+        'src/features/winderust_features/cpu_scheduler.rs',
+        'src/features/winderust_features/cpu_scheduler/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -318,11 +318,11 @@ Assert-NoSourceMatch `
     -Paths @('src/ui/app/pages/process_list_page.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'Workload Engine does not own a GPU Priority writer' `
+    -Boundary 'CPU Scheduler does not own a GPU Priority writer' `
     -Pattern 'previous_gpu_priority|applied_gpu_priority|set_gpu_priority|D3DKMTSetProcessSchedulingPriorityClass' `
     -Paths @(
-        'src/features/winderust_features/workload_engine.rs',
-        'src/features/winderust_features/workload_engine/process_control.rs'
+        'src/features/winderust_features/cpu_scheduler.rs',
+        'src/features/winderust_features/cpu_scheduler/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -363,8 +363,8 @@ Assert-NoSourceMatch `
     -Paths @(
         'src/features/cpu_control/cpu_allocation.rs',
         'src/features/cpu_control/core_limiter.rs',
-        'src/features/winderust_features/workload_engine.rs',
-        'src/features/winderust_features/workload_engine/process_control.rs'
+        'src/features/winderust_features/cpu_scheduler.rs',
+        'src/features/winderust_features/cpu_scheduler/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -757,7 +757,7 @@ Assert-SourceMatchCount `
 
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror individual runtime feature snapshots' `
-    -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|core_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|workload_engine_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
+    -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|core_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|cpu_scheduler_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
     -Paths @('src/ui/app.rs')
 
 Assert-SourceMatchCount `

@@ -62,7 +62,7 @@ impl PriorityClassValue {
             ProcessPrioritySetting::AboveNormal => Some(Self::AboveNormal),
             ProcessPrioritySetting::High => Some(Self::High),
             ProcessPrioritySetting::Realtime => Some(Self::Realtime),
-            ProcessPrioritySetting::Default | ProcessPrioritySetting::Auto => None,
+            ProcessPrioritySetting::Default => None,
         }
     }
 
@@ -1362,22 +1362,6 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .collect()
     }
 
-    pub(crate) fn policy_managed_process_labels(&self, owner: ControlOwner) -> Vec<(u32, String)> {
-        self.managed_priorities
-            .iter()
-            .filter(|(_, managed)| managed.owner == owner)
-            .map(|(identity, _)| (identity.id, identity.name.clone()))
-            .chain(
-                self.managed_power
-                    .iter()
-                    .filter(|(_, managed)| managed.owner == owner)
-                    .map(|(identity, _)| (identity.id, identity.name.clone())),
-            )
-            .collect::<BTreeMap<_, _>>()
-            .into_iter()
-            .collect()
-    }
-
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
         self.managed_priorities
             .iter()
@@ -1775,7 +1759,7 @@ fn priority_is_preserved(
 fn priority_owner_precedence() -> &'static [ControlOwner] {
     &[
         ControlOwner::BackgroundEfficiency,
-        ControlOwner::WorkloadForegroundBoost,
+        ControlOwner::CpuSchedulerFocusPriority,
         ControlOwner::AdaptiveEngine,
         ControlOwner::ProcessPriority,
     ]
@@ -2334,7 +2318,7 @@ mod tests {
                 priority_claim(
                     7,
                     1,
-                    ControlOwner::WorkloadForegroundBoost,
+                    ControlOwner::CpuSchedulerFocusPriority,
                     PriorityClassValue::AboveNormal,
                 ),
                 true,
@@ -2357,7 +2341,7 @@ mod tests {
             controller.platform.processes[&7].priority,
             ABOVE_NORMAL_PRIORITY_CLASS
         );
-        controller.release_all_priority_policy(ControlOwner::WorkloadForegroundBoost);
+        controller.release_all_priority_policy(ControlOwner::CpuSchedulerFocusPriority);
         assert_eq!(
             controller.platform.processes[&7].priority,
             IDLE_PRIORITY_CLASS

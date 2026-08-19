@@ -4,8 +4,8 @@ use crate::{
     backend::crash_recovery::{record_power_plan_change, RecoveryIntent},
     power::{
         active_plan, adaptive_power_profile_transition, apply_processor_power_values,
-        create_adaptive_plan, delete_plan, set_active, AdaptivePowerProfile,
-        ProcessorPowerAcDcValues, ProcessorPowerValues,
+        create_adaptive_plan, delete_plan, set_active, AdaptivePowerBoostValues,
+        AdaptivePowerProfile, ProcessorPowerSourceValues, ProcessorPowerValues,
     },
     rules::{DecisionOutcome, DecisionState, ExecutionFailureTracker},
 };
@@ -33,14 +33,15 @@ pub(crate) struct AdaptivePowerPlanRequest {
     pub(crate) profile: AdaptivePowerProfile,
     pub(crate) baseline: ProcessorPowerValues,
     pub(crate) has_efficiency_cores: bool,
+    pub(crate) background_pressure_profile: AdaptivePowerBoostValues,
+    pub(crate) focus_and_launch_profile: AdaptivePowerBoostValues,
 }
 
 struct ActiveAdaptivePowerPlan {
     original_guid: String,
     plan_guid: String,
     profile: AdaptivePowerProfile,
-    baseline: ProcessorPowerValues,
-    has_efficiency_cores: bool,
+    values: ProcessorPowerSourceValues,
     lower_demand_since: Option<Instant>,
     active: bool,
 }
@@ -70,7 +71,7 @@ pub(crate) trait PowerPlanPlatform {
     fn apply_processor_values(
         &mut self,
         guid: &str,
-        values: ProcessorPowerAcDcValues,
+        values: ProcessorPowerSourceValues,
     ) -> Result<(), String>;
 }
 
@@ -107,7 +108,7 @@ impl PowerPlanPlatform for WindowsPowerPlanPlatform {
     fn apply_processor_values(
         &mut self,
         guid: &str,
-        values: ProcessorPowerAcDcValues,
+        values: ProcessorPowerSourceValues,
     ) -> Result<(), String> {
         apply_processor_power_values(guid, values)
     }
@@ -298,9 +299,12 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             }
             self.current_guid = Some(original_guid.clone());
             let plan_guid = self.platform.create_adaptive_plan(&original_guid)?;
-            let values = request
-                .profile
-                .calibrated_power_values(request.baseline, request.has_efficiency_cores);
+            let values = request.profile.calibrated_power_values(
+                request.baseline,
+                request.has_efficiency_cores,
+                request.background_pressure_profile,
+                request.focus_and_launch_profile,
+            );
             if let Err(error) = self
                 .platform
                 .apply_processor_values(&plan_guid, values)
@@ -317,8 +321,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 original_guid,
                 plan_guid,
                 profile: request.profile,
-                baseline: request.baseline,
-                has_efficiency_cores: request.has_efficiency_cores,
+                values,
                 lower_demand_since: None,
                 active: true,
             });
@@ -336,13 +339,20 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         };
         let next_profile =
             adaptive_power_profile_transition(plan.profile, request.profile, lower_demand_elapsed);
-        if next_profile != plan.profile || request.baseline != plan.baseline {
-            self.platform.apply_processor_values(
-                &plan.plan_guid,
-                next_profile.calibrated_power_values(request.baseline, plan.has_efficiency_cores),
-            )?;
+        let next_values = next_profile.calibrated_power_values(
+            request.baseline,
+            request.has_efficiency_cores,
+            request.background_pressure_profile,
+            request.focus_and_launch_profile,
+        );
+        let values_changed = next_values != plan.values;
+        if values_changed {
+            self.platform
+                .apply_processor_values(&plan.plan_guid, next_values)?;
+        }
+        if next_profile != plan.profile || values_changed {
             plan.profile = next_profile;
-            plan.baseline = request.baseline;
+            plan.values = next_values;
             plan.lower_demand_since = None;
         }
 
@@ -693,7 +703,7 @@ mod tests {
         fn apply_processor_values(
             &mut self,
             guid: &str,
-            _values: ProcessorPowerAcDcValues,
+            _values: ProcessorPowerSourceValues,
         ) -> Result<(), String> {
             self.events.borrow_mut().push(format!("configure:{guid}"));
             Ok(())
@@ -715,6 +725,8 @@ mod tests {
                 crate::power::ProcessorPowerPreset::Balanced,
             ),
             has_efficiency_cores: false,
+            background_pressure_profile: AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
+            focus_and_launch_profile: AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
         }
     }
 
@@ -915,6 +927,26 @@ mod tests {
         assert_eq!(controller.platform.active, "ordinary");
         controller.shutdown(now + Duration::from_secs(3)).unwrap();
         assert_eq!(controller.platform.active, "original");
+    }
+
+    #[test]
+    fn adaptive_boost_tuning_reconfigures_the_active_profile() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let mut request = adaptive_request();
+        request.profile = AdaptivePowerProfile::BackgroundPressure;
+        controller.reconcile_adaptive(request, now).unwrap();
+        controller.platform.events.borrow_mut().clear();
+
+        request.background_pressure_profile.ac_policy = 70;
+        controller
+            .reconcile_adaptive(request, now + Duration::from_secs(1))
+            .unwrap();
+
+        assert_eq!(
+            controller.platform.events.borrow().as_slice(),
+            ["configure:adaptive-1"]
+        );
     }
 
     #[test]

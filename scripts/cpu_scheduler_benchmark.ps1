@@ -240,7 +240,7 @@ function Invoke-WithProcessorPolicy {
     }
 }
 
-if (-not ('WorkloadEngineBenchmarkNative' -as [type])) {
+if (-not ('CpuSchedulerBenchmarkNative' -as [type])) {
     Add-Type -ReferencedAssemblies @('System.dll', 'System.Core.dll') -TypeDefinition @"
 using System;
 using System.Diagnostics;
@@ -249,7 +249,7 @@ using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
-public static class WorkloadEngineBenchmarkNative
+public static class CpuSchedulerBenchmarkNative
 {
     private static long sink;
 
@@ -272,6 +272,9 @@ public static class WorkloadEngineBenchmarkNative
 
     [DllImport("kernel32.dll", EntryPoint = "SetProcessInformation", SetLastError = true)]
     public static extern bool SetProcessPowerThrottling(IntPtr hProcess, Int32 processInformationClass, ref PROCESS_POWER_THROTTLING_STATE processInformation, UInt32 processInformationSize);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetProcessInformation", SetLastError = true)]
+    public static extern bool GetProcessPowerThrottling(IntPtr hProcess, Int32 processInformationClass, ref PROCESS_POWER_THROTTLING_STATE processInformation, UInt32 processInformationSize);
 
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetCurrentThread();
@@ -617,36 +620,36 @@ function Measure-ScoreBenchmarks {
         l2_cache_proxy_kb = $l2CacheKb
         memory_copy_kb = $memoryCopyKb
         instruction_set_probe = 'managed_float_batch_no_intrinsics'
-        simd_vector_available = [WorkloadEngineBenchmarkNative]::IsVectorHardwareAccelerated()
-        simd_float_lanes = [WorkloadEngineBenchmarkNative]::VectorFloatLanes()
+        simd_vector_available = [CpuSchedulerBenchmarkNative]::IsVectorHardwareAccelerated()
+        simd_float_lanes = [CpuSchedulerBenchmarkNative]::VectorFloatLanes()
     }
 
     $score.int_arithmetic_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::IntArithmeticMops($scoreIterations)
+        [CpuSchedulerBenchmarkNative]::IntArithmeticMops($scoreIterations)
     }
     $score.double_arithmetic_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::DoubleArithmeticMops($scoreIterations)
+        [CpuSchedulerBenchmarkNative]::DoubleArithmeticMops($scoreIterations)
     }
     $score.float_batch_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::SimdFloatMops([Math]::Max(1, [int]($scoreIterations / 2)))
+        [CpuSchedulerBenchmarkNative]::SimdFloatMops([Math]::Max(1, [int]($scoreIterations / 2)))
     }
     $score.gzip_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::GZipRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+        [CpuSchedulerBenchmarkNative]::GZipRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
     }
     $score.deflate_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::DeflateRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+        [CpuSchedulerBenchmarkNative]::DeflateRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
     }
     $score.sha256_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::Sha256Mbps($scoreDataKbValue, $scoreRoundsValue * 4)
+        [CpuSchedulerBenchmarkNative]::Sha256Mbps($scoreDataKbValue, $scoreRoundsValue * 4)
     }
     $score.aes_cbc_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::AesCbcRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+        [CpuSchedulerBenchmarkNative]::AesCbcRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
     }
     $score.l2_cache_scan_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::MemoryScanMbps($l2CacheKb, $scoreRoundsValue * 128)
+        [CpuSchedulerBenchmarkNative]::MemoryScanMbps($l2CacheKb, $scoreRoundsValue * 128)
     }
     $score.memory_copy_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [WorkloadEngineBenchmarkNative]::MemoryCopyMbps($memoryCopyKb, $scoreRoundsValue * 16)
+        [CpuSchedulerBenchmarkNative]::MemoryCopyMbps($memoryCopyKb, $scoreRoundsValue * 16)
     }
 
     return [pscustomobject]$score
@@ -744,8 +747,8 @@ function Set-CurrentThreadPrioritySetting {
         return $false
     }
 
-    $thread = [WorkloadEngineBenchmarkNative]::GetCurrentThread()
-    if (-not [WorkloadEngineBenchmarkNative]::SetThreadPriority($thread, [int]$threadPriorityRaw[$Setting])) {
+    $thread = [CpuSchedulerBenchmarkNative]::GetCurrentThread()
+    if (-not [CpuSchedulerBenchmarkNative]::SetThreadPriority($thread, [int]$threadPriorityRaw[$Setting])) {
         throw 'SetThreadPriority failed.'
     }
     return $true
@@ -758,7 +761,7 @@ function Set-ProcessIoPrioritySetting {
     }
 
     $raw = [uint32]$ioPriorityRaw[$Setting]
-    $status = [WorkloadEngineBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
+    $status = [CpuSchedulerBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
     if ($status -lt 0) {
         throw "NtSetInformationProcess failed with status $status"
     }
@@ -778,23 +781,23 @@ function Set-ProcessMemoryPrioritySetting {
     if (-not $memoryPriorityRaw.ContainsKey($Setting)) {
         return $false
     }
-    $info = New-Object 'WorkloadEngineBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
+    $info = New-Object 'CpuSchedulerBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
     $info.MemoryPriority = [uint32]$memoryPriorityRaw[$Setting]
-    if (-not [WorkloadEngineBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
+    if (-not [CpuSchedulerBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
         throw 'SetProcessInformation memory priority failed.'
     }
     return $true
 }
 
 function Set-ProcessEfficiencyMode {
-    param([Diagnostics.Process]$Process)
-    $state = New-Object 'WorkloadEngineBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
+    param([Diagnostics.Process]$Process, [bool]$Enabled = $true)
+    $state = New-Object 'CpuSchedulerBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
     $state.Version = 1
     $state.ControlMask = $powerThrottlingExecutionSpeed
-    $state.StateMask = $powerThrottlingExecutionSpeed
+    $state.StateMask = if ($Enabled) { $powerThrottlingExecutionSpeed } else { 0 }
     $size = [Runtime.InteropServices.Marshal]::SizeOf($state)
-    if (-not [WorkloadEngineBenchmarkNative]::SetProcessPowerThrottling($Process.Handle, $processPowerThrottlingClass, [ref]$state, [uint32]$size)) {
-        throw 'SetProcessInformation EcoQoS failed.'
+    if (-not [CpuSchedulerBenchmarkNative]::SetProcessPowerThrottling($Process.Handle, $processPowerThrottlingClass, [ref]$state, [uint32]$size)) {
+        throw 'SetProcessInformation Power Throttling failed.'
     }
 }
 
@@ -805,7 +808,7 @@ function Set-ProcessGpuPrioritySetting {
     }
 
     $raw = [int]$gpuPriorityRaw[$Setting]
-    $status = [WorkloadEngineBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
+    $status = [CpuSchedulerBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
     if ($status -ge 0) {
         return 'Applied'
     }
@@ -863,8 +866,8 @@ function Restore-ForegroundAssistControls {
     )
 
     try {
-        $thread = [WorkloadEngineBenchmarkNative]::GetCurrentThread()
-        [void][WorkloadEngineBenchmarkNative]::SetThreadPriority($thread, $OriginalThreadPriority)
+        $thread = [CpuSchedulerBenchmarkNative]::GetCurrentThread()
+        [void][CpuSchedulerBenchmarkNative]::SetThreadPriority($thread, $OriginalThreadPriority)
     } catch {
     }
     if ($ioPriorityRaw.ContainsKey($AssistControls.foreground_io_priority)) {
@@ -1125,7 +1128,7 @@ function Measure-ForegroundIoWork {
         $buffer[$index] = [byte]($index % 251)
     }
     for ($round = 0; $round -lt $Rounds; $round++) {
-        $path = Join-Path ([IO.Path]::GetTempPath()) ("winderust-workload-engine-bench-$PID-$round.bin")
+        $path = Join-Path ([IO.Path]::GetTempPath()) ("winderust-cpu-scheduler-bench-$PID-$round.bin")
         [GC]::Collect()
         $stream = $null
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -1177,14 +1180,21 @@ while (Date.now() < deadline) {
 '@
     [IO.File]::WriteAllText($workerScriptPath, $code, [Text.UTF8Encoding]::new($false))
     $processes = @()
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{
+        ShowWindow = [uint16]0
+    }
     for ($worker = 0; $worker -lt $Priorities.Length; $worker++) {
-        $process = Start-Process -FilePath $cscriptPath -ArgumentList @(
-            '//B',
-            '//NoLogo',
-            "`"$workerScriptPath`"",
-            $Seconds
-        ) -PassThru -WindowStyle Hidden
+        $commandLine = '"{0}" //B //NoLogo "{1}" {2}' -f $cscriptPath, $workerScriptPath, $Seconds
+        $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+            CommandLine = $commandLine
+            ProcessStartupInformation = $startup
+        }
+        if ($created.ReturnValue -ne 0) {
+            throw "Failed to start detached benchmark worker: Win32_Process.Create returned $($created.ReturnValue)."
+        }
+        $process = [Diagnostics.Process]::GetProcessById([int]$created.ProcessId)
         Start-Sleep -Milliseconds 80
+        Set-ProcessEfficiencyMode -Process $process -Enabled $false
         try {
             $process.PriorityClass = $Priorities[$worker]
         } catch {
@@ -1256,6 +1266,34 @@ function Get-WorkerPriorities {
             }
         }
     )
+}
+
+function Get-WorkerEfficiencyCount {
+    param([object[]]$Processes)
+    $enabled = 0
+    foreach ($process in $Processes) {
+        try {
+            $worker = [Diagnostics.Process]::GetProcessById($process.Id)
+            if ($worker.HasExited) {
+                continue
+            }
+            $state = New-Object 'CpuSchedulerBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
+            $state.Version = 1
+            $size = [Runtime.InteropServices.Marshal]::SizeOf($state)
+            if ([CpuSchedulerBenchmarkNative]::GetProcessPowerThrottling(
+                $worker.Handle,
+                $processPowerThrottlingClass,
+                [ref]$state,
+                [uint32]$size
+            ) -and
+                ($state.ControlMask -band $powerThrottlingExecutionSpeed) -ne 0 -and
+                ($state.StateMask -band $powerThrottlingExecutionSpeed) -ne 0) {
+                $enabled += 1
+            }
+        } catch {
+        }
+    }
+    return $enabled
 }
 
 function New-Priorities {
@@ -1339,7 +1377,7 @@ function Run-LaunchGraceCase {
     param([string]$Name)
     return Run-Case `
         -Name $Name `
-        -Model 'Launch grace: foreground launch boosted AboveNormal; background restraints deferred.' `
+        -Model 'Focus and Launch profile: focus process priority raised to Above Normal; background restraints deferred.' `
         -ForegroundPriority 'AboveNormal' `
         -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
         -EfficiencySelectedCount 0 `
@@ -1470,8 +1508,8 @@ function Run-Case {
     $assistStatus = New-AssistStatus
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
     $originalPriority = $currentProcess.PriorityClass
-    $originalThreadPriority = [WorkloadEngineBenchmarkNative]::GetThreadPriority(
-        [WorkloadEngineBenchmarkNative]::GetCurrentThread()
+    $originalThreadPriority = [CpuSchedulerBenchmarkNative]::GetThreadPriority(
+        [CpuSchedulerBenchmarkNative]::GetCurrentThread()
     )
     $originalPriorityBoost = $null
     try {
@@ -1502,14 +1540,17 @@ function Run-Case {
             -AssistControls $AssistControls `
             -AssistStatus $assistStatus
         $observedWorkerPriorities = @()
+        $workerEfficiencyCounts = @()
         for ($sample = 0; $sample -lt ($WarmupSeconds * 2); $sample++) {
             Start-Sleep -Milliseconds 500
             $observedWorkerPriorities += @(Get-WorkerPriorities -Processes $processes)
+            $workerEfficiencyCounts += Get-WorkerEfficiencyCount -Processes $processes
         }
         $workerCpuBeforeMs = Get-WorkerCpuMilliseconds $processes
         $measurementWindow = [Diagnostics.Stopwatch]::StartNew()
         $samples = Measure-ForegroundWork -Iterations $Iterations -Rounds $Rounds -LaunchPriority $ForegroundPriority -PowerSamples $powerSamples
         $observedWorkerPriorities += @(Get-WorkerPriorities -Processes $processes)
+        $workerEfficiencyCounts += Get-WorkerEfficiencyCount -Processes $processes
         $scoreBenchmark = Measure-ScoreBenchmarks -PowerSamples $powerSamples
         $measurementWindow.Stop()
         $workerCpuAfterMs = Get-WorkerCpuMilliseconds $processes
@@ -1528,6 +1569,7 @@ function Run-Case {
         $summary | Add-Member -NotePropertyName assist_controls -NotePropertyValue $AssistControls
         $summary | Add-Member -NotePropertyName assist_status -NotePropertyValue $assistStatus
         $observedWorkerPriorities += @(Get-WorkerPriorities -Processes $processes)
+        $workerEfficiencyCounts += Get-WorkerEfficiencyCount -Processes $processes
         $aliveWorkerCount = 0
         foreach ($workerProcess in $processes) {
             try {
@@ -1542,6 +1584,12 @@ function Run-Case {
         $summary | Add-Member -NotePropertyName observed_worker_priorities -NotePropertyValue @(
             $observedWorkerPriorities | Sort-Object -Unique
         )
+        $workerEfficiencyCoverage = 0.0
+        if ($workerEfficiencyCounts.Count -gt 0 -and $processes.Count -gt 0) {
+            $workerEfficiencyCoverage = [Math]::Round((($workerEfficiencyCounts | Measure-Object -Sum).Sum / ($workerEfficiencyCounts.Count * $processes.Count)) * 100.0, 1)
+        }
+        $summary | Add-Member -NotePropertyName worker_efficiency_enabled_counts -NotePropertyValue @($workerEfficiencyCounts)
+        $summary | Add-Member -NotePropertyName worker_efficiency_coverage_percent -NotePropertyValue $workerEfficiencyCoverage
         return $summary
     } finally {
         Stop-CpuWorkers -Processes $processes

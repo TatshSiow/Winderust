@@ -118,6 +118,9 @@ impl WinderustApp {
             ListItemRemovalKind::ProcessorAffinityHardRule => {
                 remove_at(&mut self.settings.processor_affinity_hard.rules, index);
             }
+            ListItemRemovalKind::AdaptiveEnginePreset => {
+                remove_at(&mut self.settings.adaptive_engine_presets, index);
+            }
             ListItemRemovalKind::CpuAllocationPreset => {
                 remove_at(&mut self.settings.cpu_allocation_presets, index);
             }
@@ -136,11 +139,8 @@ impl WinderustApp {
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalKind::WorkloadEngineExclusion => {
-                remove_at(
-                    &mut self.settings.workload_engine.workload_engine_exclusions,
-                    index,
-                );
+            ListItemRemovalKind::CpuSchedulerCustomRule => {
+                remove_at(&mut self.settings.cpu_scheduler.custom_rules, index);
             }
             ListItemRemovalKind::ProcessPriorityExclusion => {
                 remove_at(&mut self.settings.process_priority.exclusions, index);

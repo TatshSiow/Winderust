@@ -29,12 +29,12 @@
 - Primary navigation: Home, Process List, Winderust Features, Power Plan Control, Priority Control, CPU Control, Action Log, Settings, About, and Advanced.
 - Core routes/screens: Dense operational pages grouped by feature ownership.
 - Content hierarchy: Feature enablement, concise explanation, controls/rules, current status, then exceptions or advanced details.
-- CPU allocation: CPU Sets (Soft) and Processor Affinity (Hard) are separate per-app pages. There is no blanket background restriction, mixed-mode rule, or Efficiency Mode Off allocation rule.
+- CPU allocation: CPU Sets (Soft) and Processor Affinity (Hard) are separate per-app pages. Adaptive Engine may temporarily limit hot background apps through its lower-precedence CPU Scheduler policy.
 
 ## Design principles
 - One owner per mechanism: A page and its settings own one Windows mechanism.
 - CPU allocation uses one runtime coordinator for CPU Sets and affinity. Its order is CPU Sets
-  (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / Workload Engine.
+  (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / CPU Scheduler.
 - Feature modules own discovery and policy state; only the coordinator owns Windows baselines,
   mutations, compensation, arbitration, and restoration. Releasing one producer queues the exact
   process key; the runtime re-resolves it once after every CPU producer has processed that pass.

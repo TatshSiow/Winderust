@@ -35,27 +35,62 @@ pub(in crate::ui::app) fn setting_group_with_help(
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
-    let (title, help) = title_help;
-    let title: SharedString = title.into();
     setting_group_with_title_element(
         target,
-        h_flex()
-            .flex_1()
-            .min_w(px(0.0))
-            .gap_1()
-            .items_center()
-            .child(div().truncate().child(title))
-            .child(title_info_button(
-                SharedString::from(format!("setting-group-info-{target:?}")),
-                help,
-            ))
-            .into_any_element(),
+        setting_group_help_title(target, title_help),
         action,
         collapsed,
         rows,
         window,
         cx,
     )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "matches the existing setting-group helper with one enabled state"
+)]
+pub(in crate::ui::app) fn setting_group_with_help_enabled(
+    target: SettingGroupTarget,
+    title_help: (impl Into<SharedString>, impl Into<SharedString>),
+    action: AnyElement,
+    enabled: bool,
+    collapsed: bool,
+    rows: Vec<AnyElement>,
+    window: &mut Window,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Stateful<gpui::Div> {
+    setting_group_with_title_element_with_body_height(
+        target,
+        setting_group_help_title(target, title_help),
+        action,
+        SettingGroupBody {
+            collapsed,
+            rows,
+            animation_height: None,
+            controls_enabled: Some(enabled),
+        },
+        window,
+        cx,
+    )
+}
+
+fn setting_group_help_title(
+    target: SettingGroupTarget,
+    title_help: (impl Into<SharedString>, impl Into<SharedString>),
+) -> AnyElement {
+    let (title, help) = title_help;
+    h_flex()
+        .flex_1()
+        .min_w(px(0.0))
+        .gap_1()
+        .items_center()
+        .child(div().truncate().child(title.into()))
+        .child(title_info_button(
+            SharedString::from(format!("setting-group-info-{target:?}")),
+            help,
+        ))
+        .into_any_element()
 }
 
 pub(in crate::ui::app) fn setting_group_with_title_element(
@@ -75,6 +110,7 @@ pub(in crate::ui::app) fn setting_group_with_title_element(
             collapsed,
             rows,
             animation_height: None,
+            controls_enabled: None,
         },
         window,
         cx,
@@ -93,6 +129,7 @@ pub(in crate::ui::app) fn setting_group_with_title_element_with_body_height(
         collapsed,
         rows,
         animation_height,
+        controls_enabled,
     } = body;
     let chevron_target = target;
     let hover_id = format!("setting-group-hover-{target:?}");
@@ -169,10 +206,19 @@ pub(in crate::ui::app) fn setting_group_with_title_element_with_body_height(
         for row in rows {
             body = body.child(row);
         }
+        let body = match controls_enabled {
+            Some(enabled) => disabled_feature_body(
+                SharedString::from(format!("setting-group-{target:?}-controls")),
+                body,
+                enabled,
+                cx,
+            ),
+            None => body.into_any_element(),
+        };
         let body_animation_height =
             animation_height.or_else(|| setting_group_body_animation_height(target, row_count));
         group = group.child(if let Some(progress) = motion_progress {
-            expanded_child_at_progress(body.into_any_element(), body_animation_height, progress)
+            expanded_child_at_progress(body, body_animation_height, progress)
         } else if let Some(height) = body_animation_height {
             animated_expanded_child_with_height(
                 SharedString::from(format!("setting-group-{target:?}-body")),
@@ -182,7 +228,7 @@ pub(in crate::ui::app) fn setting_group_with_title_element_with_body_height(
         } else {
             animated_expanded_child(
                 SharedString::from(format!("setting-group-{target:?}-body")),
-                body.into_any_element(),
+                body,
             )
         });
     }
@@ -652,48 +698,71 @@ pub(in crate::ui::app) fn setting_stepper_card_u64(
     value_element: AnyElement,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
+    setting_stepper_card_u64_inner(id, title, None, value, value_element, handler)
+}
+
+pub(in crate::ui::app) fn setting_stepper_card_u64_with_help(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    value: u64,
+    value_element: AnyElement,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    setting_stepper_card_u64_inner(id, title, Some(help.into()), value, value_element, handler)
+}
+
+fn setting_stepper_card_u64_inner(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    help: Option<SharedString>,
+    value: u64,
+    value_element: AnyElement,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
     let id: SharedString = id.into();
     let handler: StepChangeHandler<u64> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let delta = u64_step(value);
+    let card_id = id.clone();
+    let action = h_flex()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .flex_shrink_0()
+        .child(
+            control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                .label("-")
+                .on_click(move |_, window, cx| {
+                    down(
+                        &StepChange {
+                            delta,
+                            increase: false,
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+        )
+        .child(value_element)
+        .child(
+            control_button(Button::new((gpui::ElementId::from(id), "up")))
+                .label("+")
+                .on_click(move |_, window, cx| {
+                    handler(
+                        &StepChange {
+                            delta,
+                            increase: true,
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+        )
+        .into_any_element();
 
-    setting_action_card(
-        id.clone(),
-        title,
-        h_flex()
-            .items_center()
-            .justify_end()
-            .gap_2()
-            .flex_shrink_0()
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
-                    .label("-")
-                    .on_click(move |_, window, cx| {
-                        down(
-                            &StepChange {
-                                delta,
-                                increase: false,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(value_element)
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id), "up")))
-                    .label("+")
-                    .on_click(move |_, window, cx| {
-                        handler(
-                            &StepChange {
-                                delta,
-                                increase: true,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .into_any_element(),
-    )
+    match help {
+        Some(help) => setting_action_card_with_help(card_id, title, help, action),
+        None => setting_action_card(card_id, title, action),
+    }
 }

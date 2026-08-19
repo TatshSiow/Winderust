@@ -142,7 +142,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) {
         set_process_exclusion(
-            &mut self.settings.workload_engine.workload_engine_exclusions,
+            &mut self.settings.cpu_scheduler.custom_rules,
             &process_name,
             !included,
         );

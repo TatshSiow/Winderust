@@ -2,7 +2,7 @@ use crate::platform::windows::power_plan::{self as windows_power, PowerSetting};
 
 use super::{
     EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
-    ProcessorPowerAcDcValues, ProcessorPowerValues,
+    ProcessorPowerSourceValues, ProcessorPowerValues,
 };
 
 const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
@@ -104,15 +104,15 @@ pub fn read_plan_personality(guid: &str) -> Result<PowerPlanPersonality, String>
 pub(crate) enum ProcessorPowerApplyStage {
     ValidatePlan,
     AcCoreParkingMinimum,
-    DcCoreParkingMinimum,
+    BatteryCoreParkingMinimum,
     AcPerformanceMinimum,
-    DcPerformanceMinimum,
+    BatteryPerformanceMinimum,
     AcPerformanceMaximum,
-    DcPerformanceMaximum,
+    BatteryPerformanceMaximum,
     AcBoostPolicy,
-    DcBoostPolicy,
+    BatteryBoostPolicy,
     AcBoostMode,
-    DcBoostMode,
+    BatteryBoostMode,
     ReactivatePlan,
 }
 
@@ -121,15 +121,15 @@ impl std::fmt::Display for ProcessorPowerApplyStage {
         formatter.write_str(match self {
             Self::ValidatePlan => "validate plan",
             Self::AcCoreParkingMinimum => "write A/C core parking minimum",
-            Self::DcCoreParkingMinimum => "write battery core parking minimum",
+            Self::BatteryCoreParkingMinimum => "write battery core parking minimum",
             Self::AcPerformanceMinimum => "write A/C processor minimum",
-            Self::DcPerformanceMinimum => "write battery processor minimum",
+            Self::BatteryPerformanceMinimum => "write battery processor minimum",
             Self::AcPerformanceMaximum => "write A/C processor maximum",
-            Self::DcPerformanceMaximum => "write battery processor maximum",
+            Self::BatteryPerformanceMaximum => "write battery processor maximum",
             Self::AcBoostPolicy => "write A/C boost policy",
-            Self::DcBoostPolicy => "write battery boost policy",
+            Self::BatteryBoostPolicy => "write battery boost policy",
             Self::AcBoostMode => "write A/C boost mode",
-            Self::DcBoostMode => "write battery boost mode",
+            Self::BatteryBoostMode => "write battery boost mode",
             Self::ReactivatePlan => "refresh the active plan",
         })
     }
@@ -162,14 +162,14 @@ impl std::error::Error for ProcessorPowerApplyError {}
 
 pub fn apply_processor_power_values(
     guid: &str,
-    values: ProcessorPowerAcDcValues,
+    values: ProcessorPowerSourceValues,
 ) -> Result<(), String> {
     apply_processor_power_values_staged(guid, values).map_err(|error| error.to_string())
 }
 
 pub(crate) fn apply_processor_power_values_staged(
     guid: &str,
-    values: ProcessorPowerAcDcValues,
+    values: ProcessorPowerSourceValues,
 ) -> Result<(), ProcessorPowerApplyError> {
     validate_plan_guid(guid).map_err(|error| {
         ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ValidatePlan, error)
@@ -186,8 +186,8 @@ pub(crate) fn apply_processor_power_values_staged(
     write_processor_value(
         guid,
         PowerSetting::CoreParkingMinimum,
-        values.dc.core_parking_min,
-        ProcessorPowerApplyStage::DcCoreParkingMinimum,
+        values.battery.core_parking_min,
+        ProcessorPowerApplyStage::BatteryCoreParkingMinimum,
         windows_power::write_dc_value,
     )?;
     write_processor_value(
@@ -200,8 +200,8 @@ pub(crate) fn apply_processor_power_values_staged(
     write_processor_value(
         guid,
         PowerSetting::PerformanceMinimum,
-        values.dc.performance_min,
-        ProcessorPowerApplyStage::DcPerformanceMinimum,
+        values.battery.performance_min,
+        ProcessorPowerApplyStage::BatteryPerformanceMinimum,
         windows_power::write_dc_value,
     )?;
     write_processor_value(
@@ -214,8 +214,8 @@ pub(crate) fn apply_processor_power_values_staged(
     write_processor_value(
         guid,
         PowerSetting::PerformanceMaximum,
-        values.dc.performance_max,
-        ProcessorPowerApplyStage::DcPerformanceMaximum,
+        values.battery.performance_max,
+        ProcessorPowerApplyStage::BatteryPerformanceMaximum,
         windows_power::write_dc_value,
     )?;
     write_processor_value(
@@ -228,8 +228,8 @@ pub(crate) fn apply_processor_power_values_staged(
     write_processor_value(
         guid,
         PowerSetting::BoostPolicy,
-        values.dc.boost_policy,
-        ProcessorPowerApplyStage::DcBoostPolicy,
+        values.battery.boost_policy,
+        ProcessorPowerApplyStage::BatteryBoostPolicy,
         windows_power::write_dc_value,
     )?;
     write_processor_value(
@@ -242,8 +242,8 @@ pub(crate) fn apply_processor_power_values_staged(
     write_processor_value(
         guid,
         PowerSetting::BoostMode,
-        values.dc.boost_mode.power_value(),
-        ProcessorPowerApplyStage::DcBoostMode,
+        values.battery.boost_mode.power_value(),
+        ProcessorPowerApplyStage::BatteryBoostMode,
         windows_power::write_dc_value,
     )?;
 
@@ -259,9 +259,9 @@ pub(crate) fn apply_processor_power_values_staged(
     Ok(())
 }
 
-pub fn read_processor_power_values(guid: &str) -> Result<ProcessorPowerAcDcValues, String> {
+pub fn read_processor_power_values(guid: &str) -> Result<ProcessorPowerSourceValues, String> {
     validate_plan_guid(guid)?;
-    Ok(ProcessorPowerAcDcValues::new(
+    Ok(ProcessorPowerSourceValues::new(
         ProcessorPowerValues::new_with_boost_mode(
             windows_power::read_ac_value(guid, PowerSetting::CoreParkingMinimum)?,
             windows_power::read_ac_value(guid, PowerSetting::PerformanceMinimum)?,
@@ -401,8 +401,8 @@ mod tests {
     }
 
     #[test]
-    fn processor_power_ac_dc_values_normalize_each_power_source() {
-        let values = ProcessorPowerAcDcValues::new(
+    fn processor_power_values_normalize_each_power_source() {
+        let values = ProcessorPowerSourceValues::new(
             ProcessorPowerValues::new_with_boost_mode(
                 120,
                 90,
@@ -418,9 +418,9 @@ mod tests {
         assert_eq!(values.ac.performance_min, 90);
         assert_eq!(values.ac.performance_max, 90);
         assert_eq!(values.ac.boost_policy, 100);
-        assert_eq!(values.dc.core_parking_min, 10);
-        assert_eq!(values.dc.performance_min, 20);
-        assert_eq!(values.dc.performance_max, 20);
-        assert_eq!(values.dc.boost_policy, 30);
+        assert_eq!(values.battery.core_parking_min, 10);
+        assert_eq!(values.battery.performance_min, 20);
+        assert_eq!(values.battery.performance_max, 20);
+        assert_eq!(values.battery.boost_policy, 30);
     }
 }

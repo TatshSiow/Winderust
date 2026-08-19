@@ -165,7 +165,10 @@ pub(in crate::ui::app) fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcPerformanceMax
         | NumericField::ProcessorDcBoostPolicy
         | NumericField::AdvancedPowerPlanTuningPreset(_)
-        | NumericField::AdaptiveEngineProcessorPolicy(_)
+        | NumericField::AdaptiveEngineTuning(
+            _,
+            AdaptiveEngineTuningNumericField::ProcessorPowerPolicy(_),
+        )
         | NumericField::MemoryTrimMemoryLoadThreshold
         | NumericField::CoreLimiterThreshold(_)
         | NumericField::CoreLimiterMaxProcessors(_) => 76.0,

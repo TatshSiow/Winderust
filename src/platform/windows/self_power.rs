@@ -11,8 +11,7 @@ use windows_sys::Win32::{
 use crate::win_util::last_error;
 
 pub(crate) use super::priority_efficiency::{
-    PowerThrottlingState, POWER_CURRENT_VERSION, POWER_EXECUTION_SPEED,
-    POWER_IGNORE_TIMER_RESOLUTION, PRIORITY_IDLE,
+    PowerThrottlingState, POWER_CURRENT_VERSION, POWER_EXECUTION_SPEED, PRIORITY_IDLE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

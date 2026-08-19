@@ -23,7 +23,7 @@ The earlier runtime reports allowed Winderust to classify the PowerShell benchma
 
 | Gate | Requirement | Result |
 | --- | ---: | ---: |
-| Workload Engine activation | 4/4 passes | 4/4 passes |
+| CPU Scheduler activation | 4/4 passes | 4/4 passes |
 | Median improvement | at least 3% | 12.98% |
 | P95 improvement | at least 3% | 13.98% |
 | Background throughput retained | at least 85% | 98.05% |
@@ -93,7 +93,7 @@ The absolute median change is only 0.24 ms. Two passes cleared both latency gate
 
 ## Product finding
 
-The benchmark exposed a Workload Engine defect: the broad background-priority target path did not check configured Workload Engine exclusions. The shared path now checks the exclusion before applying priority or Efficiency control. The corrected release build and shortened integrity run both verify the fix.
+The benchmark exposed a CPU Scheduler defect: the broad background-priority target path did not check configured CPU Scheduler exclusions. The shared path now checks the exclusion before applying priority or Efficiency control. The corrected release build and shortened integrity run both verify the fix.
 
 ## Raw result
 

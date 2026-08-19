@@ -4,16 +4,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, ABOVE_NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-};
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    audio_activity::active_audio_process_ids,
     config::{
-        CpuRestrictionMode, ForegroundBoostPriority, PriorityRule, ProcessPriority,
-        WorkloadEngineSettings,
+        BackgroundProcessorSelection, CpuAllocationMethod, CpuSchedulerSettings,
+        ProcessPrioritySetting,
     },
     control::{
         cpu_allocation::CpuAllocationCoordinator,
@@ -46,33 +43,27 @@ use crate::{
 mod policy;
 mod process_control;
 
-pub use policy::{foreground_boost_priority_class, is_builtin_excluded};
+pub use policy::is_builtin_excluded;
 
 use policy::*;
 use process_control::*;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
-const WORKLOAD_ENGINE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
-const WORKLOAD_ENGINE_PRESSURE_RESTORE_BAND_PERCENT: u8 = 5;
-const WORKLOAD_ENGINE_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
-const WORKLOAD_ENGINE_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
+const CPU_SCHEDULER_RECOVERY_BAND_PERCENT: u8 = 5;
+const CPU_SCHEDULER_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
+const CPU_SCHEDULER_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
+const CPU_SCHEDULER_SELECTION_STICKINESS_TENTHS: u32 = 50;
 const BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
-const FOREGROUND_LAUNCH_BOOST_WINDOW: Duration = Duration::from_secs(8);
-const WORKLOAD_ENGINE_REPEAT_OFFENDER_SUSTAIN_DIVISOR: u32 = 2;
+const FOCUS_AND_LAUNCH_PROFILE_WINDOW: Duration = Duration::from_secs(8);
+const FOCUS_PROCESS_PRIORITY_STABILITY_DELAY_MS: u64 = 750;
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkloadEngineSnapshot {
+pub struct CpuSchedulerSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
-    pub background_adjusted_processes: usize,
-    pub timer_resolution_ignored_processes: usize,
-    pub foreground_boosted_process: Option<String>,
-    pub launch_boost_active: bool,
-    pub workload_engine_active: bool,
-    pub workload_managed_processes: usize,
-    pub workload_engine_message: String,
-    pub workload_engine_total_cpu_usage_tenths: Option<u16>,
-    pub adaptive_power_profile: Option<String>,
-    pub workload_engine_details: Vec<WorkloadEngineProcessStatus>,
+    pub adjusted_processes: usize,
+    pub focus_and_launch_profile_active: bool,
+    pub cpu_pressure_restraint_active: bool,
+    pub foreground_cpu_usage_tenths: Option<u16>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
@@ -81,51 +72,32 @@ pub struct WorkloadEngineSnapshot {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkloadEngineProcessStatus {
-    pub process_id: u32,
-    pub process_name: String,
-    pub state: WorkloadEngineProcessState,
-    pub cpu_usage_tenths: Option<u16>,
-    pub elapsed_seconds: Option<u64>,
-    pub reaction_millis: Option<u64>,
-    pub restraint_count: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkloadEngineProcessState {
-    Watching,
-    Lowered,
-    AffinityRestrained,
-    CoolingDown,
-}
-
-pub struct WorkloadEngineManager {
-    foreground_candidate: Option<ForegroundCandidate>,
+pub struct CpuSchedulerManager {
+    focus_process_candidate: Option<FocusProcessCandidate>,
     foreground_cpu_sample: Option<(BTreeSet<u32>, ProcessCpuSample)>,
-    workload_engine: BTreeMap<u32, WorkloadEngineProcess>,
-    workload_engine_pressure_active: bool,
-    workload_engine_affinity: CpuAllocationManager,
-    workload_engine_memory_priority: MemoryPriorityManager,
-    workload_engine_core_selection: Option<WorkloadEngineCoreSelection>,
+    tracked_processes: BTreeMap<u32, CpuSchedulerProcess>,
+    background_pressure_active: bool,
+    cpu_allocation: CpuAllocationManager,
+    background_memory_priority: MemoryPriorityManager,
+    cpu_allocation_selection: Option<CpuAllocationSelection>,
     last_background_apply_summary_logged_at: Option<Instant>,
     per_processor_usage: PerProcessorUsageMonitor,
     failure_suppression: ExecutionFailureTracker,
     unavailable_power_targets: BTreeSet<ProcessTargetKey>,
 }
 
-impl Default for WorkloadEngineManager {
+impl Default for CpuSchedulerManager {
     fn default() -> Self {
         Self {
-            foreground_candidate: None,
+            focus_process_candidate: None,
             foreground_cpu_sample: None,
-            workload_engine: BTreeMap::new(),
-            workload_engine_pressure_active: false,
-            workload_engine_affinity: CpuAllocationManager::with_action_log_feature(
-                ActionLogFeature::WorkloadEngine,
+            tracked_processes: BTreeMap::new(),
+            background_pressure_active: false,
+            cpu_allocation: CpuAllocationManager::with_action_log_feature(
+                ActionLogFeature::CpuScheduler,
             ),
-            workload_engine_memory_priority: MemoryPriorityManager::default(),
-            workload_engine_core_selection: None,
+            background_memory_priority: MemoryPriorityManager::default(),
+            cpu_allocation_selection: None,
             last_background_apply_summary_logged_at: None,
             per_processor_usage: PerProcessorUsageMonitor::default(),
             failure_suppression: ExecutionFailureTracker::default(),
@@ -134,7 +106,7 @@ impl Default for WorkloadEngineManager {
     }
 }
 
-struct ForegroundCandidate {
+struct FocusProcessCandidate {
     process_id: u32,
     process_name: String,
     executable_path: String,
@@ -143,14 +115,14 @@ struct ForegroundCandidate {
 }
 
 #[derive(Default)]
-struct ForegroundBoostGroupResult {
+struct FocusProcessPriorityGroupResult {
     skipped: usize,
     failures: PriorityFailures,
     auto_excluded_processes: Vec<String>,
 }
 
 #[derive(Clone)]
-struct WorkloadEngineProcess {
+struct CpuSchedulerProcess {
     process_name: String,
     executable_path: String,
     creation_time: u64,
@@ -159,86 +131,56 @@ struct WorkloadEngineProcess {
     high_since: Option<Instant>,
     below_since: Option<Instant>,
     active_since: Option<Instant>,
-    last_reaction_millis: Option<u64>,
-    restraint_count: u32,
-    decision: Option<WorkloadEngineDecision>,
+    decision: Option<CpuSchedulerDecision>,
     active: bool,
     selected: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WorkloadEngineDecision {
+enum CpuSchedulerDecision {
     LowerPriority,
-    RestrictAffinity,
+    LimitProcessors,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CpuSchedulerTier {
+    VisibleWindow,
+    Background,
 }
 
 #[derive(Clone)]
-struct WorkloadEngineCandidate {
+struct CpuSchedulerCandidate {
     process_id: u32,
     process_name: String,
-    decision: WorkloadEngineDecision,
+    decision: CpuSchedulerDecision,
+    tier: CpuSchedulerTier,
     score: u32,
 }
 
 #[derive(Clone, Copy)]
-struct WorkloadEngineCoreSelection {
+struct CpuAllocationSelection {
     mask: u64,
+    kind: Option<LogicalProcessorKind>,
     selected_at: Instant,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PriorityTargetSource {
-    WorkloadEngine,
-    BackgroundPolicy,
-    VisibleWindow,
-    Rule,
+struct PressureTargetPolicy {
+    priority: Option<PriorityClassValue>,
+    apply_background_efficiency: bool,
 }
 
 struct PriorityTarget {
     process_name: String,
     executable_path: String,
     creation_time: u64,
-    priority: ProcessPriority,
-    source: PriorityTargetSource,
-    apply_priority_class: bool,
+    priority: Option<PriorityClassValue>,
     apply_background_efficiency: bool,
 }
 
-fn insert_background_target(
-    targets: &mut BTreeMap<u32, PriorityTarget>,
-    settings: &WorkloadEngineSettings,
-    process_id: u32,
-    target: PriorityTarget,
-) {
-    if !settings.workload_engine_exclusion_enabled_for(&target.executable_path) {
-        targets.insert(process_id, target);
-    }
-}
-
-fn unprotected_efficiency_process_ids(
-    foreground_process_group_ids: &BTreeSet<u32>,
-    visible_window_process_group_ids: &BTreeSet<u32>,
-    protect_foreground_app: bool,
-    protect_visible_window_apps: bool,
-) -> BTreeSet<u32> {
-    foreground_process_group_ids
-        .iter()
-        .filter(|_| !protect_foreground_app)
-        .chain(
-            visible_window_process_group_ids
-                .iter()
-                .filter(|_| !protect_visible_window_apps),
-        )
-        .copied()
-        .collect()
-}
-
-pub struct WorkloadEngineUpdate<'a> {
-    pub settings: &'a WorkloadEngineSettings,
+pub struct CpuSchedulerUpdate<'a> {
+    pub settings: &'a CpuSchedulerSettings,
     pub automation_enabled: bool,
     pub allow_cross_session_process_control: bool,
-    pub protect_foreground_app_from_efficiency: bool,
-    pub protect_visible_window_apps_from_efficiency: bool,
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
     pub background_efficiency_managed: bool,
@@ -247,30 +189,27 @@ pub struct WorkloadEngineUpdate<'a> {
     pub observations: &'a mut CycleObservations,
 }
 
-struct ForegroundBoostGroup<'a> {
+struct FocusProcessPriorityGroup<'a> {
     foreground_id: u32,
     foreground_process_name: Option<&'a str>,
     targets: &'a [(u32, String, String, u64)],
     stability_delay_ms: u64,
-    foreground_boost: ForegroundBoostPriority,
-    foreground_cpu_usage_percent: Option<f32>,
+    priority: PriorityClassValue,
 }
 
-impl WorkloadEngineManager {
+impl CpuSchedulerManager {
     pub fn update(
         &mut self,
-        input: WorkloadEngineUpdate<'_>,
+        input: CpuSchedulerUpdate<'_>,
         cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         memory_priority_controller: &mut MemoryPriorityController,
         action_log: &mut ActionLog,
-    ) -> WorkloadEngineSnapshot {
-        let WorkloadEngineUpdate {
+    ) -> CpuSchedulerSnapshot {
+        let CpuSchedulerUpdate {
             settings,
             automation_enabled,
             allow_cross_session_process_control,
-            protect_foreground_app_from_efficiency,
-            protect_visible_window_apps_from_efficiency,
             foreground_process_id,
             total_cpu_usage_percent,
             background_efficiency_managed,
@@ -288,7 +227,7 @@ impl WorkloadEngineManager {
                 "automation disabled",
             );
             self.failure_suppression.clear();
-            return WorkloadEngineSnapshot {
+            return CpuSchedulerSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Automation disabled.".to_owned(),
@@ -297,19 +236,20 @@ impl WorkloadEngineManager {
             };
         }
 
-        if !settings.enabled {
+        if !settings.cpu_pressure_restraint_enabled && !settings.limit_background_processors_enabled
+        {
             let failed = self.clear_all_with_memory_priority(
                 cpu_allocation_coordinator,
                 priority_efficiency_controller,
                 memory_priority_controller,
                 action_log,
-                "Workload Engine disabled",
+                "CPU Scheduler disabled",
             );
             self.failure_suppression.clear();
-            return WorkloadEngineSnapshot {
+            return CpuSchedulerSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
-                message: "Workload Engine disabled.".to_owned(),
+                message: "CPU Scheduler disabled.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -325,7 +265,7 @@ impl WorkloadEngineManager {
                 action_log,
                 "current Windows session is unknown",
             );
-            return WorkloadEngineSnapshot {
+            return CpuSchedulerSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -335,13 +275,9 @@ impl WorkloadEngineManager {
         };
 
         let exact_paths_required = settings
-            .rules
+            .custom_rules
             .iter()
-            .any(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute())
-            || settings
-                .workload_engine_exclusions
-                .iter()
-                .any(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
+            .any(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
         let processes = match if exact_paths_required {
             observations.processes_with_paths()
         } else {
@@ -356,7 +292,7 @@ impl WorkloadEngineManager {
                     action_log,
                     "process list unavailable",
                 );
-                return WorkloadEngineSnapshot {
+                return CpuSchedulerSnapshot {
                     enabled: true,
                     failed_processes: failed.count,
                     message: err,
@@ -367,30 +303,28 @@ impl WorkloadEngineManager {
         };
 
         let scanned_processes = processes.len();
-        let visible_window_tier_required = settings.lower_background_apps
-            || settings.workload_engine_background_efficiency_enabled
-            || settings.workload_engine_memory_priority_enabled;
-        let visible_processes = if visible_window_tier_required {
-            let Ok(process_ids) = observations.visible_window_process_ids() else {
-                let failed = self.clear_all_with_memory_priority(
-                    cpu_allocation_coordinator,
-                    priority_efficiency_controller,
-                    memory_priority_controller,
-                    action_log,
-                    "visible windows are unavailable",
-                );
-                return WorkloadEngineSnapshot {
-                    enabled: true,
-                    failed_processes: failed.count,
-                    message: "Paused: visible windows are unavailable.".to_owned(),
-                    last_error: failed.last_error,
-                    ..Default::default()
-                };
+        let Ok(visible_window_process_ids) = observations.visible_window_process_ids() else {
+            let failed = self.clear_all_with_memory_priority(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                memory_priority_controller,
+                action_log,
+                "visible windows are unavailable",
+            );
+            return CpuSchedulerSnapshot {
+                enabled: true,
+                failed_processes: failed.count,
+                message: "Paused: visible windows are unavailable.".to_owned(),
+                last_error: failed.last_error,
+                ..Default::default()
             };
-            ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
-        } else {
-            ProtectedProcesses::default()
         };
+        let visible_processes = ProtectedProcesses::capture(
+            processes.as_ref(),
+            false,
+            None,
+            visible_window_process_ids,
+        );
         let processes_by_id = processes
             .iter()
             .map(|process| (process.id, process))
@@ -406,6 +340,10 @@ impl WorkloadEngineManager {
             .collect::<BTreeMap<_, _>>();
         let foreground_process_name = foreground_process_id
             .and_then(|id| processes_by_id.get(&id).map(|process| process.name.clone()));
+        let foreground_process_excluded = foreground_process_id
+            .and_then(|id| processes_by_id.get(&id))
+            .and_then(|process| cached_executable_path(process, &mut executable_paths))
+            .is_some_and(|path| settings.custom_rule_enabled_for(&path));
         let foreground_process_group_ids =
             foreground_process_group_ids(processes.as_ref(), foreground_process_id);
         let visible_window_process_group_ids = processes
@@ -424,9 +362,7 @@ impl WorkloadEngineManager {
         let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
 
         let mut failures = PriorityFailures::default();
-        let active_audio_process_ids = active_audio_process_ids().ok();
-
-        let mut lowerable_background_processes = BTreeMap::new();
+        let mut restrainable_processes = BTreeMap::new();
         for process in processes.iter() {
             if process.is_critical != Some(false)
                 || !process.can_set_information
@@ -438,7 +374,6 @@ impl WorkloadEngineManager {
                     &foreground_process_group_ids,
                     excluded_process_ids,
                 )
-                || visible_window_process_group_ids.contains(&process.id)
             {
                 continue;
             }
@@ -449,185 +384,47 @@ impl WorkloadEngineManager {
                 continue;
             }
 
-            lowerable_background_processes.insert(process.id, process.name.clone());
+            let tier = if visible_window_process_group_ids.contains(&process.id) {
+                CpuSchedulerTier::VisibleWindow
+            } else {
+                CpuSchedulerTier::Background
+            };
+            restrainable_processes.insert(process.id, (process.name.clone(), tier));
         }
 
         let mut target_processes = BTreeMap::new();
-        if settings.lower_background_apps {
-            let priority = settings.workload_engine_visible_window_priority;
-            for process_id in &visible_window_process_group_ids {
-                let Some(process) = processes_by_id.get(process_id) else {
-                    continue;
-                };
-                if process.is_critical != Some(false)
-                    || !process.can_set_information
-                    || excluded_process_ids.contains(process_id)
-                    || (!allow_cross_session_process_control
-                        && process_session_id(*process_id) != Some(current_session_id))
-                {
-                    continue;
-                }
-                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
-                else {
-                    continue;
-                };
-                let Some(creation_time) = process.creation_time else {
-                    continue;
-                };
-                if settings.workload_engine_exclusion_enabled_for(&executable_path) {
-                    continue;
-                }
-                target_processes.insert(
-                    *process_id,
-                    PriorityTarget {
-                        process_name: process.name.clone(),
-                        executable_path,
-                        creation_time,
-                        priority,
-                        source: PriorityTargetSource::VisibleWindow,
-                        apply_priority_class: true,
-                        apply_background_efficiency: false,
-                    },
-                );
-            }
-        }
-        let foreground_launch_boost_target = foreground_process_id
+        let focus_and_launch_profile_target = foreground_process_id
             .zip(foreground_process_name.as_deref())
             .is_some_and(|(process_id, process_name)| {
                 !excluded_process_ids.contains(&process_id)
-                    && foreground_boost_eligible(
+                    && !foreground_process_excluded
+                    && focus_process_priority_eligible(
                         process_id,
                         process_name,
                         current_process_id,
                         current_session_id,
                     )
-                    && foreground_launch_boost_eligible(process_id)
+                    && focus_and_launch_profile_eligible(process_id)
             });
-        let launch_boost_running =
-            workload_engine_launch_boost_enabled(settings, foreground_launch_boost_target);
-        let background_policy_can_run = !background_efficiency_managed
-            && !launch_boost_running
-            && smart_efficiency_should_run(
-                settings,
-                foreground_cpu_usage_percent,
-                total_cpu_usage_percent,
-            );
-        let lower_background_policy_enabled =
-            settings.lower_background_apps && background_policy_can_run;
-        let auto_efficiency_policy_enabled =
-            settings.workload_engine_background_efficiency_enabled && background_policy_can_run;
-        if auto_efficiency_policy_enabled {
-            for process_id in unprotected_efficiency_process_ids(
-                &foreground_process_group_ids,
-                &visible_window_process_group_ids,
-                protect_foreground_app_from_efficiency,
-                protect_visible_window_apps_from_efficiency,
-            ) {
-                let Some(process) = processes_by_id.get(&process_id) else {
-                    continue;
-                };
-                if process.id == 0
-                    || process.id == current_process_id
-                    || process.is_critical != Some(false)
-                    || !process.can_set_information
-                    || is_builtin_excluded(&process.name)
-                    || excluded_process_ids.contains(&process.id)
-                    || (!allow_cross_session_process_control
-                        && process_session_id(process.id) != Some(current_session_id))
-                {
-                    continue;
-                }
-                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
-                else {
-                    continue;
-                };
-                let Some(creation_time) = process.creation_time else {
-                    continue;
-                };
-                if settings.workload_engine_exclusion_enabled_for(&executable_path) {
-                    continue;
-                }
-                target_processes
-                    .entry(process_id)
-                    .and_modify(|target| target.apply_background_efficiency = true)
-                    .or_insert(PriorityTarget {
-                        process_name: process.name.clone(),
-                        executable_path,
-                        creation_time,
-                        priority: settings.workload_engine_background_priority,
-                        source: PriorityTargetSource::BackgroundPolicy,
-                        apply_priority_class: false,
-                        apply_background_efficiency: true,
-                    });
-            }
-        }
-        if (settings.lower_background_apps
-            || settings.workload_engine_background_efficiency_enabled)
-            && !background_efficiency_managed
-        {
-            for (process_id, process_name) in &lowerable_background_processes {
-                let matched_rule = settings
-                    .lower_background_apps
-                    .then(|| {
-                        processes_by_id
-                            .get(process_id)
-                            .and_then(|process| matching_rule(settings, process))
-                    })
-                    .flatten();
-                let (priority, source, apply_priority_class) = if let Some(rule) = matched_rule {
-                    (rule.priority, PriorityTargetSource::Rule, true)
-                } else if lower_background_policy_enabled || auto_efficiency_policy_enabled {
-                    (
-                        settings.workload_engine_background_priority,
-                        PriorityTargetSource::BackgroundPolicy,
-                        settings.lower_background_apps,
-                    )
-                } else {
-                    continue;
-                };
-                let Some(process) = processes_by_id.get(process_id) else {
-                    continue;
-                };
-                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
-                else {
-                    continue;
-                };
-                let Some(creation_time) = process.creation_time else {
-                    continue;
-                };
-                insert_background_target(
-                    &mut target_processes,
-                    settings,
-                    *process_id,
-                    PriorityTarget {
-                        process_name: process_name.clone(),
-                        executable_path,
-                        creation_time,
-                        priority,
-                        source,
-                        apply_priority_class,
-                        apply_background_efficiency: settings
-                            .workload_engine_background_efficiency_enabled,
-                    },
-                );
-            }
-        }
-
-        let workload_engine_running = self.update_workload_engine_pressure(
+        let focus_and_launch_profile_active = settings.process_priority_enabled
+            && focus_and_launch_profile_enabled(settings, focus_and_launch_profile_target);
+        let background_pressure_triggered = self.update_background_pressure(
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
         );
-        let workload_engine_restraints_running = workload_engine_running && !launch_boost_running;
+        let background_pressure_applies =
+            background_pressure_triggered && !focus_and_launch_profile_active;
+        let cpu_pressure_restraint_applies =
+            settings.cpu_pressure_restraint_enabled && background_pressure_applies;
+        let cpu_allocation_applies =
+            settings.limit_background_processors_enabled && background_pressure_applies;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        let mut workload_engine_affinity_targets = Vec::new();
-        let mut workload_engine_memory_targets = Vec::new();
-        if settings.workload_engine_memory_priority_enabled {
-            if let Some(priority) = settings
-                .workload_engine_foreground_memory_priority
-                .priority()
-            {
+        let mut cpu_allocation_targets = Vec::new();
+        let mut cpu_scheduler_memory_targets = Vec::new();
+        if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
+            if let Some(priority) = settings.focus_process_memory_priority.priority() {
                 for process in processes
                     .iter()
                     .filter(|process| {
@@ -636,20 +433,16 @@ impl WorkloadEngineManager {
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
                     .filter(|process| !excluded_process_ids.contains(&process.id))
                     .filter(|process| {
-                        !settings
-                            .workload_engine_exclusions
-                            .iter()
-                            .any(|rule| rule.enabled)
+                        !settings.custom_rules.iter().any(|rule| rule.enabled)
                             || crate::foreground::process_executable_path(process).is_some_and(
                                 |path| {
-                                    !settings.workload_engine_exclusion_enabled_for(
-                                        path.to_string_lossy().as_ref(),
-                                    )
+                                    !settings
+                                        .custom_rule_enabled_for(path.to_string_lossy().as_ref())
                                 },
                             )
                     })
                     .filter(|process| {
-                        foreground_boost_eligible(
+                        focus_process_priority_eligible(
                             process.id,
                             &process.name,
                             current_process_id,
@@ -665,7 +458,7 @@ impl WorkloadEngineManager {
                     let Some(creation_time) = process.creation_time else {
                         continue;
                     };
-                    workload_engine_memory_targets.push(MemoryPriorityTarget {
+                    cpu_scheduler_memory_targets.push(MemoryPriorityTarget {
                         process_id: process.id,
                         process_name: process.name.clone(),
                         executable_path,
@@ -679,20 +472,13 @@ impl WorkloadEngineManager {
                     });
                 }
             }
-            if let Some(priority) = settings
-                .workload_engine_visible_window_memory_priority
-                .priority()
-            {
-                for process_id in &visible_window_process_group_ids {
+        }
+        if background_pressure_applies {
+            if cpu_pressure_restraint_applies {
+                for (process_id, (_, tier)) in &restrainable_processes {
                     let Some(process) = processes_by_id.get(process_id) else {
                         continue;
                     };
-                    if process.is_critical != Some(false)
-                        || !process.can_set_information
-                        || excluded_process_ids.contains(process_id)
-                    {
-                        continue;
-                    }
                     let Some(executable_path) =
                         cached_executable_path(process, &mut executable_paths)
                     else {
@@ -701,37 +487,47 @@ impl WorkloadEngineManager {
                     let Some(creation_time) = process.creation_time else {
                         continue;
                     };
-                    if settings.workload_engine_exclusion_enabled_for(&executable_path) {
+                    if settings.custom_rule_enabled_for(&executable_path) {
                         continue;
                     }
-                    workload_engine_memory_targets.push(MemoryPriorityTarget {
-                        process_id: *process_id,
-                        process_name: process.name.clone(),
-                        executable_path,
-                        creation_time,
-                        priority,
-                        foreground: false,
-                        visible_window: true,
-                        preserve_foreground_priority: true,
-                        preserve_visible_window_priority: true,
-                        preserve_background_priority: true,
-                    });
+                    let Some(policy) = cpu_pressure_restraint_target(
+                        settings,
+                        *tier,
+                        background_efficiency_managed,
+                    ) else {
+                        continue;
+                    };
+                    target_processes.insert(
+                        *process_id,
+                        PriorityTarget {
+                            process_name: process.name.clone(),
+                            executable_path,
+                            creation_time,
+                            priority: policy.priority,
+                            apply_background_efficiency: policy.apply_background_efficiency,
+                        },
+                    );
                 }
             }
-        }
-        if workload_engine_restraints_running {
+
             let now = Instant::now();
-            let workload_engine_core_mask =
-                self.workload_engine_core_mask(settings, foreground_cpu_usage_percent, now);
-            let current_ids = processes
-                .iter()
-                .map(|process| process.id)
+            let cpu_allocation_mask = cpu_allocation_applies
+                .then(|| self.cpu_allocation_mask(settings, now))
+                .flatten();
+            let current_ids = restrainable_processes
+                .keys()
+                .copied()
                 .collect::<BTreeSet<_>>();
-            self.workload_engine
+            self.tracked_processes
                 .retain(|process_id, _| current_ids.contains(process_id));
 
-            let mut workload_engine_candidates = Vec::new();
-            for (process_id, process_name) in &lowerable_background_processes {
+            let mut cpu_scheduler_candidates = Vec::new();
+            for (process_id, (process_name, tier)) in &restrainable_processes {
+                if *tier == CpuSchedulerTier::VisibleWindow
+                    && !settings.cpu_pressure_restraint_enabled
+                {
+                    continue;
+                }
                 let Some(process) = processes_by_id.get(process_id) else {
                     continue;
                 };
@@ -739,30 +535,31 @@ impl WorkloadEngineManager {
                 else {
                     continue;
                 };
-                if settings.workload_engine_exclusion_enabled_for(&executable_path) {
+                if settings.custom_rule_enabled_for(&executable_path) {
                     continue;
                 }
 
-                if let Some(candidate) = self.update_workload_engine_process(
+                if let Some(candidate) = self.update_cpu_scheduler_process(
                     *process_id,
                     process_name,
                     &executable_path,
                     settings,
+                    *tier,
                     now,
                 ) {
-                    workload_engine_candidates.push(candidate);
+                    cpu_scheduler_candidates.push(candidate);
                 }
             }
 
-            let selected_candidates = select_workload_engine_candidates(
-                workload_engine_candidates,
-                settings.workload_engine_max_targeted_processes,
+            let selected_candidates = select_cpu_scheduler_candidates(
+                cpu_scheduler_candidates,
+                settings.maximum_restrained_apps,
             );
             let selected_ids = selected_candidates
                 .iter()
                 .map(|candidate| candidate.process_id)
                 .collect::<BTreeSet<_>>();
-            for (process_id, process) in &mut self.workload_engine {
+            for (process_id, process) in &mut self.tracked_processes {
                 if process.active && !selected_ids.contains(process_id) {
                     process.selected = false;
                     process.decision = None;
@@ -780,55 +577,52 @@ impl WorkloadEngineManager {
                 let Some(creation_time) = process.creation_time else {
                     continue;
                 };
-                if let Some(process) = self.workload_engine.get_mut(&candidate.process_id) {
+                if let Some(process) = self.tracked_processes.get_mut(&candidate.process_id) {
                     process.selected = true;
                     process.decision = Some(candidate.decision);
                 }
-                target_processes
-                    .entry(candidate.process_id)
-                    .and_modify(|target| target.apply_priority_class = true)
-                    .or_insert_with(|| PriorityTarget {
-                        process_name: candidate.process_name.clone(),
-                        executable_path: executable_path.clone(),
-                        creation_time,
-                        priority: settings.workload_engine_background_priority,
-                        source: PriorityTargetSource::WorkloadEngine,
-                        apply_priority_class: true,
-                        apply_background_efficiency: false,
-                    });
-                if settings.workload_engine_memory_priority_enabled {
-                    if let Some(creation_time) = process.creation_time {
-                        workload_engine_memory_targets.push(MemoryPriorityTarget {
+                if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
+                    let priority = match candidate.tier {
+                        CpuSchedulerTier::VisibleWindow => {
+                            settings.visible_window_memory_priority.priority()
+                        }
+                        CpuSchedulerTier::Background => {
+                            settings.background_memory_priority.priority()
+                        }
+                    };
+                    if let Some(priority) = priority {
+                        cpu_scheduler_memory_targets.push(MemoryPriorityTarget {
                             process_id: candidate.process_id,
                             process_name: candidate.process_name.clone(),
                             executable_path: executable_path.clone(),
                             creation_time,
-                            priority: settings.workload_engine_memory_priority,
+                            priority,
                             foreground: false,
-                            visible_window: false,
+                            visible_window: candidate.tier == CpuSchedulerTier::VisibleWindow,
                             preserve_foreground_priority: true,
                             preserve_visible_window_priority: true,
                             preserve_background_priority: true,
                         });
                     }
                 }
-                if candidate.decision == WorkloadEngineDecision::RestrictAffinity
+                if candidate.decision == CpuSchedulerDecision::LimitProcessors
+                    && candidate.tier == CpuSchedulerTier::Background
                     && !cpu_allocation::contains_process(
                         explicit_cpu_allocation_paths,
                         &executable_path,
                     )
                 {
                     if let (Some(core_mask), Some(creation_time)) = (
-                        workload_engine_core_mask,
-                        self.workload_engine
+                        cpu_allocation_mask,
+                        self.tracked_processes
                             .get(&candidate.process_id)
                             .map(|process| process.creation_time),
                     ) {
-                        workload_engine_affinity_targets.push(CpuAllocationTarget {
+                        cpu_allocation_targets.push(CpuAllocationTarget {
                             process_id: candidate.process_id,
                             process_name: candidate.process_name.clone(),
                             executable_path,
-                            mode: workload_engine_affinity_mode(settings),
+                            mode: cpu_allocation_method(settings),
                             core_mask,
                             creation_time,
                         });
@@ -836,80 +630,74 @@ impl WorkloadEngineManager {
                 }
             }
         } else {
-            self.workload_engine.clear();
-            self.workload_engine_pressure_active = false;
-            self.workload_engine_core_selection = None;
+            self.tracked_processes.clear();
+            self.cpu_allocation_selection = None;
         }
 
-        let workload_engine_affinity_snapshot =
-            if settings.workload_engine_enabled && workload_engine_restraints_running {
-                self.workload_engine_affinity.update_discovered_targets(
-                    cpu_allocation_coordinator,
-                    ControlOwner::AdaptiveEngine,
-                    workload_engine_affinity_targets,
-                    scanned_processes,
-                    "Workload Engine active.",
-                    allow_cross_session_process_control,
-                    action_log,
-                )
-            } else {
-                self.workload_engine_affinity.update_discovered_targets(
-                    cpu_allocation_coordinator,
-                    ControlOwner::AdaptiveEngine,
-                    Vec::new(),
-                    scanned_processes,
-                    "Workload Engine idle.",
-                    allow_cross_session_process_control,
-                    action_log,
-                )
-            };
+        let cpu_allocation_snapshot = if cpu_allocation_applies {
+            self.cpu_allocation.update_discovered_targets(
+                cpu_allocation_coordinator,
+                ControlOwner::AdaptiveEngine,
+                cpu_allocation_targets,
+                scanned_processes,
+                "CPU Scheduler active.",
+                allow_cross_session_process_control,
+                action_log,
+            )
+        } else {
+            self.cpu_allocation.update_discovered_targets(
+                cpu_allocation_coordinator,
+                ControlOwner::AdaptiveEngine,
+                Vec::new(),
+                scanned_processes,
+                "CPU Scheduler idle.",
+                allow_cross_session_process_control,
+                action_log,
+            )
+        };
         auto_excluded_processes.extend(
-            workload_engine_affinity_snapshot
+            cpu_allocation_snapshot
                 .auto_excluded_processes
                 .iter()
                 .cloned(),
         );
-        failures.count += workload_engine_affinity_snapshot.failed_processes;
+        failures.count += cpu_allocation_snapshot.failed_processes;
         if failures.last_error.is_none() {
-            failures.last_error = workload_engine_affinity_snapshot.last_error.clone();
+            failures.last_error = cpu_allocation_snapshot.last_error.clone();
         }
-        let workload_engine_memory_snapshot = self.workload_engine_memory_priority.update(
+        let cpu_scheduler_memory_snapshot = self.background_memory_priority.update(
             memory_priority_controller,
             ControlOwner::AdaptiveEngine,
-            if settings.enabled
-                && settings.workload_engine_enabled
-                && workload_engine_restraints_running
-                && settings.workload_engine_memory_priority_enabled
-            {
-                workload_engine_memory_targets
+            if cpu_pressure_restraint_applies && settings.memory_priority_enabled {
+                cpu_scheduler_memory_targets
             } else {
                 Vec::new()
             },
             automation_enabled,
             allow_cross_session_process_control,
-            ActionLogFeature::WorkloadEngine,
+            ActionLogFeature::CpuScheduler,
             action_log,
         );
         auto_excluded_processes.extend(
-            workload_engine_memory_snapshot
+            cpu_scheduler_memory_snapshot
                 .auto_excluded_processes
                 .iter()
                 .cloned(),
         );
-        failures.count += workload_engine_memory_snapshot.failed_processes;
+        failures.count += cpu_scheduler_memory_snapshot.failed_processes;
         if failures.last_error.is_none() {
-            failures.last_error = workload_engine_memory_snapshot.last_error.clone();
+            failures.last_error = cpu_scheduler_memory_snapshot.last_error.clone();
         }
 
         let active_priority_targets = target_processes
             .iter()
-            .filter(|(_, target)| target.apply_priority_class)
-            .map(|(process_id, target)| workload_priority_target_key(*process_id, target))
+            .filter(|(_, target)| target.priority.is_some())
+            .map(|(process_id, target)| cpu_scheduler_priority_target_key(*process_id, target))
             .collect::<BTreeSet<_>>();
         let active_power_targets = target_processes
             .iter()
             .filter(|(_, target)| target.apply_background_efficiency)
-            .map(|(process_id, target)| workload_priority_target_key(*process_id, target))
+            .map(|(process_id, target)| cpu_scheduler_priority_target_key(*process_id, target))
             .collect::<BTreeSet<_>>();
         self.unavailable_power_targets
             .retain(|target| active_power_targets.contains(target));
@@ -929,20 +717,20 @@ impl WorkloadEngineManager {
                 &active_priority_targets,
             ),
             action_log,
-            "process no longer matches a Workload Engine rule",
-            "background priority",
+            "process no longer needs CPU Scheduler restraint",
+            "process priority",
             &mut failures,
         );
         self.merge_controller_release(
             priority_efficiency_controller
                 .release_power_policy_except(ControlOwner::AdaptiveEngine, &active_power_targets),
             action_log,
-            "process no longer matches a Workload Engine rule",
+            "process no longer needs CPU Scheduler restraint",
             "Background Efficiency",
             &mut failures,
         );
         let mut skipped_processes = 0;
-        skipped_processes += workload_engine_memory_snapshot.skipped_processes;
+        skipped_processes += cpu_scheduler_memory_snapshot.skipped_processes;
         let mut summarized_background_applies = 0;
 
         for (process_id, target) in target_processes {
@@ -976,25 +764,13 @@ impl WorkloadEngineManager {
                         PowerThrottlingClaim {
                             target: control_target.clone(),
                             owner: ControlOwner::AdaptiveEngine,
-                            ignore_timer_resolution: ignore_timer_resolution_allowed(
-                                process_id,
-                                active_audio_process_ids.as_ref(),
-                            ),
+                            ignore_timer_resolution: false,
                         },
                         allow_cross_session_process_control,
                     ) {
                         Ok(ProcessPropertyApplyOutcome::Applied) => {
                             self.unavailable_power_targets.remove(&target_key);
                             changed = true;
-                            if target.source == PriorityTargetSource::Rule {
-                                action_log.record(
-                                    ActionLogFeature::WorkloadEngine,
-                                    Some(process_id),
-                                    target.process_name.clone(),
-                                    ActionLogResult::Applied,
-                                    "Applied Background Efficiency: enabled EcoQoS.",
-                                );
-                            }
                         }
                         Ok(
                             ProcessPropertyApplyOutcome::Unchanged
@@ -1007,7 +783,7 @@ impl WorkloadEngineManager {
                             skipped = true;
                             self.unavailable_power_targets.insert(target_key.clone());
                             action_log.record(
-                            ActionLogFeature::WorkloadEngine,
+                            ActionLogFeature::CpuScheduler,
                             Some(process_id),
                             target.process_name.clone(),
                             ActionLogResult::Skipped,
@@ -1022,7 +798,7 @@ impl WorkloadEngineManager {
                             self.failure_suppression
                                 .suppress_process_failure(&target.executable_path);
                             action_log.record(
-                                ActionLogFeature::WorkloadEngine,
+                                ActionLogFeature::CpuScheduler,
                                 Some(process_id),
                                 target.process_name.clone(),
                                 ActionLogResult::Skipped,
@@ -1044,31 +820,18 @@ impl WorkloadEngineManager {
                 }
             }
 
-            if target.apply_priority_class {
+            if let Some(priority) = target.priority {
                 match priority_efficiency_controller.apply_priority_claim(
                     PriorityClassClaim {
                         target: control_target,
                         owner: ControlOwner::AdaptiveEngine,
-                        priority: workload_priority_value(target.priority),
+                        priority,
                         preservation: PriorityClassPreservation::PreserveHighOrRealtime,
                     },
                     allow_cross_session_process_control,
                 ) {
                     Ok(ProcessPropertyApplyOutcome::Applied) => {
                         changed = true;
-                        if target.source == PriorityTargetSource::Rule {
-                            action_log.record(
-                                ActionLogFeature::WorkloadEngine,
-                                Some(process_id),
-                                target.process_name.clone(),
-                                ActionLogResult::Applied,
-                                format!(
-                                    "{} set background priority to {}.",
-                                    priority_source_label(target.source),
-                                    workload_priority_value(target.priority).label(),
-                                ),
-                            );
-                        }
                     }
                     Ok(ProcessPropertyApplyOutcome::Preserved) => skipped = true,
                     Ok(
@@ -1081,7 +844,7 @@ impl WorkloadEngineManager {
                         self.failure_suppression
                             .suppress_process_failure(&target.executable_path);
                         action_log.record(
-                            ActionLogFeature::WorkloadEngine,
+                            ActionLogFeature::CpuScheduler,
                             Some(process_id),
                             target.process_name.clone(),
                             ActionLogResult::Skipped,
@@ -1108,12 +871,7 @@ impl WorkloadEngineManager {
             if skipped {
                 skipped_processes += 1;
             }
-            if changed
-                && matches!(
-                    target.source,
-                    PriorityTargetSource::WorkloadEngine | PriorityTargetSource::BackgroundPolicy
-                )
-            {
+            if changed {
                 summarized_background_applies += 1;
             }
         }
@@ -1123,37 +881,28 @@ impl WorkloadEngineManager {
         {
             self.last_background_apply_summary_logged_at = Some(now);
             action_log.record(
-                ActionLogFeature::WorkloadEngine,
+                ActionLogFeature::CpuScheduler,
                 None,
-                "Workload Engine",
+                "CPU Scheduler",
                 ActionLogResult::Applied,
                 background_apply_summary_message(summarized_background_applies),
             );
         }
 
-        let workload_engine_details = self.workload_engine_statuses(now);
-        let workload_managed_processes = workload_engine_details
-            .iter()
-            .filter(|status| {
-                matches!(
-                    status.state,
-                    WorkloadEngineProcessState::Lowered
-                        | WorkloadEngineProcessState::AffinityRestrained
-                )
-            })
-            .count();
-        let workload_engine_message = workload_engine_status_message(
-            settings,
-            foreground_cpu_usage_percent,
-            total_cpu_usage_percent,
-            launch_boost_running,
-            workload_engine_running,
-            workload_managed_processes,
-        );
-
         if let Some(foreground_id) = foreground_process_id {
-            if (settings.boost_foreground_app || launch_boost_running)
-                && !excluded_process_ids.contains(&foreground_id)
+            let foreground_priority = if settings.process_priority_enabled
+                && (cpu_pressure_restraint_applies || focus_and_launch_profile_active)
+            {
+                if focus_and_launch_profile_active {
+                    Some(PriorityClassValue::AboveNormal)
+                } else {
+                    cpu_scheduler_priority_value(settings.focus_process_priority)
+                }
+            } else {
+                None
+            };
+            if let Some(priority) =
+                foreground_priority.filter(|_| !excluded_process_ids.contains(&foreground_id))
             {
                 let boost_targets = processes
                     .iter()
@@ -1163,7 +912,7 @@ impl WorkloadEngineManager {
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
                     .filter(|process| !excluded_process_ids.contains(&process.id))
                     .filter(|process| {
-                        foreground_boost_eligible(
+                        focus_process_priority_eligible(
                             process.id,
                             &process.name,
                             current_process_id,
@@ -1172,28 +921,26 @@ impl WorkloadEngineManager {
                     })
                     .filter_map(|process| {
                         cached_executable_path(process, &mut executable_paths).and_then(|path| {
+                            if settings.custom_rule_enabled_for(&path) {
+                                return None;
+                            }
                             process.creation_time.map(|creation_time| {
                                 (process.id, process.name.clone(), path, creation_time)
                             })
                         })
                     })
                     .collect::<Vec<_>>();
-                let result = self.apply_foreground_boost_group(
-                    ForegroundBoostGroup {
+                let result = self.apply_focus_process_priority_group(
+                    FocusProcessPriorityGroup {
                         foreground_id,
                         foreground_process_name: foreground_process_name.as_deref(),
                         targets: &boost_targets,
-                        stability_delay_ms: if launch_boost_running {
+                        stability_delay_ms: if focus_and_launch_profile_active {
                             0
                         } else {
-                            settings.foreground_stability_delay_ms
+                            FOCUS_PROCESS_PRIORITY_STABILITY_DELAY_MS
                         },
-                        foreground_boost: if launch_boost_running {
-                            ForegroundBoostPriority::AboveNormal
-                        } else {
-                            settings.foreground_boost
-                        },
-                        foreground_cpu_usage_percent,
+                        priority,
                     },
                     priority_efficiency_controller,
                     allow_cross_session_process_control,
@@ -1202,15 +949,15 @@ impl WorkloadEngineManager {
                 skipped_processes += result.skipped;
                 auto_excluded_processes.extend(result.auto_excluded_processes);
                 failures.merge(result.failures);
-            } else if let Some(error) = self.clear_boosted(
+            } else if let Some(error) = self.clear_focus_process_priority(
                 priority_efficiency_controller,
                 true,
                 action_log,
-                "foreground boost disabled or blocked",
+                "focus process priority disabled or blocked",
             ) {
                 failures.merge(error);
             }
-        } else if let Some(error) = self.clear_boosted(
+        } else if let Some(error) = self.clear_focus_process_priority(
             priority_efficiency_controller,
             true,
             action_log,
@@ -1219,30 +966,14 @@ impl WorkloadEngineManager {
             failures.merge(error);
         }
 
-        let boosted_processes = priority_efficiency_controller
-            .policy_managed_process_labels(ControlOwner::WorkloadForegroundBoost);
-
-        WorkloadEngineSnapshot {
+        CpuSchedulerSnapshot {
             enabled: true,
             scanned_processes,
-            background_adjusted_processes: priority_efficiency_controller
+            adjusted_processes: priority_efficiency_controller
                 .policy_managed_process_count(ControlOwner::AdaptiveEngine),
-            timer_resolution_ignored_processes: priority_efficiency_controller
-                .policy_ignore_timer_resolution_count(ControlOwner::AdaptiveEngine),
-            foreground_boosted_process: boosted_processes.first().map(|(process_id, name)| {
-                if boosted_processes.len() == 1 {
-                    format!("{name} ({process_id})")
-                } else {
-                    format!("{name} ({process_id}) +{}", boosted_processes.len() - 1)
-                }
-            }),
-            launch_boost_active: launch_boost_running,
-            workload_engine_active: workload_engine_restraints_running,
-            workload_managed_processes,
-            workload_engine_message,
-            workload_engine_total_cpu_usage_tenths: foreground_cpu_usage_tenths,
-            adaptive_power_profile: None,
-            workload_engine_details,
+            focus_and_launch_profile_active,
+            cpu_pressure_restraint_active: cpu_pressure_restraint_applies,
+            foreground_cpu_usage_tenths,
             skipped_processes,
             failed_processes: failures.count,
             adjusted_apps: unique_app_names(
@@ -1252,7 +983,7 @@ impl WorkloadEngineManager {
                     .map(String::as_str),
             ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Workload Engine active.".to_owned(),
+            message: "CPU Scheduler active.".to_owned(),
             last_error: failures.last_error,
         }
     }
@@ -1271,13 +1002,13 @@ impl WorkloadEngineManager {
             action_log,
             reason,
         );
-        let memory_snapshot = self.workload_engine_memory_priority.update(
+        let memory_snapshot = self.background_memory_priority.update(
             memory_priority_controller,
             ControlOwner::AdaptiveEngine,
             Vec::new(),
             true,
             true,
-            ActionLogFeature::WorkloadEngine,
+            ActionLogFeature::CpuScheduler,
             action_log,
         );
         failures.count += memory_snapshot.failed_processes;
@@ -1295,14 +1026,14 @@ impl WorkloadEngineManager {
         reason: &str,
     ) -> PriorityFailures {
         let mut failures = self
-            .clear_boosted(priority_efficiency_controller, true, action_log, reason)
+            .clear_focus_process_priority(priority_efficiency_controller, true, action_log, reason)
             .unwrap_or_default();
         self.merge_controller_release(
             priority_efficiency_controller
                 .release_all_priority_policy(ControlOwner::AdaptiveEngine),
             action_log,
             reason,
-            "background priority",
+            "process priority",
             &mut failures,
         );
         self.merge_controller_release(
@@ -1312,29 +1043,29 @@ impl WorkloadEngineManager {
             "Background Efficiency",
             &mut failures,
         );
-        self.foreground_candidate = None;
+        self.focus_process_candidate = None;
         self.foreground_cpu_sample = None;
-        self.workload_engine.clear();
-        self.workload_engine_pressure_active = false;
+        self.tracked_processes.clear();
+        self.background_pressure_active = false;
         self.last_background_apply_summary_logged_at = None;
         self.unavailable_power_targets.clear();
-        let affinity_snapshot = self.workload_engine_affinity.update_discovered_targets(
+        let cpu_allocation_snapshot = self.cpu_allocation.update_discovered_targets(
             cpu_allocation_coordinator,
             ControlOwner::AdaptiveEngine,
             Vec::new(),
             0,
-            "Workload Engine disabled.",
+            "CPU Scheduler disabled.",
             true,
             action_log,
         );
-        failures.count += affinity_snapshot.failed_processes;
+        failures.count += cpu_allocation_snapshot.failed_processes;
         if failures.last_error.is_none() {
-            failures.last_error = affinity_snapshot.last_error;
+            failures.last_error = cpu_allocation_snapshot.last_error;
         }
         failures
     }
 
-    fn clear_boosted(
+    fn clear_focus_process_priority(
         &mut self,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         reset_candidate: bool,
@@ -1342,10 +1073,10 @@ impl WorkloadEngineManager {
         reason: &str,
     ) -> Option<PriorityFailures> {
         if reset_candidate {
-            self.foreground_candidate = None;
+            self.focus_process_candidate = None;
         }
         let summary = priority_efficiency_controller
-            .release_all_priority_policy(ControlOwner::WorkloadForegroundBoost);
+            .release_all_priority_policy(ControlOwner::CpuSchedulerFocusPriority);
         if summary.restored_processes == 0 && summary.failures.is_empty() {
             return None;
         }
@@ -1354,7 +1085,7 @@ impl WorkloadEngineManager {
             summary,
             action_log,
             reason,
-            "foreground boost",
+            "focus process priority",
             &mut failures,
         );
         Some(failures)
@@ -1370,9 +1101,9 @@ impl WorkloadEngineManager {
     ) {
         if summary.restored_processes > 0 {
             action_log.record(
-                ActionLogFeature::WorkloadEngine,
+                ActionLogFeature::CpuScheduler,
                 None,
-                "Workload Engine",
+                "CPU Scheduler",
                 ActionLogResult::Restored,
                 format!(
                     "Restored {property} for {}: {reason}.",
@@ -1410,12 +1141,12 @@ impl WorkloadEngineManager {
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
-                ActionLogFeature::WorkloadEngine,
+                ActionLogFeature::CpuScheduler,
                 Some(process_id),
                 process_name.trim().to_owned(),
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Workload Engine after {} failed attempts.",
+                    "Stopped retrying CPU Scheduler after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -1450,35 +1181,30 @@ impl WorkloadEngineManager {
         self.failure_suppression.clear_process_failure(process_name);
     }
 
-    fn update_workload_engine_pressure(
+    fn update_background_pressure(
         &mut self,
-        settings: &WorkloadEngineSettings,
+        settings: &CpuSchedulerSettings,
         foreground_cpu_usage_percent: Option<f32>,
         total_cpu_usage_percent: Option<f32>,
     ) -> bool {
-        if !settings.workload_engine_enabled {
-            self.workload_engine_pressure_active = false;
-            return false;
-        }
-
-        if workload_engine_should_run(
+        if cpu_pressure_restraint_should_run(
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
         ) {
-            self.workload_engine_pressure_active = true;
+            self.background_pressure_active = true;
             return true;
         }
 
-        if self.workload_engine_pressure_active
+        if self.background_pressure_active
             && foreground_cpu_usage_percent.is_none()
             && total_cpu_usage_percent.is_none()
         {
             return true;
         }
 
-        if self.workload_engine_pressure_active
-            && cpu_pressure_above_restore_threshold(
+        if self.background_pressure_active
+            && cpu_pressure_above_recovery_threshold(
                 settings,
                 foreground_cpu_usage_percent,
                 total_cpu_usage_percent,
@@ -1487,7 +1213,7 @@ impl WorkloadEngineManager {
             return true;
         }
 
-        self.workload_engine_pressure_active = false;
+        self.background_pressure_active = false;
         false
     }
 
@@ -1500,8 +1226,8 @@ impl WorkloadEngineManager {
         stability_delay_ms: u64,
     ) -> bool {
         let now = Instant::now();
-        if foreground_launch_boost_eligible(process_id) {
-            self.foreground_candidate = Some(ForegroundCandidate {
+        if focus_and_launch_profile_eligible(process_id) {
+            self.focus_process_candidate = Some(FocusProcessCandidate {
                 process_id,
                 process_name: process_name.to_owned(),
                 executable_path: executable_path.to_owned(),
@@ -1511,7 +1237,7 @@ impl WorkloadEngineManager {
             return true;
         }
 
-        match &mut self.foreground_candidate {
+        match &mut self.focus_process_candidate {
             Some(candidate)
                 if candidate.process_id == process_id
                     && same_process_name(&candidate.process_name, process_name)
@@ -1525,7 +1251,7 @@ impl WorkloadEngineManager {
                     >= u128::from(stability_delay_ms)
             }
             _ => {
-                self.foreground_candidate = Some(ForegroundCandidate {
+                self.focus_process_candidate = Some(FocusProcessCandidate {
                     process_id,
                     process_name: process_name.to_owned(),
                     executable_path: executable_path.to_owned(),
@@ -1537,25 +1263,24 @@ impl WorkloadEngineManager {
         }
     }
 
-    fn apply_foreground_boost_group(
+    fn apply_focus_process_priority_group(
         &mut self,
-        group: ForegroundBoostGroup<'_>,
+        group: FocusProcessPriorityGroup<'_>,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
-    ) -> ForegroundBoostGroupResult {
-        let ForegroundBoostGroup {
+    ) -> FocusProcessPriorityGroupResult {
+        let FocusProcessPriorityGroup {
             foreground_id,
             foreground_process_name,
             targets,
             stability_delay_ms,
-            foreground_boost,
-            foreground_cpu_usage_percent,
+            priority,
         } = group;
-        let mut result = ForegroundBoostGroupResult::default();
+        let mut result = FocusProcessPriorityGroupResult::default();
         let foreground_name = foreground_process_name.unwrap_or("").trim();
         if foreground_name.is_empty() || targets.is_empty() {
-            if let Some(error) = self.clear_boosted(
+            if let Some(error) = self.clear_focus_process_priority(
                 priority_efficiency_controller,
                 true,
                 action_log,
@@ -1571,7 +1296,7 @@ impl WorkloadEngineManager {
                 (*id == foreground_id).then_some((path.as_str(), *creation_time))
             })
         else {
-            if let Some(error) = self.clear_boosted(
+            if let Some(error) = self.clear_focus_process_priority(
                 priority_efficiency_controller,
                 true,
                 action_log,
@@ -1588,7 +1313,7 @@ impl WorkloadEngineManager {
             foreground_creation_time,
             stability_delay_ms,
         ) {
-            if let Some(error) = self.clear_boosted(
+            if let Some(error) = self.clear_focus_process_priority(
                 priority_efficiency_controller,
                 false,
                 action_log,
@@ -1615,17 +1340,15 @@ impl WorkloadEngineManager {
             .collect::<BTreeSet<_>>();
         self.merge_controller_release(
             priority_efficiency_controller.release_priority_policy_except(
-                ControlOwner::WorkloadForegroundBoost,
+                ControlOwner::CpuSchedulerFocusPriority,
                 &active_targets,
             ),
             action_log,
             "foreground focus changed",
-            "foreground boost",
+            "focus process priority",
             &mut result.failures,
         );
 
-        let priority =
-            foreground_boost_priority_value(foreground_boost, foreground_cpu_usage_percent);
         let mut auto_excluded_processes = BTreeSet::new();
         for (process_id, process_name, executable_path, creation_time) in targets {
             if self.is_executable_path_suppressed(
@@ -1646,7 +1369,7 @@ impl WorkloadEngineManager {
                         PathBuf::from(executable_path),
                         *creation_time,
                     ),
-                    owner: ControlOwner::WorkloadForegroundBoost,
+                    owner: ControlOwner::CpuSchedulerFocusPriority,
                     priority,
                     preservation: PriorityClassPreservation::PreserveHighOrRealtime,
                 },
@@ -1655,11 +1378,11 @@ impl WorkloadEngineManager {
                 Ok(ProcessPropertyApplyOutcome::Applied) => {
                     self.clear_process_failure(executable_path);
                     action_log.record(
-                        ActionLogFeature::WorkloadEngine,
+                        ActionLogFeature::CpuScheduler,
                         Some(*process_id),
                         process_name.clone(),
                         ActionLogResult::Applied,
-                        format!("Boosted foreground priority to {}.", priority.label()),
+                        format!("Set focus process priority to {}.", priority.label()),
                     );
                 }
                 Ok(ProcessPropertyApplyOutcome::Preserved) => {
@@ -1675,7 +1398,7 @@ impl WorkloadEngineManager {
                     self.failure_suppression
                         .suppress_process_failure(executable_path);
                     action_log.record(
-                        ActionLogFeature::WorkloadEngine,
+                        ActionLogFeature::CpuScheduler,
                         Some(*process_id),
                         process_name.clone(),
                         ActionLogResult::Skipped,
@@ -1685,7 +1408,7 @@ impl WorkloadEngineManager {
                 Err(error) => {
                     self.record_process_failure(executable_path);
                     result.failures.record_control_error(
-                        "Boost",
+                        "Set Focus Process Priority",
                         *process_id,
                         process_name,
                         error,
@@ -1699,28 +1422,28 @@ impl WorkloadEngineManager {
         result
     }
 
-    fn update_workload_engine_process(
+    fn update_cpu_scheduler_process(
         &mut self,
         process_id: u32,
         process_name: &str,
         executable_path: &str,
-        settings: &WorkloadEngineSettings,
+        settings: &CpuSchedulerSettings,
+        tier: CpuSchedulerTier,
         now: Instant,
-    ) -> Option<WorkloadEngineCandidate> {
-        let threshold = f32::from(settings.workload_engine_threshold_percent.min(100));
-        let restore_threshold = f32::from(
+    ) -> Option<CpuSchedulerCandidate> {
+        let threshold = f32::from(settings.background_app_cpu_threshold_percent.min(100));
+        let recovery_threshold = f32::from(
             settings
-                .workload_engine_restore_threshold_percent
-                .min(settings.workload_engine_threshold_percent)
+                .cpu_recovery_threshold_percent
+                .min(settings.background_app_cpu_threshold_percent)
                 .min(100),
         );
-        let minimum_restraint =
-            Duration::from_secs(settings.workload_engine_minimum_restraint_seconds);
-        let cooldown = Duration::from_secs(settings.workload_engine_cooldown_seconds);
+        let cpu_restraint_time = Duration::from_secs(settings.cpu_restraint_time_seconds);
+        let cpu_recovery_time = Duration::from_secs(settings.cpu_recovery_time_seconds);
         let (current, creation_time) =
             process_cpu_sample_with_identity(process_id, executable_path)?;
         if self
-            .workload_engine
+            .tracked_processes
             .get(&process_id)
             .is_some_and(|process| {
                 process.creation_time != creation_time
@@ -1730,12 +1453,12 @@ impl WorkloadEngineManager {
                     )
             })
         {
-            self.workload_engine.remove(&process_id);
+            self.tracked_processes.remove(&process_id);
         }
         let state =
-            self.workload_engine
+            self.tracked_processes
                 .entry(process_id)
-                .or_insert_with(|| WorkloadEngineProcess {
+                .or_insert_with(|| CpuSchedulerProcess {
                     process_name: process_name.to_owned(),
                     executable_path: executable_path.to_owned(),
                     creation_time,
@@ -1744,8 +1467,6 @@ impl WorkloadEngineManager {
                     high_since: None,
                     below_since: None,
                     active_since: None,
-                    last_reaction_millis: None,
-                    restraint_count: 0,
                     decision: None,
                     active: false,
                     selected: false,
@@ -1753,7 +1474,6 @@ impl WorkloadEngineManager {
         state.process_name = process_name.to_owned();
         state.executable_path = executable_path.to_owned();
         state.creation_time = creation_time;
-        let priority_sustain = workload_engine_priority_sustain(settings, state.restraint_count);
 
         let usage = state
             .previous_cpu_time
@@ -1764,68 +1484,54 @@ impl WorkloadEngineManager {
         state.last_usage_tenths = Some(percent_tenths(usage));
         if usage >= threshold {
             state.below_since = None;
-            let high_since = *state.high_since.get_or_insert(now);
-            if state.active || now.duration_since(high_since) >= priority_sustain {
-                if !state.active {
-                    state.active_since = Some(now);
-                    state.last_reaction_millis =
-                        Some(duration_millis_u64(now.duration_since(high_since)));
-                    state.restraint_count = state.restraint_count.saturating_add(1);
-                }
+            state.high_since.get_or_insert(now);
+            if !state.active {
                 state.active = true;
-                let decision = workload_engine_process_decision(settings, state.active_since, now);
-                state.decision = Some(decision);
-                return Some(workload_engine_candidate(process_id, state, decision, now));
+                state.active_since = Some(now);
             }
-            return None;
+            let decision = cpu_scheduler_process_decision(settings, tier);
+            state.decision = Some(decision);
+            return Some(cpu_scheduler_candidate(process_id, state, decision, tier));
         }
 
         if !state.active {
-            if usage <= restore_threshold {
-                let below_since = *state.below_since.get_or_insert(now);
-                if workload_engine_hot_streak_should_reset(
-                    usage,
-                    restore_threshold,
-                    now.duration_since(below_since),
-                    priority_sustain,
-                ) {
-                    state.high_since = None;
-                }
-            } else {
-                state.below_since = None;
-            }
+            state.high_since = None;
+            state.below_since = None;
+            return None;
         }
         if state.active && !state.selected {
             state.active = false;
+            state.high_since = None;
             state.below_since = None;
             state.active_since = None;
             state.decision = None;
-        } else if state.active {
-            let active_since = state.active_since.unwrap_or(now);
-            if usage > restore_threshold || now.duration_since(active_since) < minimum_restraint {
-                state.below_since = None;
-                let decision = workload_engine_process_decision(settings, state.active_since, now);
-                state.decision = Some(decision);
-                return Some(workload_engine_candidate(process_id, state, decision, now));
-            }
-
-            let below_since = *state.below_since.get_or_insert(now);
-            if now.duration_since(below_since) < cooldown {
-                state.decision = Some(WorkloadEngineDecision::LowerPriority);
-                return Some(workload_engine_candidate(
-                    process_id,
-                    state,
-                    WorkloadEngineDecision::LowerPriority,
-                    now,
-                ));
-            }
-            state.active = false;
-            state.selected = false;
-            state.below_since = None;
-            state.active_since = None;
-            state.decision = None;
+            return None;
         }
 
+        let active_since = state.active_since.unwrap_or(now);
+        if usage > recovery_threshold || now.duration_since(active_since) < cpu_restraint_time {
+            state.below_since = None;
+            let decision = cpu_scheduler_process_decision(settings, tier);
+            state.decision = Some(decision);
+            return Some(cpu_scheduler_candidate(process_id, state, decision, tier));
+        }
+
+        let below_since = *state.below_since.get_or_insert(now);
+        if now.duration_since(below_since) < cpu_recovery_time {
+            state.decision = Some(CpuSchedulerDecision::LowerPriority);
+            return Some(cpu_scheduler_candidate(
+                process_id,
+                state,
+                CpuSchedulerDecision::LowerPriority,
+                tier,
+            ));
+        }
+        state.active = false;
+        state.selected = false;
+        state.high_since = None;
+        state.below_since = None;
+        state.active_since = None;
+        state.decision = None;
         None
     }
 
@@ -1851,98 +1557,72 @@ impl WorkloadEngineManager {
         usage
     }
 
-    fn workload_engine_statuses(&self, now: Instant) -> Vec<WorkloadEngineProcessStatus> {
-        self.workload_engine
-            .iter()
-            .filter_map(|(process_id, process)| {
-                let state = if process.active && process.selected {
-                    if process.below_since.is_some() {
-                        WorkloadEngineProcessState::CoolingDown
-                    } else if process.decision == Some(WorkloadEngineDecision::RestrictAffinity) {
-                        WorkloadEngineProcessState::AffinityRestrained
-                    } else {
-                        WorkloadEngineProcessState::Lowered
-                    }
-                } else if process.high_since.is_some() {
-                    WorkloadEngineProcessState::Watching
-                } else {
-                    return None;
-                };
-
-                let elapsed_seconds = match state {
-                    WorkloadEngineProcessState::Watching => process.high_since,
-                    WorkloadEngineProcessState::Lowered
-                    | WorkloadEngineProcessState::AffinityRestrained
-                    | WorkloadEngineProcessState::CoolingDown => {
-                        process.active_since.or(process.below_since)
-                    }
-                }
-                .map(|started| now.duration_since(started).as_secs());
-
-                Some(WorkloadEngineProcessStatus {
-                    process_id: *process_id,
-                    process_name: process.process_name.clone(),
-                    state,
-                    cpu_usage_tenths: process.last_usage_tenths,
-                    elapsed_seconds,
-                    reaction_millis: process.last_reaction_millis,
-                    restraint_count: process.restraint_count,
-                })
-            })
-            .collect()
-    }
-
-    fn workload_engine_core_mask(
+    fn cpu_allocation_mask(
         &mut self,
-        settings: &WorkloadEngineSettings,
-        foreground_cpu_usage_percent: Option<f32>,
+        settings: &CpuSchedulerSettings,
         now: Instant,
     ) -> Option<u64> {
-        let percent = workload_engine_effective_cpu_percent(settings, foreground_cpu_usage_percent);
-        if percent >= 100 {
-            return None;
-        }
-
-        if workload_engine_effective_restriction_mode(settings) == CpuRestrictionMode::SoftCpuSets {
-            if let Some(mask) = self.load_aware_workload_engine_core_mask(
-                percent,
-                settings.workload_engine_max_logical_processors,
-                now,
-            ) {
-                return Some(mask);
+        match settings.background_processor_selection {
+            BackgroundProcessorSelection::LeastUsed => {
+                return self.load_aware_cpu_allocation_mask(
+                    settings.processor_limit_percent,
+                    None,
+                    now,
+                );
             }
+            BackgroundProcessorSelection::LeastUsedPerformanceCores => {
+                return self.load_aware_cpu_allocation_mask(
+                    settings.processor_limit_percent,
+                    Some(LogicalProcessorKind::Performance),
+                    now,
+                );
+            }
+            BackgroundProcessorSelection::LeastUsedEfficiencyCores => {
+                return self.load_aware_cpu_allocation_mask(
+                    settings.processor_limit_percent,
+                    Some(LogicalProcessorKind::Efficiency),
+                    now,
+                );
+            }
+            _ => {}
         }
 
-        limited_efficiency_preferred_core_mask(
-            percent,
-            settings.workload_engine_max_logical_processors,
+        let processors = cpu_allocation::logical_processors();
+        self.cpu_allocation_selection = None;
+        selected_background_processor_mask(
+            &processors,
+            settings.background_processor_selection,
+            &settings.specific_processors,
         )
     }
 
-    fn load_aware_workload_engine_core_mask(
+    fn load_aware_cpu_allocation_mask(
         &mut self,
         percent: u8,
-        max_logical_processors: u8,
+        kind: Option<LogicalProcessorKind>,
         now: Instant,
     ) -> Option<u64> {
         let processors = cpu_allocation::logical_processors();
         let usages = self.per_processor_usage.sample()?;
-        let next_mask =
-            load_aware_limited_core_mask(&processors, &usages, percent, max_logical_processors)?;
+        let next_mask = load_aware_limited_core_mask(&processors, &usages, percent, kind)?;
+        if next_mask == cpu_allocation::logical_processor_mask(&processors) {
+            self.cpu_allocation_selection = None;
+            return None;
+        }
 
-        let mask = if let Some(previous) = self.workload_engine_core_selection {
+        let mask = if let Some(previous) = self.cpu_allocation_selection {
             let previous_count = previous.mask.count_ones();
             let next_count = next_mask.count_ones();
             let elapsed = now.duration_since(previous.selected_at);
             let previous_load = average_masked_core_load(previous.mask, &usages);
             let next_load = average_masked_core_load(next_mask, &usages);
-            if previous_count == next_count
-                && elapsed < Duration::from_secs(WORKLOAD_ENGINE_CORE_REBALANCE_INTERVAL_SECS)
+            if previous.kind == kind
+                && previous_count == next_count
+                && elapsed < Duration::from_secs(CPU_SCHEDULER_CORE_REBALANCE_INTERVAL_SECS)
                 && previous_load
                     .zip(next_load)
                     .is_none_or(|(previous_load, next_load)| {
-                        previous_load - next_load
-                            < WORKLOAD_ENGINE_CORE_REBALANCE_IMPROVEMENT_PERCENT
+                        previous_load - next_load < CPU_SCHEDULER_CORE_REBALANCE_IMPROVEMENT_PERCENT
                     })
             {
                 previous.mask
@@ -1954,11 +1634,12 @@ impl WorkloadEngineManager {
         };
 
         if self
-            .workload_engine_core_selection
-            .is_none_or(|selection| selection.mask != mask)
+            .cpu_allocation_selection
+            .is_none_or(|selection| selection.mask != mask || selection.kind != kind)
         {
-            self.workload_engine_core_selection = Some(WorkloadEngineCoreSelection {
+            self.cpu_allocation_selection = Some(CpuAllocationSelection {
                 mask,
+                kind,
                 selected_at: now,
             });
         }
@@ -1981,25 +1662,11 @@ fn cached_executable_path(
     Some(path)
 }
 
-fn workload_priority_value(priority: ProcessPriority) -> PriorityClassValue {
-    match priority {
-        ProcessPriority::Normal => PriorityClassValue::Normal,
-        ProcessPriority::BelowNormal => PriorityClassValue::BelowNormal,
-        ProcessPriority::Idle => PriorityClassValue::Idle,
-    }
+fn cpu_scheduler_priority_value(priority: ProcessPrioritySetting) -> Option<PriorityClassValue> {
+    PriorityClassValue::from_setting(priority.safe_for_automatic_control())
 }
 
-fn foreground_boost_priority_value(
-    priority: ForegroundBoostPriority,
-    foreground_cpu_usage_percent: Option<f32>,
-) -> PriorityClassValue {
-    match foreground_boost_priority_class(priority, foreground_cpu_usage_percent) {
-        ABOVE_NORMAL_PRIORITY_CLASS => PriorityClassValue::AboveNormal,
-        _ => PriorityClassValue::Normal,
-    }
-}
-
-fn workload_priority_target_key(process_id: u32, target: &PriorityTarget) -> ProcessTargetKey {
+fn cpu_scheduler_priority_target_key(process_id: u32, target: &PriorityTarget) -> ProcessTargetKey {
     ProcessControlTarget::automatic(
         process_id,
         target.process_name.clone(),
@@ -2009,26 +1676,20 @@ fn workload_priority_target_key(process_id: u32, target: &PriorityTarget) -> Pro
     .key()
 }
 
-impl Default for WorkloadEngineSnapshot {
+impl Default for CpuSchedulerSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
             scanned_processes: 0,
-            background_adjusted_processes: 0,
-            timer_resolution_ignored_processes: 0,
-            foreground_boosted_process: None,
-            launch_boost_active: false,
-            workload_engine_active: false,
-            workload_managed_processes: 0,
-            workload_engine_message: "Workload Engine disabled.".to_owned(),
-            workload_engine_total_cpu_usage_tenths: None,
-            adaptive_power_profile: None,
-            workload_engine_details: Vec::new(),
+            adjusted_processes: 0,
+            focus_and_launch_profile_active: false,
+            cpu_pressure_restraint_active: false,
+            foreground_cpu_usage_tenths: None,
             skipped_processes: 0,
             failed_processes: 0,
             adjusted_apps: Vec::new(),
             auto_excluded_processes: Vec::new(),
-            message: "Workload Engine disabled.".to_owned(),
+            message: "CPU Scheduler disabled.".to_owned(),
             last_error: None,
         }
     }

@@ -12,7 +12,8 @@ pub(crate) enum RefreshDomain {
     CoreLimiter,
     CpuAllocationReconciliation,
     ByRunningApp,
-    WorkloadEngine,
+    CpuScheduler,
+    AdaptivePowerPlan,
     ProcessPriority,
     ThreadPriority,
     DynamicPriorityBoost,
@@ -25,7 +26,7 @@ pub(crate) enum RefreshDomain {
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 20] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 21] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -35,7 +36,8 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 20] = [
     RefreshDomain::CoreLimiter,
     RefreshDomain::CpuAllocationReconciliation,
     RefreshDomain::ByRunningApp,
-    RefreshDomain::WorkloadEngine,
+    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptivePowerPlan,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
     RefreshDomain::DynamicPriorityBoost,
@@ -48,14 +50,15 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 20] = [
     RefreshDomain::ControllerActivity,
 ];
 
-const FOREGROUND_DOMAINS: [RefreshDomain; 15] = [
+const FOREGROUND_DOMAINS: [RefreshDomain; 16] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspensionForegroundRelease,
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CoreLimiter,
-    RefreshDomain::WorkloadEngine,
+    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptivePowerPlan,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
     RefreshDomain::DynamicPriorityBoost,
@@ -82,7 +85,7 @@ const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 13] = [
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CoreLimiter,
     RefreshDomain::ByRunningApp,
-    RefreshDomain::WorkloadEngine,
+    RefreshDomain::CpuScheduler,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
     RefreshDomain::DynamicPriorityBoost,
@@ -112,14 +115,12 @@ pub(crate) enum SchedulerEvent {
 /// with their existing managers.
 pub(crate) struct RefreshScheduler {
     deadlines: [Instant; ALL_REFRESH_DOMAINS.len()],
-    workload_engine_fast_until: Option<Instant>,
 }
 
 impl RefreshScheduler {
     pub(crate) fn new(now: Instant) -> Self {
         Self {
             deadlines: [now; ALL_REFRESH_DOMAINS.len()],
-            workload_engine_fast_until: None,
         }
     }
 
@@ -140,33 +141,16 @@ impl RefreshScheduler {
         self.deadlines[domain as usize] = now + interval;
     }
 
-    pub(crate) fn invalidate(
-        &mut self,
-        event: SchedulerEvent,
-        now: Instant,
-        workload_fast_refresh_enabled: bool,
-        workload_fast_window: Duration,
-    ) {
+    pub(crate) fn invalidate(&mut self, event: SchedulerEvent, now: Instant) {
         match event {
             SchedulerEvent::SettingsChanged => {
                 self.schedule_domains_now(&ALL_REFRESH_DOMAINS, now);
-                self.workload_engine_fast_until = None;
             }
             SchedulerEvent::ForegroundChanged => {
                 self.schedule_domains_now(&FOREGROUND_DOMAINS, now);
-                self.extend_workload_fast_window(
-                    now,
-                    workload_fast_refresh_enabled,
-                    workload_fast_window,
-                );
             }
             SchedulerEvent::WindowCreated => {
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
-                self.extend_workload_fast_window(
-                    now,
-                    workload_fast_refresh_enabled,
-                    workload_fast_window,
-                );
             }
             SchedulerEvent::PowerChanged | SchedulerEvent::InputActivity => {
                 self.schedule_now(RefreshDomain::PowerPlanCheck, now);
@@ -174,22 +158,12 @@ impl RefreshScheduler {
             SchedulerEvent::SessionChanged => {
                 self.schedule_domains_now(&FOREGROUND_DOMAINS, now);
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
-                self.extend_workload_fast_window(
-                    now,
-                    workload_fast_refresh_enabled,
-                    workload_fast_window,
-                );
             }
             SchedulerEvent::AppSwitch | SchedulerEvent::AppSwitchMouseClick => {
                 self.schedule_domains_now(&APP_SWITCH_DOMAINS, now);
             }
             SchedulerEvent::ProcessAppeared => {
                 self.schedule_domains_now(&PROCESS_APPEARANCE_DOMAINS, now);
-                self.extend_workload_fast_window(
-                    now,
-                    workload_fast_refresh_enabled,
-                    workload_fast_window,
-                );
             }
             SchedulerEvent::AppSuspensionRequested => {
                 self.schedule_now(RefreshDomain::AppSuspension, now);
@@ -201,24 +175,6 @@ impl RefreshScheduler {
                 self.schedule_now(RefreshDomain::PowerPlanCheck, now);
             }
         }
-    }
-
-    pub(crate) fn extend_workload_fast_window(
-        &mut self,
-        now: Instant,
-        enabled: bool,
-        window: Duration,
-    ) {
-        if enabled {
-            self.workload_engine_fast_until = Some(now + window);
-        }
-    }
-
-    pub(crate) fn workload_fast_refresh_active(&self, now: Instant, enabled: bool) -> bool {
-        enabled
-            && self
-                .workload_engine_fast_until
-                .is_some_and(|until| now < until)
     }
 
     pub(crate) fn minimum_wait(
@@ -255,7 +211,6 @@ mod tests {
     use super::*;
 
     const HOUR: Duration = Duration::from_secs(60 * 60);
-    const FAST_WINDOW: Duration = Duration::from_secs(8);
 
     fn future_scheduler(now: Instant) -> RefreshScheduler {
         let mut scheduler = RefreshScheduler::new(now);
@@ -276,15 +231,13 @@ mod tests {
     }
 
     #[test]
-    fn settings_invalidates_every_domain_and_resets_the_fast_window() {
+    fn settings_invalidates_every_domain() {
         let now = Instant::now();
         let mut scheduler = future_scheduler(now);
-        scheduler.extend_workload_fast_window(now, true, FAST_WINDOW);
 
-        scheduler.invalidate(SchedulerEvent::SettingsChanged, now, true, FAST_WINDOW);
+        scheduler.invalidate(SchedulerEvent::SettingsChanged, now);
 
         assert_only_due(&scheduler, now, &ALL_REFRESH_DOMAINS);
-        assert!(!scheduler.workload_fast_refresh_active(now, true));
     }
 
     #[test]
@@ -292,10 +245,9 @@ mod tests {
         let now = Instant::now();
         let mut scheduler = future_scheduler(now);
 
-        scheduler.invalidate(SchedulerEvent::ForegroundChanged, now, true, FAST_WINDOW);
+        scheduler.invalidate(SchedulerEvent::ForegroundChanged, now);
 
         assert_only_due(&scheduler, now, &FOREGROUND_DOMAINS);
-        assert!(scheduler.workload_fast_refresh_active(now, true));
     }
 
     #[test]
@@ -303,10 +255,9 @@ mod tests {
         let now = Instant::now();
         let mut scheduler = future_scheduler(now);
 
-        scheduler.invalidate(SchedulerEvent::WindowCreated, now, false, FAST_WINDOW);
+        scheduler.invalidate(SchedulerEvent::WindowCreated, now);
 
         assert_only_due(&scheduler, now, &WINDOW_CREATED_DOMAINS);
-        assert!(!scheduler.workload_fast_refresh_active(now, true));
     }
 
     #[test]
@@ -320,10 +271,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        scheduler.invalidate(SchedulerEvent::SessionChanged, now, true, FAST_WINDOW);
+        scheduler.invalidate(SchedulerEvent::SessionChanged, now);
 
         assert_only_due(&scheduler, now, &expected);
-        assert!(scheduler.workload_fast_refresh_active(now, true));
     }
 
     #[test]
@@ -335,7 +285,7 @@ mod tests {
             SchedulerEvent::ControllerActivity,
         ] {
             let mut scheduler = future_scheduler(now);
-            scheduler.invalidate(event, now, false, FAST_WINDOW);
+            scheduler.invalidate(event, now);
             assert_only_due(&scheduler, now, &[RefreshDomain::PowerPlanCheck]);
         }
     }
@@ -348,7 +298,7 @@ mod tests {
             SchedulerEvent::AppSwitchMouseClick,
         ] {
             let mut scheduler = future_scheduler(now);
-            scheduler.invalidate(event, now, false, FAST_WINDOW);
+            scheduler.invalidate(event, now);
             assert_only_due(&scheduler, now, &APP_SWITCH_DOMAINS);
         }
     }
@@ -358,40 +308,21 @@ mod tests {
         let now = Instant::now();
         let mut scheduler = future_scheduler(now);
 
-        scheduler.invalidate(SchedulerEvent::ProcessAppeared, now, true, FAST_WINDOW);
+        scheduler.invalidate(SchedulerEvent::ProcessAppeared, now);
 
         assert_only_due(&scheduler, now, &PROCESS_APPEARANCE_DOMAINS);
-        assert!(scheduler.workload_fast_refresh_active(now, true));
     }
 
     #[test]
     fn manual_requests_force_only_the_requested_domain() {
         let now = Instant::now();
         let mut suspension = future_scheduler(now);
-        suspension.invalidate(
-            SchedulerEvent::AppSuspensionRequested,
-            now,
-            false,
-            FAST_WINDOW,
-        );
+        suspension.invalidate(SchedulerEvent::AppSuspensionRequested, now);
         assert_only_due(&suspension, now, &[RefreshDomain::AppSuspension]);
 
         let mut trim = future_scheduler(now);
-        trim.invalidate(SchedulerEvent::MemoryTrimRequested, now, false, FAST_WINDOW);
+        trim.invalidate(SchedulerEvent::MemoryTrimRequested, now);
         assert_only_due(&trim, now, &[RefreshDomain::MemoryTrim]);
-    }
-
-    #[test]
-    fn fast_window_expires_at_its_deadline_and_disabled_features_do_not_extend_it() {
-        let now = Instant::now();
-        let mut scheduler = RefreshScheduler::new(now);
-        scheduler.extend_workload_fast_window(now, false, FAST_WINDOW);
-        assert!(!scheduler.workload_fast_refresh_active(now, true));
-
-        scheduler.extend_workload_fast_window(now, true, FAST_WINDOW);
-        assert!(scheduler.workload_fast_refresh_active(now, true));
-        assert!(!scheduler.workload_fast_refresh_active(now + FAST_WINDOW, true));
-        assert!(!scheduler.workload_fast_refresh_active(now, false));
     }
 
     #[test]

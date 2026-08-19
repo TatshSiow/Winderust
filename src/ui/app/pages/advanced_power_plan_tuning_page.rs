@@ -308,7 +308,7 @@ impl WinderustApp {
 
     fn step_advanced_power_plan_tuning_preset_value(
         &mut self,
-        field: AdaptiveEngineProcessorPolicyField,
+        field: AdaptiveEngineProcessorPowerPolicyField,
         change: &StepChange<u64>,
     ) {
         let Some(editor) = self.advanced_power_plan_tuning_preset_editor.as_mut() else {
@@ -321,7 +321,7 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn set_advanced_power_plan_tuning_preset_field_value(
         &mut self,
-        field: AdaptiveEngineProcessorPolicyField,
+        field: AdaptiveEngineProcessorPowerPolicyField,
         value: u64,
     ) {
         let Some(editor) = self.advanced_power_plan_tuning_preset_editor.as_mut() else {
@@ -366,25 +366,25 @@ impl WinderustApp {
         }
         let rows = [
             (
-                AdaptiveEngineProcessorPolicyField::CoreParkingMin,
+                AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin,
                 t!("processor_power.core_parking_min").to_string(),
                 values.core_parking_min,
                 &editor.sliders[0],
             ),
             (
-                AdaptiveEngineProcessorPolicyField::PerformanceMin,
+                AdaptiveEngineProcessorPowerPolicyField::PerformanceMin,
                 t!("processor_power.processor_min").to_string(),
                 values.performance_min,
                 &editor.sliders[1],
             ),
             (
-                AdaptiveEngineProcessorPolicyField::PerformanceMax,
+                AdaptiveEngineProcessorPowerPolicyField::PerformanceMax,
                 t!("processor_power.processor_max").to_string(),
                 values.performance_max,
                 &editor.sliders[2],
             ),
             (
-                AdaptiveEngineProcessorPolicyField::BoostPolicy,
+                AdaptiveEngineProcessorPowerPolicyField::BoostPolicy,
                 t!("processor_power.boost_policy").to_string(),
                 values.boost_policy,
                 &editor.sliders[3],
@@ -707,7 +707,11 @@ impl WinderustApp {
                 }
             })
             .child(self.render_processor_power_source_group(ProcessorPowerSource::Ac, window, cx))
-            .child(self.render_processor_power_source_group(ProcessorPowerSource::Dc, window, cx))
+            .child(self.render_processor_power_source_group(
+                ProcessorPowerSource::Battery,
+                window,
+                cx,
+            ))
             .child(
                 h_flex().justify_end().child(
                     control_button(Button::new("processor-power-refresh-values"))
@@ -764,38 +768,38 @@ impl WinderustApp {
                     ),
                 ],
             ),
-            ProcessorPowerSource::Dc => (
+            ProcessorPowerSource::Battery => (
                 SettingGroupTarget::ProcessorPowerBattery,
                 t!("processor_power.battery_preset").to_string(),
-                "processor-power-dc-boost-mode",
+                "processor-power-battery-boost-mode",
                 [
                     (
-                        "processor-power-dc-core-parking-min",
+                        "processor-power-battery-core-parking-min",
                         t!("processor_power.core_parking_min").to_string(),
                         NumericField::ProcessorDcCoreParkingMin,
-                        ProcessorPowerSlider::DcCoreParkingMin,
-                        self.processor_power_dc_core_parking_min,
+                        ProcessorPowerSlider::BatteryCoreParkingMin,
+                        self.processor_power_battery_core_parking_min,
                     ),
                     (
-                        "processor-power-dc-performance-min",
+                        "processor-power-battery-performance-min",
                         t!("processor_power.processor_min").to_string(),
                         NumericField::ProcessorDcPerformanceMin,
-                        ProcessorPowerSlider::DcPerformanceMin,
-                        self.processor_power_dc_performance_min,
+                        ProcessorPowerSlider::BatteryPerformanceMin,
+                        self.processor_power_battery_performance_min,
                     ),
                     (
-                        "processor-power-dc-performance-max",
+                        "processor-power-battery-performance-max",
                         t!("processor_power.processor_max").to_string(),
                         NumericField::ProcessorDcPerformanceMax,
-                        ProcessorPowerSlider::DcPerformanceMax,
-                        self.processor_power_dc_performance_max,
+                        ProcessorPowerSlider::BatteryPerformanceMax,
+                        self.processor_power_battery_performance_max,
                     ),
                     (
-                        "processor-power-dc-boost-policy",
+                        "processor-power-battery-boost-policy",
                         t!("processor_power.boost_policy").to_string(),
                         NumericField::ProcessorDcBoostPolicy,
-                        ProcessorPowerSlider::DcBoostPolicy,
-                        self.processor_power_dc_boost_policy,
+                        ProcessorPowerSlider::BatteryBoostPolicy,
+                        self.processor_power_battery_boost_policy,
                     ),
                 ],
             ),
@@ -853,7 +857,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let current = match source {
             ProcessorPowerSource::Ac => self.processor_power_values().ac,
-            ProcessorPowerSource::Dc => self.processor_power_values().dc,
+            ProcessorPowerSource::Battery => self.processor_power_values().battery,
         };
         let mut presets = processor_power_builtin_presets()
             .into_iter()
@@ -970,7 +974,7 @@ impl WinderustApp {
         );
         let selected = match source {
             ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode,
-            ProcessorPowerSource::Dc => self.processor_power_dc_boost_mode,
+            ProcessorPowerSource::Battery => self.processor_power_battery_boost_mode,
         };
         let mut options = dropdown_surface(cx, placement.max_height);
         for boost_mode in ProcessorBoostMode::ALL {
@@ -1162,35 +1166,35 @@ fn advanced_power_plan_tuning_preset_label(name: &str) -> String {
     }
 }
 
-const ADVANCED_POWER_PLAN_TUNING_PRESET_FIELDS: [AdaptiveEngineProcessorPolicyField; 4] = [
-    AdaptiveEngineProcessorPolicyField::CoreParkingMin,
-    AdaptiveEngineProcessorPolicyField::PerformanceMin,
-    AdaptiveEngineProcessorPolicyField::PerformanceMax,
-    AdaptiveEngineProcessorPolicyField::BoostPolicy,
+const ADVANCED_POWER_PLAN_TUNING_PRESET_FIELDS: [AdaptiveEngineProcessorPowerPolicyField; 4] = [
+    AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin,
+    AdaptiveEngineProcessorPowerPolicyField::PerformanceMin,
+    AdaptiveEngineProcessorPowerPolicyField::PerformanceMax,
+    AdaptiveEngineProcessorPowerPolicyField::BoostPolicy,
 ];
 
 fn advanced_power_plan_tuning_preset_field_value(
     values: ProcessorPowerValues,
-    field: AdaptiveEngineProcessorPolicyField,
+    field: AdaptiveEngineProcessorPowerPolicyField,
 ) -> u64 {
     u64::from(match field {
-        AdaptiveEngineProcessorPolicyField::CoreParkingMin => values.core_parking_min,
-        AdaptiveEngineProcessorPolicyField::PerformanceMin => values.performance_min,
-        AdaptiveEngineProcessorPolicyField::PerformanceMax => values.performance_max,
-        AdaptiveEngineProcessorPolicyField::BoostPolicy => values.boost_policy,
+        AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin => values.core_parking_min,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMin => values.performance_min,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMax => values.performance_max,
+        AdaptiveEngineProcessorPowerPolicyField::BoostPolicy => values.boost_policy,
     })
 }
 
 fn set_advanced_power_plan_tuning_preset_field_value(
     values: &mut ProcessorPowerValues,
-    field: AdaptiveEngineProcessorPolicyField,
+    field: AdaptiveEngineProcessorPowerPolicyField,
     value: u32,
 ) {
     match field {
-        AdaptiveEngineProcessorPolicyField::CoreParkingMin => values.core_parking_min = value,
-        AdaptiveEngineProcessorPolicyField::PerformanceMin => values.performance_min = value,
-        AdaptiveEngineProcessorPolicyField::PerformanceMax => values.performance_max = value,
-        AdaptiveEngineProcessorPolicyField::BoostPolicy => values.boost_policy = value,
+        AdaptiveEngineProcessorPowerPolicyField::CoreParkingMin => values.core_parking_min = value,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMin => values.performance_min = value,
+        AdaptiveEngineProcessorPowerPolicyField::PerformanceMax => values.performance_max = value,
+        AdaptiveEngineProcessorPowerPolicyField::BoostPolicy => values.boost_policy = value,
     }
 }
 

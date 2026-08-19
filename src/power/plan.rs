@@ -6,8 +6,8 @@ pub const ADAPTIVE_POWER_DEESCALATION_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdaptivePowerDemand {
-    pub launch_boost: bool,
-    pub workload_active: bool,
+    pub focus_and_launch_profile_active: bool,
+    pub background_pressure_active: bool,
     pub total_cpu_percent: Option<f32>,
     pub peak_cpu_percent: Option<f32>,
     pub performance_peak_cpu_percent: Option<f32>,
@@ -20,8 +20,8 @@ pub struct AdaptivePowerDemand {
 pub enum AdaptivePowerProfile {
     Idle,
     Responsive,
-    Sustained,
-    Burst,
+    BackgroundPressure,
+    FocusAndLaunch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,10 +79,18 @@ pub struct ProcessorPowerValues {
     pub boost_mode: ProcessorBoostMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdaptivePowerBoostValues {
+    pub ac_policy: u32,
+    pub ac_mode: ProcessorBoostMode,
+    pub battery_policy: u32,
+    pub battery_mode: ProcessorBoostMode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProcessorPowerAcDcValues {
+pub struct ProcessorPowerSourceValues {
     pub ac: ProcessorPowerValues,
-    pub dc: ProcessorPowerValues,
+    pub battery: ProcessorPowerValues,
 }
 
 impl ProcessorPowerValues {
@@ -140,6 +148,43 @@ impl ProcessorPowerValues {
     }
 }
 
+impl AdaptivePowerBoostValues {
+    pub const BACKGROUND_PRESSURE: Self = Self::new(
+        80,
+        ProcessorBoostMode::EfficientAggressive,
+        60,
+        ProcessorBoostMode::EfficientEnabled,
+    );
+    pub const FOCUS_AND_LAUNCH: Self = Self::new(
+        100,
+        ProcessorBoostMode::Aggressive,
+        80,
+        ProcessorBoostMode::EfficientAggressive,
+    );
+
+    pub const fn new(
+        ac_policy: u32,
+        ac_mode: ProcessorBoostMode,
+        battery_policy: u32,
+        battery_mode: ProcessorBoostMode,
+    ) -> Self {
+        Self {
+            ac_policy,
+            ac_mode,
+            battery_policy,
+            battery_mode,
+        }
+    }
+
+    pub fn normalized(self) -> Self {
+        Self {
+            ac_policy: self.ac_policy.min(100),
+            battery_policy: self.battery_policy.min(100),
+            ..self
+        }
+    }
+}
+
 impl ProcessorBoostMode {
     pub const ALL: [Self; 7] = [
         Self::Disabled,
@@ -177,41 +222,44 @@ impl ProcessorBoostMode {
     }
 }
 
-impl ProcessorPowerAcDcValues {
-    pub const fn new(ac: ProcessorPowerValues, dc: ProcessorPowerValues) -> Self {
-        Self { ac, dc }
+impl ProcessorPowerSourceValues {
+    pub const fn new(ac: ProcessorPowerValues, battery: ProcessorPowerValues) -> Self {
+        Self { ac, battery }
     }
 
     pub const fn same(values: ProcessorPowerValues) -> Self {
         Self {
             ac: values,
-            dc: values,
+            battery: values,
         }
     }
 
     pub fn normalized(self) -> Self {
         Self {
             ac: self.ac.normalized(),
-            dc: self.dc.normalized(),
+            battery: self.battery.normalized(),
         }
     }
 }
 
 impl AdaptivePowerProfile {
     pub fn for_demand(demand: AdaptivePowerDemand) -> Self {
-        if demand.launch_boost
-            || demand.total_cpu_percent.is_some_and(|usage| usage >= 85.0)
-            || demand.peak_cpu_percent.is_some_and(|usage| usage >= 85.0)
-            || demand
-                .performance_peak_cpu_percent
-                .is_some_and(|usage| usage >= 85.0)
+        if demand.focus_and_launch_profile_active
             || demand
                 .foreground_cpu_percent
                 .is_some_and(|usage| usage >= 25.0)
         {
-            Self::Burst
-        } else if demand.workload_active
-            || demand.total_cpu_percent.is_some_and(|usage| usage >= 55.0)
+            Self::FocusAndLaunch
+        } else if demand.background_pressure_active && demand.foreground_cpu_percent.is_some() {
+            Self::BackgroundPressure
+        } else if demand.total_cpu_percent.is_some_and(|usage| usage >= 85.0)
+            || demand.peak_cpu_percent.is_some_and(|usage| usage >= 85.0)
+            || demand
+                .performance_peak_cpu_percent
+                .is_some_and(|usage| usage >= 85.0)
+        {
+            Self::FocusAndLaunch
+        } else if demand.total_cpu_percent.is_some_and(|usage| usage >= 55.0)
             || demand.peak_cpu_percent.is_some_and(|usage| usage >= 55.0)
             || demand
                 .performance_peak_cpu_percent
@@ -223,7 +271,7 @@ impl AdaptivePowerProfile {
                 .foreground_cpu_percent
                 .is_some_and(|usage| usage >= 8.0)
         {
-            Self::Sustained
+            Self::BackgroundPressure
         } else if demand.total_cpu_percent.is_some_and(|usage| usage >= 20.0)
             || demand.peak_cpu_percent.is_some_and(|usage| usage >= 20.0)
             || demand
@@ -249,14 +297,14 @@ impl AdaptivePowerProfile {
         match self {
             Self::Idle => "Idle",
             Self::Responsive => "Responsive",
-            Self::Sustained => "Sustained",
-            Self::Burst => "Burst",
+            Self::BackgroundPressure => "Background Pressure",
+            Self::FocusAndLaunch => "Focus and Launch",
         }
     }
 
-    pub const fn power_values(self) -> ProcessorPowerAcDcValues {
+    pub const fn power_values(self) -> ProcessorPowerSourceValues {
         match self {
-            Self::Idle => ProcessorPowerAcDcValues::new(
+            Self::Idle => ProcessorPowerSourceValues::new(
                 ProcessorPowerValues::new_with_boost_mode(
                     0,
                     5,
@@ -272,7 +320,7 @@ impl AdaptivePowerProfile {
                     ProcessorBoostMode::Disabled,
                 ),
             ),
-            Self::Responsive => ProcessorPowerAcDcValues::new(
+            Self::Responsive => ProcessorPowerSourceValues::new(
                 ProcessorPowerValues::new_with_boost_mode(
                     25,
                     10,
@@ -288,36 +336,36 @@ impl AdaptivePowerProfile {
                     ProcessorBoostMode::EfficientEnabled,
                 ),
             ),
-            Self::Sustained => ProcessorPowerAcDcValues::new(
+            Self::BackgroundPressure => ProcessorPowerSourceValues::new(
                 ProcessorPowerValues::new_with_boost_mode(
                     60,
                     20,
                     100,
-                    80,
-                    ProcessorBoostMode::EfficientAggressive,
+                    AdaptivePowerBoostValues::BACKGROUND_PRESSURE.ac_policy,
+                    AdaptivePowerBoostValues::BACKGROUND_PRESSURE.ac_mode,
                 ),
                 ProcessorPowerValues::new_with_boost_mode(
                     30,
                     10,
                     90,
-                    60,
-                    ProcessorBoostMode::EfficientEnabled,
+                    AdaptivePowerBoostValues::BACKGROUND_PRESSURE.battery_policy,
+                    AdaptivePowerBoostValues::BACKGROUND_PRESSURE.battery_mode,
                 ),
             ),
-            Self::Burst => ProcessorPowerAcDcValues::new(
+            Self::FocusAndLaunch => ProcessorPowerSourceValues::new(
                 ProcessorPowerValues::new_with_boost_mode(
                     100,
                     35,
                     100,
-                    100,
-                    ProcessorBoostMode::Aggressive,
+                    AdaptivePowerBoostValues::FOCUS_AND_LAUNCH.ac_policy,
+                    AdaptivePowerBoostValues::FOCUS_AND_LAUNCH.ac_mode,
                 ),
                 ProcessorPowerValues::new_with_boost_mode(
                     60,
                     20,
                     100,
-                    80,
-                    ProcessorBoostMode::EfficientAggressive,
+                    AdaptivePowerBoostValues::FOCUS_AND_LAUNCH.battery_policy,
+                    AdaptivePowerBoostValues::FOCUS_AND_LAUNCH.battery_mode,
                 ),
             ),
         }
@@ -327,10 +375,12 @@ impl AdaptivePowerProfile {
         self,
         baseline: ProcessorPowerValues,
         has_efficiency_cores: bool,
-    ) -> ProcessorPowerAcDcValues {
+        background_pressure_profile: AdaptivePowerBoostValues,
+        focus_and_launch_profile: AdaptivePowerBoostValues,
+    ) -> ProcessorPowerSourceValues {
         let baseline = baseline.normalized();
         if self == Self::Idle {
-            return ProcessorPowerAcDcValues::same(baseline);
+            return ProcessorPowerSourceValues::same(baseline);
         }
 
         fn apply_floor(
@@ -348,24 +398,35 @@ impl AdaptivePowerProfile {
         }
 
         let mut values = self.power_values();
+        let boost = match self {
+            Self::BackgroundPressure => Some(background_pressure_profile.normalized()),
+            Self::FocusAndLaunch => Some(focus_and_launch_profile.normalized()),
+            Self::Idle | Self::Responsive => None,
+        };
+        if let Some(boost) = boost {
+            values.ac.boost_policy = boost.ac_policy;
+            values.ac.boost_mode = boost.ac_mode;
+            values.battery.boost_policy = boost.battery_policy;
+            values.battery.boost_mode = boost.battery_mode;
+        }
         if has_efficiency_cores {
             match self {
                 Self::Idle | Self::Responsive => {}
-                Self::Sustained => {
+                Self::BackgroundPressure => {
                     values.ac.core_parking_min = 40;
                     values.ac.performance_min = 15;
                 }
-                Self::Burst => {
+                Self::FocusAndLaunch => {
                     values.ac.core_parking_min = 50;
                     values.ac.performance_min = 20;
-                    values.dc.core_parking_min = 40;
-                    values.dc.performance_min = 15;
+                    values.battery.core_parking_min = 40;
+                    values.battery.performance_min = 15;
                 }
             }
         }
-        ProcessorPowerAcDcValues::new(
+        ProcessorPowerSourceValues::new(
             apply_floor(values.ac, baseline),
-            apply_floor(values.dc, baseline),
+            apply_floor(values.battery, baseline),
         )
     }
 }
@@ -426,8 +487,8 @@ mod adaptive_tests {
 
     fn demand() -> AdaptivePowerDemand {
         AdaptivePowerDemand {
-            launch_boost: false,
-            workload_active: false,
+            focus_and_launch_profile_active: false,
+            background_pressure_active: false,
             total_cpu_percent: Some(0.0),
             peak_cpu_percent: Some(0.0),
             performance_peak_cpu_percent: None,
@@ -438,7 +499,7 @@ mod adaptive_tests {
     }
 
     #[test]
-    fn adaptive_demand_selects_cpu_foreground_io_and_burst_profiles() {
+    fn adaptive_demand_selects_cpu_foreground_io_and_focus_and_launch_profiles() {
         assert_eq!(
             AdaptivePowerProfile::for_demand(demand()),
             AdaptivePowerProfile::Idle
@@ -462,14 +523,41 @@ mod adaptive_tests {
                 foreground_cpu_percent: Some(9.0),
                 ..demand()
             }),
-            AdaptivePowerProfile::Sustained
+            AdaptivePowerProfile::BackgroundPressure
         );
         assert_eq!(
             AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
                 peak_cpu_percent: Some(90.0),
                 ..demand()
             }),
-            AdaptivePowerProfile::Burst
+            AdaptivePowerProfile::FocusAndLaunch
+        );
+        assert_eq!(
+            AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
+                background_pressure_active: true,
+                total_cpu_percent: Some(95.0),
+                peak_cpu_percent: Some(100.0),
+                foreground_cpu_percent: Some(5.0),
+                ..demand()
+            }),
+            AdaptivePowerProfile::BackgroundPressure
+        );
+        assert_eq!(
+            AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
+                background_pressure_active: true,
+                total_cpu_percent: Some(95.0),
+                foreground_cpu_percent: None,
+                ..demand()
+            }),
+            AdaptivePowerProfile::FocusAndLaunch
+        );
+        assert_eq!(
+            AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
+                background_pressure_active: true,
+                foreground_cpu_percent: Some(25.0),
+                ..demand()
+            }),
+            AdaptivePowerProfile::FocusAndLaunch
         );
         assert_eq!(
             AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
@@ -477,7 +565,7 @@ mod adaptive_tests {
                 peak_cpu_percent: None,
                 ..demand()
             }),
-            AdaptivePowerProfile::Sustained
+            AdaptivePowerProfile::BackgroundPressure
         );
         assert_eq!(
             AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
@@ -485,14 +573,14 @@ mod adaptive_tests {
                 peak_cpu_percent: None,
                 ..demand()
             }),
-            AdaptivePowerProfile::Burst
+            AdaptivePowerProfile::FocusAndLaunch
         );
         assert_eq!(
             AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
-                launch_boost: true,
+                focus_and_launch_profile_active: true,
                 ..demand()
             }),
-            AdaptivePowerProfile::Burst
+            AdaptivePowerProfile::FocusAndLaunch
         );
     }
 
@@ -500,23 +588,23 @@ mod adaptive_tests {
     fn adaptive_profiles_scale_every_processor_control() {
         let idle = AdaptivePowerProfile::Idle.power_values().ac;
         let responsive = AdaptivePowerProfile::Responsive.power_values().ac;
-        let sustained = AdaptivePowerProfile::Sustained.power_values().ac;
-        let burst = AdaptivePowerProfile::Burst.power_values().ac;
+        let background_pressure = AdaptivePowerProfile::BackgroundPressure.power_values().ac;
+        let focus_and_launch = AdaptivePowerProfile::FocusAndLaunch.power_values().ac;
 
         assert!(idle.core_parking_min < responsive.core_parking_min);
-        assert!(responsive.core_parking_min < sustained.core_parking_min);
-        assert!(sustained.core_parking_min < burst.core_parking_min);
+        assert!(responsive.core_parking_min < background_pressure.core_parking_min);
+        assert!(background_pressure.core_parking_min < focus_and_launch.core_parking_min);
         assert!(idle.performance_min < responsive.performance_min);
-        assert!(responsive.performance_min < sustained.performance_min);
-        assert!(sustained.performance_min < burst.performance_min);
+        assert!(responsive.performance_min < background_pressure.performance_min);
+        assert!(background_pressure.performance_min < focus_and_launch.performance_min);
         assert!(idle.performance_max < responsive.performance_max);
-        assert!(responsive.performance_max < sustained.performance_max);
+        assert!(responsive.performance_max < background_pressure.performance_max);
         assert!(idle.boost_policy < responsive.boost_policy);
-        assert!(responsive.boost_policy < sustained.boost_policy);
-        assert!(sustained.boost_policy < burst.boost_policy);
+        assert!(responsive.boost_policy < background_pressure.boost_policy);
+        assert!(background_pressure.boost_policy < focus_and_launch.boost_policy);
         assert_ne!(idle.boost_mode, responsive.boost_mode);
-        assert_ne!(responsive.boost_mode, sustained.boost_mode);
-        assert_ne!(sustained.boost_mode, burst.boost_mode);
+        assert_ne!(responsive.boost_mode, background_pressure.boost_mode);
+        assert_ne!(background_pressure.boost_mode, focus_and_launch.boost_mode);
     }
 
     #[test]
@@ -530,44 +618,125 @@ mod adaptive_tests {
         );
 
         assert_eq!(
-            AdaptivePowerProfile::Idle.calibrated_power_values(baseline, false),
-            ProcessorPowerAcDcValues::same(baseline)
+            AdaptivePowerProfile::Idle.calibrated_power_values(
+                baseline,
+                false,
+                AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
+                AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
+            ),
+            ProcessorPowerSourceValues::same(baseline)
         );
-        let burst = AdaptivePowerProfile::Burst
-            .calibrated_power_values(baseline, false)
+        let focus_and_launch = AdaptivePowerProfile::FocusAndLaunch
+            .calibrated_power_values(
+                baseline,
+                false,
+                AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
+                AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
+            )
             .ac;
-        assert_eq!(burst.performance_max, 100);
-        assert!(burst.core_parking_min >= baseline.core_parking_min);
-        assert!(burst.performance_min >= baseline.performance_min);
-        assert!(burst.boost_policy >= baseline.boost_policy);
+        assert_eq!(focus_and_launch.performance_max, 100);
+        assert!(focus_and_launch.core_parking_min >= baseline.core_parking_min);
+        assert!(focus_and_launch.performance_min >= baseline.performance_min);
+        assert!(focus_and_launch.boost_policy >= baseline.boost_policy);
     }
 
     #[test]
     fn adaptive_profiles_preserve_hybrid_turbo_headroom() {
         let baseline =
             ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled);
-        let sustained = AdaptivePowerProfile::Sustained
-            .calibrated_power_values(baseline, true)
+        let background_pressure = AdaptivePowerProfile::BackgroundPressure
+            .calibrated_power_values(
+                baseline,
+                true,
+                AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
+                AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
+            )
             .ac;
-        let burst = AdaptivePowerProfile::Burst
-            .calibrated_power_values(baseline, true)
+        let focus_and_launch = AdaptivePowerProfile::FocusAndLaunch
+            .calibrated_power_values(
+                baseline,
+                true,
+                AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
+                AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
+            )
             .ac;
 
         assert_eq!(
-            (sustained.core_parking_min, sustained.performance_min),
+            (
+                background_pressure.core_parking_min,
+                background_pressure.performance_min
+            ),
             (40, 15)
         );
-        assert_eq!((burst.core_parking_min, burst.performance_min), (50, 20));
+        assert_eq!(
+            (
+                focus_and_launch.core_parking_min,
+                focus_and_launch.performance_min
+            ),
+            (50, 20)
+        );
         assert!(
-            burst.core_parking_min
-                < AdaptivePowerProfile::Burst
+            focus_and_launch.core_parking_min
+                < AdaptivePowerProfile::FocusAndLaunch
                     .power_values()
                     .ac
                     .core_parking_min
         );
-        assert_eq!(burst.performance_max, 100);
-        assert_eq!(burst.boost_policy, 100);
-        assert_eq!(burst.boost_mode, ProcessorBoostMode::Aggressive);
+        assert_eq!(focus_and_launch.performance_max, 100);
+        assert_eq!(focus_and_launch.boost_policy, 100);
+        assert_eq!(focus_and_launch.boost_mode, ProcessorBoostMode::Aggressive);
+    }
+
+    #[test]
+    fn adaptive_pressure_and_focus_boost_values_are_tunable() {
+        let baseline =
+            ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled);
+        let background = AdaptivePowerBoostValues::new(
+            72,
+            ProcessorBoostMode::EfficientEnabled,
+            42,
+            ProcessorBoostMode::Disabled,
+        );
+        let focus = AdaptivePowerBoostValues::new(
+            91,
+            ProcessorBoostMode::AggressiveAtGuaranteed,
+            63,
+            ProcessorBoostMode::EfficientAggressiveAtGuaranteed,
+        );
+
+        let background_pressure = AdaptivePowerProfile::BackgroundPressure
+            .calibrated_power_values(baseline, false, background, focus);
+        let focus_and_launch = AdaptivePowerProfile::FocusAndLaunch
+            .calibrated_power_values(baseline, false, background, focus);
+
+        assert_eq!(
+            (
+                background_pressure.ac.boost_policy,
+                background_pressure.ac.boost_mode
+            ),
+            (72, ProcessorBoostMode::EfficientEnabled)
+        );
+        assert_eq!(
+            (
+                background_pressure.battery.boost_policy,
+                background_pressure.battery.boost_mode
+            ),
+            (42, ProcessorBoostMode::Disabled)
+        );
+        assert_eq!(
+            (
+                focus_and_launch.ac.boost_policy,
+                focus_and_launch.ac.boost_mode
+            ),
+            (91, ProcessorBoostMode::AggressiveAtGuaranteed)
+        );
+        assert_eq!(
+            (
+                focus_and_launch.battery.boost_policy,
+                focus_and_launch.battery.boost_mode
+            ),
+            (63, ProcessorBoostMode::EfficientAggressiveAtGuaranteed)
+        );
     }
 
     #[test]
@@ -575,22 +744,22 @@ mod adaptive_tests {
         assert_eq!(
             adaptive_power_profile_transition(
                 AdaptivePowerProfile::Idle,
-                AdaptivePowerProfile::Burst,
+                AdaptivePowerProfile::FocusAndLaunch,
                 Duration::ZERO,
             ),
-            AdaptivePowerProfile::Burst
+            AdaptivePowerProfile::FocusAndLaunch
         );
         assert_eq!(
             adaptive_power_profile_transition(
-                AdaptivePowerProfile::Burst,
+                AdaptivePowerProfile::FocusAndLaunch,
                 AdaptivePowerProfile::Idle,
                 Duration::from_secs(4),
             ),
-            AdaptivePowerProfile::Burst
+            AdaptivePowerProfile::FocusAndLaunch
         );
         assert_eq!(
             adaptive_power_profile_transition(
-                AdaptivePowerProfile::Burst,
+                AdaptivePowerProfile::FocusAndLaunch,
                 AdaptivePowerProfile::Idle,
                 ADAPTIVE_POWER_DEESCALATION_DELAY,
             ),

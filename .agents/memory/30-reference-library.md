@@ -25,7 +25,7 @@ window rendering and infrastructure calls are not duplicated here.
 | System tray lifecycle | `src/backend/tray.rs` | Notification-area icon, window-procedure subclassing, popup menu, and restore/quit messages |
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, named App Suspension jobs, and automatic power-plan recovery |
-| Adaptive Engine | `src/features/winderust_features/workload_engine.rs`, `workload_engine/process_control.rs`, and `src/control/priority_efficiency.rs` | Workload decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
+| Adaptive Engine | `src/features/winderust_features/cpu_scheduler.rs`, `cpu_scheduler/policy.rs`, `cpu_scheduler/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
 | Stop Process / Stop Process Tree | `src/foreground/process_list.rs`, `src/control/process_termination.rs`, and `src/platform/windows/process_termination.rs` | Read-side tree capture, typed batch command, and raw termination adapter |
@@ -134,7 +134,7 @@ normal shutdown or Windows abandons it after forced termination.
 
 ## Winderust Self-Power
 
-`src/backend/self_power.rs` owns Winderust's own process-lifetime priority and Power Throttling state. Before its first write, `SelfPowerController` strictly reads both original values; failure to capture either reversible baseline blocks the transition. Hidden-to-tray and Adaptive requests are composed into one desired state, applied as one verified transaction, and compensated if a later write or verification fails. Clean disable and shutdown restore the exact captured baseline. This state does not use the external journal because process termination also terminates the controlled Winderust process.
+`src/backend/self_power.rs` owns Winderust's own process-lifetime priority and Power Throttling state. Before its first write, `SelfPowerController` strictly reads both original values; failure to capture either reversible baseline blocks the transition. Hidden-to-tray and Adaptive requests are composed into one desired state, applied as one verified transaction, and compensated if a later write or verification fails. These requests control only EcoQoS and hidden Idle priority; they preserve timer-resolution throttling bits exactly as observed. Clean disable and shutdown restore the exact captured baseline. This state does not use the external journal because process termination also terminates the controlled Winderust process.
 
 `src/platform/windows/self_power.rs` owns the current-process pseudo-handle and every raw query/set
 for this lifecycle. It converts the Windows structure to the shared platform-layer typed Power
@@ -145,7 +145,7 @@ rejected on supported Windows versions.
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GetProcessInformation(ProcessPowerThrottling)` | Captures and verifies Winderust's process power-throttling state. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation |
-| `SetProcessInformation(ProcessPowerThrottling)` | Applies and compensates the composed EcoQoS/timer-resolution throttling state. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation |
+| `SetProcessInformation(ProcessPowerThrottling)` | Applies and compensates Winderust's composed EcoQoS state without claiming timer-resolution behavior. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation |
 | `GetPriorityClass` | Captures and verifies Winderust's original process priority. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass |
 | `SetPriorityClass` | Applies hidden Idle priority and restores the captured priority. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass |
 
@@ -198,7 +198,7 @@ before recovery.
 
 Winderust Background Efficiency applies Windows EcoQoS and idle process
 priority to selected background processes. Process Priority, Background
-Efficiency, Workload Engine, and Process List actions share one
+Efficiency, CPU Scheduler, and Process List actions share one
 `PriorityEfficiencyController`, so overlapping requests use one baseline and a
 deterministic effective owner instead of competing writers.
 
@@ -207,9 +207,9 @@ Implementation paths:
 - `src/features/winderust_features/background_efficiency.rs`: Background
   Efficiency target policy, protections, exclusions, suppression, status, and
   Action Log attribution.
-- `src/features/winderust_features/workload_engine.rs`: Adaptive Engine and
-  Workload Engine Process Priority and Power Throttling claims.
-- `src/features/winderust_features/workload_engine/process_control.rs`: read-only
+- `src/features/winderust_features/cpu_scheduler.rs`: Adaptive Engine and CPU
+  Scheduler Process Priority and Power Throttling claims.
+- `src/features/winderust_features/cpu_scheduler/process_control.rs`: read-only
   workload process sampling and identity helpers.
 - `src/features/priority_control/process_priority.rs`: static Process Priority
   policy.
@@ -223,11 +223,13 @@ Implementation paths:
 
 User-facing behavior:
 
-- Winderust finds eligible background processes under the configured
-  cross-session policy and preserves all protected-process and access checks.
+- Winderust finds eligible processes under the configured cross-session policy
+  and preserves all protected-process and access checks. CPU Scheduler protects
+  Focus processes and considers hot Visible Window and Background processes;
+  Background Efficiency retains its own foreground/visible protection policy.
 - It skips Winderust itself, built-in Windows shell/input/system processes,
-  protected processes, inaccessible processes, exclusions, and processes
-  protected by Focus App or Visible Window policy.
+  protected processes, inaccessible processes, exclusions, and any process
+  protected by the active feature's tier policy.
 - The runtime worker reopens and revalidates PID, creation time, and exact
   executable path immediately before a read or write.
 - It reads the process's existing Power Throttling and Priority Class values
@@ -236,15 +238,18 @@ User-facing behavior:
 - It enables EcoQoS by setting `PROCESS_POWER_THROTTLING_EXECUTION_SPEED`
   through `SetProcessInformation` and sets `IDLE_PRIORITY_CLASS` as one compound
   Efficiency Mode transaction.
+- Adaptive Engine Power Throttling claims do not set
+  `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`; that behavior remains
+  owned only by the separate Background Efficiency feature.
 - The Process List context-menu action uses the same Task Manager-style
   invariant. Efficiency Mode reports enabled only when both EcoQoS and Idle
   process priority are observed.
-- Priority precedence is Background Efficiency > Workload foreground boost >
+- Priority precedence is Background Efficiency > CPU Scheduler Focus Process Priority >
   Adaptive Engine > static Process Priority. Power Throttling precedence is
   Background Efficiency > Adaptive Engine. Removing a higher claim reveals a
   lower claim without restoring through the original baseline.
 - If `GetProcessInformation(ProcessPowerThrottling)` cannot capture a reversible
-  baseline for a Workload Engine target, its independent Process Priority claim
+  baseline for a CPU Scheduler target, its independent Process Priority claim
   may still proceed. The unavailable Power Throttling control is remembered by
   exact process instance so each reconciliation does not retry and log the same
   failure.
@@ -345,20 +350,20 @@ Implementation entry points:
 - `src/features/priority_control/gpu_priority.rs`: GPU Priority policy, tiering, rules, preservation, suppression, pending-context handling, status, and Action Log.
 - `src/control/gpu_priority.rs`: sole GPU Priority process identity, raw baseline, owner, transaction, verification, compensation, journal relinquishment, and clean-release authority.
 - `src/platform/windows/gpu_priority.rs`: sole live D3DKMT query/set and NTSTATUS-classification adapter; crash recovery retains its independent replay-only mirror.
-- `src/features/priority_control/memory_priority.rs`: static and Workload Engine Memory Priority target policy, tiering, rules, preservation, suppression, status, and Action Log attribution.
+- `src/features/priority_control/memory_priority.rs`: static and CPU Scheduler Memory Priority target policy, tiering, rules, preservation, suppression, status, and Action Log attribution.
 - `src/control/memory_priority.rs`: sole Memory Priority process identity, simultaneous-owner arbitration, raw baseline, transaction, verification, compensation, journal relinquishment, and clean-release authority.
 - `src/platform/windows/memory_priority.rs`: sole live Memory Priority raw-class conversion and query/set adapter; crash recovery retains its independent replay-only mirror.
 
 | Product feature / API | Used for | Reference |
 | --- | --- | --- |
-| Process Priority: `GetPriorityClass` / `SetPriorityClass` | `src/platform/windows/priority_efficiency.rs` is the sole live query/set adapter. The typed controller owns exact-process baselines, owner arbitration, Begin/apply/verify/Commit, compensation, relinquishment, and clean release. Static Process Priority, Background Efficiency, Workload Engine, foreground boost, and Process List commands share its deterministic owner chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass) |
+| Process Priority: `GetPriorityClass` / `SetPriorityClass` | `src/platform/windows/priority_efficiency.rs` is the sole live query/set adapter. The typed controller owns exact-process baselines, owner arbitration, Begin/apply/verify/Commit, compensation, relinquishment, and clean release. Static Process Priority, Background Efficiency, CPU Scheduler, Focus Process Priority, and Process List commands share its deterministic owner chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass) |
 | Process Power Throttling: `GetProcessInformation` / `SetProcessInformation` | `src/platform/windows/priority_efficiency.rs` is the sole live `ProcessPowerThrottling` adapter and initializes the required current-version field before reads. The typed controller owns the full raw baseline, compound Efficiency Mode transaction, verification, compensation, and restoration chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) |
 | Thread Priority: `CreateToolhelp32Snapshot`, `Thread32First`, and `Thread32Next` | `src/platform/windows/thread_priority.rs` enumerates the current threads of an exact process claim on each applicable reconciliation. The controller discovers new threads and relinquishes missing exact identities without targeting replacements. | [Snapshot](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot) / [First](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32first) / [Next](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32next) |
 | Thread Priority: `GetThreadPriority` / `SetThreadPriority` | The same adapter is the sole live query/set boundary. The typed controller reads, applies, verifies, compensates, and restores per-thread state; static policy, Adaptive replacement policy, and Process List commands share exact baseline/expected chains. Crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadpriority) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setthreadpriority) |
 | Thread Priority: `GetThreadTimes` | The adapter reads creation time; the controller binds ownership and recovery to it so a recycled thread ID cannot receive or restore another thread's state. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes |
 | Thread Priority: `GetProcessIdOfThread` | The adapter reads the owning PID immediately before a controller query, journal transaction, or write; the controller rejects any mismatch with the verified process identity. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessidofthread |
 | Dynamic Priority Boost: `GetProcessPriorityBoost` / `SetProcessPriorityBoost` | `src/platform/windows/dynamic_priority_boost.rs` is the sole live query/set adapter. The typed controller owns Begin, apply, verify, Commit, compensation, external-break relinquishment, and clean release. Static policy, Adaptive replacement policy, and Process List commands share its exact-identity baseline/expected chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesspriorityboost) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocesspriorityboost) |
-| Memory Priority: `GetProcessInformation` / `SetProcessInformation` | `src/platform/windows/memory_priority.rs` is the sole live raw-class query/set adapter. The typed controller preserves unknown raw values and owns Begin/apply/verify/Commit, compensation, arbitration, relinquishment, and clean release. Static Memory Priority, lower-precedence Workload Engine claims, and Process List commands share one exact-process raw baseline/expected chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) |
+| Memory Priority: `GetProcessInformation` / `SetProcessInformation` | `src/platform/windows/memory_priority.rs` is the sole live raw-class query/set adapter. The typed controller preserves unknown raw values and owns Begin/apply/verify/Commit, compensation, arbitration, relinquishment, and clean release. Static Memory Priority, lower-precedence CPU Scheduler claims, and Process List commands share one exact-process raw baseline/expected chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) |
 | `MEMORY_PRIORITY_INFORMATION` | Defines the memory-priority value passed to the process information APIs. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-memory_priority_information |
 | I/O Priority: `NtQueryInformationProcess` / `NtSetInformationProcess` | `src/platform/windows/io_priority.rs` is the sole live declaration/query/set adapter for numeric process information class 33. The typed controller preserves unknown raw values and owns Begin/apply/verify/Commit, preservation, compensation, relinquishment, and clean release. Static policy, Adaptive replacement policy, and Process List commands share one exact-process baseline/expected chain; crash recovery retains a separate replay-only setter. | https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess |
 | GPU Priority: `D3DKMTGetProcessSchedulingPriorityClass` / `D3DKMTSetProcessSchedulingPriorityClass` | `src/platform/windows/gpu_priority.rs` is the sole live query/set adapter and keeps the observed `STATUS_INVALID_PARAMETER`-as-temporary-context interpretation local. The typed controller owns Begin/apply/verify/Commit, preservation, compensation, relinquishment, and clean release. Static policy, Adaptive replacement policy, and Process List commands share one exact-process baseline/expected chain; crash recovery retains a separate replay-only setter. | [Get](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/nf-d3dkmthk-d3dkmtgetprocessschedulingpriorityclass) / [Set](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmthk/nf-d3dkmthk-d3dkmtsetprocessschedulingpriorityclass) |
@@ -397,7 +402,7 @@ Implementation entry points:
 
 ## CPU Sets (Soft) and Processor Affinity (Hard)
 
-Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / Workload Engine. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance.
+Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / CPU Scheduler. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. CPU Scheduler may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
 
 Background Efficiency and Core Limiter expose Protect Foreground App and Protect Apps with Visible
 Windows. CPU Sets (Soft) and Processor Affinity (Hard) instead classify each matched process as
@@ -421,7 +426,7 @@ Implementation paths:
   status, and Action Log reporting.
 - `src/features/cpu_control/core_limiter.rs`: CPU sampling, sustain/cooldown
   hysteresis, and limit policy only.
-- `src/features/winderust_features/workload_engine.rs`: pressure, candidate,
+- `src/features/winderust_features/cpu_scheduler.rs`: pressure, candidate,
   topology, saturation, and rebalance policy only.
 - `src/backend/crash_recovery.rs`: independent crash-recovery mirror for
   affinity and CPU Set values.

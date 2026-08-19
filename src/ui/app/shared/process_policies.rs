@@ -30,8 +30,8 @@ pub(in crate::ui::app) fn process_target_can_accept(
         SuggestionTarget::ByRunningApp => {
             can_add_by_running_app_process(&settings.by_running_app, process)
         }
-        SuggestionTarget::WorkloadEngine => {
-            can_add_workload_engine_process(&settings.workload_engine, process)
+        SuggestionTarget::CpuScheduler => {
+            can_add_cpu_scheduler_custom_rule(&settings.cpu_scheduler, process)
         }
         SuggestionTarget::ProcessPriority => {
             can_add_process_priority_exclusion(&settings.process_priority, process)
@@ -367,17 +367,6 @@ pub(in crate::ui::app) fn can_add_cpu_allocation_process(
     )
 }
 
-pub(in crate::ui::app) fn can_add_workload_engine_process(
-    settings: &WorkloadEngineSettings,
-    process: &str,
-) -> bool {
-    can_add_process_candidate(
-        process,
-        |process| settings.contains_rule_for(process),
-        workload_engine::is_builtin_excluded,
-    )
-}
-
 pub(in crate::ui::app) fn can_add_io_priority_exclusion(
     settings: &IoPrioritySettings,
     process: &str,
@@ -455,14 +444,14 @@ pub(in crate::ui::app) fn can_add_timer_resolution_process(
     )
 }
 
-pub(in crate::ui::app) fn can_add_workload_engine_exclusion(
-    settings: &WorkloadEngineSettings,
+pub(in crate::ui::app) fn can_add_cpu_scheduler_custom_rule(
+    settings: &CpuSchedulerSettings,
     process: &str,
 ) -> bool {
     can_add_process_candidate(
         process,
-        |process| settings.contains_exclusion(process),
-        |_| false,
+        |process| settings.contains_custom_rule(process),
+        cpu_scheduler::is_builtin_excluded,
     )
 }
 
@@ -662,9 +651,7 @@ pub(in crate::ui::app) fn process_policy_summary(
         ProcessListColumn::PowerPlanRunning,
         by_running_app_power_plan_override_guid(&settings.by_running_app, process_name).is_some(),
     );
-    let adaptive_engine_excluded = settings
-        .workload_engine
-        .workload_engine_exclusion_enabled_for(process_name);
+    let adaptive_engine_excluded = settings.cpu_scheduler.custom_rule_enabled_for(process_name);
     summary.adaptive_engine = process_list_include_exclude_label(!adaptive_engine_excluded);
     summary.set_active(ProcessListColumn::AdaptiveEngine, !adaptive_engine_excluded);
     if adaptive_engine_excluded {
@@ -1119,22 +1106,11 @@ fn priority_policy_label<T: Copy + PartialEq>(
         label,
     )
 }
-pub(in crate::ui::app) fn process_priority_label(priority: ProcessPriority) -> String {
-    match priority {
-        ProcessPriority::Normal => format!("8 ({})", t!("workload_engine.priority_normal")),
-        ProcessPriority::BelowNormal => {
-            format!("6 ({})", t!("workload_engine.priority_below_normal"))
-        }
-        ProcessPriority::Idle => format!("4 ({})", t!("workload_engine.priority_idle")),
-    }
-}
-
 pub(in crate::ui::app) fn process_priority_setting_label(
     priority: ProcessPrioritySetting,
 ) -> String {
     match priority {
         ProcessPrioritySetting::Default => t!("process_priority.priority_default").to_string(),
-        ProcessPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
         ProcessPrioritySetting::Realtime => {
             format!("24 ({})", t!("process_priority.priority_realtime"))
         }
@@ -1157,7 +1133,6 @@ pub(in crate::ui::app) fn process_thread_priority_setting_label(
 ) -> String {
     match priority {
         ProcessThreadPrioritySetting::Default => t!("thread_priority.priority_default").to_string(),
-        ProcessThreadPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
         ProcessThreadPrioritySetting::TimeCritical => {
             format!("15 ({})", t!("thread_priority.priority_time_critical"))
         }
@@ -1189,7 +1164,6 @@ pub(in crate::ui::app) fn process_dynamic_priority_boost_setting_label(
         ProcessDynamicPriorityBoostSetting::Default => {
             t!("dynamic_priority_boost.boost_default").to_string()
         }
-        ProcessDynamicPriorityBoostSetting::Auto => t!("workload_engine.priority_auto").to_string(),
         ProcessDynamicPriorityBoostSetting::Enabled => {
             t!("dynamic_priority_boost.boost_enabled").to_string()
         }
@@ -1204,7 +1178,6 @@ pub(in crate::ui::app) fn process_io_priority_setting_label(
 ) -> String {
     match priority {
         ProcessIoPrioritySetting::Default => t!("io_priority.priority_default").to_string(),
-        ProcessIoPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
         ProcessIoPrioritySetting::Critical => {
             process_io_priority_label(ProcessIoPriority::Critical)
         }
@@ -1231,7 +1204,6 @@ pub(in crate::ui::app) fn process_gpu_priority_setting_label(
 ) -> String {
     match priority {
         ProcessGpuPrioritySetting::Default => t!("gpu_priority.priority_default").to_string(),
-        ProcessGpuPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
         ProcessGpuPrioritySetting::Realtime => {
             process_gpu_priority_label(ProcessGpuPriority::Realtime)
         }
@@ -1263,20 +1235,6 @@ pub(in crate::ui::app) fn timer_resolution_edit_value(value_100ns: u32) -> Strin
     let milliseconds = value_100ns as f64 / 10_000.0;
     let value = format!("{milliseconds:.4}");
     value.trim_end_matches('0').trim_end_matches('.').to_owned()
-}
-
-pub(in crate::ui::app) fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
-    match priority {
-        ProcessMemoryPriority::VeryLow => {
-            t!("workload_engine.memory_priority_very_low").to_string()
-        }
-        ProcessMemoryPriority::Low => t!("workload_engine.memory_priority_low").to_string(),
-        ProcessMemoryPriority::Medium => t!("workload_engine.memory_priority_medium").to_string(),
-        ProcessMemoryPriority::BelowNormal => {
-            t!("workload_engine.memory_priority_below_normal").to_string()
-        }
-        ProcessMemoryPriority::Normal => t!("workload_engine.memory_priority_normal").to_string(),
-    }
 }
 
 #[cfg(test)]

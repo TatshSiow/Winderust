@@ -116,12 +116,12 @@ pub(in crate::ui::app) fn action_log_mode_help(mode: ActionLogMode) -> String {
     }
 }
 
-pub(in crate::ui::app) fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -> String {
+pub(in crate::ui::app) fn cpu_allocation_method_label(mode: CpuAllocationMethod) -> String {
     match mode {
-        CpuRestrictionMode::SoftCpuSets => {
+        CpuAllocationMethod::CpuSetsSoft => {
             t!("background_efficiency.cpu_restriction_soft").to_string()
         }
-        CpuRestrictionMode::HardAffinity => {
+        CpuAllocationMethod::ProcessorAffinityHard => {
             t!("background_efficiency.cpu_restriction_hard").to_string()
         }
     }
@@ -148,47 +148,35 @@ pub(in crate::ui::app) fn toggle_affinity_core(mask: &mut u64, core: usize) {
     }
 }
 
+pub(in crate::ui::app) fn toggle_specific_processor(processors: &mut Vec<u8>, index: usize) {
+    let Ok(index) = u8::try_from(index) else {
+        return;
+    };
+    if let Some(position) = processors.iter().position(|processor| *processor == index) {
+        processors.remove(position);
+    } else {
+        processors.push(index);
+        processors.sort_unstable();
+    }
+}
+
 pub(in crate::ui::app) fn cpu_allocation_processors_mask(
     processors: &[LogicalProcessorInfo],
 ) -> u64 {
-    processors
-        .iter()
-        .filter_map(|processor| cpu_allocation_processor_bit(processor.index))
-        .fold(0, |mask, bit| mask | bit)
+    cpu_allocation::logical_processor_mask(processors)
 }
 
 pub(in crate::ui::app) fn cpu_allocation_processors_kind_mask(
     processors: &[LogicalProcessorInfo],
     kind: LogicalProcessorKind,
 ) -> u64 {
-    processors
-        .iter()
-        .filter(|processor| processor.kind == kind)
-        .filter_map(|processor| cpu_allocation_processor_bit(processor.index))
-        .fold(0, |mask, bit| mask | bit)
+    cpu_allocation::logical_processor_kind_mask(processors, kind)
 }
 
 pub(in crate::ui::app) fn cpu_allocation_processors_no_smt_mask(
     processors: &[LogicalProcessorInfo],
 ) -> u64 {
-    let mut seen_cores = Vec::new();
-    let mut mask = 0;
-
-    for processor in processors {
-        if seen_cores.contains(&processor.core_index) {
-            continue;
-        }
-        seen_cores.push(processor.core_index);
-        if let Some(bit) = cpu_allocation_processor_bit(processor.index) {
-            mask |= bit;
-        }
-    }
-
-    mask
-}
-
-pub(in crate::ui::app) fn cpu_allocation_processor_bit(index: usize) -> Option<u64> {
-    (index < 64).then_some(1_u64 << index)
+    cpu_allocation::logical_processor_no_smt_mask(processors)
 }
 
 pub(in crate::ui::app) fn core_tile_kind_label(processor: &LogicalProcessorInfo) -> String {
@@ -249,7 +237,7 @@ pub(in crate::ui::app) const fn processor_boost_mode_picker_id(
 ) -> &'static str {
     match source {
         ProcessorPowerSource::Ac => "processor-power-ac-boost-mode-picker",
-        ProcessorPowerSource::Dc => "processor-power-dc-boost-mode-picker",
+        ProcessorPowerSource::Battery => "processor-power-battery-boost-mode-picker",
     }
 }
 

@@ -26,7 +26,7 @@ pub(crate) enum ControlOwner {
     ProcessorAffinityHard,
     ThreadPriority,
     AdaptiveEngine,
-    WorkloadForegroundBoost,
+    CpuSchedulerFocusPriority,
     ProcessList,
 }
 
@@ -392,7 +392,7 @@ mod tests {
         assert!(ControlOwner::CoreLimiter.is_automatic());
         assert!(ControlOwner::CpuSetsSoft.is_automatic());
         assert!(ControlOwner::ProcessorAffinityHard.is_automatic());
-        assert!(ControlOwner::WorkloadForegroundBoost.is_automatic());
+        assert!(ControlOwner::CpuSchedulerFocusPriority.is_automatic());
         assert!(ControlOwner::ThreadPriority.is_automatic());
         assert!(ControlOwner::AdaptiveEngine.is_automatic());
         assert!(!ControlOwner::ProcessList.is_automatic());

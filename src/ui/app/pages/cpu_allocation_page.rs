@@ -311,8 +311,7 @@ impl WinderustApp {
         page: Page,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let status_selected =
-            self.cpu_allocation_side_panel_tab == CpuAllocationSidePanelTab::Status;
+        let status_selected = self.cpu_allocation_side_panel_tab == PresetSidePanelTab::Status;
         let presets_selected = !status_selected;
         let selected_background = cx.theme().secondary_active;
         let hover_background = cx.theme().secondary_hover;
@@ -334,7 +333,7 @@ impl WinderustApp {
                     .when(status_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
-                        app.cpu_allocation_side_panel_tab = CpuAllocationSidePanelTab::Status;
+                        app.cpu_allocation_side_panel_tab = PresetSidePanelTab::Status;
                         cx.notify();
                     }))
                     .child(t!("common.status").to_string()),
@@ -353,7 +352,7 @@ impl WinderustApp {
                     .when(presets_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
-                        app.cpu_allocation_side_panel_tab = CpuAllocationSidePanelTab::Presets;
+                        app.cpu_allocation_side_panel_tab = PresetSidePanelTab::Presets;
                         cx.notify();
                     }))
                     .child(t!("cpu_allocation.presets").to_string()),
@@ -691,6 +690,11 @@ impl WinderustApp {
                 editor.core_mask,
                 "cpu-allocation-preset-core",
                 edits_custom_preset,
+                |app, core| {
+                    if let Some(editor) = app.cpu_allocation_preset_editor.as_mut() {
+                        toggle_affinity_core(&mut editor.core_mask, core);
+                    }
+                },
                 cx,
             ),
             false,
@@ -980,12 +984,13 @@ impl WinderustApp {
         )
     }
 
-    fn render_core_tile_grid(
+    pub(in crate::ui::app) fn render_core_tile_grid(
         &self,
         processors: &[LogicalProcessorInfo],
         core_mask: u64,
         id_prefix: impl Into<String>,
         editable: bool,
+        on_toggle: impl Fn(&mut Self, usize) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if processors.is_empty() {
@@ -997,6 +1002,7 @@ impl WinderustApp {
         let mut cells_in_row = 0;
         for processor in processors {
             let core = processor.index;
+            let on_toggle = on_toggle.clone();
             let selected = affinity_mask_contains(core_mask, core);
             let foreground: Hsla = if selected {
                 cx.theme().primary_foreground
@@ -1049,9 +1055,7 @@ impl WinderustApp {
                         .h(px(CORE_TILE_HEIGHT))
                         .when(editable, |button| {
                             button.on_click(cx.listener(move |app, _, _, cx| {
-                                if let Some(editor) = app.cpu_allocation_preset_editor.as_mut() {
-                                    toggle_affinity_core(&mut editor.core_mask, core);
-                                }
+                                on_toggle(app, core);
                                 cx.notify();
                             }))
                         })

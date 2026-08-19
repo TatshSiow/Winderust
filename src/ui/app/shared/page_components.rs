@@ -239,7 +239,9 @@ fn status_section(title: String, body: AnyElement) -> gpui::Div {
 
 impl WinderustApp {
     fn render_side_panel_for_page(&self, page: Page, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if matches!(page, Page::CpuSetsSoft | Page::ProcessorAffinityHard) {
+        if page == Page::AdaptiveEngine {
+            Some(self.render_adaptive_engine_side_panel(cx))
+        } else if matches!(page, Page::CpuSetsSoft | Page::ProcessorAffinityHard) {
             Some(self.render_cpu_allocation_side_panel(page, cx))
         } else if page == Page::AdvancedPowerPlanTuning {
             Some(self.render_advanced_power_plan_tuning_side_panel(cx))
@@ -383,18 +385,18 @@ impl WinderustApp {
     fn feature_status_summary(&self, page: Page) -> Option<FeatureStatusSummary> {
         let summary = match page {
             Page::AdaptiveEngine => {
-                let status = &self.feature_status.workload_engine;
+                let status = &self.feature_status.cpu_scheduler;
                 FeatureStatusSummary {
                     state: feature_run_state(
                         self.settings.general.enabled && self.settings.adaptive_engine.enabled,
                         false,
                     ),
                     scanned: Some(status.scanned_processes),
-                    adjusted: Some(status.background_adjusted_processes),
+                    adjusted: Some(status.adjusted_processes),
                     protected_or_denied: None,
                     skipped: Some(status.skipped_processes),
                     last_error: status.last_error.clone(),
-                    action_log_feature: ActionLogFeature::WorkloadEngine,
+                    action_log_feature: ActionLogFeature::CpuScheduler,
                 }
             }
             Page::BackgroundEfficiency => {

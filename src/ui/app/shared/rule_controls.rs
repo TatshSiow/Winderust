@@ -53,11 +53,9 @@ impl WinderustApp {
         enabled: bool,
     ) {
         let rule = match kind {
-            ListItemRemovalKind::WorkloadEngineExclusion => self
-                .settings
-                .workload_engine
-                .workload_engine_exclusions
-                .get_mut(index),
+            ListItemRemovalKind::CpuSchedulerCustomRule => {
+                self.settings.cpu_scheduler.custom_rules.get_mut(index)
+            }
             ListItemRemovalKind::MemoryTrimExclusion => {
                 self.settings.memory_trim.exclusions.get_mut(index)
             }

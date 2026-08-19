@@ -3,7 +3,7 @@ use crate::action_log::{ActionLogFeature, ActionLogResult};
 use crate::runtime::observations::CycleObservations;
 
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled && settings.adaptive_engine.processor_policy_enabled
+    settings.adaptive_engine.enabled && settings.adaptive_engine.processor_power_policy_enabled
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -74,9 +74,10 @@ pub(super) struct RuntimeCore {
     core_limiter_manager: CoreLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
-    workload_engine_manager: WorkloadEngineManager,
-    launch_boost_active: bool,
-    workload_engine_active: bool,
+    cpu_scheduler_manager: CpuSchedulerManager,
+    focus_and_launch_profile_active: bool,
+    cpu_pressure_restraint_active: bool,
+    cpu_scheduler_foreground_cpu_usage_tenths: Option<u16>,
     process_priority_manager: ProcessPriorityManager,
     priority_efficiency_controller: PriorityEfficiencyController,
     thread_priority_manager: ThreadPriorityManager,
@@ -214,8 +215,8 @@ impl RuntimeCore {
         }
         collect_restore_error(
             &mut errors,
-            "Workload Engine",
-            self.run_workload_engine_update(&settings, &mut observations)
+            "CPU Scheduler",
+            self.run_cpu_scheduler_update(&settings, &mut observations)
                 .last_error,
         );
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
@@ -525,39 +526,22 @@ impl RuntimeCore {
         )
     }
 
-    pub(super) fn run_workload_engine_update(
+    pub(super) fn run_cpu_scheduler_update(
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> WorkloadEngineSnapshot {
+    ) -> CpuSchedulerSnapshot {
         self.refresh_cpu_usage();
         let foreground_process_id = observations.foreground_process_id();
-        let mut workload_settings = settings.workload_engine.clone();
-        workload_settings.enabled &= settings.adaptive_engine.enabled;
-        let mut excluded_process_ids = self
-            .priority_efficiency_controller
-            .policy_target_process_ids(&[ControlOwner::BackgroundEfficiency]);
-        excluded_process_ids.extend(self.by_running_app_manager.active_process_ids());
+        let excluded_process_ids = self.by_running_app_manager.active_process_ids();
         let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
-        let mut snapshot = self.workload_engine_manager.update(
-            WorkloadEngineUpdate {
-                settings: &workload_settings,
-                automation_enabled: settings.general.enabled,
+        let snapshot = self.cpu_scheduler_manager.update(
+            CpuSchedulerUpdate {
+                settings: &settings.cpu_scheduler,
+                automation_enabled: settings.general.enabled && settings.adaptive_engine.enabled,
                 allow_cross_session_process_control: settings
                     .general
                     .allow_cross_session_process_control,
-                protect_foreground_app_from_efficiency: settings
-                    .workload_engine
-                    .workload_engine_foreground_detection_enabled
-                    && !settings
-                        .workload_engine
-                        .workload_engine_foreground_efficiency_mode,
-                protect_visible_window_apps_from_efficiency: settings
-                    .workload_engine
-                    .workload_engine_visible_window_detection_enabled
-                    && !settings
-                        .workload_engine
-                        .workload_engine_visible_window_efficiency_mode,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
                 background_efficiency_managed: settings.background_efficiency.enabled,
@@ -570,49 +554,45 @@ impl RuntimeCore {
             &mut self.memory_priority_controller,
             &mut self.action_log,
         );
-        self.launch_boost_active = snapshot.launch_boost_active;
-        self.workload_engine_active = snapshot.workload_engine_active;
-        if let Err(error) =
-            self.sync_processor_power_policy(settings, &mut snapshot, foreground_process_id)
-        {
-            snapshot.adaptive_power_profile = None;
-            if snapshot.last_error.is_none() {
-                snapshot.last_error = Some(error);
-            }
-        }
+        self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
+        self.cpu_pressure_restraint_active = snapshot.cpu_pressure_restraint_active;
+        self.cpu_scheduler_foreground_cpu_usage_tenths = snapshot.foreground_cpu_usage_tenths;
         snapshot
     }
 
-    pub(super) fn sync_processor_power_policy(
+    pub(super) fn run_adaptive_power_plan_update(
         &mut self,
         settings: &Settings,
-        snapshot: &mut WorkloadEngineSnapshot,
-        foreground_process_id: Option<u32>,
+        observations: &mut CycleObservations,
     ) -> Result<(), String> {
+        self.refresh_cpu_usage();
+        let foreground_process_id = observations.foreground_process_id();
         if adaptive_power_plan_required(settings) && settings.general.enabled {
             let foreground_changed = foreground_process_id.is_some()
                 && self.adaptive_foreground_process_id != foreground_process_id;
             self.adaptive_foreground_process_id = foreground_process_id;
             self.update_adaptive_power_plan(
-                snapshot,
-                settings
-                    .adaptive_engine
-                    .processor_policy_values
-                    .normalized(),
+                settings.adaptive_engine.base_processor_policy.normalized(),
+                settings.adaptive_engine.background_pressure_profile,
+                settings.adaptive_engine.focus_and_launch_profile,
                 foreground_changed,
-            )
+            )?;
+            Ok(())
         } else {
             self.adaptive_foreground_process_id = None;
-            self.power_plan_controller.release_adaptive(Instant::now())
+            self.power_plan_controller
+                .release_adaptive(Instant::now())?;
+            Ok(())
         }
     }
 
     pub(super) fn update_adaptive_power_plan(
         &mut self,
-        snapshot: &mut WorkloadEngineSnapshot,
         baseline: ProcessorPowerValues,
+        background_pressure_profile: AdaptivePowerBoostValues,
+        focus_and_launch_profile: AdaptivePowerBoostValues,
         foreground_changed: bool,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let now = Instant::now();
         if self
             .next_adaptive_io_refresh
@@ -631,14 +611,15 @@ impl RuntimeCore {
             .map(|usage| adaptive_processor_demand(&usage, &self.adaptive_processor_topology))
             .unwrap_or_default();
         let desired_profile = AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
-            launch_boost: snapshot.launch_boost_active || foreground_changed,
-            workload_active: snapshot.workload_engine_active,
+            focus_and_launch_profile_active: self.focus_and_launch_profile_active
+                || foreground_changed,
+            background_pressure_active: self.cpu_pressure_restraint_active,
             total_cpu_percent: self.cpu_usage.percent,
             peak_cpu_percent: processor_demand.peak_cpu_percent,
             performance_peak_cpu_percent: processor_demand.performance_peak_cpu_percent,
             efficiency_peak_cpu_percent: processor_demand.efficiency_peak_cpu_percent,
-            foreground_cpu_percent: snapshot
-                .workload_engine_total_cpu_usage_tenths
+            foreground_cpu_percent: self
+                .cpu_scheduler_foreground_cpu_usage_tenths
                 .map(|usage| f32::from(usage) / 10.0),
             io_bytes_per_second: io_usage.bytes_per_second,
         });
@@ -652,11 +633,12 @@ impl RuntimeCore {
                 profile: desired_profile,
                 baseline,
                 has_efficiency_cores,
+                background_pressure_profile,
+                focus_and_launch_profile,
             },
             now,
         )?;
-        snapshot.adaptive_power_profile = Some(profile.label().to_owned());
-        Ok(())
+        Ok(profile.label().to_owned())
     }
 
     pub(super) fn run_io_priority_update(
@@ -665,8 +647,8 @@ impl RuntimeCore {
         observations: &mut CycleObservations,
     ) -> IoPrioritySnapshot {
         let io_priority_settings =
-            effective_io_priority_settings(settings, self.workload_engine_active);
-        let owner = io_priority_control_owner(settings, self.workload_engine_active);
+            effective_io_priority_settings(settings, self.cpu_pressure_restraint_active);
+        let owner = io_priority_control_owner(settings, self.cpu_pressure_restraint_active);
         self.io_priority_manager.update(
             &mut self.io_priority_controller,
             owner,
@@ -689,7 +671,7 @@ impl RuntimeCore {
             .policy_target_process_ids(&[
                 ControlOwner::BackgroundEfficiency,
                 ControlOwner::AdaptiveEngine,
-                ControlOwner::WorkloadForegroundBoost,
+                ControlOwner::CpuSchedulerFocusPriority,
             ]);
         self.process_priority_manager.update(
             &mut self.priority_efficiency_controller,
@@ -709,8 +691,8 @@ impl RuntimeCore {
         observations: &mut CycleObservations,
     ) -> ThreadPrioritySnapshot {
         let thread_priority_settings =
-            effective_thread_priority_settings(settings, self.workload_engine_active);
-        let owner = thread_priority_control_owner(settings, self.workload_engine_active);
+            effective_thread_priority_settings(settings, self.cpu_pressure_restraint_active);
+        let owner = thread_priority_control_owner(settings, self.cpu_pressure_restraint_active);
         self.thread_priority_manager.update(
             &mut self.thread_priority_controller,
             owner,
@@ -729,8 +711,9 @@ impl RuntimeCore {
         observations: &mut CycleObservations,
     ) -> DynamicPriorityBoostSnapshot {
         let dynamic_priority_boost_settings =
-            effective_dynamic_priority_boost_settings(settings, self.workload_engine_active);
-        let owner = dynamic_priority_boost_control_owner(settings, self.workload_engine_active);
+            effective_dynamic_priority_boost_settings(settings, self.cpu_pressure_restraint_active);
+        let owner =
+            dynamic_priority_boost_control_owner(settings, self.cpu_pressure_restraint_active);
         self.dynamic_priority_boost_manager.update(
             &mut self.dynamic_priority_boost_controller,
             owner,
@@ -962,7 +945,8 @@ impl RuntimeCore {
     }
 
     pub(super) fn has_managed_process_control_state(&self) -> bool {
-        self.cpu_allocation_coordinator.has_managed_state()
+        self.power_plan_controller.adaptive_active()
+            || self.cpu_allocation_coordinator.has_managed_state()
             || self.cpu_allocation_coordinator.has_pending_reconciliation()
             || self.dynamic_priority_boost_controller.has_managed_state()
             || self.thread_priority_controller.has_managed_state()
@@ -975,14 +959,18 @@ impl RuntimeCore {
                 .has_suspended_processes(&self.app_suspension_controller)
     }
 
+    pub(super) fn adaptive_power_plan_active(&self) -> bool {
+        self.power_plan_controller.adaptive_active()
+    }
+
     pub(super) fn run_gpu_priority_update(
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> GpuPrioritySnapshot {
         let gpu_priority_settings =
-            effective_gpu_priority_settings(settings, self.workload_engine_active);
-        let owner = gpu_priority_control_owner(settings, self.workload_engine_active);
+            effective_gpu_priority_settings(settings, self.cpu_pressure_restraint_active);
+        let owner = gpu_priority_control_owner(settings, self.cpu_pressure_restraint_active);
         self.gpu_priority_manager.update(
             &mut self.gpu_priority_controller,
             owner,

@@ -16,7 +16,7 @@ use crate::{
     win_util::{filetime_to_u64, WinHandle},
 };
 
-use super::{PriorityTargetSource, BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL};
+use super::BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL;
 
 pub(super) fn process_cpu_sample(process_id: u32) -> Option<ProcessCpuSample> {
     let process = ProcessHandle::open_query(process_id)?;
@@ -63,13 +63,6 @@ pub(super) fn process_group_cpu_sample(process_ids: &BTreeSet<u32>) -> Option<Pr
         cpu_time_100ns,
         sampled_at,
     })
-}
-
-pub(super) fn ignore_timer_resolution_allowed(
-    process_id: u32,
-    active_audio_process_ids: Option<&BTreeSet<u32>>,
-) -> bool {
-    active_audio_process_ids.is_some_and(|ids| !ids.contains(&process_id))
 }
 
 #[derive(Default)]
@@ -124,7 +117,7 @@ impl PriorityFailures {
             ));
         }
         action_log.record(
-            ActionLogFeature::WorkloadEngine,
+            ActionLogFeature::CpuScheduler,
             Some(process_id),
             process_name.to_owned(),
             ActionLogResult::Failed,
@@ -147,20 +140,11 @@ pub(super) fn process_failure_message(
     format!("{action} {name} ({process_id}): {message}")
 }
 
-pub(super) fn priority_source_label(source: PriorityTargetSource) -> &'static str {
-    match source {
-        PriorityTargetSource::WorkloadEngine => "Workload Engine",
-        PriorityTargetSource::BackgroundPolicy => "Background policy",
-        PriorityTargetSource::VisibleWindow => "Visible window",
-        PriorityTargetSource::Rule => "Rule",
-    }
-}
-
 pub(super) fn background_apply_summary_message(count: usize) -> String {
     if count == 1 {
-        "Applied Workload Engine background restraint to 1 process.".to_owned()
+        "Applied CPU Scheduler restraint to 1 process.".to_owned()
     } else {
-        format!("Applied Workload Engine background restraint to {count} processes.")
+        format!("Applied CPU Scheduler restraint to {count} processes.")
     }
 }
 

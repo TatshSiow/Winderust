@@ -4,7 +4,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{MemoryPrioritySettings, ProcessMemoryPriority, ProcessMemoryPrioritySetting},
+    config::{MemoryPrioritySettings, ProcessMemoryPriority},
     control::{
         memory_priority::{
             MemoryPriorityApplyOutcome, MemoryPriorityClaim, MemoryPriorityController,
@@ -195,7 +195,6 @@ impl MemoryPriorityManager {
                     visible_window,
                 );
                 let priority = match configured_override {
-                    Some(Some(ProcessMemoryPrioritySetting::Auto)) => default_priority,
                     Some(Some(priority)) => priority,
                     Some(None) => return None,
                     None => default_priority,
@@ -623,7 +622,7 @@ fn memory_priority_restore_summary_message(count: usize, reason: &str) -> String
 
 fn memory_priority_summary_process_name(action_log_feature: ActionLogFeature) -> &'static str {
     match action_log_feature {
-        ActionLogFeature::WorkloadEngine => "Workload Engine",
+        ActionLogFeature::CpuScheduler => "CPU Scheduler",
         _ => "Memory Priority",
     }
 }
@@ -631,11 +630,11 @@ fn memory_priority_summary_process_name(action_log_feature: ActionLogFeature) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProcessMemoryPrioritySetting;
 
     #[test]
     fn quick_actions_require_a_concrete_memory_priority() {
         assert_eq!(ProcessMemoryPrioritySetting::Default.priority(), None);
-        assert_eq!(ProcessMemoryPrioritySetting::Auto.priority(), None);
         assert_eq!(
             ProcessMemoryPrioritySetting::Low.priority(),
             Some(ProcessMemoryPriority::Low)
@@ -668,7 +667,7 @@ mod tests {
         assert!(!manager.is_process_suppressed(
             42,
             r"C:\Apps\app.exe",
-            ActionLogFeature::WorkloadEngine,
+            ActionLogFeature::CpuScheduler,
             &mut log,
             &mut BTreeSet::new()
         ));
@@ -677,21 +676,21 @@ mod tests {
         assert!(manager.is_process_suppressed(
             42,
             r"C:\Apps\app.exe",
-            ActionLogFeature::WorkloadEngine,
+            ActionLogFeature::CpuScheduler,
             &mut log,
             &mut BTreeSet::new()
         ));
         assert!(manager.is_process_suppressed(
             43,
             r"C:/Apps/app.exe",
-            ActionLogFeature::WorkloadEngine,
+            ActionLogFeature::CpuScheduler,
             &mut log,
             &mut BTreeSet::new()
         ));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::WorkloadEngine);
+        assert_eq!(entries[0].feature, ActionLogFeature::CpuScheduler);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
             .reason
@@ -721,8 +720,8 @@ mod tests {
             "Memory Priority"
         );
         assert_eq!(
-            memory_priority_summary_process_name(ActionLogFeature::WorkloadEngine),
-            "Workload Engine"
+            memory_priority_summary_process_name(ActionLogFeature::CpuScheduler),
+            "CPU Scheduler"
         );
     }
 }

@@ -10,7 +10,7 @@ pub(in crate::ui::app) enum SuggestionTarget {
     AppSuspension,
     CoreLimiter,
     ByRunningApp,
-    WorkloadEngine,
+    CpuScheduler,
     ProcessPriority,
     ThreadPriority,
     DynamicPriorityBoost,
@@ -30,7 +30,7 @@ impl SuggestionTarget {
         Self::AppSuspension,
         Self::CoreLimiter,
         Self::ByRunningApp,
-        Self::WorkloadEngine,
+        Self::CpuScheduler,
         Self::ProcessPriority,
         Self::ThreadPriority,
         Self::DynamicPriorityBoost,
@@ -50,7 +50,7 @@ impl SuggestionTarget {
             Self::AppSuspension => &inputs.app_suspension_process,
             Self::CoreLimiter => &inputs.core_limiter_process,
             Self::ByRunningApp => &inputs.performance_process,
-            Self::WorkloadEngine => &inputs.workload_engine_process,
+            Self::CpuScheduler => &inputs.cpu_scheduler_process,
             Self::ProcessPriority => &inputs.process_priority_process,
             Self::ThreadPriority => &inputs.thread_priority_process,
             Self::DynamicPriorityBoost => &inputs.dynamic_priority_boost_process,
@@ -78,17 +78,10 @@ pub(in crate::ui::app) enum RuleCardTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::ui::app) enum SettingGroupTarget {
     AccentColor,
-    AdaptiveEngineCpuScheduling,
-    AdaptiveEngineProcessorPolicy,
-    WorkloadEngineAffinity,
-    WorkloadEngineBehaviourTuning,
-    WorkloadEngineEfficiency,
-    WorkloadEngineGpuPriority,
-    WorkloadEngineIoPriority,
-    WorkloadEngineMemoryPriority,
-    WorkloadEngineDynamicPriorityBoost,
-    WorkloadEngineProcessPriority,
-    WorkloadEngineThreadPriority,
+    LimitBackgroundProcessors,
+    CpuPressureRestraint,
+    AdaptiveEnginePresetLimitBackgroundProcessors,
+    AdaptiveEnginePresetCpuPressureRestraint,
     ProcessPriorityMaster,
     ProcessPriorityForegroundDetection,
     ProcessPriorityVisibleWindowDetection,
@@ -120,11 +113,85 @@ pub(in crate::ui::app) enum SettingGroupTarget {
     SuspensionNetwork,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::ui::app) enum WorkloadEnginePreset {
-    LowImpact,
-    ForegroundFirst,
-    MaxForeground,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub(in crate::ui::app) enum AdaptiveEngineTuningTab {
+    #[default]
+    CpuBehaviour,
+    ProcessorPower,
+    PriorityControl,
+    CustomRules,
+}
+
+impl AdaptiveEngineTuningTab {
+    pub(in crate::ui::app) const LIVE: [Self; 4] = [
+        Self::CpuBehaviour,
+        Self::ProcessorPower,
+        Self::PriorityControl,
+        Self::CustomRules,
+    ];
+
+    pub(in crate::ui::app) const PRESET: [Self; 3] = [
+        Self::CpuBehaviour,
+        Self::ProcessorPower,
+        Self::PriorityControl,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::ui::app) enum AdaptiveEngineTuningTarget {
+    Live,
+    Preset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::ui::app) enum AdaptiveEngineTuningNumericField {
+    ProcessorPowerPolicy(AdaptiveEngineProcessorPowerPolicyField),
+    ProfileBoostPolicy(AdaptiveEngineProfile, ProcessorPowerSource),
+    ProcessorLimit,
+    ForegroundOrSystemCpuThreshold,
+    BackgroundAppCpuThreshold,
+    CpuRecoveryThreshold,
+    MaximumRestrainedApps,
+    ReactionTime,
+    CpuRestraintTime,
+    CpuRecoveryTime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::ui::app) enum AdaptiveEngineProfile {
+    BackgroundPressure,
+    FocusAndLaunch,
+}
+
+impl AdaptiveEngineProfile {
+    pub(in crate::ui::app) const fn key(self) -> &'static str {
+        match self {
+            Self::BackgroundPressure => "background-pressure",
+            Self::FocusAndLaunch => "focus-and-launch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(in crate::ui::app) enum AdaptiveEngineBoostModeField {
+    Base,
+    Profile(AdaptiveEngineProfile, ProcessorPowerSource),
+}
+
+impl AdaptiveEngineBoostModeField {
+    pub(in crate::ui::app) fn key(self) -> String {
+        match self {
+            Self::Base => "base".to_owned(),
+            Self::Profile(profile, source) => format!(
+                "{}-{}",
+                profile.key(),
+                match source {
+                    ProcessorPowerSource::Ac => "ac",
+                    ProcessorPowerSource::Battery => "battery",
+                }
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,20 +222,15 @@ impl ProcessRuleTier {
     }
 }
 
-impl WorkloadEnginePreset {
-    pub(in crate::ui::app) const ALL: [Self; 3] =
-        [Self::LowImpact, Self::ForegroundFirst, Self::MaxForeground];
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::ui::app) enum PowerModePreset {
+pub(in crate::ui::app) enum BuiltInAdaptiveEnginePreset {
     PowerSave,
     Balanced,
     Performance,
     Speed,
 }
 
-impl PowerModePreset {
+impl BuiltInAdaptiveEnginePreset {
     pub(in crate::ui::app) const ALL: [Self; 4] = [
         Self::PowerSave,
         Self::Balanced,
@@ -196,14 +258,7 @@ pub(in crate::ui::app) enum NumericField {
     SuspensionThawDuration,
     SuspensionAudioRefreeze,
     SuspensionNetworkRefreeze,
-    WorkloadEngineTotalThreshold,
-    WorkloadEngineThreshold,
-    WorkloadEngineRestoreThreshold,
-    WorkloadEngineCpuPercent,
-    WorkloadEngineSustain,
-    WorkloadEngineMinimumRestraint,
-    WorkloadEngineCooldown,
-    WorkloadEngineMaxTargetedProcesses,
+    AdaptiveEngineTuning(AdaptiveEngineTuningTarget, AdaptiveEngineTuningNumericField),
     ProcessorAcCoreParkingMin,
     ProcessorAcPerformanceMin,
     ProcessorAcPerformanceMax,
@@ -212,7 +267,7 @@ pub(in crate::ui::app) enum NumericField {
     ProcessorDcPerformanceMin,
     ProcessorDcPerformanceMax,
     ProcessorDcBoostPolicy,
-    AdvancedPowerPlanTuningPreset(AdaptiveEngineProcessorPolicyField),
+    AdvancedPowerPlanTuningPreset(AdaptiveEngineProcessorPowerPolicyField),
     CpuThreshold(usize),
     CpuUpperThreshold(usize),
     CpuDuration(usize),
@@ -222,11 +277,10 @@ pub(in crate::ui::app) enum NumericField {
     CoreLimiterMaxProcessors(usize),
     TimerResolutionRule(usize),
     NetworkThreshold(ThresholdField),
-    AdaptiveEngineProcessorPolicy(AdaptiveEngineProcessorPolicyField),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(in crate::ui::app) enum AdaptiveEngineProcessorPolicyField {
+pub(in crate::ui::app) enum AdaptiveEngineProcessorPowerPolicyField {
     CoreParkingMin,
     PerformanceMin,
     PerformanceMax,
@@ -239,16 +293,16 @@ pub(in crate::ui::app) enum ProcessorPowerSlider {
     AcPerformanceMin,
     AcPerformanceMax,
     AcBoostPolicy,
-    DcCoreParkingMin,
-    DcPerformanceMin,
-    DcPerformanceMax,
-    DcBoostPolicy,
+    BatteryCoreParkingMin,
+    BatteryPerformanceMin,
+    BatteryPerformanceMax,
+    BatteryBoostPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::ui::app) enum ProcessorPowerSource {
     Ac,
-    Dc,
+    Battery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -310,6 +364,7 @@ pub(in crate::ui::app) struct SettingGroupBody {
     pub(in crate::ui::app) collapsed: bool,
     pub(in crate::ui::app) rows: Vec<AnyElement>,
     pub(in crate::ui::app) animation_height: Option<f32>,
+    pub(in crate::ui::app) controls_enabled: Option<bool>,
 }
 
 pub(in crate::ui::app) fn make_input(
@@ -370,12 +425,18 @@ pub(in crate::ui::app) fn processor_power_slider_input(
         ProcessorPowerSlider::AcPerformanceMin => inputs.processor_power_ac_performance_min.clone(),
         ProcessorPowerSlider::AcPerformanceMax => inputs.processor_power_ac_performance_max.clone(),
         ProcessorPowerSlider::AcBoostPolicy => inputs.processor_power_ac_boost_policy.clone(),
-        ProcessorPowerSlider::DcCoreParkingMin => {
-            inputs.processor_power_dc_core_parking_min.clone()
+        ProcessorPowerSlider::BatteryCoreParkingMin => {
+            inputs.processor_power_battery_core_parking_min.clone()
         }
-        ProcessorPowerSlider::DcPerformanceMin => inputs.processor_power_dc_performance_min.clone(),
-        ProcessorPowerSlider::DcPerformanceMax => inputs.processor_power_dc_performance_max.clone(),
-        ProcessorPowerSlider::DcBoostPolicy => inputs.processor_power_dc_boost_policy.clone(),
+        ProcessorPowerSlider::BatteryPerformanceMin => {
+            inputs.processor_power_battery_performance_min.clone()
+        }
+        ProcessorPowerSlider::BatteryPerformanceMax => {
+            inputs.processor_power_battery_performance_max.clone()
+        }
+        ProcessorPowerSlider::BatteryBoostPolicy => {
+            inputs.processor_power_battery_boost_policy.clone()
+        }
     }
 }
 
@@ -452,7 +513,7 @@ impl UiInputs {
         window: &mut Window,
         cx: &mut Context<WinderustApp>,
         settings: &Settings,
-        processor_power_values: ProcessorPowerAcDcValues,
+        processor_power_values: ProcessorPowerSourceValues,
     ) -> Self {
         let processor_power_values = processor_power_values.normalized();
         Self {
@@ -514,6 +575,12 @@ impl UiInputs {
                 "",
                 &t!("common.search_running_apps"),
             ),
+            adaptive_engine_preset_name: make_input(
+                window,
+                cx,
+                "",
+                &t!("adaptive_engine.preset_name_placeholder"),
+            ),
             cpu_allocation_preset_name: make_input(
                 window,
                 cx,
@@ -526,7 +593,7 @@ impl UiInputs {
                 "",
                 &t!("processor_power.preset_name_placeholder"),
             ),
-            workload_engine_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            cpu_scheduler_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             process_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             thread_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             dynamic_priority_boost_process: make_input(
@@ -570,21 +637,21 @@ impl UiInputs {
                 cx,
                 processor_power_values.ac.boost_policy as u64,
             ),
-            processor_power_dc_core_parking_min: make_processor_power_slider(
+            processor_power_battery_core_parking_min: make_processor_power_slider(
                 cx,
-                processor_power_values.dc.core_parking_min as u64,
+                processor_power_values.battery.core_parking_min as u64,
             ),
-            processor_power_dc_performance_min: make_processor_power_slider(
+            processor_power_battery_performance_min: make_processor_power_slider(
                 cx,
-                processor_power_values.dc.performance_min as u64,
+                processor_power_values.battery.performance_min as u64,
             ),
-            processor_power_dc_performance_max: make_processor_power_slider(
+            processor_power_battery_performance_max: make_processor_power_slider(
                 cx,
-                processor_power_values.dc.performance_max as u64,
+                processor_power_values.battery.performance_max as u64,
             ),
-            processor_power_dc_boost_policy: make_processor_power_slider(
+            processor_power_battery_boost_policy: make_processor_power_slider(
                 cx,
-                processor_power_values.dc.boost_policy as u64,
+                processor_power_values.battery.boost_policy as u64,
             ),
         }
     }
@@ -678,6 +745,12 @@ impl UiInputs {
             set_input_placeholder(input, t!("common.rule_name"), window, cx);
         }
         set_input_placeholder(
+            &self.adaptive_engine_preset_name,
+            t!("adaptive_engine.preset_name_placeholder"),
+            window,
+            cx,
+        );
+        set_input_placeholder(
             &self.cpu_allocation_preset_name,
             t!("cpu_allocation.preset_name_placeholder"),
             window,
@@ -702,6 +775,7 @@ impl WinderustApp {
         let processor_power_values = self.processor_power_values();
         self.editing_rule_title = None;
         self.editing_numeric = None;
+        self.adaptive_engine_preset_editor = None;
         self.cpu_allocation_preset_editor = None;
         self.advanced_power_plan_tuning_preset_editor = None;
         self.expanded_rule_cards.clear();
@@ -713,6 +787,7 @@ impl WinderustApp {
         self.subscribe_to_numeric_input(window, cx);
         self.subscribe_to_dashboard_search_input(window, cx);
         self.subscribe_to_process_list_search_input(window, cx);
+        self.subscribe_to_adaptive_engine_preset_name_input(window, cx);
         self.subscribe_to_cpu_allocation_preset_name_input(window, cx);
         self.subscribe_to_advanced_power_plan_tuning_preset_name_input(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
@@ -875,6 +950,18 @@ impl WinderustApp {
         ));
     }
 
+    pub(in crate::ui::app) fn subscribe_to_adaptive_engine_preset_name_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._adaptive_engine_preset_name_subscription = Some(cx.subscribe_in(
+            &self.inputs.adaptive_engine_preset_name,
+            window,
+            move |_, _, _: &InputEvent, _, cx| cx.notify(),
+        ));
+    }
+
     pub(in crate::ui::app) fn subscribe_to_advanced_power_plan_tuning_preset_name_input(
         &mut self,
         window: &mut Window,
@@ -898,10 +985,10 @@ impl WinderustApp {
             ProcessorPowerSlider::AcPerformanceMin,
             ProcessorPowerSlider::AcPerformanceMax,
             ProcessorPowerSlider::AcBoostPolicy,
-            ProcessorPowerSlider::DcCoreParkingMin,
-            ProcessorPowerSlider::DcPerformanceMin,
-            ProcessorPowerSlider::DcPerformanceMax,
-            ProcessorPowerSlider::DcBoostPolicy,
+            ProcessorPowerSlider::BatteryCoreParkingMin,
+            ProcessorPowerSlider::BatteryPerformanceMin,
+            ProcessorPowerSlider::BatteryPerformanceMax,
+            ProcessorPowerSlider::BatteryBoostPolicy,
         ] {
             let input = processor_power_slider_input(&self.inputs, slider);
             self._processor_power_slider_subscriptions
@@ -1156,91 +1243,8 @@ impl WinderustApp {
                     self.settings.app_suspension.network_wake_duration_seconds = value;
                 }
             }
-            NumericField::WorkloadEngineThreshold => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_THRESHOLD_MIN_PERCENT,
-                    WORKLOAD_ENGINE_THRESHOLD_MAX_PERCENT,
-                ) {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_threshold_percent = value as u8;
-                }
-            }
-            NumericField::WorkloadEngineRestoreThreshold => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_THRESHOLD_MIN_PERCENT,
-                    WORKLOAD_ENGINE_THRESHOLD_MAX_PERCENT,
-                ) {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_restore_threshold_percent = value as u8;
-                }
-            }
-            NumericField::WorkloadEngineTotalThreshold => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_THRESHOLD_MIN_PERCENT,
-                    WORKLOAD_ENGINE_THRESHOLD_MAX_PERCENT,
-                ) {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_total_threshold_percent = value as u8;
-                }
-            }
-            NumericField::WorkloadEngineCpuPercent => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_THRESHOLD_MIN_PERCENT,
-                    WORKLOAD_ENGINE_THRESHOLD_MAX_PERCENT,
-                ) {
-                    self.settings.workload_engine.workload_engine_cpu_percent = value as u8;
-                }
-            }
-            NumericField::WorkloadEngineSustain => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_SECONDS_MIN,
-                    WORKLOAD_ENGINE_SECONDS_MAX,
-                ) {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_sustain_seconds = value;
-                }
-            }
-            NumericField::WorkloadEngineMinimumRestraint => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_SECONDS_MIN,
-                    WORKLOAD_ENGINE_SECONDS_MAX,
-                ) {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_minimum_restraint_seconds = value;
-                }
-            }
-            NumericField::WorkloadEngineCooldown => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_SECONDS_MIN,
-                    WORKLOAD_ENGINE_SECONDS_MAX,
-                ) {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_cooldown_seconds = value;
-                }
-            }
-            NumericField::WorkloadEngineMaxTargetedProcesses => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    WORKLOAD_ENGINE_TARGET_LIMIT_MIN,
-                    WORKLOAD_ENGINE_TARGET_LIMIT_MAX,
-                ) {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_max_targeted_processes = value as u8;
-                }
+            NumericField::AdaptiveEngineTuning(target, field) => {
+                self.apply_adaptive_engine_tuning_numeric_input(target, field, &value);
             }
             NumericField::ProcessorAcCoreParkingMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
@@ -1277,7 +1281,7 @@ impl WinderustApp {
             NumericField::ProcessorDcCoreParkingMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_processor_power_slider_value(
-                        ProcessorPowerSlider::DcCoreParkingMin,
+                        ProcessorPowerSlider::BatteryCoreParkingMin,
                         value,
                     );
                 }
@@ -1285,7 +1289,7 @@ impl WinderustApp {
             NumericField::ProcessorDcPerformanceMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_processor_power_slider_value(
-                        ProcessorPowerSlider::DcPerformanceMin,
+                        ProcessorPowerSlider::BatteryPerformanceMin,
                         value,
                     );
                 }
@@ -1293,7 +1297,7 @@ impl WinderustApp {
             NumericField::ProcessorDcPerformanceMax => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_processor_power_slider_value(
-                        ProcessorPowerSlider::DcPerformanceMax,
+                        ProcessorPowerSlider::BatteryPerformanceMax,
                         value,
                     );
                 }
@@ -1301,7 +1305,7 @@ impl WinderustApp {
             NumericField::ProcessorDcBoostPolicy => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_processor_power_slider_value(
-                        ProcessorPowerSlider::DcBoostPolicy,
+                        ProcessorPowerSlider::BatteryBoostPolicy,
                         value,
                     );
                 }
@@ -1309,11 +1313,6 @@ impl WinderustApp {
             NumericField::AdvancedPowerPlanTuningPreset(field) => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_advanced_power_plan_tuning_preset_field_value(field, value);
-                }
-            }
-            NumericField::AdaptiveEngineProcessorPolicy(field) => {
-                if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.set_adaptive_engine_processor_policy_percent(field, value);
                 }
             }
             NumericField::CpuThreshold(index) => {

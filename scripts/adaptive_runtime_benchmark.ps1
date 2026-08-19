@@ -9,6 +9,19 @@ param(
     [ValidateSet('CpuLoop', 'IoLoop', 'MessageLoop')]
     [string]$ForegroundScenario = 'CpuLoop',
     [string]$WinderustExePath = '.\target\release\winderust.exe',
+    [switch]$DisableBackgroundProcessorLimit,
+    [ValidateRange(1, 100)]
+    [int]$ProcessRestraintThresholdPercent = 10,
+    [ValidateRange(1, 32)]
+    [int]$MaximumRestrainedApps = 4,
+    [ValidateRange(1, 100)]
+    [int]$ForegroundOrSystemCpuThresholdPercent = 75,
+    [ValidateRange(0, 100)]
+    [int]$BackgroundPressureAcBoostPolicy = 80,
+    [ValidateSet('disabled', 'enabled', 'aggressive', 'efficient_enabled', 'efficient_aggressive', 'aggressive_at_guaranteed', 'efficient_aggressive_at_guaranteed')]
+    [string]$BackgroundPressureAcBoostMode = 'efficient_aggressive',
+    [ValidateRange(-100, 100)]
+    [double]$MinimumPowerSavingPercent = -2.0,
     [switch]$SkipPower,
     [string]$OutputPath = ''
 )
@@ -20,7 +33,7 @@ if ($Passes -lt 4 -or ($Passes % 2) -ne 0) {
 if ($WorkerSeconds -le ($WarmupSeconds + 30)) {
     throw 'WorkerSeconds must exceed WarmupSeconds by more than 30 seconds so workers survive measurement.'
 }
-$benchmarkScript = Join-Path $PSScriptRoot 'workload_engine_benchmark.ps1'
+$benchmarkScript = Join-Path $PSScriptRoot 'cpu_scheduler_benchmark.ps1'
 $env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
 try {
     . $benchmarkScript `
@@ -43,8 +56,11 @@ $configDir = Join-Path ([IO.Path]::GetTempPath()) "winderust-adaptive-benchmark-
 $exePath = Join-Path $configDir 'winderust.exe'
 $configPath = Join-Path $configDir 'settings.toml'
 $runtime = $null
+$backgroundProcessorLimitEnabled = !$DisableBackgroundProcessorLimit.IsPresent
 
 $settingsToml = @'
+adaptive_engine_presets = []
+
 [general]
 enabled = true
 startup_with_windows = false
@@ -54,39 +70,63 @@ check_interval_ms = 500
 
 [adaptive_engine]
 enabled = true
-processor_policy_enabled = true
+processor_power_policy_enabled = true
 
-[adaptive_engine.processor_policy_values]
+[adaptive_engine.base_processor_policy]
 core_parking_min = 25
 performance_min = 5
 performance_max = 95
 boost_policy = 60
 boost_mode = "efficient_enabled"
 
+[adaptive_engine.background_pressure_profile]
+ac_policy = __BACKGROUND_PRESSURE_AC_BOOST_POLICY__
+ac_mode = "__BACKGROUND_PRESSURE_AC_BOOST_MODE__"
+battery_policy = 60
+battery_mode = "efficient_enabled"
+
+[adaptive_engine.focus_and_launch_profile]
+ac_policy = 100
+ac_mode = "aggressive"
+battery_policy = 80
+battery_mode = "efficient_aggressive"
+
 [background_efficiency]
 enabled = false
 
-[workload_engine]
-enabled = true
-lower_background_apps = true
-workload_engine_background_efficiency_enabled = true
-workload_engine_background_priority = "below_normal"
-workload_engine_visible_window_priority = "normal"
-lower_background_io_priority_enabled = false
-workload_engine_memory_priority_enabled = false
-lower_background_auto_cpu_percent = true
-workload_engine_enabled = true
-workload_engine_affinity_escalation_enabled = false
-workload_engine_total_threshold_percent = 75
-workload_engine_threshold_percent = 10
-workload_engine_restore_threshold_percent = 5
-workload_engine_sustain_seconds = 3
-workload_engine_minimum_restraint_seconds = 2
-workload_engine_cooldown_seconds = 4
-workload_engine_max_targeted_processes = 6
-boost_foreground_app = true
-foreground_boost = "auto"
-workload_engine_exclusions = [{ enabled = true, executable_path = "__BENCHMARK_HOST_PATH__" }]
+[cpu_scheduler]
+process_priority_enabled = true
+background_efficiency_enabled = true
+focus_process_background_efficiency_override_enabled = true
+visible_window_background_efficiency_override_enabled = true
+focus_process_background_efficiency_mode = false
+visible_window_background_efficiency_mode = false
+background_efficiency_mode = true
+focus_process_priority = "above_normal"
+background_priority = "below_normal"
+visible_window_priority = "normal"
+io_priority = { enabled = false, foreground_detection_enabled = true, foreground_priority = "normal", visible_window_detection_enabled = true, visible_window_priority = "very_low", background_priority = "very_low", preserve_foreground_priority = true, preserve_visible_window_priority = true, preserve_background_priority = true, exclusions = [] }
+thread_priority = { enabled = true, foreground_detection_enabled = true, foreground_priority = "default", visible_window_detection_enabled = true, visible_window_priority = "below_normal", background_priority = "below_normal", preserve_foreground_priority = true, preserve_visible_window_priority = true, preserve_background_priority = true, exclusions = [] }
+dynamic_priority_boost = { enabled = true, foreground_detection_enabled = true, foreground_boost = "enabled", visible_window_detection_enabled = true, visible_window_boost = "disabled", background_boost = "disabled", exclusions = [] }
+gpu_priority = { enabled = true, foreground_detection_enabled = true, foreground_priority = "default", visible_window_detection_enabled = true, visible_window_priority = "below_normal", background_priority = "below_normal", preserve_foreground_priority = true, preserve_visible_window_priority = true, preserve_background_priority = true, exclusions = [] }
+memory_priority_enabled = false
+focus_process_memory_priority = "default"
+visible_window_memory_priority = "default"
+background_memory_priority = "low"
+cpu_pressure_restraint_enabled = true
+limit_background_processors_enabled = __LIMIT_BACKGROUND_PROCESSORS__
+cpu_allocation_method = "cpu_sets_soft"
+background_processor_selection = "least_used"
+processor_limit_percent = 75
+specific_processors = []
+foreground_or_system_cpu_threshold_percent = __FOREGROUND_OR_SYSTEM_CPU_THRESHOLD__
+background_app_cpu_threshold_percent = __PROCESS_RESTRAINT_THRESHOLD__
+cpu_recovery_threshold_percent = 5
+reaction_time_ms = 1500
+cpu_restraint_time_seconds = 2
+cpu_recovery_time_seconds = 4
+maximum_restrained_apps = __MAXIMUM_RESTRAINED_APPS__
+custom_rules = [{ enabled = true, executable_path = "__BENCHMARK_HOST_PATH__" }]
 
 [by_activity]
 enabled = false
@@ -106,6 +146,30 @@ $escapedBenchmarkHostPath = $benchmarkHostPath.Replace('\', '\\')
 $settingsToml = $settingsToml.Replace(
     '__BENCHMARK_HOST_PATH__',
     $escapedBenchmarkHostPath
+)
+$settingsToml = $settingsToml.Replace(
+    '__LIMIT_BACKGROUND_PROCESSORS__',
+    $backgroundProcessorLimitEnabled.ToString().ToLowerInvariant()
+)
+$settingsToml = $settingsToml.Replace(
+    '__PROCESS_RESTRAINT_THRESHOLD__',
+    $ProcessRestraintThresholdPercent.ToString([Globalization.CultureInfo]::InvariantCulture)
+)
+$settingsToml = $settingsToml.Replace(
+    '__MAXIMUM_RESTRAINED_APPS__',
+    $MaximumRestrainedApps.ToString([Globalization.CultureInfo]::InvariantCulture)
+)
+$settingsToml = $settingsToml.Replace(
+    '__FOREGROUND_OR_SYSTEM_CPU_THRESHOLD__',
+    $ForegroundOrSystemCpuThresholdPercent.ToString([Globalization.CultureInfo]::InvariantCulture)
+)
+$settingsToml = $settingsToml.Replace(
+    '__BACKGROUND_PRESSURE_AC_BOOST_POLICY__',
+    $BackgroundPressureAcBoostPolicy.ToString([Globalization.CultureInfo]::InvariantCulture)
+)
+$settingsToml = $settingsToml.Replace(
+    '__BACKGROUND_PRESSURE_AC_BOOST_MODE__',
+    $BackgroundPressureAcBoostMode
 )
 
 function Write-IsolatedSettings {
@@ -226,7 +290,7 @@ function Run-AdaptiveCase {
             -WarmupSeconds $WarmupSeconds
         Assert-ValidCase -Result $result -Name 'Adaptive'
         if (@($result.observed_worker_priorities | Where-Object { $_ -ne 'Normal' }).Count -eq 0) {
-            throw "Invalid runtime benchmark: Workload Engine did not change any generated worker priority."
+            throw "Invalid runtime benchmark: CPU Scheduler did not change any generated worker priority."
         }
         $result | Add-Member -NotePropertyName runtime_control_observed -NotePropertyValue $true
         $result | Add-Member -NotePropertyName adaptive_policy_after_load -NotePropertyValue (Read-ActiveProcessorPolicy)
@@ -279,7 +343,7 @@ $p95Improvement = Get-AverageProperty -Items $comparisons -Name 'p95_improvement
 $backgroundRetained = Get-AverageProperty -Items $comparisons -Name 'background_throughput_retained_percent_vs_off'
 $powerSaving = Get-AverageProperty -Items $comparisons -Name 'package_power_saving_percent_vs_off'
 $activationPasses = @($adaptiveRows | Where-Object { $_.runtime_control_observed }).Count
-$powerGatePassed = $SkipPower -or ($null -ne $powerSaving -and $powerSaving -ge -2.0)
+$powerGatePassed = $SkipPower -or ($null -ne $powerSaving -and $powerSaving -ge $MinimumPowerSavingPercent)
 $validationPassed = $activationPasses -eq $Passes `
     -and $medianImprovement -ge 3.0 `
     -and $p95Improvement -ge 3.0 `
@@ -295,6 +359,12 @@ $report = [pscustomobject]@{
     rounds = $Rounds
     foreground_scenario = $ForegroundScenario
     foreground_iterations_per_round = $Iterations
+    background_pressure_ac_boost_policy = $BackgroundPressureAcBoostPolicy
+    background_pressure_ac_boost_mode = $BackgroundPressureAcBoostMode
+    limit_background_processors_enabled = $backgroundProcessorLimitEnabled
+    process_restraint_threshold_percent = $ProcessRestraintThresholdPercent
+    maximum_restrained_apps = $MaximumRestrainedApps
+    foreground_or_system_cpu_threshold_percent = $ForegroundOrSystemCpuThresholdPercent
     benchmark_foreground_host = $benchmarkHostPath
     warmup_seconds_per_case = $WarmupSeconds
     cooldown_seconds = $CooldownSeconds
@@ -309,12 +379,13 @@ $report = [pscustomobject]@{
         p95_improvement_percent = $p95Improvement
         background_throughput_retained_percent = $backgroundRetained
         package_power_saving_percent = $powerSaving
+        minimum_package_power_saving_percent = $MinimumPowerSavingPercent
         gates = [pscustomobject]@{
             activation_all_passes = $activationPasses -eq $Passes
             median_at_least_3_percent = $medianImprovement -ge 3.0
             p95_at_least_3_percent = $p95Improvement -ge 3.0
             background_retained_at_least_85_percent = $backgroundRetained -ge 85.0
-            package_power_regression_within_2_percent = $powerGatePassed
+            package_power_saving_at_least_minimum = $powerGatePassed
         }
     }
     summary = @(

@@ -46,6 +46,7 @@ use crate::{
         self, record_cpu_allocation_reconciliation, CpuAllocationManager, CpuAllocationSnapshot,
         LogicalProcessorInfo, LogicalProcessorKind,
     },
+    cpu_scheduler::{CpuSchedulerManager, CpuSchedulerSnapshot, CpuSchedulerUpdate},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
@@ -61,7 +62,9 @@ use crate::{
     io_priority::{IoPriorityManager, IoPrioritySnapshot},
     memory_priority::{MemoryPriorityManager, MemoryPrioritySnapshot},
     memory_trim::{MemoryTrimManager, MemoryTrimSnapshot},
-    power::{AdaptivePowerDemand, AdaptivePowerProfile, ProcessorPowerValues},
+    power::{
+        AdaptivePowerBoostValues, AdaptivePowerDemand, AdaptivePowerProfile, ProcessorPowerValues,
+    },
     power_source,
     process_priority::{ProcessPriorityManager, ProcessPrioritySnapshot},
     rules::{
@@ -77,7 +80,6 @@ use crate::{
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
     tray::{self, TrayVisibilityWatcher},
     windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
-    workload_engine::{WorkloadEngineManager, WorkloadEngineSnapshot, WorkloadEngineUpdate},
 };
 
 mod requirements;
@@ -100,9 +102,7 @@ const CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL: Duration = Duration::from_sec
 const CPU_ALLOCATION_RECONCILIATION_RETRY_MAX: Duration = Duration::from_secs(60);
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const WORKLOAD_ENGINE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
-const WORKLOAD_ENGINE_FAST_REFRESH_WINDOW: Duration = Duration::from_secs(8);
+const ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const ADAPTIVE_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const THREAD_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -294,7 +294,7 @@ pub struct RuntimeFeatureStatus {
     pub processor_affinity_hard: CpuAllocationSnapshot,
     pub core_limiter: CoreLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
-    pub workload_engine: WorkloadEngineSnapshot,
+    pub cpu_scheduler: CpuSchedulerSnapshot,
     pub process_priority: ProcessPrioritySnapshot,
     pub thread_priority: ThreadPrioritySnapshot,
     pub dynamic_priority_boost: DynamicPriorityBoostSnapshot,
@@ -972,8 +972,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             adaptive_engine_enabled,
             PERFORMANCE_MODE_REFRESH_INTERVAL,
         );
-        let mut workload_engine_refresh_interval =
-            workload_refresh_interval(&settings, hidden_to_tray, adaptive_engine_enabled);
+        let cpu_scheduler_refresh_interval = cpu_scheduler_refresh_interval(&settings);
         let process_priority_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1026,47 +1025,20 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         );
         let event_now = Instant::now();
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
-        let workload_fast_refresh_enabled =
-            feature_refresh_required(&settings, workload_engine_required(&settings));
         if settings_changed {
-            scheduler.invalidate(
-                SchedulerEvent::SettingsChanged,
-                event_now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
+            scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }
         if wake_events.foreground_changed {
-            scheduler.invalidate(
-                SchedulerEvent::ForegroundChanged,
-                event_now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
+            scheduler.invalidate(SchedulerEvent::ForegroundChanged, event_now);
         }
         if wake_events.window_created {
-            scheduler.invalidate(
-                SchedulerEvent::WindowCreated,
-                event_now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
+            scheduler.invalidate(SchedulerEvent::WindowCreated, event_now);
         }
         if wake_events.power_changed {
-            scheduler.invalidate(
-                SchedulerEvent::PowerChanged,
-                event_now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
+            scheduler.invalidate(SchedulerEvent::PowerChanged, event_now);
         }
         if wake_events.session_changed {
-            scheduler.invalidate(
-                SchedulerEvent::SessionChanged,
-                event_now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
+            scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);
         }
         if wake_events.power_changed || wake_events.session_changed {
             if let Err(error) = runner.refresh_active_plan() {
@@ -1074,24 +1046,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             }
         }
         if wake_events.input_activity {
-            scheduler.invalidate(
-                SchedulerEvent::InputActivity,
-                event_now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
+            scheduler.invalidate(SchedulerEvent::InputActivity, event_now);
         }
         let controller_poll_required = controller_activity_poll_required(&settings);
         if controller_poll_required
             && scheduler.is_due(RefreshDomain::ControllerActivity, event_now)
         {
             if runner.poll_controller_activity(event_now) {
-                scheduler.invalidate(
-                    SchedulerEvent::ControllerActivity,
-                    event_now,
-                    workload_fast_refresh_enabled,
-                    WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-                );
+                scheduler.invalidate(SchedulerEvent::ControllerActivity, event_now);
             }
             scheduler.schedule_after(
                 RefreshDomain::ControllerActivity,
@@ -1110,8 +1072,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                     SchedulerEvent::AppSwitchMouseClick
                 },
                 event_now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
             );
             if runner
                 .app_suspension_manager
@@ -1146,11 +1106,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             || feature_refresh_required(&settings, core_limiter_required(&settings));
         let by_running_app_refresh_required = settings_changed
             || feature_refresh_required(&settings, by_running_app_required(&settings));
-        let workload_engine_refresh_required = settings_changed
-            || feature_refresh_required(
-                &settings,
-                workload_engine_required(&settings) || adaptive_power_plan_required(&settings),
-            );
+        let cpu_scheduler_refresh_required = settings_changed
+            || feature_refresh_required(&settings, cpu_scheduler_required(&settings));
+        let adaptive_power_plan_refresh_required = settings_changed
+            || feature_refresh_required(&settings, adaptive_power_plan_required(&settings))
+            || runner.adaptive_power_plan_active();
         let process_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.process_priority.enabled);
         let thread_priority_refresh_required = settings_changed
@@ -1169,34 +1129,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         let timer_resolution_refresh_required = settings_changed
             || feature_refresh_required(&settings, timer_resolution_required(&settings));
         if app_suspension_command_requested {
-            scheduler.invalidate(
-                SchedulerEvent::AppSuspensionRequested,
-                now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
+            scheduler.invalidate(SchedulerEvent::AppSuspensionRequested, now);
         }
         if memory_trim_command_requested {
-            scheduler.invalidate(
-                SchedulerEvent::MemoryTrimRequested,
-                now,
-                workload_fast_refresh_enabled,
-                WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-            );
-        }
-
-        if scheduler.workload_fast_refresh_active(now, workload_fast_refresh_enabled) {
-            workload_engine_refresh_interval = WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL;
+            scheduler.invalidate(SchedulerEvent::MemoryTrimRequested, now);
         }
 
         if scan_process_appearance && scheduler.is_due(RefreshDomain::ProcessAppearance, now) {
             if runner.detect_process_appearance(&mut observations) {
-                scheduler.invalidate(
-                    SchedulerEvent::ProcessAppeared,
-                    now,
-                    workload_fast_refresh_enabled,
-                    WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-                );
+                scheduler.invalidate(SchedulerEvent::ProcessAppeared, now);
             }
             scheduler.schedule_after(
                 RefreshDomain::ProcessAppearance,
@@ -1241,24 +1182,27 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 background_efficiency_refresh_interval,
             );
         }
-        if workload_engine_refresh_required && scheduler.is_due(RefreshDomain::WorkloadEngine, now)
-        {
-            let workload_engine_status =
-                runner.run_workload_engine_update(&settings, &mut observations);
-            if workload_engine_status.foreground_boosted_process.is_some()
-                || workload_engine_status.workload_managed_processes > 0
-            {
-                scheduler.extend_workload_fast_window(
-                    now,
-                    workload_fast_refresh_enabled,
-                    WORKLOAD_ENGINE_FAST_REFRESH_WINDOW,
-                );
-            }
-            update_workload_engine_status(&shared, workload_engine_status);
+        if cpu_scheduler_refresh_required && scheduler.is_due(RefreshDomain::CpuScheduler, now) {
+            let cpu_scheduler_status =
+                runner.run_cpu_scheduler_update(&settings, &mut observations);
+            update_cpu_scheduler_status(&shared, cpu_scheduler_status);
             scheduler.schedule_after(
-                RefreshDomain::WorkloadEngine,
+                RefreshDomain::CpuScheduler,
                 now,
-                workload_engine_refresh_interval,
+                cpu_scheduler_refresh_interval,
+            );
+        }
+        if adaptive_power_plan_refresh_required
+            && scheduler.is_due(RefreshDomain::AdaptivePowerPlan, now)
+        {
+            if let Err(error) = runner.run_adaptive_power_plan_update(&settings, &mut observations)
+            {
+                update_worker_error(&shared, Some(error));
+            }
+            scheduler.schedule_after(
+                RefreshDomain::AdaptivePowerPlan,
+                now,
+                ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
             );
         }
         if io_priority_refresh_required && scheduler.is_due(RefreshDomain::IoPriority, now) {
@@ -1522,9 +1466,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                     by_running_app_refresh_interval,
                 ),
                 (
-                    workload_engine_refresh_required,
-                    RefreshDomain::WorkloadEngine,
-                    workload_engine_refresh_interval,
+                    cpu_scheduler_refresh_required,
+                    RefreshDomain::CpuScheduler,
+                    cpu_scheduler_refresh_interval,
+                ),
+                (
+                    adaptive_power_plan_refresh_required,
+                    RefreshDomain::AdaptivePowerPlan,
+                    ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
                 ),
                 (
                     process_priority_refresh_required,

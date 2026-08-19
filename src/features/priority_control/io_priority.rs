@@ -4,7 +4,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{IoPrioritySettings, ProcessIoPrioritySetting},
+    config::IoPrioritySettings,
     control::{
         io_priority::{
             IoPriorityApplyOutcome, IoPriorityClaim, IoPriorityController, IoPriorityPreservation,
@@ -192,7 +192,6 @@ impl IoPriorityManager {
                 settings.background_priority,
             );
             let priority = match configured_override {
-                Some(Some(ProcessIoPrioritySetting::Auto)) => default_priority,
                 Some(Some(priority)) => priority,
                 Some(None) => continue,
                 None => default_priority,

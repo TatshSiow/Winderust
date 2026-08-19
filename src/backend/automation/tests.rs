@@ -46,8 +46,8 @@ fn app_suspension_rule(executable_path: &str) -> AppSuspensionRule {
     }
 }
 
-// Phase 0 keeps production scheduling untouched. These scoped source assertions lock the current
-// monolithic worker order/invalidation until Phase 2 introduces a directly testable scheduler.
+// These scoped source assertions lock runtime ordering and ownership boundaries that span
+// multiple managers.
 fn source_scope<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let body_start = source
         .find(start)
@@ -998,7 +998,7 @@ fn automation_worker_runs_for_adaptive_power_plan_alone() {
     settings.by_activity.enabled = false;
     settings.by_foreground.enabled = false;
     settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine.processor_policy_enabled = true;
+    settings.adaptive_engine.processor_power_policy_enabled = true;
 
     assert!(automation_worker_required(&settings));
 }
@@ -1387,34 +1387,12 @@ fn automation_worker_runs_for_enabled_memory_trim() {
 }
 
 #[test]
-fn workload_engine_fast_refresh_requires_enabled_feature() {
-    let now = Instant::now();
-    let mut settings = Settings::default();
-    let mut scheduler = RefreshScheduler::new(now);
-
-    let enabled = feature_refresh_required(&settings, workload_engine_required(&settings));
-    scheduler.extend_workload_fast_window(now, enabled, WORKLOAD_ENGINE_FAST_REFRESH_WINDOW);
-    assert!(!scheduler.workload_fast_refresh_active(now, enabled));
-
-    settings.general.enabled = true;
-    settings.adaptive_engine.enabled = true;
-    settings.workload_engine.enabled = true;
-    let enabled = feature_refresh_required(&settings, workload_engine_required(&settings));
-    scheduler.extend_workload_fast_window(now, enabled, WORKLOAD_ENGINE_FAST_REFRESH_WINDOW);
-    assert!(scheduler.workload_fast_refresh_active(now, enabled));
-    assert!(!scheduler
-        .workload_fast_refresh_active(now + WORKLOAD_ENGINE_FAST_REFRESH_WINDOW, enabled,));
-}
-
-#[test]
-fn workload_engine_io_assist_waits_for_pressure() {
+fn cpu_scheduler_io_assist_waits_for_pressure() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.workload_engine.enabled = true;
-    settings
-        .workload_engine
-        .lower_background_io_priority_enabled = true;
-    settings.workload_engine.lower_background_io_priority = ProcessIoPriority::Low;
+    settings.cpu_scheduler.io_priority.enabled = true;
+    settings.cpu_scheduler.io_priority.foreground_priority = ProcessIoPriority::Normal.into();
+    settings.cpu_scheduler.io_priority.background_priority = ProcessIoPriority::Low.into();
 
     assert!(!effective_io_priority_settings(&settings, false).enabled);
 
@@ -1441,61 +1419,53 @@ fn workload_engine_io_assist_waits_for_pressure() {
 }
 
 #[test]
-fn workload_engine_pressure_feeds_priority_defaults() {
+fn cpu_scheduler_pressure_feeds_priority_defaults() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.workload_engine.enabled = true;
-    settings.workload_engine.workload_engine_enabled = true;
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
+    settings.cpu_scheduler.io_priority.enabled = true;
     settings
-        .workload_engine
-        .lower_background_io_priority_enabled = true;
-    settings.workload_engine.lower_background_io_priority = ProcessIoPriority::Low;
-    settings.workload_engine.workload_engine_io_priority.enabled = true;
-    settings
-        .workload_engine
-        .workload_engine_io_priority
+        .cpu_scheduler
+        .io_priority
         .foreground_detection_enabled = false;
     settings
-        .workload_engine
-        .workload_engine_io_priority
+        .cpu_scheduler
+        .io_priority
         .preserve_foreground_priority = false;
     settings
-        .workload_engine
-        .workload_engine_io_priority
+        .cpu_scheduler
+        .io_priority
         .preserve_background_priority = false;
+    settings.cpu_scheduler.io_priority.background_priority = ProcessIoPriority::Low.into();
     settings
-        .workload_engine
-        .workload_engine_io_priority
-        .background_priority = ProcessIoPriority::Low.into();
-    settings
-        .workload_engine
-        .workload_engine_thread_priority
+        .cpu_scheduler
+        .thread_priority
         .foreground_detection_enabled = false;
     settings
-        .workload_engine
-        .workload_engine_thread_priority
+        .cpu_scheduler
+        .thread_priority
         .preserve_foreground_priority = false;
     settings
-        .workload_engine
-        .workload_engine_thread_priority
+        .cpu_scheduler
+        .thread_priority
         .preserve_background_priority = false;
     settings
-        .workload_engine
-        .workload_engine_dynamic_priority_boost
+        .cpu_scheduler
+        .dynamic_priority_boost
         .foreground_detection_enabled = false;
     settings
-        .workload_engine
-        .workload_engine_gpu_priority
+        .cpu_scheduler
+        .gpu_priority
         .foreground_detection_enabled = false;
     settings
-        .workload_engine
-        .workload_engine_gpu_priority
+        .cpu_scheduler
+        .gpu_priority
         .preserve_foreground_priority = false;
     settings
-        .workload_engine
-        .workload_engine_gpu_priority
+        .cpu_scheduler
+        .gpu_priority
         .preserve_background_priority = false;
-    settings.workload_engine.workload_engine_exclusions = vec![ProcessExclusionRule {
+    settings.cpu_scheduler.custom_rules = vec![ProcessExclusionRule {
         executable_path: "game.exe".to_owned(),
         ..Default::default()
     }];
@@ -1571,48 +1541,44 @@ fn workload_engine_pressure_feeds_priority_defaults() {
 }
 
 #[test]
-fn workload_engine_page_enabled_without_runtime_work_does_not_poll() {
+fn cpu_scheduler_behaviours_independently_drive_polling() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.workload_engine.enabled = true;
-    settings.workload_engine.lower_background_apps = false;
-    settings
-        .workload_engine
-        .workload_engine_background_efficiency_enabled = false;
-    settings.workload_engine.workload_engine_enabled = false;
-    settings.workload_engine.boost_foreground_app = false;
+    settings.cpu_scheduler.process_priority_enabled = false;
+    settings.cpu_scheduler.background_efficiency_enabled = false;
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = false;
 
-    assert!(!workload_engine_required(&settings));
+    assert!(!cpu_scheduler_required(&settings));
 
-    settings.workload_engine.workload_engine_enabled = true;
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
 
-    assert!(workload_engine_required(&settings));
+    assert!(cpu_scheduler_required(&settings));
+
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = false;
+    settings.cpu_scheduler.limit_background_processors_enabled = true;
+
+    assert!(cpu_scheduler_required(&settings));
 }
 
 #[test]
-fn workload_engine_priority_assist_temporarily_overrides_global_priority_defaults() {
+fn cpu_scheduler_priority_assist_temporarily_overrides_global_priority_defaults() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.workload_engine.enabled = true;
-    settings.workload_engine.workload_engine_enabled = true;
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
     settings.thread_priority.enabled = true;
     settings.thread_priority.background_priority = ProcessThreadPrioritySetting::Idle;
     settings.dynamic_priority_boost.enabled = true;
     settings.dynamic_priority_boost.background_boost = ProcessDynamicPriorityBoostSetting::Enabled;
     settings.gpu_priority.enabled = true;
     settings.gpu_priority.background_priority = ProcessGpuPrioritySetting::Idle;
+    settings.cpu_scheduler.thread_priority.background_priority =
+        ProcessThreadPrioritySetting::BelowNormal;
     settings
-        .workload_engine
-        .workload_engine_thread_priority
-        .background_priority = ProcessThreadPrioritySetting::BelowNormal;
-    settings
-        .workload_engine
-        .workload_engine_dynamic_priority_boost
+        .cpu_scheduler
+        .dynamic_priority_boost
         .background_boost = ProcessDynamicPriorityBoostSetting::Disabled;
-    settings
-        .workload_engine
-        .workload_engine_gpu_priority
-        .background_priority = ProcessGpuPrioritySetting::BelowNormal;
+    settings.cpu_scheduler.gpu_priority.background_priority =
+        ProcessGpuPrioritySetting::BelowNormal;
 
     assert_eq!(
         effective_thread_priority_settings(&settings, true).background_priority,
@@ -1657,12 +1623,10 @@ fn workload_engine_priority_assist_temporarily_overrides_global_priority_default
 }
 
 #[test]
-fn workload_engine_without_io_assist_does_not_require_io_refresh() {
+fn cpu_scheduler_without_io_assist_does_not_require_io_refresh() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.workload_engine.enabled = true;
-    settings.workload_engine.workload_engine_enabled = true;
-    settings.workload_engine.boost_foreground_app = false;
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
 
     assert!(!io_priority_required(&settings));
 }
@@ -1984,11 +1948,11 @@ fn disabled_automation_suppresses_worker_refreshes() {
 fn adaptive_plan_follows_adaptive_engine_processor_policy() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine.processor_policy_enabled = true;
+    settings.adaptive_engine.processor_power_policy_enabled = true;
 
     assert!(adaptive_power_plan_required(&settings));
 
-    settings.adaptive_engine.processor_policy_enabled = false;
+    settings.adaptive_engine.processor_power_policy_enabled = false;
     assert!(!adaptive_power_plan_required(&settings));
 }
 
@@ -2017,39 +1981,46 @@ fn adaptive_processor_demand_separates_hybrid_core_classes() {
 }
 
 #[test]
-fn adaptive_plan_uses_half_second_workload_sampling() {
+fn workload_reaction_interval_is_independent_from_adaptive_power_sampling() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.adaptive_engine.processor_policy_enabled = true;
+    settings.adaptive_engine.processor_power_policy_enabled = true;
+    settings.cpu_scheduler.reaction_time_ms = 1_500;
 
     assert_eq!(
-        workload_refresh_interval(&settings, true, true),
-        WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL
+        cpu_scheduler_refresh_interval(&settings),
+        Duration::from_millis(1_500)
     );
     assert_eq!(
-        WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL,
+        ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL,
         Duration::from_millis(500)
     );
-    assert!(ADAPTIVE_IO_REFRESH_INTERVAL > WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL);
-    assert!(
-        workload_refresh_interval(&Settings::default(), true, true)
-            >= ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL
+    assert!(ADAPTIVE_IO_REFRESH_INTERVAL > ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL);
+
+    settings.cpu_scheduler.reaction_time_ms = 1;
+    assert_eq!(
+        cpu_scheduler_refresh_interval(&settings),
+        Duration::from_millis(crate::config::CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS)
     );
 }
 
 #[test]
-fn workload_engine_requires_adaptive_engine() {
+fn cpu_scheduler_requires_adaptive_engine() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
-    settings.workload_engine.enabled = true;
-    settings.workload_engine.workload_engine_enabled = true;
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
 
-    assert!(!workload_engine_required(&settings));
-    assert!(!workload_engine_priority_assist_required(&settings));
+    assert!(!cpu_scheduler_required(&settings));
+    assert!(!cpu_scheduler_priority_assist_required(&settings));
 
     settings.adaptive_engine.enabled = true;
-    assert!(workload_engine_required(&settings));
-    assert!(workload_engine_priority_assist_required(&settings));
+    assert!(cpu_scheduler_required(&settings));
+    assert!(cpu_scheduler_priority_assist_required(&settings));
+
+    settings.cpu_scheduler.cpu_pressure_restraint_enabled = false;
+    settings.cpu_scheduler.limit_background_processors_enabled = true;
+    assert!(cpu_scheduler_required(&settings));
+    assert!(!cpu_scheduler_priority_assist_required(&settings));
 }
 #[test]
 fn power_plan_checks_sleep_when_decision_features_are_off() {
@@ -2071,7 +2042,8 @@ fn automation_feature_execution_order_is_characterized() {
         "runner.publish_action_log_if_changed(&shared);",
         &[
             "runner.run_background_efficiency_update(",
-            "runner.run_workload_engine_update(",
+            "runner.run_cpu_scheduler_update(",
+            "runner.run_adaptive_power_plan_update(",
             "runner.run_io_priority_update(",
             "runner.run_process_priority_update(",
             "runner.run_thread_priority_update(",
@@ -2112,11 +2084,10 @@ fn shared_property_precedence_inputs_are_characterized() {
     let source = include_str!("runner.rs");
     let workload = source_scope(
         source,
-        "pub(super) fn run_workload_engine_update",
-        "pub(super) fn sync_processor_power_policy",
+        "pub(super) fn run_cpu_scheduler_update",
+        "pub(super) fn run_adaptive_power_plan_update",
     );
     assert!(workload.contains("priority_efficiency_controller"));
-    assert!(workload.contains("ControlOwner::BackgroundEfficiency"));
     assert!(workload.contains("by_running_app_manager.active_process_ids()"));
     assert!(workload.contains("explicit_cpu_allocation_paths(settings)"));
 
@@ -2128,7 +2099,7 @@ fn shared_property_precedence_inputs_are_characterized() {
     assert!(process_priority.contains("priority_efficiency_controller"));
     assert!(process_priority.contains("ControlOwner::BackgroundEfficiency"));
     assert!(process_priority.contains("ControlOwner::AdaptiveEngine"));
-    assert!(process_priority.contains("ControlOwner::WorkloadForegroundBoost"));
+    assert!(process_priority.contains("ControlOwner::CpuSchedulerFocusPriority"));
 
     let core_limiter = source_scope(
         source,
@@ -2204,7 +2175,7 @@ fn automation_shutdown_restores_reversible_features_in_reverse_order() {
             "self.run_process_priority_update(",
             "self.run_io_priority_update(",
             "self.io_priority_controller.shutdown(",
-            "self.run_workload_engine_update(",
+            "self.run_cpu_scheduler_update(",
             "self.cpu_allocation_coordinator.shutdown(",
             "self.run_background_efficiency_update(",
             "self.priority_efficiency_controller.shutdown(",

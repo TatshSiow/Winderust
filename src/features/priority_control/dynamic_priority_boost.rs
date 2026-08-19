@@ -4,7 +4,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{DynamicPriorityBoostSettings, ProcessDynamicPriorityBoostSetting},
+    config::DynamicPriorityBoostSettings,
     control::{
         dynamic_priority_boost::{
             DynamicPriorityBoostApplyOutcome, DynamicPriorityBoostClaim,
@@ -196,7 +196,6 @@ impl DynamicPriorityBoostManager {
                 visible_window,
             );
             let boost = match configured_override {
-                Some(Some(ProcessDynamicPriorityBoostSetting::Auto)) => default_boost,
                 Some(Some(boost)) => boost,
                 Some(None) => continue,
                 None => default_boost,

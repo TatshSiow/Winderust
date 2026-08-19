@@ -291,7 +291,7 @@ impl CpuAllocationManager {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "Workload Engine supplies already-discovered exact process targets"
+        reason = "CPU Scheduler supplies already-discovered exact process targets"
     )]
     pub(crate) fn update_discovered_targets(
         &mut self,
@@ -650,7 +650,7 @@ pub(crate) fn cpu_allocation_action_log_context(
             "Processor Affinity (Hard)",
         ),
         ControlOwner::CoreLimiter => (ActionLogFeature::CoreLimiter, "Core Limiter"),
-        ControlOwner::AdaptiveEngine => (ActionLogFeature::WorkloadEngine, "Workload Engine"),
+        ControlOwner::AdaptiveEngine => (ActionLogFeature::CpuScheduler, "CPU Scheduler"),
         unsupported => {
             unreachable!("unsupported CPU allocation Action Log owner: {unsupported:?}")
         }
@@ -764,12 +764,53 @@ pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
     logical_processors_from_topology().unwrap_or_else(fallback_logical_processors)
 }
 
+pub fn logical_processor_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+    processors
+        .iter()
+        .filter_map(|processor| {
+            (processor.index < u64::BITS as usize).then_some(1_u64 << processor.index)
+        })
+        .fold(0, |mask, bit| mask | bit)
+}
+
+pub fn logical_processor_kind_mask(
+    processors: &[LogicalProcessorInfo],
+    kind: LogicalProcessorKind,
+) -> u64 {
+    processors
+        .iter()
+        .filter(|processor| processor.kind == kind)
+        .filter_map(|processor| {
+            (processor.index < u64::BITS as usize).then_some(1_u64 << processor.index)
+        })
+        .fold(0, |mask, bit| mask | bit)
+}
+
+pub fn logical_processor_indices_mask(indices: &[u8]) -> u64 {
+    indices
+        .iter()
+        .filter(|index| **index < u64::BITS as u8)
+        .fold(0, |mask, index| mask | (1_u64 << index))
+}
+
+pub fn logical_processor_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+    let mut seen_cores = Vec::new();
+    let mut mask = 0;
+    for processor in processors {
+        if seen_cores.contains(&processor.core_index) {
+            continue;
+        }
+        seen_cores.push(processor.core_index);
+        if processor.index < u64::BITS as usize {
+            mask |= 1_u64 << processor.index;
+        }
+    }
+    mask
+}
+
 pub fn default_cpu_mask() -> u64 {
     let processors = logical_processors();
-    let mask = processors
-        .iter()
-        .filter_map(|processor| (processor.index < 64).then_some(1_u64 << processor.index))
-        .fold(0, |mask, bit| mask | bit);
+    let mask = logical_processor_mask(&processors);
     if mask != 0 {
         return mask;
     }
@@ -1165,14 +1206,14 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].feature, ActionLogFeature::CpuSetsSoft);
         assert!(entries[0].reason.contains("2 CPU allocation properties"));
-        assert_eq!(entries[1].feature, ActionLogFeature::WorkloadEngine);
+        assert_eq!(entries[1].feature, ActionLogFeature::CpuScheduler);
         assert!(entries[1].reason.contains("1 CPU allocation property"));
     }
 
     #[test]
     fn cross_owner_release_failure_is_not_charged_to_the_releasing_status() {
         let mut manager =
-            CpuAllocationManager::with_action_log_feature(ActionLogFeature::WorkloadEngine);
+            CpuAllocationManager::with_action_log_feature(ActionLogFeature::CpuScheduler);
         let mut failures = CpuAllocationFailures::default();
         let mut log = ActionLog::new(8);
 

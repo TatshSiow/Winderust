@@ -154,8 +154,7 @@ pub(super) fn merge_auto_exclusion_patch(
         &mut target.processor_affinity_hard,
     );
     changed |= append_unique_executable_paths(&incoming.core_limiter, &mut target.core_limiter);
-    changed |=
-        append_unique_executable_paths(&incoming.workload_engine, &mut target.workload_engine);
+    changed |= append_unique_executable_paths(&incoming.cpu_scheduler, &mut target.cpu_scheduler);
     changed |= append_unique_executable_paths(&incoming.io_priority, &mut target.io_priority);
     changed |=
         append_unique_executable_paths(&incoming.process_priority, &mut target.process_priority);
@@ -198,19 +197,17 @@ pub(super) fn update_by_running_app_status(
     );
 }
 
-pub(super) fn update_workload_engine_status(
+pub(super) fn update_cpu_scheduler_status(
     shared: &SharedAutomationState,
-    status: WorkloadEngineSnapshot,
+    status: CpuSchedulerSnapshot,
 ) {
     update_status_with_auto_exclusions(
         shared,
         status,
         |status| &status.auto_excluded_processes,
-        |pending, path_list| {
-            append_unique_executable_paths(path_list, &mut pending.workload_engine)
-        },
-        |feature_status| &feature_status.workload_engine,
-        |feature_status| &mut feature_status.workload_engine,
+        |pending, path_list| append_unique_executable_paths(path_list, &mut pending.cpu_scheduler),
+        |feature_status| &feature_status.cpu_scheduler,
+        |feature_status| &mut feature_status.cpu_scheduler,
     );
 }
 

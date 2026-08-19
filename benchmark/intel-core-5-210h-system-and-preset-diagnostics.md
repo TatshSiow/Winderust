@@ -52,7 +52,7 @@ active. Paired Stock runs reduce drift but do not remove it.
 ## Method
 
 The benchmark used
-[`workload_engine_benchmark.ps1`](../scripts/workload_engine_benchmark.ps1)
+[`cpu_scheduler_benchmark.ps1`](../scripts/cpu_scheduler_benchmark.ps1)
 with 12 generated CPU workers. Each tier matrix used three independently
 ordered passes, five foreground rounds per case, and a paired Stock case beside
 each preset. The workload applied the current preset processor policy,
@@ -290,7 +290,7 @@ The stock baseline used 20 one-second samples with Winderust stopped.
 | GPU engine utilization | 6.47% | 27.92% |
 | CPU package power | 15.79 W | 21.50 W |
 
-Winderust was then measured with the current 500 ms Workload Engine cadence
+Winderust was then measured with the current 500 ms CPU Scheduler cadence
 and the user's existing configuration.
 
 | Metric | Current result | Earlier 250 ms cadence | Change |

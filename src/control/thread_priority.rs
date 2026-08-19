@@ -927,7 +927,7 @@ pub(crate) fn thread_priority_is_actionable(priority: ProcessThreadPrioritySetti
 
 fn thread_priority_value(priority: ProcessThreadPrioritySetting) -> Option<i32> {
     match priority {
-        ProcessThreadPrioritySetting::Default | ProcessThreadPrioritySetting::Auto => None,
+        ProcessThreadPrioritySetting::Default => None,
         ProcessThreadPrioritySetting::TimeCritical => {
             Some(windows_thread_priority::PRIORITY_TIME_CRITICAL)
         }

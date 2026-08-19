@@ -55,20 +55,22 @@ use crate::{
     },
     background_efficiency,
     config::{
-        self, AccentColorSource, AccentSettings, ActionLogMode, AdvancedPowerPlanTuningPreset,
-        AnimationMode, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
-        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
+        self, AccentColorSource, AccentSettings, ActionLogMode, AdaptiveEnginePreset,
+        AdvancedPowerPlanTuningPreset, AnimationMode, AppLanguage, AppSuspensionRule,
+        AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
+        BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
         ByCpuLoadRule, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
-        ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings, CpuAllocationRule,
-        CpuRestrictionMode, CpuUsageComparison, DynamicPriorityBoostSettings,
-        ForegroundBoostPriority, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
-        MemoryTrimSettings, NetworkThresholdUnit, ProcessDynamicPriorityBoostSetting,
-        ProcessExclusionRule, ProcessGpuPriority, ProcessGpuPrioritySetting, ProcessIoPriority,
-        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
-        ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
-        ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
-        TimerResolutionSettings, UpdateChannel, WeekdaySetting, WorkloadEngineSettings,
-        CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings,
+        CpuAllocationMethod, CpuAllocationRule, CpuSchedulerSettings, CpuUsageComparison,
+        DynamicPriorityBoostSettings, GpuPrioritySettings, IoPrioritySettings,
+        MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPriority,
+        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
+        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
+        ProcessPrioritySettings, ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings,
+        TimerResolutionRule, TimerResolutionSettings, UpdateChannel, WeekdaySetting,
+        CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS, CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS,
+        CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS,
     },
     control::{
         dynamic_priority_boost::{current_dynamic_priority_boost_state, DynamicPriorityBoostState},
@@ -82,7 +84,7 @@ use crate::{
     core_limiter::{self, CoreLimiterSnapshot},
     cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
     cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind},
-    crash_recovery,
+    cpu_scheduler, crash_recovery,
     dashboard_metrics::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
         NetworkUsageMonitor, NetworkUsageSnapshot,
@@ -103,9 +105,9 @@ use crate::{
     },
     gpu_priority, io_priority, memory_priority, memory_trim,
     power::{
-        active_plan, list_plans, EffectivePowerMode, EffectivePowerModeMonitor, PowerPlan,
-        PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerPreset,
-        ProcessorPowerValues,
+        active_plan, list_plans, AdaptivePowerBoostValues, EffectivePowerMode,
+        EffectivePowerModeMonitor, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
+        ProcessorPowerPreset, ProcessorPowerSourceValues, ProcessorPowerValues,
     },
     privilege,
     process_icon::load_process_icon,
@@ -118,7 +120,6 @@ use crate::{
     ui::{self, Page},
     update_checker::{self, AvailableUpdate},
     win_registry::{read_registry_binary_root, read_registry_dword_root},
-    workload_engine,
 };
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
@@ -223,12 +224,12 @@ const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
 const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
 const TIMER_RESOLUTION_INPUT_MIN_MS: f64 = 0.1;
 const TIMER_RESOLUTION_INPUT_MAX_MS: f64 = 1000.0;
-const WORKLOAD_ENGINE_THRESHOLD_MIN_PERCENT: u64 = 1;
-const WORKLOAD_ENGINE_THRESHOLD_MAX_PERCENT: u64 = 100;
-const WORKLOAD_ENGINE_SECONDS_MIN: u64 = 1;
-const WORKLOAD_ENGINE_SECONDS_MAX: u64 = 3_600;
-const WORKLOAD_ENGINE_TARGET_LIMIT_MIN: u64 = 1;
-const WORKLOAD_ENGINE_TARGET_LIMIT_MAX: u64 = 64;
+const CPU_SCHEDULER_THRESHOLD_MIN_PERCENT: u64 = 1;
+const CPU_SCHEDULER_THRESHOLD_MAX_PERCENT: u64 = 100;
+const CPU_SCHEDULER_SECONDS_MIN: u64 = 1;
+const CPU_SCHEDULER_SECONDS_MAX: u64 = 3_600;
+const CPU_SCHEDULER_TARGET_LIMIT_MIN: u64 = 1;
+const CPU_SCHEDULER_TARGET_LIMIT_MAX: u64 = 64;
 const WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT: u32 = 0x26;
 const DWM_REGISTRY_SUB_KEY: &str = "Software\\Microsoft\\Windows\\DWM";
 const DWM_ACCENT_COLOR_VALUE: &str = "AccentColor";
@@ -402,7 +403,7 @@ struct ProcessDetailsDraft {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum CpuAllocationSidePanelTab {
+enum PresetSidePanelTab {
     Status,
     #[default]
     Presets,
@@ -461,11 +462,11 @@ pub struct WinderustApp {
     processor_power_ac_performance_max: u64,
     processor_power_ac_boost_policy: u64,
     processor_power_ac_boost_mode: ProcessorBoostMode,
-    processor_power_dc_core_parking_min: u64,
-    processor_power_dc_performance_min: u64,
-    processor_power_dc_performance_max: u64,
-    processor_power_dc_boost_policy: u64,
-    processor_power_dc_boost_mode: ProcessorBoostMode,
+    processor_power_battery_core_parking_min: u64,
+    processor_power_battery_performance_min: u64,
+    processor_power_battery_performance_max: u64,
+    processor_power_battery_boost_policy: u64,
+    processor_power_battery_boost_mode: ProcessorBoostMode,
     processor_power_target_plan_guid: Option<String>,
     processor_power_loaded_plan_guid: Option<String>,
     processor_power_target_plan_personality: Option<PowerPlanPersonality>,
@@ -477,11 +478,14 @@ pub struct WinderustApp {
     win32_priority_separation_status: String,
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
-    cpu_allocation_side_panel_tab: CpuAllocationSidePanelTab,
+    adaptive_engine_side_panel_tab: PresetSidePanelTab,
+    adaptive_engine_tuning_tab: AdaptiveEngineTuningTab,
+    cpu_allocation_side_panel_tab: PresetSidePanelTab,
     side_panel_collapsed: bool,
     side_panel_visible: bool,
     retained_side_panel_page: Option<Page>,
     editing_numeric: Option<NumericField>,
+    adaptive_engine_preset_editor: Option<AdaptiveEnginePresetEditor>,
     cpu_allocation_preset_editor: Option<CpuAllocationPresetEditor>,
     advanced_power_plan_tuning_preset_editor: Option<AdvancedPowerPlanTuningPresetEditor>,
     expanded_rule_cards: HashSet<RuleCardTarget>,
@@ -503,6 +507,7 @@ pub struct WinderustApp {
     _numeric_input_subscription: Option<Subscription>,
     _dashboard_search_subscription: Option<Subscription>,
     _process_list_search_subscription: Option<Subscription>,
+    _adaptive_engine_preset_name_subscription: Option<Subscription>,
     _cpu_allocation_preset_name_subscription: Option<Subscription>,
     _advanced_power_plan_tuning_preset_name_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
@@ -621,11 +626,12 @@ enum ListItemRemovalKind {
     AppSuspensionRule,
     CpuSetsSoftRule,
     ProcessorAffinityHardRule,
+    AdaptiveEnginePreset,
     CpuAllocationPreset,
     AdvancedPowerPlanTuningPreset,
     CoreLimiterRule,
     ByRunningAppRule,
-    WorkloadEngineExclusion,
+    CpuSchedulerCustomRule,
     ProcessPriorityExclusion,
     ThreadPriorityExclusion,
     DynamicPriorityBoostExclusion,
@@ -640,6 +646,19 @@ enum ListItemRemovalKind {
 struct CpuAllocationPresetEditor {
     target: CpuAllocationPresetEditorTarget,
     core_mask: u64,
+}
+
+#[derive(Clone)]
+struct AdaptiveEnginePresetEditor {
+    target: AdaptiveEnginePresetEditorTarget,
+    preset: AdaptiveEnginePreset,
+    tuning_tab: AdaptiveEngineTuningTab,
+}
+
+#[derive(Clone, Copy)]
+enum AdaptiveEnginePresetEditorTarget {
+    BuiltIn(BuiltInAdaptiveEnginePreset),
+    Custom(Option<usize>),
 }
 
 #[derive(Clone, Copy)]
@@ -696,9 +715,10 @@ struct UiInputs {
     performance_process: Entity<InputState>,
     cpu_sets_soft_process: Entity<InputState>,
     processor_affinity_hard_process: Entity<InputState>,
+    adaptive_engine_preset_name: Entity<InputState>,
     cpu_allocation_preset_name: Entity<InputState>,
     advanced_power_plan_tuning_preset_name: Entity<InputState>,
-    workload_engine_process: Entity<InputState>,
+    cpu_scheduler_process: Entity<InputState>,
     process_priority_process: Entity<InputState>,
     thread_priority_process: Entity<InputState>,
     dynamic_priority_boost_process: Entity<InputState>,
@@ -713,16 +733,16 @@ struct UiInputs {
     processor_power_ac_performance_min: Entity<SliderState>,
     processor_power_ac_performance_max: Entity<SliderState>,
     processor_power_ac_boost_policy: Entity<SliderState>,
-    processor_power_dc_core_parking_min: Entity<SliderState>,
-    processor_power_dc_performance_min: Entity<SliderState>,
-    processor_power_dc_performance_max: Entity<SliderState>,
-    processor_power_dc_boost_policy: Entity<SliderState>,
+    processor_power_battery_core_parking_min: Entity<SliderState>,
+    processor_power_battery_performance_min: Entity<SliderState>,
+    processor_power_battery_performance_max: Entity<SliderState>,
+    processor_power_battery_boost_policy: Entity<SliderState>,
 }
 
 struct InitialProcessorPowerState {
     plans: Vec<PowerPlan>,
     current_plan: Option<PowerPlan>,
-    values: ProcessorPowerAcDcValues,
+    values: ProcessorPowerSourceValues,
     target_plan_guid: Option<String>,
     loaded_plan_guid: Option<String>,
     target_plan_personality: Option<PowerPlanPersonality>,
@@ -755,8 +775,8 @@ struct Win32PrioritySeparationFieldOption {
     bits: u32,
 }
 
-fn default_processor_power_values() -> ProcessorPowerAcDcValues {
-    ProcessorPowerAcDcValues::same(ProcessorPowerValues::for_preset(
+fn default_processor_power_values() -> ProcessorPowerSourceValues {
+    ProcessorPowerSourceValues::same(ProcessorPowerValues::for_preset(
         ProcessorPowerPreset::Balanced,
     ))
     .normalized()
@@ -942,14 +962,23 @@ impl WinderustApp {
                 as u64,
             processor_power_ac_boost_policy: initial_processor_power.values.ac.boost_policy as u64,
             processor_power_ac_boost_mode: initial_processor_power.values.ac.boost_mode,
-            processor_power_dc_core_parking_min: initial_processor_power.values.dc.core_parking_min
-                as u64,
-            processor_power_dc_performance_min: initial_processor_power.values.dc.performance_min
-                as u64,
-            processor_power_dc_performance_max: initial_processor_power.values.dc.performance_max
-                as u64,
-            processor_power_dc_boost_policy: initial_processor_power.values.dc.boost_policy as u64,
-            processor_power_dc_boost_mode: initial_processor_power.values.dc.boost_mode,
+            processor_power_battery_core_parking_min: initial_processor_power
+                .values
+                .battery
+                .core_parking_min as u64,
+            processor_power_battery_performance_min: initial_processor_power
+                .values
+                .battery
+                .performance_min as u64,
+            processor_power_battery_performance_max: initial_processor_power
+                .values
+                .battery
+                .performance_max as u64,
+            processor_power_battery_boost_policy: initial_processor_power
+                .values
+                .battery
+                .boost_policy as u64,
+            processor_power_battery_boost_mode: initial_processor_power.values.battery.boost_mode,
             processor_power_target_plan_guid: initial_processor_power.target_plan_guid,
             processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
             processor_power_target_plan_personality: initial_processor_power
@@ -962,11 +991,14 @@ impl WinderustApp {
             win32_priority_separation_status,
             start_minimized_applied: false,
             editing_rule_title: None,
-            cpu_allocation_side_panel_tab: CpuAllocationSidePanelTab::default(),
+            adaptive_engine_side_panel_tab: PresetSidePanelTab::default(),
+            adaptive_engine_tuning_tab: AdaptiveEngineTuningTab::default(),
+            cpu_allocation_side_panel_tab: PresetSidePanelTab::default(),
             side_panel_collapsed: false,
             side_panel_visible: false,
             retained_side_panel_page: None,
             editing_numeric: None,
+            adaptive_engine_preset_editor: None,
             cpu_allocation_preset_editor: None,
             advanced_power_plan_tuning_preset_editor: None,
             expanded_rule_cards: HashSet::new(),
@@ -989,6 +1021,7 @@ impl WinderustApp {
             _numeric_input_subscription: None,
             _dashboard_search_subscription: None,
             _process_list_search_subscription: None,
+            _adaptive_engine_preset_name_subscription: None,
             _cpu_allocation_preset_name_subscription: None,
             _advanced_power_plan_tuning_preset_name_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
@@ -1013,6 +1046,7 @@ impl WinderustApp {
         app.subscribe_to_numeric_input(window, cx);
         app.subscribe_to_dashboard_search_input(window, cx);
         app.subscribe_to_process_list_search_input(window, cx);
+        app.subscribe_to_adaptive_engine_preset_name_input(window, cx);
         app.subscribe_to_cpu_allocation_preset_name_input(window, cx);
         app.subscribe_to_advanced_power_plan_tuning_preset_name_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
@@ -1138,6 +1172,8 @@ impl Render for WinderustApp {
                     app.dismiss_startup_update_modal(cx);
                 } else if app.advanced_power_plan_tuning_preset_editor.is_some() {
                     app.close_advanced_power_plan_tuning_preset_editor(cx);
+                } else if app.adaptive_engine_preset_editor.is_some() {
+                    app.close_adaptive_engine_preset_editor(cx);
                 } else if app.cpu_allocation_preset_editor.is_some() {
                     app.close_cpu_allocation_preset_editor(cx);
                 } else if app.process_list.details.is_some() {
@@ -1207,6 +1243,11 @@ impl Render for WinderustApp {
             })
             .child(if self.cpu_allocation_preset_editor.is_some() {
                 self.render_cpu_allocation_preset_modal(window, cx)
+            } else {
+                div().into_any_element()
+            })
+            .child(if self.adaptive_engine_preset_editor.is_some() {
+                self.render_adaptive_engine_preset_modal(window, cx)
             } else {
                 div().into_any_element()
             })
@@ -1377,153 +1418,164 @@ mod tests {
     }
 
     #[test]
-    fn workload_engine_presets_set_background_process_priority() {
-        let low_impact = workload_engine_preset_values(WorkloadEnginePreset::LowImpact);
-        let foreground_first = workload_engine_preset_values(WorkloadEnginePreset::ForegroundFirst);
-        let max_foreground = workload_engine_preset_values(WorkloadEnginePreset::MaxForeground);
+    fn built_in_adaptive_engine_presets_set_cpu_scheduler_values() {
+        let power_save = cpu_scheduler_preset_values(BuiltInAdaptiveEnginePreset::PowerSave);
+        let performance = cpu_scheduler_preset_values(BuiltInAdaptiveEnginePreset::Performance);
+        let speed = cpu_scheduler_preset_values(BuiltInAdaptiveEnginePreset::Speed);
 
-        assert_eq!(low_impact.background_priority, ProcessPriority::BelowNormal);
-        assert_eq!(low_impact.visible_window_priority, ProcessPriority::Normal);
         assert_eq!(
-            foreground_first.background_priority,
-            ProcessPriority::BelowNormal
+            power_save.background_priority,
+            ProcessPrioritySetting::BelowNormal
         );
         assert_eq!(
-            foreground_first.visible_window_priority,
-            ProcessPriority::Normal
-        );
-        assert_eq!(max_foreground.background_priority, ProcessPriority::Idle);
-        assert_eq!(
-            max_foreground.visible_window_priority,
-            ProcessPriority::BelowNormal
-        );
-        assert!(low_impact.workload_engine_background_efficiency_enabled);
-        assert!(foreground_first.workload_engine_background_efficiency_enabled);
-        assert!(max_foreground.workload_engine_background_efficiency_enabled);
-        assert!(!low_impact.lower_background_io_priority_enabled);
-        assert!(foreground_first.lower_background_io_priority_enabled);
-        assert!(max_foreground.lower_background_io_priority_enabled);
-        assert!(!low_impact.workload_engine_memory_priority_enabled);
-        assert!(foreground_first.workload_engine_memory_priority_enabled);
-        assert!(max_foreground.workload_engine_memory_priority_enabled);
-        assert_eq!(
-            low_impact.lower_background_io_priority,
-            ProcessIoPriority::Low
+            power_save.visible_window_priority,
+            ProcessPrioritySetting::Normal
         );
         assert_eq!(
-            foreground_first.lower_background_io_priority,
+            performance.background_priority,
+            ProcessPrioritySetting::BelowNormal
+        );
+        assert_eq!(
+            performance.visible_window_priority,
+            ProcessPrioritySetting::Normal
+        );
+        assert_eq!(speed.background_priority, ProcessPrioritySetting::Idle);
+        assert_eq!(
+            speed.visible_window_priority,
+            ProcessPrioritySetting::BelowNormal
+        );
+        assert!(power_save.background_efficiency_enabled);
+        assert!(performance.background_efficiency_enabled);
+        assert!(speed.background_efficiency_enabled);
+        assert!(!power_save.io_priority_enabled);
+        assert!(performance.io_priority_enabled);
+        assert!(speed.io_priority_enabled);
+        assert!(!power_save.memory_priority_enabled);
+        assert!(performance.memory_priority_enabled);
+        assert!(speed.memory_priority_enabled);
+        assert_eq!(power_save.background_io_priority, ProcessIoPriority::Low);
+        assert_eq!(
+            performance.background_io_priority,
             ProcessIoPriority::VeryLow
         );
+        assert_eq!(speed.background_io_priority, ProcessIoPriority::VeryLow);
         assert_eq!(
-            max_foreground.lower_background_io_priority,
-            ProcessIoPriority::VeryLow
-        );
-        assert_eq!(
-            foreground_first.workload_engine_foreground_memory_priority,
+            performance.focus_process_memory_priority,
             ProcessMemoryPrioritySetting::Normal
         );
         assert_eq!(
-            foreground_first.workload_engine_visible_window_memory_priority,
+            performance.visible_window_memory_priority,
             ProcessMemoryPrioritySetting::BelowNormal
         );
         assert_eq!(
-            max_foreground.workload_engine_visible_window_memory_priority,
+            speed.visible_window_memory_priority,
             ProcessMemoryPrioritySetting::Medium
         );
-        assert_eq!(low_impact.max_targeted_processes, 6);
-        assert_eq!(foreground_first.max_targeted_processes, 8);
-        assert_eq!(max_foreground.max_targeted_processes, 12);
-        assert!(!low_impact.workload_engine_affinity_escalation_enabled);
-        assert!(foreground_first.workload_engine_affinity_escalation_enabled);
-        assert!(max_foreground.workload_engine_affinity_escalation_enabled);
-        assert!(low_impact.lower_background_apps);
-        assert!(foreground_first.lower_background_apps);
-        assert!(max_foreground.lower_background_apps);
-        assert!(low_impact.boost_foreground_app);
-        assert!(foreground_first.boost_foreground_app);
-        assert!(max_foreground.boost_foreground_app);
-        assert!(low_impact.lower_background_auto_cpu_percent);
-        assert!(foreground_first.lower_background_auto_cpu_percent);
-        assert!(!max_foreground.lower_background_auto_cpu_percent);
-        assert_eq!(low_impact.foreground_boost, ForegroundBoostPriority::Auto);
+        assert_eq!(power_save.maximum_restrained_apps, 4);
+        assert_eq!(performance.maximum_restrained_apps, 8);
+        assert_eq!(speed.maximum_restrained_apps, 12);
+        assert!(power_save.limit_background_processors_enabled);
+        assert!(performance.limit_background_processors_enabled);
+        assert!(speed.limit_background_processors_enabled);
+        assert!(power_save.process_priority_enabled);
+        assert!(performance.process_priority_enabled);
+        assert!(speed.process_priority_enabled);
         assert_eq!(
-            foreground_first.foreground_boost,
-            ForegroundBoostPriority::Auto
+            power_save.background_processor_selection,
+            BackgroundProcessorSelection::LeastUsed
         );
         assert_eq!(
-            max_foreground.foreground_boost,
-            ForegroundBoostPriority::AboveNormal
+            performance.background_processor_selection,
+            BackgroundProcessorSelection::LeastUsed
         );
-        assert!(low_impact.total_threshold > foreground_first.total_threshold);
-        assert!(foreground_first.total_threshold > max_foreground.total_threshold);
-        assert!(low_impact.process_threshold > foreground_first.process_threshold);
-        assert!(foreground_first.process_threshold > max_foreground.process_threshold);
+        assert_eq!(
+            speed.background_processor_selection,
+            BackgroundProcessorSelection::LeastUsed
+        );
+        assert_eq!(
+            power_save.focus_process_priority,
+            ProcessPrioritySetting::AboveNormal
+        );
+        assert_eq!(
+            performance.focus_process_priority,
+            ProcessPrioritySetting::AboveNormal
+        );
+        assert_eq!(
+            speed.focus_process_priority,
+            ProcessPrioritySetting::AboveNormal
+        );
+        assert!(
+            power_save.foreground_or_system_cpu_threshold_percent
+                > performance.foreground_or_system_cpu_threshold_percent
+        );
+        assert!(
+            performance.foreground_or_system_cpu_threshold_percent
+                > speed.foreground_or_system_cpu_threshold_percent
+        );
+        assert!(
+            power_save.background_app_cpu_threshold_percent
+                > performance.background_app_cpu_threshold_percent
+        );
+        assert!(
+            performance.background_app_cpu_threshold_percent
+                > speed.background_app_cpu_threshold_percent
+        );
         for (values, expected) in [
-            (&low_impact, (75, 10, 5, 3, 2, 4, 6)),
-            (&foreground_first, (60, 8, 4, 1, 3, 5, 8)),
-            (&max_foreground, (35, 4, 2, 1, 5, 8, 12)),
+            (&power_save, (75, 10, 5, 1_500, 2, 4, 4)),
+            (&performance, (60, 8, 4, 750, 3, 5, 8)),
+            (&speed, (35, 4, 2, 500, 5, 8, 12)),
         ] {
             assert_eq!(
                 (
-                    values.total_threshold,
-                    values.process_threshold,
-                    values.restore_threshold,
-                    values.sustain_seconds,
-                    values.minimum_restraint_seconds,
-                    values.cooldown_seconds,
-                    values.max_targeted_processes,
+                    values.foreground_or_system_cpu_threshold_percent,
+                    values.background_app_cpu_threshold_percent,
+                    values.cpu_recovery_threshold_percent,
+                    values.reaction_time_ms,
+                    values.cpu_restraint_time_seconds,
+                    values.cpu_recovery_time_seconds,
+                    values.maximum_restrained_apps,
                 ),
                 expected
             );
         }
-        assert_eq!(low_impact.manual_cpu_percent, 60);
-        assert_eq!(foreground_first.manual_cpu_percent, 16);
-        assert_eq!(max_foreground.manual_cpu_percent, 10);
+        assert_eq!(power_save.processor_limit_percent, 60);
+        assert_eq!(performance.processor_limit_percent, 16);
+        assert_eq!(speed.processor_limit_percent, 10);
+        assert!(!thread_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled);
         assert!(
-            !workload_engine_thread_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
+            !dynamic_priority_boost_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled
         );
-        assert!(
-            !workload_engine_dynamic_priority_boost_preset_values(WorkloadEnginePreset::LowImpact)
-                .enabled
-        );
-        assert!(
-            !workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
-        );
+        assert!(!gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled);
         assert_eq!(
-            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact)
-                .background_priority,
+            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).background_priority,
             ProcessGpuPrioritySetting::BelowNormal
         );
         assert_eq!(
-            max_foreground.foreground_io_priority,
+            speed.focus_process_io_priority,
             ProcessIoPrioritySetting::High
         );
         assert_eq!(
-            workload_engine_io_priority_preset_values(max_foreground).visible_window_priority,
+            io_priority_preset_values(speed).visible_window_priority,
             ProcessIoPrioritySetting::Normal
         );
         assert_eq!(
-            workload_engine_io_priority_preset_values(max_foreground).background_priority,
+            io_priority_preset_values(speed).background_priority,
             ProcessIoPrioritySetting::VeryLow
         );
         assert_eq!(
-            workload_engine_thread_priority_preset_values(WorkloadEnginePreset::MaxForeground)
-                .foreground_priority,
+            thread_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).foreground_priority,
             ProcessThreadPrioritySetting::Highest
         );
         assert_eq!(
-            workload_engine_thread_priority_preset_values(WorkloadEnginePreset::MaxForeground)
+            thread_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed)
                 .visible_window_priority,
             ProcessThreadPrioritySetting::Normal
         );
         assert_eq!(
-            workload_engine_thread_priority_preset_values(WorkloadEnginePreset::MaxForeground)
-                .background_priority,
+            thread_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).background_priority,
             ProcessThreadPrioritySetting::Idle
         );
-        let max_dynamic = workload_engine_dynamic_priority_boost_preset_values(
-            WorkloadEnginePreset::MaxForeground,
-        );
+        let max_dynamic = dynamic_priority_boost_preset_values(BuiltInAdaptiveEnginePreset::Speed);
         assert_eq!(
             (
                 max_dynamic.foreground_boost,
@@ -1537,86 +1589,91 @@ mod tests {
             )
         );
         assert_eq!(
-            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::MaxForeground)
-                .foreground_priority,
+            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).foreground_priority,
             ProcessGpuPrioritySetting::High
         );
         assert_eq!(
-            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::MaxForeground)
-                .visible_window_priority,
+            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).visible_window_priority,
             ProcessGpuPrioritySetting::Normal
         );
         assert_eq!(
-            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::MaxForeground)
-                .background_priority,
+            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).background_priority,
             ProcessGpuPrioritySetting::Idle
         );
     }
 
     #[test]
-    fn adaptive_engine_default_keeps_workload_engine_opt_in() {
+    fn adaptive_engine_default_keeps_cpu_scheduler_opt_in() {
         let mut settings = Settings::default();
 
         apply_adaptive_engine(&mut settings, true);
 
         assert!(settings.adaptive_engine.enabled);
-        assert!(settings.adaptive_engine.processor_policy_enabled);
+        assert!(settings.adaptive_engine.processor_power_policy_enabled);
         assert!(!settings.background_efficiency.enabled);
-        assert!(!settings.workload_engine.enabled);
-        assert!(!settings.workload_engine.workload_engine_enabled);
+        assert!(!settings.cpu_scheduler.cpu_pressure_restraint_enabled);
     }
 
     #[test]
-    fn power_mode_presets_combine_adaptive_engine_and_workload_engine() {
+    fn adaptive_engine_presets_tune_without_changing_feature_ownership() {
         let mut settings = Settings::default();
+        settings.background_efficiency.enabled = true;
+        settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
 
-        apply_power_mode_preset(&mut settings, PowerModePreset::PowerSave);
-        assert!(power_mode_matches_preset(
+        apply_built_in_adaptive_engine_preset(
+            &mut settings,
+            BuiltInAdaptiveEnginePreset::PowerSave,
+        );
+        assert!(matches_built_in_adaptive_engine_preset(
             &settings,
-            PowerModePreset::PowerSave
+            BuiltInAdaptiveEnginePreset::PowerSave
         ));
-        assert!(settings.adaptive_engine.enabled);
-        assert!(settings.adaptive_engine.processor_policy_enabled);
+        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.adaptive_engine.processor_power_policy_enabled);
         assert!(settings.background_efficiency.enabled);
-        assert!(settings.workload_engine.enabled);
+        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
 
-        apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
-        assert!(power_mode_matches_preset(
+        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
+        assert!(matches_built_in_adaptive_engine_preset(
             &settings,
-            PowerModePreset::Balanced
+            BuiltInAdaptiveEnginePreset::Balanced
         ));
-        assert!(settings.adaptive_engine.enabled);
-        assert!(!settings.background_efficiency.enabled);
-        assert!(settings.workload_engine.enabled);
-        assert!(workload_engine_matches_preset(
-            &settings.workload_engine,
-            WorkloadEnginePreset::LowImpact
+        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.background_efficiency.enabled);
+        assert!(cpu_scheduler_matches_preset(
+            &settings.cpu_scheduler,
+            BuiltInAdaptiveEnginePreset::Balanced
         ));
 
-        apply_power_mode_preset(&mut settings, PowerModePreset::Performance);
-        assert!(power_mode_matches_preset(
+        apply_built_in_adaptive_engine_preset(
+            &mut settings,
+            BuiltInAdaptiveEnginePreset::Performance,
+        );
+        assert!(matches_built_in_adaptive_engine_preset(
             &settings,
-            PowerModePreset::Performance
+            BuiltInAdaptiveEnginePreset::Performance
         ));
-        assert!(settings.adaptive_engine.enabled);
-        assert!(!settings.background_efficiency.enabled);
-        assert!(settings.workload_engine.enabled);
-        assert!(settings.workload_engine.workload_engine_enabled);
-        assert!(settings.adaptive_engine.processor_policy_enabled);
-        assert!(workload_engine_matches_preset(
-            &settings.workload_engine,
-            WorkloadEnginePreset::ForegroundFirst
+        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.background_efficiency.enabled);
+        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
+        assert!(settings.adaptive_engine.processor_power_policy_enabled);
+        assert!(cpu_scheduler_matches_preset(
+            &settings.cpu_scheduler,
+            BuiltInAdaptiveEnginePreset::Performance
         ));
 
-        apply_power_mode_preset(&mut settings, PowerModePreset::Speed);
-        assert!(power_mode_matches_preset(&settings, PowerModePreset::Speed));
-        assert!(settings.adaptive_engine.enabled);
-        assert!(settings.workload_engine.enabled);
-        assert!(settings.workload_engine.workload_engine_enabled);
-        assert!(settings.adaptive_engine.processor_policy_enabled);
-        assert!(workload_engine_matches_preset(
-            &settings.workload_engine,
-            WorkloadEnginePreset::MaxForeground
+        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Speed);
+        assert!(matches_built_in_adaptive_engine_preset(
+            &settings,
+            BuiltInAdaptiveEnginePreset::Speed
+        ));
+        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.background_efficiency.enabled);
+        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
+        assert!(settings.adaptive_engine.processor_power_policy_enabled);
+        assert!(cpu_scheduler_matches_preset(
+            &settings.cpu_scheduler,
+            BuiltInAdaptiveEnginePreset::Speed
         ));
     }
 
@@ -1624,70 +1681,64 @@ mod tests {
     fn adaptive_engine_custom_targets_make_preset_custom() {
         let mut settings = Settings::default();
 
-        apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
+        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
         settings
             .adaptive_engine
-            .processor_policy_values
+            .base_processor_policy
             .performance_max = 55;
 
-        assert!(!power_mode_matches_preset(
+        assert!(!matches_built_in_adaptive_engine_preset(
             &settings,
-            PowerModePreset::Balanced
+            BuiltInAdaptiveEnginePreset::Balanced
         ));
         assert_eq!(
             settings
                 .adaptive_engine
-                .processor_policy_values
+                .base_processor_policy
                 .performance_max,
             55
         );
 
-        apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
-        apply_workload_engine_preset(
-            &mut settings.workload_engine,
-            WorkloadEnginePreset::ForegroundFirst,
+        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
+        apply_cpu_scheduler_preset(
+            &mut settings.cpu_scheduler,
+            BuiltInAdaptiveEnginePreset::Performance,
         );
 
-        assert!(!power_mode_matches_preset(
+        assert!(!matches_built_in_adaptive_engine_preset(
             &settings,
-            PowerModePreset::Balanced
+            BuiltInAdaptiveEnginePreset::Balanced
         ));
-        assert!(workload_engine_matches_preset(
-            &settings.workload_engine,
-            WorkloadEnginePreset::ForegroundFirst
+        assert!(cpu_scheduler_matches_preset(
+            &settings.cpu_scheduler,
+            BuiltInAdaptiveEnginePreset::Performance
         ));
     }
 
     #[test]
-    fn adaptive_engine_toggle_disables_power_mode_preset_match() {
+    fn adaptive_engine_toggle_does_not_change_preset_match() {
         let mut settings = Settings::default();
 
-        for preset in PowerModePreset::ALL {
-            apply_power_mode_preset(&mut settings, preset);
+        for preset in BuiltInAdaptiveEnginePreset::ALL {
+            apply_built_in_adaptive_engine_preset(&mut settings, preset);
             let enabled = !settings.adaptive_engine.enabled;
             apply_adaptive_engine(&mut settings, enabled);
 
-            assert!(!power_mode_matches_preset(&settings, preset));
+            assert!(matches_built_in_adaptive_engine_preset(&settings, preset));
         }
     }
 
     #[test]
-    fn workload_engine_preset_match_ignores_hidden_preserve_flags() {
-        let mut settings = WorkloadEngineSettings::default();
-        apply_workload_engine_preset(&mut settings, WorkloadEnginePreset::ForegroundFirst);
-        settings
-            .workload_engine_io_priority
-            .preserve_foreground_priority = false;
-        settings
-            .workload_engine_thread_priority
-            .preserve_background_priority = false;
-        settings
-            .workload_engine_gpu_priority
-            .foreground_detection_enabled = false;
+    fn cpu_scheduler_preset_match_ignores_hidden_preserve_flags() {
+        let mut settings = CpuSchedulerSettings::default();
+        apply_cpu_scheduler_preset(&mut settings, BuiltInAdaptiveEnginePreset::Performance);
+        settings.io_priority.preserve_foreground_priority = false;
+        settings.thread_priority.preserve_background_priority = false;
+        settings.gpu_priority.foreground_detection_enabled = false;
 
-        assert!(workload_engine_matches_preset(
+        assert!(cpu_scheduler_matches_preset(
             &settings,
-            WorkloadEnginePreset::ForegroundFirst
+            BuiltInAdaptiveEnginePreset::Performance
         ));
     }
 

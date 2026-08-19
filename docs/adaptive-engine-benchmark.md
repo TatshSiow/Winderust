@@ -1,7 +1,7 @@
 # Adaptive Engine Benchmark Guide
 
 This guide documents the real-runtime and synthetic benchmarks used to tune
-Adaptive Engine operating profiles and Workload Engine scheduling presets.
+Adaptive Engine presets and CPU Scheduler scheduling presets.
 Synthetic results isolate mechanisms; release-binary runtime A/B results are
 the primary acceptance evidence.
 
@@ -11,9 +11,13 @@ The default benchmark measures foreground CPU work completion time while
 temporary background CPU workers compete for scheduler time. Lower milliseconds
 are better.
 
-Benchmark workers use a temporary `cscript.exe` workload distinct from the
-visible benchmark shell. Runtime results are rejected unless Windows reports an
-actual priority change on one of those workers.
+Benchmark workers use a temporary hidden `cscript.exe` workload distinct from
+the visible benchmark shell. They are created through the local WMI process
+provider so they are not descendants of that foreground shell; otherwise
+Winderust's foreground process-group protection would correctly protect the
+generated load. The runner also clears inherited Power Throttling before each
+measurement. Runtime results are rejected unless Windows reports an actual
+priority change on one of those workers.
 
 The optional `IoLoop` foreground scenario measures foreground temp-file
 read/write completion time and reports foreground IOPS under the same generated
@@ -85,15 +89,14 @@ Do not treat one local benchmark as universal. Record the CPU model, logical
 processor count, Windows power mode, and whether the machine has Intel-style
 P-cores plus E-cores or an all-P-core layout such as most AMD desktop CPUs.
 
-Adaptive Engine's internal Workload Engine masking is topology-aware:
+Adaptive Engine's internal CPU Scheduler masking is topology-aware:
 
-- Hybrid CPUs: background affinity candidates prefer E-cores, then choose the
-  least-loaded allowed E-cores when load data is available.
-- All-P-core CPUs: background affinity candidates use all logical processors
-  and choose the least-loaded allowed cores when load data is available.
-- Automatic CPU-share floors are intentionally different: hybrid systems prefer
-  E-cores, while all-P-core systems reserve a clearer foreground lane without
-  going as far as Max Foreground.
+- Least-used selection ranks the configured All, P-core, or E-core logical-processor pool by
+  sampled load and assigns the configured processor-limit share with rebalance hysteresis.
+- Fixed selections can target P-cores, E-cores, all/P/E cores without SMT, or an exact custom
+  processor mask.
+- The per-app CPU threshold controls when a background app becomes eligible; the foreground or
+  system threshold still controls when pressure restraint is active.
 
 Benchmark matrix for preset changes:
 
@@ -123,12 +126,14 @@ design provides useful policy constraints:
 - [Energy Aware Scheduling](https://docs.kernel.org/scheduler/sched-energy.html)
   uses energy-aware placement below its overutilization point, then falls back
   to normal load balancing when capacity is saturated. Winderust similarly
-  releases CPU-set placement at foreground saturation, but keeps relative
-  priority and EcoQoS hints active.
+  releases CPU-set placement at foreground saturation. While pressure remains
+  active, it keeps the configured priority and EcoQoS hints across eligible
+  Visible Window and Background processes; only selected hot Background
+  candidates receive processor-allocation escalation.
 - [cgroup v2 CPU control](https://docs.kernel.org/admin-guide/cgroup-v2.html)
   distinguishes work-conserving weights from hard bandwidth limits. Winderust
-  applies priority and QoS first; restrictive CPU placement is an escalation,
-  not the first response.
+  keeps visible-window restraint soft; selected background apps can receive the
+  configured processor restriction in the same pressure pass.
 - Keep total pressure as whole-machine utilization, but measure a hot process
   against one logical processor's capacity. Otherwise the same single-threaded
   offender appears colder merely because the PC has more logical processors.
@@ -161,7 +166,7 @@ Keep this in sync with the Adaptive Engine preset values in
 | Preset | Benchmark model |
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
-| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, EcoQoS, Below Normal background process priority, and at most 6 restrained workers. Priority assists are disabled. |
+| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, EcoQoS, Below Normal background process priority, and targeted restraint of at most 4 workers. Priority assists are disabled. |
 | Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling with a higher processor ceiling than Powersave. |
 | Performance | High processor policy (`min 25`, `max 100`, efficient aggressive boost) plus Foreground First scheduling, EcoQoS, Below Normal background process priority, Very Low background I/O and memory priority, Below Normal background thread/GPU priority, and at most 8 restrained workers. |
 | Speed | Aggressive processor policy (`parking 100`, `min 25`, `max 100`, aggressive boost) plus Maximum Foreground scheduling, a 10% background CPU target, foreground Above Normal/High assists, Very Low/Idle background assists, and at most 12 restrained workers. |
@@ -176,7 +181,7 @@ Run from the repository root:
 
 ```powershell
 cargo check --locked
-cargo test --locked workload_engine
+cargo test --locked cpu_scheduler
 ```
 
 For cleaner benchmark results:
@@ -201,18 +206,41 @@ Primary real-runtime Balanced/Low Impact A/B matrix:
 .\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 4 -Rounds 5
 ```
 
+Use `-DisableBackgroundProcessorLimit`,
+`-ProcessRestraintThresholdPercent <1-100>`, or
+`-MaximumRestrainedApps <1-32>` only for controlled tuning variants. Use
+`-ForegroundOrSystemCpuThresholdPercent <1-100>` to force a known activation
+threshold during controlled CPU Scheduler comparisons; the
+default command keeps the serialized Low Impact values.
+
+Use `-BackgroundPressureAcBoostPolicy <0-100>` and
+`-BackgroundPressureAcBoostMode <mode>` to screen an A/C Background Pressure
+profile without changing the app defaults. The selected values are written into
+the JSON report. Focus and Launch remains at its default profile values.
+
+Use `-MinimumPowerSavingPercent 20` only when testing an explicit power-saving
+objective. The default remains `-2`, which rejects a package-power regression
+beyond 2% without pretending that every responsiveness preset must save 20% in
+a foreground-contended Focus and Launch workload.
+
 The runtime benchmark uses an isolated portable configuration with the current
-500 ms cadence and explicitly enables the current Balanced processor policy and
-Low Impact Workload Engine preset. Use an even pass count of at least four so
+500 ms Processor Power cadence and 1.5 second Low Impact CPU Scheduler reaction
+interval. It explicitly enables the current Balanced processor policy and Low
+Impact CPU Scheduler preset. Use an even pass count of at least four so
 Stock-first and Adaptive-first orders are equally represented. Stock and
 Adaptive cases receive the same 100-second background-load warmup and 30-second
 cooldown before measurement. The JSON validation gate requires observed
-Workload Engine priority control, at least 3% aggregate median and P95
+CPU Scheduler priority control, at least 3% aggregate median and P95
 improvement, at least 85% retained background throughput, and no package-power
 regression beyond 2%. A run that only creates the adaptive power plan without
 changing a generated worker priority is invalid for scheduler tuning.
 
-The runner adds the exact PowerShell benchmark-host path to Workload Engine
+The JSON also records `worker_efficiency_enabled_counts` and
+`worker_efficiency_coverage_percent` from direct Windows Power Throttling
+queries. Use them to distinguish a missing EcoQoS application from a valid
+control whose measured package-power effect simply misses the selected gate.
+
+The runner adds the exact PowerShell benchmark-host path to CPU Scheduler
 exclusions. Every case is rejected if that host leaves Normal priority or if any
 generated worker exits before measurement completes. These are benchmark
 integrity requirements: without them, Winderust can restrain the workload being
@@ -221,7 +249,7 @@ treated as foreground or a dead worker can create a false latency win.
 Synthetic mechanism-isolation command:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+.\scripts\cpu_scheduler_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
 Use `-ProcessTier Focus`, `-ProcessTier VisibleWindow`, or
@@ -231,7 +259,7 @@ The default is `Focus`.
 For pressure-transition validation, include moderate load, foreground
 saturation at 85% or more of whole-machine CPU, and recovery below the restore
 band. At saturation, priority and EcoQoS must remain active while automatic CPU
-Sets relax to 100%; recovery must not oscillate before the cooldown expires.
+Sets relax to 100%; recovery must not oscillate before the recovery period expires.
 
 The score suite runs by default. Use `-ScoreIterations`, `-ScoreDataKb`, and
 `-ScoreRounds` to scale it, or `-SkipScoreBenchmark` when validating only the
@@ -240,19 +268,19 @@ older foreground-latency path.
 Foreground file-I/O scenario:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
+.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
 ```
 
 Foreground message-loop scenario:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
+.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
 ```
 
 Winderust launch scenario:
 
 ```powershell
-.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
 ```
 
 Power-drain benchmark:
@@ -373,7 +401,7 @@ embedding a moving "latest result" here.
   CPU-only work may not have a GPU context, so `gpu_priority_unavailable` is
   expected on many systems.
 - It does not test real foreground-app detection, Winderust exclusions, restore,
-  cooldown, launch boost,
+  cooldown, the Focus and Launch profile,
   or failure handling.
 - Hard affinity may make CPU-share behavior look harsher than Winderust CPU Sets (Soft).
 - Thermal throttling and Windows background services can move results by several
@@ -388,7 +416,7 @@ Run:
 
 ```powershell
 cargo check --locked
-cargo test --locked workload_engine
+cargo test --locked cpu_scheduler
 cargo test --locked
 git diff --check
 ```

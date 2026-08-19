@@ -58,58 +58,46 @@ impl WinderustApp {
                                 .gpu_priority
                                 .foreground_priority
                                 .safe_when_advanced_disabled();
-                            app.settings
-                                .workload_engine
-                                .workload_engine_io_priority
-                                .background_priority = app
+                            app.settings.cpu_scheduler.io_priority.background_priority = app
                                 .settings
-                                .workload_engine
-                                .workload_engine_io_priority
+                                .cpu_scheduler
+                                .io_priority
                                 .background_priority
                                 .safe_when_advanced_disabled();
-                            app.settings
-                                .workload_engine
-                                .workload_engine_io_priority
-                                .foreground_priority = app
+                            app.settings.cpu_scheduler.io_priority.foreground_priority = app
                                 .settings
-                                .workload_engine
-                                .workload_engine_io_priority
+                                .cpu_scheduler
+                                .io_priority
                                 .foreground_priority
                                 .safe_when_advanced_disabled();
                             app.settings
-                                .workload_engine
-                                .workload_engine_thread_priority
+                                .cpu_scheduler
+                                .thread_priority
                                 .background_priority = app
                                 .settings
-                                .workload_engine
-                                .workload_engine_thread_priority
+                                .cpu_scheduler
+                                .thread_priority
                                 .background_priority
                                 .safe_when_advanced_disabled();
                             app.settings
-                                .workload_engine
-                                .workload_engine_thread_priority
+                                .cpu_scheduler
+                                .thread_priority
                                 .foreground_priority = app
                                 .settings
-                                .workload_engine
-                                .workload_engine_thread_priority
+                                .cpu_scheduler
+                                .thread_priority
                                 .foreground_priority
                                 .safe_when_advanced_disabled();
-                            app.settings
-                                .workload_engine
-                                .workload_engine_gpu_priority
-                                .background_priority = app
+                            app.settings.cpu_scheduler.gpu_priority.background_priority = app
                                 .settings
-                                .workload_engine
-                                .workload_engine_gpu_priority
+                                .cpu_scheduler
+                                .gpu_priority
                                 .background_priority
                                 .safe_when_advanced_disabled();
-                            app.settings
-                                .workload_engine
-                                .workload_engine_gpu_priority
-                                .foreground_priority = app
+                            app.settings.cpu_scheduler.gpu_priority.foreground_priority = app
                                 .settings
-                                .workload_engine
-                                .workload_engine_gpu_priority
+                                .cpu_scheduler
+                                .gpu_priority
                                 .foreground_priority
                                 .safe_when_advanced_disabled();
                             for rule in &mut app.settings.process_priority.exclusions {
@@ -212,28 +200,22 @@ fn sanitize_visible_window_priority_values(settings: &mut Settings) {
         .gpu_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
-    settings
-        .workload_engine
-        .workload_engine_io_priority
-        .visible_window_priority = settings
-        .workload_engine
-        .workload_engine_io_priority
+    settings.cpu_scheduler.io_priority.visible_window_priority = settings
+        .cpu_scheduler
+        .io_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
     settings
-        .workload_engine
-        .workload_engine_thread_priority
+        .cpu_scheduler
+        .thread_priority
         .visible_window_priority = settings
-        .workload_engine
-        .workload_engine_thread_priority
+        .cpu_scheduler
+        .thread_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
-    settings
-        .workload_engine
-        .workload_engine_gpu_priority
-        .visible_window_priority = settings
-        .workload_engine
-        .workload_engine_gpu_priority
+    settings.cpu_scheduler.gpu_priority.visible_window_priority = settings
+        .cpu_scheduler
+        .gpu_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
 }
@@ -250,18 +232,14 @@ mod tests {
             ProcessThreadPrioritySetting::TimeCritical;
         settings.io_priority.visible_window_priority = ProcessIoPrioritySetting::Critical;
         settings.gpu_priority.visible_window_priority = ProcessGpuPrioritySetting::Realtime;
+        settings.cpu_scheduler.io_priority.visible_window_priority =
+            ProcessIoPrioritySetting::Critical;
         settings
-            .workload_engine
-            .workload_engine_io_priority
-            .visible_window_priority = ProcessIoPrioritySetting::Critical;
-        settings
-            .workload_engine
-            .workload_engine_thread_priority
+            .cpu_scheduler
+            .thread_priority
             .visible_window_priority = ProcessThreadPrioritySetting::TimeCritical;
-        settings
-            .workload_engine
-            .workload_engine_gpu_priority
-            .visible_window_priority = ProcessGpuPrioritySetting::Realtime;
+        settings.cpu_scheduler.gpu_priority.visible_window_priority =
+            ProcessGpuPrioritySetting::Realtime;
 
         sanitize_visible_window_priority_values(&mut settings);
 
@@ -282,24 +260,18 @@ mod tests {
             ProcessGpuPrioritySetting::AboveNormal
         );
         assert_eq!(
-            settings
-                .workload_engine
-                .workload_engine_io_priority
-                .visible_window_priority,
+            settings.cpu_scheduler.io_priority.visible_window_priority,
             ProcessIoPrioritySetting::Normal
         );
         assert_eq!(
             settings
-                .workload_engine
-                .workload_engine_thread_priority
+                .cpu_scheduler
+                .thread_priority
                 .visible_window_priority,
             ProcessThreadPrioritySetting::Highest
         );
         assert_eq!(
-            settings
-                .workload_engine
-                .workload_engine_gpu_priority
-                .visible_window_priority,
+            settings.cpu_scheduler.gpu_priority.visible_window_priority,
             ProcessGpuPrioritySetting::AboveNormal
         );
     }

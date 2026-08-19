@@ -42,20 +42,11 @@ fn activity_input_hook_required(settings: &Settings) -> bool {
         && settings.by_activity.power_plans.performance_guid.is_some()
 }
 
-pub(super) fn workload_refresh_interval(
-    settings: &Settings,
-    hidden_to_tray: bool,
-    adaptive_engine_enabled: bool,
-) -> Duration {
-    if adaptive_power_plan_required(settings) {
-        WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL
-    } else {
-        automation_refresh_interval(
-            hidden_to_tray,
-            adaptive_engine_enabled,
-            WORKLOAD_ENGINE_REFRESH_INTERVAL,
-        )
-    }
+pub(super) fn cpu_scheduler_refresh_interval(settings: &Settings) -> Duration {
+    Duration::from_millis(settings.cpu_scheduler.reaction_time_ms.clamp(
+        crate::config::CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS,
+        crate::config::CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS,
+    ))
 }
 
 pub(super) fn feature_refresh_required(settings: &Settings, feature_enabled: bool) -> bool {
@@ -66,14 +57,10 @@ fn enabled_executable_path_rule(enabled: bool, executable_path: &str) -> bool {
     enabled && std::path::Path::new(executable_path.trim()).is_absolute()
 }
 
-pub(super) fn workload_engine_required(settings: &Settings) -> bool {
-    let workload = &settings.workload_engine;
+pub(super) fn cpu_scheduler_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled
-        && workload.enabled
-        && (workload.lower_background_apps
-            || workload.workload_engine_background_efficiency_enabled
-            || workload.workload_engine_enabled
-            || workload.boost_foreground_app)
+        && (settings.cpu_scheduler.cpu_pressure_restraint_enabled
+            || settings.cpu_scheduler.limit_background_processors_enabled)
 }
 
 pub(super) fn app_suspension_required(settings: &Settings) -> bool {
@@ -125,94 +112,64 @@ pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
 pub(super) fn io_priority_required(settings: &Settings) -> bool {
     settings.io_priority.enabled
         || (settings.adaptive_engine.enabled
-            && settings.workload_engine.enabled
-            && (settings
-                .workload_engine
-                .lower_background_io_priority_enabled
-                || settings.workload_engine.workload_engine_io_priority.enabled))
+            && settings.cpu_scheduler.cpu_pressure_restraint_enabled
+            && settings.cpu_scheduler.io_priority.enabled)
 }
 
-pub(super) fn workload_engine_priority_assist_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled
-        && settings.workload_engine.enabled
-        && settings.workload_engine.workload_engine_enabled
+pub(super) fn cpu_scheduler_priority_assist_required(settings: &Settings) -> bool {
+    settings.adaptive_engine.enabled && settings.cpu_scheduler.cpu_pressure_restraint_enabled
 }
 
 pub(super) fn thread_priority_required(settings: &Settings) -> bool {
     settings.thread_priority.enabled
-        || (workload_engine_priority_assist_required(settings)
-            && settings
-                .workload_engine
-                .workload_engine_thread_priority
-                .enabled)
+        || (cpu_scheduler_priority_assist_required(settings)
+            && settings.cpu_scheduler.thread_priority.enabled)
 }
 
 pub(super) fn dynamic_priority_boost_required(settings: &Settings) -> bool {
     settings.dynamic_priority_boost.enabled
-        || (workload_engine_priority_assist_required(settings)
-            && settings
-                .workload_engine
-                .workload_engine_dynamic_priority_boost
-                .enabled)
+        || (cpu_scheduler_priority_assist_required(settings)
+            && settings.cpu_scheduler.dynamic_priority_boost.enabled)
 }
 
 pub(super) fn gpu_priority_required(settings: &Settings) -> bool {
     settings.gpu_priority.enabled
-        || (workload_engine_priority_assist_required(settings)
-            && settings
-                .workload_engine
-                .workload_engine_gpu_priority
-                .enabled)
+        || (cpu_scheduler_priority_assist_required(settings)
+            && settings.cpu_scheduler.gpu_priority.enabled)
 }
 
 pub(super) fn effective_io_priority_settings(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> crate::config::IoPrioritySettings {
     let mut io_priority = settings.io_priority.clone();
-    if adaptive_io_priority_active(settings, workload_engine_active) {
-        let auto_io_priority = workload_engine_io_priority_settings(settings);
+    if adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
+        let auto_io_priority = io_priority_settings(settings);
         io_priority = auto_io_priority;
         io_priority
             .exclusions
-            .extend(settings.workload_engine.workload_engine_exclusions.clone());
+            .extend(settings.cpu_scheduler.custom_rules.clone());
     }
     io_priority
 }
 
 pub(super) fn io_priority_control_owner(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> ControlOwner {
-    if adaptive_io_priority_active(settings, workload_engine_active) {
+    if adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
         ControlOwner::AdaptiveEngine
     } else {
         ControlOwner::IoPriority
     }
 }
 
-fn adaptive_io_priority_active(settings: &Settings, workload_engine_active: bool) -> bool {
-    workload_engine_active
-        && (settings.workload_engine.workload_engine_io_priority.enabled
-            || settings
-                .workload_engine
-                .lower_background_io_priority_enabled)
+fn adaptive_io_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
+    cpu_pressure_restraint_active && settings.cpu_scheduler.io_priority.enabled
 }
 
-pub(super) fn workload_engine_io_priority_settings(
-    settings: &Settings,
-) -> crate::config::IoPrioritySettings {
-    let mut io_priority = settings.workload_engine.workload_engine_io_priority.clone();
-    if !io_priority.enabled
-        && settings
-            .workload_engine
-            .lower_background_io_priority_enabled
-    {
-        io_priority.enabled = true;
-        io_priority.foreground_priority = ProcessIoPriority::Normal.into();
-        io_priority.background_priority =
-            settings.workload_engine.lower_background_io_priority.into();
-    }
+pub(super) fn io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
+    let mut io_priority = settings.cpu_scheduler.io_priority.clone();
     io_priority.foreground_detection_enabled = true;
     io_priority.visible_window_detection_enabled = true;
     io_priority.preserve_foreground_priority = true;
@@ -223,14 +180,11 @@ pub(super) fn workload_engine_io_priority_settings(
 
 pub(super) fn effective_thread_priority_settings(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> crate::config::ThreadPrioritySettings {
     let mut thread_priority = settings.thread_priority.clone();
-    if adaptive_thread_priority_active(settings, workload_engine_active) {
-        thread_priority = settings
-            .workload_engine
-            .workload_engine_thread_priority
-            .clone();
+    if adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
+        thread_priority = settings.cpu_scheduler.thread_priority.clone();
         thread_priority.foreground_detection_enabled = true;
         thread_priority.visible_window_detection_enabled = true;
         thread_priority.preserve_foreground_priority = true;
@@ -238,55 +192,52 @@ pub(super) fn effective_thread_priority_settings(
         thread_priority.preserve_background_priority = true;
         thread_priority
             .exclusions
-            .extend(settings.workload_engine.workload_engine_exclusions.clone());
+            .extend(settings.cpu_scheduler.custom_rules.clone());
     }
     thread_priority
 }
 
 pub(super) fn thread_priority_control_owner(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> ControlOwner {
-    if adaptive_thread_priority_active(settings, workload_engine_active) {
+    if adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
         ControlOwner::AdaptiveEngine
     } else {
         ControlOwner::ThreadPriority
     }
 }
 
-fn adaptive_thread_priority_active(settings: &Settings, workload_engine_active: bool) -> bool {
-    workload_engine_active
-        && workload_engine_priority_assist_required(settings)
-        && settings
-            .workload_engine
-            .workload_engine_thread_priority
-            .enabled
+fn adaptive_thread_priority_active(
+    settings: &Settings,
+    cpu_pressure_restraint_active: bool,
+) -> bool {
+    cpu_pressure_restraint_active
+        && cpu_scheduler_priority_assist_required(settings)
+        && settings.cpu_scheduler.thread_priority.enabled
 }
 
 pub(super) fn effective_dynamic_priority_boost_settings(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> crate::config::DynamicPriorityBoostSettings {
     let mut dynamic_priority_boost = settings.dynamic_priority_boost.clone();
-    if adaptive_dynamic_priority_boost_active(settings, workload_engine_active) {
-        dynamic_priority_boost = settings
-            .workload_engine
-            .workload_engine_dynamic_priority_boost
-            .clone();
+    if adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
+        dynamic_priority_boost = settings.cpu_scheduler.dynamic_priority_boost.clone();
         dynamic_priority_boost.foreground_detection_enabled = true;
         dynamic_priority_boost.visible_window_detection_enabled = true;
         dynamic_priority_boost
             .exclusions
-            .extend(settings.workload_engine.workload_engine_exclusions.clone());
+            .extend(settings.cpu_scheduler.custom_rules.clone());
     }
     dynamic_priority_boost
 }
 
 pub(super) fn dynamic_priority_boost_control_owner(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> ControlOwner {
-    if adaptive_dynamic_priority_boost_active(settings, workload_engine_active) {
+    if adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
         ControlOwner::AdaptiveEngine
     } else {
         ControlOwner::DynamicPriorityBoost
@@ -295,26 +246,20 @@ pub(super) fn dynamic_priority_boost_control_owner(
 
 fn adaptive_dynamic_priority_boost_active(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> bool {
-    workload_engine_active
-        && workload_engine_priority_assist_required(settings)
-        && settings
-            .workload_engine
-            .workload_engine_dynamic_priority_boost
-            .enabled
+    cpu_pressure_restraint_active
+        && cpu_scheduler_priority_assist_required(settings)
+        && settings.cpu_scheduler.dynamic_priority_boost.enabled
 }
 
 pub(super) fn effective_gpu_priority_settings(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> crate::config::GpuPrioritySettings {
     let mut gpu_priority = settings.gpu_priority.clone();
-    if adaptive_gpu_priority_active(settings, workload_engine_active) {
-        gpu_priority = settings
-            .workload_engine
-            .workload_engine_gpu_priority
-            .clone();
+    if adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
+        gpu_priority = settings.cpu_scheduler.gpu_priority.clone();
         gpu_priority.foreground_detection_enabled = true;
         gpu_priority.visible_window_detection_enabled = true;
         gpu_priority.preserve_foreground_priority = true;
@@ -322,29 +267,26 @@ pub(super) fn effective_gpu_priority_settings(
         gpu_priority.preserve_background_priority = true;
         gpu_priority
             .exclusions
-            .extend(settings.workload_engine.workload_engine_exclusions.clone());
+            .extend(settings.cpu_scheduler.custom_rules.clone());
     }
     gpu_priority
 }
 
 pub(super) fn gpu_priority_control_owner(
     settings: &Settings,
-    workload_engine_active: bool,
+    cpu_pressure_restraint_active: bool,
 ) -> ControlOwner {
-    if adaptive_gpu_priority_active(settings, workload_engine_active) {
+    if adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
         ControlOwner::AdaptiveEngine
     } else {
         ControlOwner::GpuPriority
     }
 }
 
-fn adaptive_gpu_priority_active(settings: &Settings, workload_engine_active: bool) -> bool {
-    workload_engine_active
-        && workload_engine_priority_assist_required(settings)
-        && settings
-            .workload_engine
-            .workload_engine_gpu_priority
-            .enabled
+fn adaptive_gpu_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
+    cpu_pressure_restraint_active
+        && cpu_scheduler_priority_assist_required(settings)
+        && settings.cpu_scheduler.gpu_priority.enabled
 }
 
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
@@ -354,7 +296,7 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
             || processor_affinity_hard_required(settings)
             || core_limiter_required(settings)
             || by_running_app_required(settings)
-            || workload_engine_required(settings)
+            || cpu_scheduler_required(settings)
             || settings.process_priority.enabled
             || thread_priority_required(settings)
             || dynamic_priority_boost_required(settings)

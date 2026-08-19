@@ -172,7 +172,6 @@ impl ProcessPriorityManager {
                     visible_window,
                 );
                 let priority = match configured_override {
-                    Some(Some(ProcessPrioritySetting::Auto)) => default_priority,
                     Some(Some(priority)) => priority,
                     Some(None) => return None,
                     None => default_priority,

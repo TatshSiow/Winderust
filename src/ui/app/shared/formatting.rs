@@ -219,8 +219,8 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
         "Thread Priority active." => "runtime_status.thread_priority_active",
         "Process priority defaults disabled." => "runtime_status.process_priority_disabled",
         "Process priority defaults active." => "runtime_status.process_priority_active",
-        "Workload Engine disabled." => "runtime_status.workload_engine_disabled",
-        "Workload Engine active." => "runtime_status.workload_engine_active",
+        "CPU Scheduler disabled." => "runtime_status.cpu_scheduler_disabled",
+        "CPU Scheduler active." => "runtime_status.cpu_pressure_restraint_active",
         "CPU Sets (Soft) active." => "runtime_status.cpu_sets_soft_active",
         "Processor Affinity (Hard) active." => {
             "runtime_status.processor_affinity_hard_active"

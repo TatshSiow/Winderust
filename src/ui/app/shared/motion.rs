@@ -589,15 +589,6 @@ pub(in crate::ui::app) fn animated_expanded_child(
     }
 }
 
-pub(in crate::ui::app) fn expanded_child(child: AnyElement) -> AnyElement {
-    div()
-        .w_full()
-        .min_w(px(0.0))
-        .overflow_hidden()
-        .child(child)
-        .into_any_element()
-}
-
 pub(in crate::ui::app) fn animated_expanded_child_with_height(
     id: impl Into<SharedString>,
     target_height: f32,
@@ -628,11 +619,6 @@ pub(in crate::ui::app) fn animated_expanded_child_with_height(
     } else {
         container.into_any_element()
     }
-}
-
-pub(in crate::ui::app) fn remember_expanded_child_hidden(id: impl Into<SharedString>) {
-    let id = id.into();
-    let _ = control_motion_generation(&format!("expanded-child-{id}"), "hidden");
 }
 
 pub(in crate::ui::app) fn animated_rule_card_body_child(

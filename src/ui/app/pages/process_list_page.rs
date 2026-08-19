@@ -2397,8 +2397,8 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         }
         ProcessListColumn::AdaptiveEngine => {
             let included = !settings
-                .workload_engine
-                .workload_engine_exclusion_enabled_for(&process_name);
+                .cpu_scheduler
+                .custom_rule_enabled_for(&process_name);
             options = process_list_include_exclude_editor_options(
                 options,
                 &process_name,

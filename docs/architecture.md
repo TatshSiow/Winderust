@@ -78,7 +78,7 @@ target, but every mutation reopens and revalidates the exact process or thread i
 - Process List reversible actions use the same RuntimeCore controllers as automatic policy and
   may be superseded by a later automatic reconciliation.
 - CPU allocation has one coordinator with this precedence: CPU Sets (Soft), Processor Affinity
-  (Hard), Core Limiter, then Adaptive Engine / Workload Engine.
+  (Hard), Core Limiter, then Adaptive Engine / CPU Scheduler.
 - Process Priority and Power Throttling share one compound controller so Efficiency Mode cannot
   leave a half-applied state.
 

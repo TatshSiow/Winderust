@@ -111,8 +111,8 @@ impl WinderustApp {
         }
     }
 
-    pub(in crate::ui::app) fn processor_power_values(&self) -> ProcessorPowerAcDcValues {
-        ProcessorPowerAcDcValues::new(
+    pub(in crate::ui::app) fn processor_power_values(&self) -> ProcessorPowerSourceValues {
+        ProcessorPowerSourceValues::new(
             ProcessorPowerValues::new_with_boost_mode(
                 self.processor_power_ac_core_parking_min as u32,
                 self.processor_power_ac_performance_min as u32,
@@ -121,11 +121,11 @@ impl WinderustApp {
                 self.processor_power_ac_boost_mode,
             ),
             ProcessorPowerValues::new_with_boost_mode(
-                self.processor_power_dc_core_parking_min as u32,
-                self.processor_power_dc_performance_min as u32,
-                self.processor_power_dc_performance_max as u32,
-                self.processor_power_dc_boost_policy as u32,
-                self.processor_power_dc_boost_mode,
+                self.processor_power_battery_core_parking_min as u32,
+                self.processor_power_battery_performance_min as u32,
+                self.processor_power_battery_performance_max as u32,
+                self.processor_power_battery_boost_policy as u32,
+                self.processor_power_battery_boost_mode,
             ),
         )
         .normalized()
@@ -133,7 +133,7 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn set_processor_power_values(
         &mut self,
-        values: ProcessorPowerAcDcValues,
+        values: ProcessorPowerSourceValues,
     ) {
         let values = values.normalized();
         self.processor_power_ac_core_parking_min = values.ac.core_parking_min as u64;
@@ -141,11 +141,11 @@ impl WinderustApp {
         self.processor_power_ac_performance_max = values.ac.performance_max as u64;
         self.processor_power_ac_boost_policy = values.ac.boost_policy as u64;
         self.processor_power_ac_boost_mode = values.ac.boost_mode;
-        self.processor_power_dc_core_parking_min = values.dc.core_parking_min as u64;
-        self.processor_power_dc_performance_min = values.dc.performance_min as u64;
-        self.processor_power_dc_performance_max = values.dc.performance_max as u64;
-        self.processor_power_dc_boost_policy = values.dc.boost_policy as u64;
-        self.processor_power_dc_boost_mode = values.dc.boost_mode;
+        self.processor_power_battery_core_parking_min = values.battery.core_parking_min as u64;
+        self.processor_power_battery_performance_min = values.battery.performance_min as u64;
+        self.processor_power_battery_performance_max = values.battery.performance_max as u64;
+        self.processor_power_battery_boost_policy = values.battery.boost_policy as u64;
+        self.processor_power_battery_boost_mode = values.battery.boost_mode;
     }
 
     pub(in crate::ui::app) fn set_processor_power_boost_mode(
@@ -155,7 +155,7 @@ impl WinderustApp {
     ) {
         match source {
             ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode = boost_mode,
-            ProcessorPowerSource::Dc => self.processor_power_dc_boost_mode = boost_mode,
+            ProcessorPowerSource::Battery => self.processor_power_battery_boost_mode = boost_mode,
         }
         self.active_power_plan_picker = None;
         self.processor_power_dirty = true;
@@ -180,57 +180,20 @@ impl WinderustApp {
             ProcessorPowerSlider::AcBoostPolicy => {
                 self.processor_power_ac_boost_policy = value;
             }
-            ProcessorPowerSlider::DcCoreParkingMin => {
-                self.processor_power_dc_core_parking_min = value;
+            ProcessorPowerSlider::BatteryCoreParkingMin => {
+                self.processor_power_battery_core_parking_min = value;
             }
-            ProcessorPowerSlider::DcPerformanceMin => {
-                self.processor_power_dc_performance_min = value;
+            ProcessorPowerSlider::BatteryPerformanceMin => {
+                self.processor_power_battery_performance_min = value;
             }
-            ProcessorPowerSlider::DcPerformanceMax => {
-                self.processor_power_dc_performance_max = value;
+            ProcessorPowerSlider::BatteryPerformanceMax => {
+                self.processor_power_battery_performance_max = value;
             }
-            ProcessorPowerSlider::DcBoostPolicy => {
-                self.processor_power_dc_boost_policy = value;
+            ProcessorPowerSlider::BatteryBoostPolicy => {
+                self.processor_power_battery_boost_policy = value;
             }
         }
         self.processor_power_dirty = true;
-    }
-
-    pub(in crate::ui::app) fn adaptive_engine_processor_policy_percent(
-        &self,
-        field: AdaptiveEngineProcessorPolicyField,
-    ) -> u32 {
-        let values = self
-            .settings
-            .adaptive_engine
-            .processor_policy_values
-            .normalized();
-        match field {
-            AdaptiveEngineProcessorPolicyField::CoreParkingMin => values.core_parking_min,
-            AdaptiveEngineProcessorPolicyField::PerformanceMin => values.performance_min,
-            AdaptiveEngineProcessorPolicyField::PerformanceMax => values.performance_max,
-            AdaptiveEngineProcessorPolicyField::BoostPolicy => values.boost_policy,
-        }
-    }
-
-    pub(in crate::ui::app) fn set_adaptive_engine_processor_policy_percent(
-        &mut self,
-        field: AdaptiveEngineProcessorPolicyField,
-        value: u64,
-    ) {
-        let mut values = self
-            .settings
-            .adaptive_engine
-            .processor_policy_values
-            .normalized();
-        let value = value.min(100) as u32;
-        match field {
-            AdaptiveEngineProcessorPolicyField::CoreParkingMin => values.core_parking_min = value,
-            AdaptiveEngineProcessorPolicyField::PerformanceMin => values.performance_min = value,
-            AdaptiveEngineProcessorPolicyField::PerformanceMax => values.performance_max = value,
-            AdaptiveEngineProcessorPolicyField::BoostPolicy => values.boost_policy = value,
-        }
-        self.settings.adaptive_engine.processor_policy_values = values.normalized();
     }
 
     pub(in crate::ui::app) fn sync_processor_power_slider_states(
@@ -256,20 +219,20 @@ impl WinderustApp {
                 self.processor_power_ac_boost_policy,
             ),
             (
-                ProcessorPowerSlider::DcCoreParkingMin,
-                self.processor_power_dc_core_parking_min,
+                ProcessorPowerSlider::BatteryCoreParkingMin,
+                self.processor_power_battery_core_parking_min,
             ),
             (
-                ProcessorPowerSlider::DcPerformanceMin,
-                self.processor_power_dc_performance_min,
+                ProcessorPowerSlider::BatteryPerformanceMin,
+                self.processor_power_battery_performance_min,
             ),
             (
-                ProcessorPowerSlider::DcPerformanceMax,
-                self.processor_power_dc_performance_max,
+                ProcessorPowerSlider::BatteryPerformanceMax,
+                self.processor_power_battery_performance_max,
             ),
             (
-                ProcessorPowerSlider::DcBoostPolicy,
-                self.processor_power_dc_boost_policy,
+                ProcessorPowerSlider::BatteryBoostPolicy,
+                self.processor_power_battery_boost_policy,
             ),
         ] {
             let input = processor_power_slider_input(&self.inputs, slider);
@@ -343,13 +306,13 @@ impl WinderustApp {
 }
 
 fn replace_processor_power_source(
-    mut current: ProcessorPowerAcDcValues,
+    mut current: ProcessorPowerSourceValues,
     source: ProcessorPowerSource,
     values: ProcessorPowerValues,
-) -> ProcessorPowerAcDcValues {
+) -> ProcessorPowerSourceValues {
     match source {
         ProcessorPowerSource::Ac => current.ac = values,
-        ProcessorPowerSource::Dc => current.dc = values,
+        ProcessorPowerSource::Battery => current.battery = values,
     }
     current.normalized()
 }
@@ -363,12 +326,12 @@ mod tests {
         let balanced = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced);
         let performance = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Performance);
         let saver = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
-        let current = ProcessorPowerAcDcValues::same(balanced);
+        let current = ProcessorPowerSourceValues::same(balanced);
 
         let ac = replace_processor_power_source(current, ProcessorPowerSource::Ac, performance);
-        assert_eq!(ac, ProcessorPowerAcDcValues::new(performance, balanced));
+        assert_eq!(ac, ProcessorPowerSourceValues::new(performance, balanced));
 
-        let dc = replace_processor_power_source(current, ProcessorPowerSource::Dc, saver);
-        assert_eq!(dc, ProcessorPowerAcDcValues::new(balanced, saver));
+        let battery = replace_processor_power_source(current, ProcessorPowerSource::Battery, saver);
+        assert_eq!(battery, ProcessorPowerSourceValues::new(balanced, saver));
     }
 }

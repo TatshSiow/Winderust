@@ -60,7 +60,7 @@ pub struct AutoExclusionPatch {
     pub cpu_sets_soft: Vec<String>,
     pub processor_affinity_hard: Vec<String>,
     pub core_limiter: Vec<String>,
-    pub workload_engine: Vec<String>,
+    pub cpu_scheduler: Vec<String>,
     pub io_priority: Vec<String>,
     pub process_priority: Vec<String>,
     pub thread_priority: Vec<String>,
@@ -78,7 +78,7 @@ impl Default for AutoExclusionPatch {
             cpu_sets_soft: Vec::new(),
             processor_affinity_hard: Vec::new(),
             core_limiter: Vec::new(),
-            workload_engine: Vec::new(),
+            cpu_scheduler: Vec::new(),
             io_priority: Vec::new(),
             process_priority: Vec::new(),
             thread_priority: Vec::new(),
@@ -545,8 +545,8 @@ fn apply_auto_exclusion_patch_to(settings: &mut Settings, patch: &AutoExclusionP
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
-        &mut settings.workload_engine.workload_engine_exclusions,
-        &patch.workload_engine,
+        &mut settings.cpu_scheduler.custom_rules,
+        &patch.cpu_scheduler,
         true,
         process_exclusion_rule,
         |rule| &rule.executable_path,

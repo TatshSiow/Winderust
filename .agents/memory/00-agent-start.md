@@ -61,7 +61,7 @@
   Object creation, assignment, membership, freeze/thaw, and the shared undocumented layout live in
   `src/platform/windows/suspension.rs`.
 - CPU allocation has one runtime coordinator and deterministic precedence: CPU Sets (Soft) >
-  Processor Affinity (Hard) > Core Limiter > Adaptive Engine / Workload Engine. Feature modules own
+  Processor Affinity (Hard) > Core Limiter > Adaptive Engine / CPU Scheduler. Feature modules own
   policy only; the coordinator alone owns affinity/CPU Set baselines, mutation, compensation,
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
@@ -72,8 +72,9 @@
 - Background Efficiency and Core Limiter custom rules use Focus, Visible Window, and Background
   columns with Default/Enabled/Disabled values and Focus > Visible Window > Background precedence.
   Default inherits the page-wide foreground/visible protection behavior.
-- Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Auto remains loadable for existing pre-release settings but is not offered in custom-rule selectors.
+- Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
+- Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and CPU Scheduler tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution does not use process failure suppression.
 - `src/control/timer_resolution.rs` is the sole Timer Resolution lifecycle owner;
@@ -98,7 +99,7 @@
 - Process Priority, Power Throttling/Efficiency Mode, Dynamic Priority Boost,
   Thread Priority, I/O Priority, GPU Priority, and Memory Priority are complete
   typed process-control cutovers. Static Priority Control, Background
-  Efficiency, Adaptive Engine/Workload Engine policies, and Process List
+  Efficiency, Adaptive Engine/CPU Scheduler policies, and Process List
   one-shot actions share their `RuntimeCore` controllers; feature code owns
   policy only, and the crash helper remains the independent recovery mirror.
   Dynamic Priority Boost's raw live query/set pair is isolated in
@@ -118,19 +119,25 @@
   query/set calls are isolated in `src/platform/windows/thread_priority.rs`.
   Thread Priority identity includes the exact process instance, thread ID, and
   thread creation time. Do not restore feature-owned setters, Process List
-  restore closures, or duplicate Workload Engine setters for these properties.
+  restore closures, or duplicate CPU Scheduler setters for these properties.
   GPU Priority treats a temporarily unavailable GPU scheduling context as
-  pending and retries without auto-excluding the process. Workload Engine keeps
+  pending and retries without auto-excluding the process. CPU Scheduler keeps
   Process Priority independent when Power Throttling is unavailable and
   remembers that unavailable control for the exact process instance so it does
   not retry-spam.
-- Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping Workload Engine claim, while non-overlapping Workload claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
-- CPU Sets, Processor Affinity, Core Limiter, and Workload Engine CPU allocation are a complete
+- Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping CPU Scheduler claim, while non-overlapping CPU Scheduler claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
+- CPU Sets, Processor Affinity, Core Limiter, and CPU Scheduler CPU allocation are a complete
   typed family cutover through `src/control/cpu_allocation.rs`. Do not restore feature-owned raw
   setters, property baselines, recovery calls, or affinity-owning `Drop` paths. Exact identity,
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
   the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
   `src/platform/windows/cpu_allocation.rs`.
+- CPU Scheduler has no separate master gate. Within an enabled Adaptive Engine, CPU Pressure
+  Restraint and Limit Background Processors run independently; disabling one must not disable or
+  apply the other. Limit Background Processors exposes one explicit processor selection:
+  least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
+  fixed P/E/no-SMT topology masks, or an exact custom mask. The per-app CPU threshold decides when a background app becomes eligible;
+  the shared CPU allocation coordinator remains the only mutation and restoration owner.
 - CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog. The
   topology-derived Core Presets are read-only: All, P-cores, E-cores, All cores no SMT, P-cores no
   SMT, and E-cores no SMT. Custom presets remain editable. Every rule independently selects Focus,
