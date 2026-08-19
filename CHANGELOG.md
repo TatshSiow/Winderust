@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## 0.6.0-alpha - 2026-08-19
+
+### Added
+
+- Add local executable browsing to custom process-rule pickers. (#17)
+- Add custom Adaptive Engine presets alongside read-only built-in presets.
+- Add separate A/C and battery presets to Advanced Power Plan Tuning.
+- Add editable CPU allocation presets, exact logical-processor selection, and topology presets for all cores, P-cores, E-cores, and no-SMT variants.
+- Add least-used processor selection across all processors, P-cores, or E-cores to Adaptive Engine CPU allocation.
+- Add standardized feature status side panels with process activity, successful-action, and failed-action details.
+
+### Changed
+
+- Replace Workload Engine with the redesigned CPU Scheduler inside Adaptive Engine.
+- Make CPU Pressure Restraint and Limit Background Processors independent.
+- Redesign Adaptive Engine settings and presets into focused CPU Behaviour, Processor Power, Priority Control, and Custom Rules tabs.
+- Standardize process rules around Focus Process, Visible Window, and Background tiers across priority, efficiency, and CPU controls.
+- Redesign CPU Sets (Soft) and Processor Affinity (Hard) rules around shared presets while keeping per-tier processor selection independent.
+- Redesign Advanced Power Plan Tuning around expandable A/C and battery cards and the shared save-confirmation flow.
+- Unify collapsible navigation and feature side panels with matching slide animations, compact controls, and stable search layout.
+- Improve sliders with hover and drag feedback, keyboard controls, and consistent value editing.
+- Centralize Windows runtime control and restoration behind typed controllers, and persistent settings behind dedicated application services.
+
+### Fixed
+
+- Preserve Process List rule edits when the rule-details modal loses focus or closes.
+- Close Process List overlays consistently when clicking outside them.
+- Prevent the local executable browser from crashing the application.
+- Prevent an unsuccessful administrator relaunch from silently closing Winderust.
+- Revalidate exact process identities for process actions to avoid acting on reused process IDs or stale process-tree links.
+- Improve clean-shutdown restoration across process controls, CPU allocation, App Suspension, Timer Resolution, and automatic power-plan switching, while hardening crash recovery for recoverable external state.
+- Reduce repeated retries and Action Log spam from inaccessible targets and failed restoration attempts.
+
 ## 0.5.0-alpha - 2026-08-06
 
 ### Added
