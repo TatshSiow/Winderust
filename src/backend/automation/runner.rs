@@ -902,28 +902,44 @@ impl RuntimeCore {
                         .collect();
                     let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
                 }
-                ProcessControlCommand::AppSuspensionFreezePath {
+                ProcessControlCommand::AppSuspensionPathAction {
                     executable_path,
+                    freeze,
                     result,
                 } => {
-                    let status = self.run_app_suspension_update(
-                        settings,
-                        std::slice::from_ref(&executable_path),
-                        observations,
-                    );
-                    let reply = self
-                        .app_suspension_manager
-                        .manual_freeze_result(&executable_path)
-                        .map(|()| status.clone())
-                        .map_err(|error| {
-                            RuntimeCommandError::CommandFailed(
-                                if !status.enabled || status.unsupported || status.status_unknown {
-                                    status.message.clone()
-                                } else {
-                                    error
-                                },
-                            )
-                        });
+                    let (status, reply) = if freeze {
+                        let status = self.run_app_suspension_update(
+                            settings,
+                            std::slice::from_ref(&executable_path),
+                            observations,
+                        );
+                        let reply = self
+                            .app_suspension_manager
+                            .manual_freeze_result(&executable_path)
+                            .map(|()| status.clone())
+                            .map_err(|error| {
+                                RuntimeCommandError::CommandFailed(
+                                    if !status.enabled
+                                        || status.unsupported
+                                        || status.status_unknown
+                                    {
+                                        status.message.clone()
+                                    } else {
+                                        error
+                                    },
+                                )
+                            });
+                        (status, reply)
+                    } else {
+                        let status = self
+                            .app_suspension_manager
+                            .release_suspended_path_for_user_intent(
+                                &mut self.app_suspension_controller,
+                                Path::new(&executable_path),
+                                &mut self.action_log,
+                            );
+                        (status.clone(), Ok(status))
+                    };
                     let _ = result.try_send(reply);
                     statuses.app_suspension = Some(status);
                 }

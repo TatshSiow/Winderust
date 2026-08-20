@@ -1,5 +1,3 @@
-#[cfg(feature = "architecture-diagnostics")]
-pub(crate) mod architecture_diagnostics;
 pub(crate) mod audio_activity;
 pub(crate) mod automation;
 pub(crate) mod crash_recovery;

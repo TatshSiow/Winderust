@@ -222,6 +222,13 @@ mod tests {
 
     use super::*;
 
+    use crate::{
+        action_log::ActionLog,
+        config::{AppSuspensionRule, AppSuspensionSettings},
+        control::suspension::SuspensionController,
+        features::advanced_controls::app_suspension::AppSuspensionManager,
+    };
+
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     static PROCESS_CALLS: AtomicUsize = AtomicUsize::new(0);
     static PROCESS_PATH_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -255,6 +262,8 @@ mod tests {
         PROCESS_PATH_CALLS.fetch_add(1, Ordering::Relaxed);
         for process in processes {
             process.image_path = Some(PathBuf::from(r"C:\Apps\test.exe"));
+            process.is_service_account = Some(false);
+            process.is_critical = Some(false);
         }
     }
 
@@ -365,6 +374,67 @@ mod tests {
     fn unavailable_visible_windows() -> Option<BTreeSet<u32>> {
         VISIBLE_WINDOW_CALLS.fetch_add(1, Ordering::Relaxed);
         None
+    }
+
+    #[test]
+    fn app_suspension_reports_a_running_app_after_process_enrichment() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
+        fn raw_processes() -> Result<Vec<ProcessInfo>, String> {
+            Ok(vec![ProcessInfo {
+                id: 42,
+                creation_time: Some(1),
+                parent_id: None,
+                session_id: Some(1),
+                user_name: None,
+                is_service_account: None,
+                is_critical: Some(false),
+                can_set_information: true,
+                name: "test.exe".to_owned(),
+                image_path: None,
+            }])
+        }
+
+        let path = r"C:\Apps\test.exe";
+        let mut observations = CycleObservations::with_sources(ObservationSources {
+            processes: raw_processes,
+            enrich_process_paths: enrich_paths,
+            foreground_process_id: || Some(7),
+            process_from_id: foreground_process,
+            visible_window_process_ids: visible_windows,
+            top_level_window_process_ids: top_level_windows,
+        });
+        let settings = AppSuspensionSettings {
+            enabled: true,
+            background_delay_seconds: 60,
+            suspendable_apps: vec![AppSuspensionRule {
+                enabled: true,
+                executable_path: path.to_owned(),
+                network_wake_enabled: false,
+                audio_wake_enabled: false,
+                network_download_threshold_bytes: 0,
+                network_download_threshold_unit: Default::default(),
+                network_upload_threshold_bytes: 0,
+                network_upload_threshold_unit: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let mut manager = AppSuspensionManager::default();
+        let mut controller = SuspensionController::default();
+        let mut action_log = ActionLog::new(8);
+
+        let snapshot = manager.update(
+            &mut controller,
+            &settings,
+            true,
+            true,
+            Some(7),
+            &[],
+            &mut observations,
+            &mut action_log,
+        );
+
+        assert_eq!(snapshot.running_apps, vec![path.to_owned()]);
     }
 
     #[test]

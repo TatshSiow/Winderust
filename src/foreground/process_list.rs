@@ -597,8 +597,6 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
 }
 
 pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
-    #[cfg(feature = "architecture-diagnostics")]
-    crate::architecture_diagnostics::record_process_snapshot_scan();
     let snapshot = process_snapshot()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -648,8 +646,6 @@ pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
 }
 
 pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
-    #[cfg(feature = "architecture-diagnostics")]
-    crate::architecture_diagnostics::record_process_path_enrichment_scan();
     for process in processes {
         let Some(handle) = open_process_for_query(process.id) else {
             continue;

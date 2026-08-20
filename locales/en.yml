@@ -691,7 +691,9 @@ app_suspension:
   suspendable_help: "Only apps in this list can be suspended after the background delay."
   no_suspendable: "No custom rules are configured."
   freeze: "Freeze"
+  thaw: "Thaw"
   manual_freeze_requested: "Manual freeze requested for %{process}."
+  manual_thaw_requested: "Manual thaw requested for %{process}."
   download_threshold: "Download Threshold"
   upload_threshold: "Upload Threshold"
   indicator:
@@ -970,7 +972,6 @@ cpu_allocation:
   e_cores: "E-cores"
   all_cores_no_smt: "All cores no SMT"
   p_cores_no_smt: "P-cores no SMT"
-  e_cores_no_smt: "E-cores no SMT"
   custom: "Custom"
   presets: "Presets"
   core_presets: "Core presets"

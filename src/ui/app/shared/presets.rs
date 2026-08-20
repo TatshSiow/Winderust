@@ -213,9 +213,6 @@ pub(in crate::ui::app) fn background_processor_selection_label(
         BackgroundProcessorSelection::PerformanceCoresNoSmt => {
             t!("cpu_allocation.p_cores_no_smt").to_string()
         }
-        BackgroundProcessorSelection::EfficiencyCoresNoSmt => {
-            t!("cpu_allocation.e_cores_no_smt").to_string()
-        }
         BackgroundProcessorSelection::Custom => t!("cpu_allocation.custom").to_string(),
     }
 }

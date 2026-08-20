@@ -197,9 +197,6 @@ pub(super) fn selected_background_processor_mask(
         BackgroundProcessorSelection::PerformanceCoresNoSmt => {
             kind_mask(LogicalProcessorKind::Performance) & no_smt_mask
         }
-        BackgroundProcessorSelection::EfficiencyCoresNoSmt => {
-            kind_mask(LogicalProcessorKind::Efficiency) & no_smt_mask
-        }
         BackgroundProcessorSelection::Custom => {
             cpu_allocation::logical_processor_indices_mask(specific_processors) & all_mask
         }

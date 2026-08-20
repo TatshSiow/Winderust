@@ -93,7 +93,7 @@ Adaptive Engine's internal CPU Scheduler masking is topology-aware:
 
 - Least-used selection ranks the configured All, P-core, or E-core logical-processor pool by
   sampled load and assigns the configured processor-limit share with rebalance hysteresis.
-- Fixed selections can target P-cores, E-cores, all/P/E cores without SMT, or an exact custom
+- Fixed selections can target P-cores, E-cores, all cores or P-cores without SMT, or an exact custom
   processor mask.
 - The per-app CPU threshold controls when a background app becomes eligible; the foreground or
   system threshold still controls when pressure restraint is active.

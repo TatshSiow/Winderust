@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## 0.6.1-alpha - 2026-08-20
+
+### Added
+
+- Add a Freeze/Thaw toggle to App Suspension.
+
+### Changed
+
+- Remove obsolete architecture diagnostic instrumentation and baseline tooling.
+- Use the version tag alone as the generated draft release title.
+
+### Fixed
+
+- Restore running-process detection in App Suspension.
+- Prevent Status panel cards from shifting when action messages change.
+- Remove the redundant E-core no-SMT option.
+
 ## 0.6.0-alpha - 2026-08-19
 
 ### Added

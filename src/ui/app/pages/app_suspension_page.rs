@@ -320,6 +320,10 @@ impl WinderustApp {
             .enumerate()
         {
             let process = rule.executable_path.clone();
+            let frozen = app_suspension::contains_process(
+                &self.feature_status.app_suspension.suspended_apps,
+                &process,
+            );
             let indicator = app_suspension_indicator(
                 &self.feature_status.app_suspension,
                 &process,
@@ -423,17 +427,29 @@ impl WinderustApp {
                         .justify_center()
                         .child(
                             control_button(Button::new(SharedString::from(format!(
-                                "freeze-suspension-{index}"
+                                "toggle-suspension-{index}"
                             ))))
                             .with_size(px(32.0))
-                            .icon(Icon::new(NavIcon::Snowflake).with_size(px(14.0)))
-                            .tooltip(t!("app_suspension.freeze").to_string())
+                            .icon(
+                                Icon::new(if frozen {
+                                    NavIcon::Play
+                                } else {
+                                    NavIcon::Snowflake
+                                })
+                                .with_size(px(14.0)),
+                            )
+                            .tooltip(
+                                t!(if frozen {
+                                    "app_suspension.thaw"
+                                } else {
+                                    "app_suspension.freeze"
+                                })
+                                .to_string(),
+                            )
                             .disabled(
-                                !rule_enabled
-                                    || !can_manual_freeze(
-                                        &self.feature_status.app_suspension,
-                                        &process,
-                                    ),
+                                !frozen
+                                    && (!rule_enabled
+                                        || !self.feature_status.app_suspension.enabled),
                             )
                             .on_click(cx.listener({
                                 let process = process.clone();
@@ -441,7 +457,7 @@ impl WinderustApp {
                                     cx.stop_propagation();
                                     let receiver = match app
                                         .runtime_handle
-                                        .request_app_suspension_freeze(&process)
+                                        .request_app_suspension_path_action(&process, !frozen)
                                     {
                                         Ok(receiver) => receiver,
                                         Err(error) => {
@@ -451,7 +467,11 @@ impl WinderustApp {
                                         }
                                     };
                                     app.status_message = t!(
-                                        "app_suspension.manual_freeze_requested",
+                                        if frozen {
+                                            "app_suspension.manual_thaw_requested"
+                                        } else {
+                                            "app_suspension.manual_freeze_requested"
+                                        },
                                         process = process
                                     )
                                     .to_string();

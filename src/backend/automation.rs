@@ -169,7 +169,7 @@ pub(crate) type MemoryTrimActionReceiver =
     Receiver<Result<MemoryTrimSnapshot, RuntimeCommandError>>;
 pub(crate) type ProcessTerminationActionReceiver =
     Receiver<Result<ProcessTerminationBatchResult, RuntimeCommandError>>;
-pub(crate) type AppSuspensionFreezeReceiver =
+pub(crate) type AppSuspensionPathActionReceiver =
     Receiver<Result<AppSuspensionSnapshot, RuntimeCommandError>>;
 
 impl ProcessControlBatchResult {
@@ -236,8 +236,9 @@ enum ProcessControlCommand {
         suspend: bool,
         result: SyncSender<Result<ProcessControlBatchResult, RuntimeCommandError>>,
     },
-    AppSuspensionFreezePath {
+    AppSuspensionPathAction {
         executable_path: String,
+        freeze: bool,
         result: SyncSender<Result<AppSuspensionSnapshot, RuntimeCommandError>>,
     },
     MemoryTrim {
@@ -268,7 +269,7 @@ impl ProcessControlCommand {
             Self::StopProcesses { result, .. } => {
                 let _ = result.try_send(Err(error));
             }
-            Self::AppSuspensionFreezePath { result, .. } => {
+            Self::AppSuspensionPathAction { result, .. } => {
                 let _ = result.try_send(Err(error));
             }
         }
@@ -281,7 +282,7 @@ impl ProcessControlCommand {
     fn is_app_suspension(&self) -> bool {
         matches!(
             self,
-            Self::AppSuspension { .. } | Self::AppSuspensionFreezePath { .. }
+            Self::AppSuspension { .. } | Self::AppSuspensionPathAction { .. }
         )
     }
 }
@@ -604,10 +605,11 @@ impl RuntimeHandle {
             .fetch_add(1, Ordering::Release);
     }
 
-    pub fn request_app_suspension_freeze(
+    pub fn request_app_suspension_path_action(
         &self,
         executable_path: &str,
-    ) -> Result<AppSuspensionFreezeReceiver, RuntimeCommandError> {
+        freeze: bool,
+    ) -> Result<AppSuspensionPathActionReceiver, RuntimeCommandError> {
         let executable_path = executable_path_key(Path::new(executable_path));
         if !Path::new(&executable_path).is_absolute() {
             return Err(RuntimeCommandError::InvalidRequest(
@@ -615,8 +617,9 @@ impl RuntimeHandle {
             ));
         }
         let (result, receiver) = sync_channel(1);
-        self.enqueue_process_control_command(ProcessControlCommand::AppSuspensionFreezePath {
+        self.enqueue_process_control_command(ProcessControlCommand::AppSuspensionPathAction {
             executable_path,
+            freeze,
             result,
         })?;
         Ok(receiver)
@@ -921,8 +924,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
 
     while let Some(snapshot) = automation_snapshot(&shared) {
-        #[cfg(feature = "architecture-diagnostics")]
-        crate::architecture_diagnostics::record_worker_pass();
         let settings = snapshot.settings;
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =

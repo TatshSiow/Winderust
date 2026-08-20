@@ -21,8 +21,6 @@ mod runtime;
 mod ui;
 
 use application::SettingsEditor;
-#[cfg(feature = "architecture-diagnostics")]
-use backend::architecture_diagnostics;
 use backend::{
     audio_activity, automation, crash_recovery, dashboard_metrics, file_dialog, power_source,
     privilege, process_icon, self_power, tray, update_checker, win_registry, win_util,
@@ -69,8 +67,6 @@ fn main() {
             Some(error.to_string()),
         ),
     };
-    #[cfg(feature = "architecture-diagnostics")]
-    architecture_diagnostics::initialize();
     let mut recovery_client = crash_recovery::RecoveryClient::start();
     let adaptive_plan_recovery_error = power::restore_stale_adaptive_plans()
         .err()
@@ -111,10 +107,6 @@ fn main() {
             .expect("failed to open Winderust window");
         });
     if let Err(error) = recovery_client.finish() {
-        eprintln!("{error}");
-    }
-    #[cfg(feature = "architecture-diagnostics")]
-    if let Err(error) = architecture_diagnostics::finish() {
         eprintln!("{error}");
     }
 }

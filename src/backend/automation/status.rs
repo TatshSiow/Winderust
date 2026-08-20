@@ -43,8 +43,6 @@ pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: Window
             state.status.appearance_change_generation.wrapping_add(1);
         bump_status_generation(shared, &mut state);
     }
-    #[cfg(feature = "architecture-diagnostics")]
-    crate::architecture_diagnostics::record_windows_event(event);
     state.pending_events.insert_windows_event(event);
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
@@ -65,8 +63,6 @@ pub(super) fn notify_input_event(shared: &SharedAutomationState, events: InputHo
     if input_hook_should_check_app_switch_mouse_click(&state.settings, events) {
         state.pending_events.app_switch_mouse_click = true;
     }
-    #[cfg(feature = "architecture-diagnostics")]
-    crate::architecture_diagnostics::record_input_notification();
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
 }

@@ -249,7 +249,7 @@ fn runtime_handle_rejects_commands_after_shutdown_starts() {
 
     let memory_trim_error = automation.request_memory_trim_now().err();
     let app_suspension_error = automation
-        .request_app_suspension_freeze(r"C:\Apps\worker.exe")
+        .request_app_suspension_path_action(r"C:\Apps\worker.exe", true)
         .err();
     let app_suspension_process_error = automation
         .request_app_suspension_process_action(Vec::new(), true)
@@ -577,8 +577,9 @@ fn process_control_queue_preserves_cross_property_fifo_order() {
             });
         state
             .process_control_commands
-            .push_back(ProcessControlCommand::AppSuspensionFreezePath {
+            .push_back(ProcessControlCommand::AppSuspensionPathAction {
                 executable_path: r"C:\Apps\app.exe".to_owned(),
+                freeze: true,
                 result: app_suspension_path_result,
             });
         state
@@ -633,7 +634,7 @@ fn process_control_queue_preserves_cross_property_fifo_order() {
     ));
     assert!(matches!(
         commands.get(8),
-        Some(ProcessControlCommand::AppSuspensionFreezePath { .. })
+        Some(ProcessControlCommand::AppSuspensionPathAction { .. })
     ));
     assert!(matches!(
         commands.get(9),
@@ -1330,15 +1331,15 @@ fn pending_auto_exclusions_keep_same_named_executable_paths_distinct() {
 }
 
 #[test]
-fn app_suspension_freeze_rejects_relative_paths_and_always_replies() {
+fn app_suspension_path_action_rejects_relative_paths_and_always_replies() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
 
     assert!(matches!(
-        automation.request_app_suspension_freeze("Editor.exe"),
+        automation.request_app_suspension_path_action("Editor.exe", true),
         Err(RuntimeCommandError::InvalidRequest(_))
     ));
     let receiver = automation
-        .request_app_suspension_freeze(r"C:/Apps/Editor.exe")
+        .request_app_suspension_path_action(r"C:/Apps/Editor.exe", true)
         .expect("absolute path should be queued");
     assert!(matches!(
         receiver.recv_timeout(Duration::from_secs(2)),
@@ -1360,7 +1361,7 @@ fn manual_app_suspension_request_starts_worker_without_automatic_rules() {
         .is_none());
 
     let _receiver = automation
-        .request_app_suspension_freeze(r"C:\Apps\Editor.exe")
+        .request_app_suspension_path_action(r"C:\Apps\Editor.exe", true)
         .expect("request should be queued");
 
     assert!(automation
