@@ -187,11 +187,6 @@ impl ProcessPriorityManager {
             })
             .collect::<Vec<_>>();
 
-        #[cfg(feature = "architecture-diagnostics")]
-        crate::architecture_diagnostics::record_process_priority_cycle(
-            scanned_processes,
-            targets.len(),
-        );
         let active_targets = targets
             .iter()
             .map(process_priority_target_key)
@@ -243,8 +238,6 @@ impl ProcessPriorityManager {
             };
             match controller.apply_priority_claim(claim, allow_cross_session_process_control) {
                 Ok(ProcessPropertyApplyOutcome::Applied) => {
-                    #[cfg(feature = "architecture-diagnostics")]
-                    crate::architecture_diagnostics::record_process_priority_applied();
                     applied_processes += 1;
                     self.failure_suppression
                         .clear_process_failure(&target.executable_path);
@@ -252,26 +245,18 @@ impl ProcessPriorityManager {
                 Ok(
                     ProcessPropertyApplyOutcome::Unchanged | ProcessPropertyApplyOutcome::Shadowed,
                 ) => {
-                    #[cfg(feature = "architecture-diagnostics")]
-                    crate::architecture_diagnostics::record_process_priority_already_applied();
                     self.failure_suppression
                         .clear_process_failure(&target.executable_path);
                 }
                 Ok(ProcessPropertyApplyOutcome::Preserved) => {
-                    #[cfg(feature = "architecture-diagnostics")]
-                    crate::architecture_diagnostics::record_process_priority_preserved();
                     skipped_processes += 1;
                     self.failure_suppression
                         .clear_process_failure(&target.executable_path);
                 }
                 Err(ProcessControlError::ProcessExited) => {
-                    #[cfg(feature = "architecture-diagnostics")]
-                    crate::architecture_diagnostics::record_process_priority_exit_failure();
                     skipped_processes += 1;
                 }
                 Err(ProcessControlError::AccessDenied(message)) => {
-                    #[cfg(feature = "architecture-diagnostics")]
-                    crate::architecture_diagnostics::record_process_priority_access_failure();
                     skipped_processes += 1;
                     self.failure_suppression
                         .suppress_process_failure(&target.executable_path);
@@ -284,8 +269,6 @@ impl ProcessPriorityManager {
                     );
                 }
                 Err(error) => {
-                    #[cfg(feature = "architecture-diagnostics")]
-                    crate::architecture_diagnostics::record_process_priority_other_failure();
                     self.failure_suppression
                         .record_process_failure(&target.executable_path);
                     failures.record(

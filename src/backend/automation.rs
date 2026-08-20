@@ -921,8 +921,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
 
     while let Some(snapshot) = automation_snapshot(&shared) {
-        #[cfg(feature = "architecture-diagnostics")]
-        crate::architecture_diagnostics::record_worker_pass();
         let settings = snapshot.settings;
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =

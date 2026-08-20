@@ -25,8 +25,6 @@ pub fn shell_window_mouse_pressed() -> bool {
 }
 
 pub fn top_level_window_process_ids() -> BTreeSet<u32> {
-    #[cfg(feature = "architecture-diagnostics")]
-    crate::architecture_diagnostics::record_top_level_window_scan();
     let mut process_ids = BTreeSet::new();
     // SAFETY: collect_top_level_window_process has the required callback ABI and lparam points to
     // process_ids, which remains live and exclusively borrowed for the synchronous enumeration.
@@ -40,8 +38,6 @@ pub fn top_level_window_process_ids() -> BTreeSet<u32> {
 }
 
 pub fn visible_window_process_ids() -> Option<BTreeSet<u32>> {
-    #[cfg(feature = "architecture-diagnostics")]
-    crate::architecture_diagnostics::record_visible_window_scan();
     let mut process_ids = BTreeSet::new();
     // SAFETY: collect_visible_window_process has the required callback ABI and lparam points to
     // process_ids, which remains live and exclusively borrowed for the synchronous enumeration.
@@ -78,8 +74,6 @@ pub(crate) fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
 }
 
 pub fn foreground_process_id() -> Option<u32> {
-    #[cfg(feature = "architecture-diagnostics")]
-    crate::architecture_diagnostics::record_foreground_process_query();
     // SAFETY: GetForegroundWindow takes no arguments and returns a borrowed HWND.
     let window = unsafe { GetForegroundWindow() };
     if window.is_null() {
