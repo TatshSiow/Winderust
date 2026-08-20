@@ -691,7 +691,9 @@ app_suspension:
   suspendable_help: "Only apps in this list can be suspended after the background delay."
   no_suspendable: "No custom rules are configured."
   freeze: "Freeze"
+  thaw: "Thaw"
   manual_freeze_requested: "Manual freeze requested for %{process}."
+  manual_thaw_requested: "Manual thaw requested for %{process}."
   download_threshold: "Download Threshold"
   upload_threshold: "Upload Threshold"
   indicator:

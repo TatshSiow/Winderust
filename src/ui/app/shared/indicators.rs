@@ -94,10 +94,6 @@ pub(in crate::ui::app) fn app_suspension_indicator(
     }
 }
 
-pub(in crate::ui::app) fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
-    status.enabled && !app_suspension::contains_process(&status.suspended_apps, process)
-}
-
 pub(in crate::ui::app) fn action_log_mode_label(mode: ActionLogMode) -> String {
     match mode {
         ActionLogMode::Full => t!("settings.action_log_mode_full").to_string(),

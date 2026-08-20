@@ -473,7 +473,7 @@ impl AppSuspensionManager {
             );
         };
 
-        let processes = match observations.processes() {
+        let processes = match observations.processes_with_paths() {
             Ok(processes) => processes,
             Err(err) => {
                 failed_actions += 1;
@@ -1136,21 +1136,7 @@ impl AppSuspensionManager {
         if process_ids.is_empty() {
             return None;
         }
-
-        let failed_actions = self.thaw_processes_for_user_intent(
-            controller,
-            &process_ids,
-            Instant::now(),
-            action_log,
-        );
-        Some(self.snapshot(
-            true,
-            self.job_freeze_unsupported,
-            0,
-            failed_actions,
-            "App Suspension active.".to_owned(),
-            None,
-        ))
+        Some(self.release_process_ids_for_user_intent(controller, &process_ids, action_log))
     }
 
     pub fn release_all_suspended_processes_for_user_intent(
@@ -1162,21 +1148,46 @@ impl AppSuspensionManager {
         if process_ids.is_empty() {
             return None;
         }
+        Some(self.release_process_ids_for_user_intent(controller, &process_ids, action_log))
+    }
 
+    pub fn release_suspended_path_for_user_intent(
+        &mut self,
+        controller: &mut SuspensionController,
+        executable_path: &Path,
+        action_log: &mut ActionLog,
+    ) -> AppSuspensionSnapshot {
+        let process_ids = self
+            .suspended
+            .iter()
+            .filter(|(_process_id, process)| {
+                same_executable_path(Path::new(&process.executable_path), executable_path)
+            })
+            .map(|(process_id, _process)| *process_id)
+            .collect::<Vec<_>>();
+        self.release_process_ids_for_user_intent(controller, &process_ids, action_log)
+    }
+
+    fn release_process_ids_for_user_intent(
+        &mut self,
+        controller: &mut SuspensionController,
+        process_ids: &[u32],
+        action_log: &mut ActionLog,
+    ) -> AppSuspensionSnapshot {
         let failed_actions = self.thaw_processes_for_user_intent(
             controller,
-            &process_ids,
+            process_ids,
             Instant::now(),
             action_log,
         );
-        Some(self.snapshot(
+        self.snapshot(
             true,
             self.job_freeze_unsupported,
             0,
             failed_actions,
             "App Suspension active.".to_owned(),
             None,
-        ))
+        )
     }
 
     fn thaw_processes_for_user_intent(
@@ -2505,6 +2516,40 @@ mod tests {
         assert_eq!(status.suspended_processes, 0);
         assert!(manager.suspended.is_empty());
         assert!(manager.temporary_thawed.contains_key(&8));
+    }
+
+    #[test]
+    fn user_intent_release_by_path_thaws_only_matching_instances() {
+        let mut manager = AppSuspensionManager::default();
+        let mut controller = SuspensionController::default();
+        let mut log = ActionLog::new(8);
+        let now = Instant::now();
+        for (process_id, name, path) in [
+            (7, "chat.exe", r"C:\Apps\chat.exe"),
+            (8, "chat.exe", r"C:\Apps\chat.exe"),
+            (9, "mail.exe", r"C:\Mail\mail.exe"),
+        ] {
+            insert_inert(&mut controller, process_id, name, path, true);
+            manager.suspended.insert(
+                process_id,
+                SuspendedProcess {
+                    process_name: name.to_owned(),
+                    executable_path: path.to_owned(),
+                    creation_time: u64::from(process_id) + 1,
+                    suspended_since: now,
+                    manual: true,
+                },
+            );
+        }
+
+        let status = manager.release_suspended_path_for_user_intent(
+            &mut controller,
+            Path::new(r"c:/apps/CHAT.exe"),
+            &mut log,
+        );
+
+        assert_eq!(status.suspended_process_ids, vec![9]);
+        assert_eq!(status.temporary_thawed_processes, 2);
     }
 
     #[test]

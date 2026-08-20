@@ -693,7 +693,9 @@ app_suspension:
   suspendable_help: "只有此清單中的應用程式會在背景延遲後被暫停。"
   no_suspendable: "沒有可暫停的應用程式。"
   freeze: "凍結"
+  thaw: "解凍"
   manual_freeze_requested: "已要求手動凍結 %{process}。"
+  manual_thaw_requested: "已要求手動解凍 %{process}。"
   download_threshold: "下載門檻"
   upload_threshold: "上傳門檻"
   indicator:
