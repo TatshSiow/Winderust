@@ -227,7 +227,6 @@ fn status_log_row(
 
 fn status_section(title: String, body: AnyElement) -> gpui::Div {
     v_flex()
-        .w_full()
         .min_w(px(0.0))
         .gap_2()
         .rounded(px(BRAND_RADIUS_SURFACE))
@@ -353,7 +352,6 @@ impl WinderustApp {
             ));
         Some(
             v_flex()
-                .w_full()
                 .min_w(px(0.0))
                 .gap_4()
                 .child(status_state_row(feature_run_state(
@@ -613,7 +611,6 @@ impl WinderustApp {
             ));
         Some(
             v_flex()
-                .w_full()
                 .min_w(px(0.0))
                 .gap_4()
                 .child(status_state_row(status.state))
