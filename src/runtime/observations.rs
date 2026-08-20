@@ -378,6 +378,8 @@ mod tests {
 
     #[test]
     fn app_suspension_reports_a_running_app_after_process_enrichment() {
+        let _guard = TEST_LOCK.lock().unwrap();
+
         fn raw_processes() -> Result<Vec<ProcessInfo>, String> {
             Ok(vec![ProcessInfo {
                 id: 42,
