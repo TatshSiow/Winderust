@@ -975,7 +975,6 @@ cpu_allocation:
   e_cores: "E 核心"
   all_cores_no_smt: "所有核心（停用 SMT）"
   p_cores_no_smt: "P 核心（停用 SMT）"
-  e_cores_no_smt: "E 核心（停用 SMT）"
   custom: "自訂"
   presets: "預設"
   core_presets: "核心預設"

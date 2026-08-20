@@ -2810,9 +2810,6 @@ fn background_processor_selection_available(
         BackgroundProcessorSelection::PerformanceCoresNoSmt => {
             kind_mask(LogicalProcessorKind::Performance) & no_smt_mask
         }
-        BackgroundProcessorSelection::EfficiencyCoresNoSmt => {
-            kind_mask(LogicalProcessorKind::Efficiency) & no_smt_mask
-        }
         BackgroundProcessorSelection::Custom => unreachable!("custom selection returns above"),
     };
     if selection.is_least_used() {

@@ -972,7 +972,6 @@ cpu_allocation:
   e_cores: "E-cores"
   all_cores_no_smt: "All cores no SMT"
   p_cores_no_smt: "P-cores no SMT"
-  e_cores_no_smt: "E-cores no SMT"
   custom: "Custom"
   presets: "Presets"
   core_presets: "Core presets"

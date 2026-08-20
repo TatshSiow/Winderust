@@ -1136,7 +1136,6 @@ fn cpu_allocation_core_presets(processors: &[LogicalProcessorInfo]) -> Vec<(Stri
         cpu_allocation_processors_kind_mask(processors, LogicalProcessorKind::Efficiency);
     let no_smt_mask = cpu_allocation_processors_no_smt_mask(processors);
     let performance_no_smt_mask = performance_mask & no_smt_mask;
-    let efficiency_no_smt_mask = efficiency_mask & no_smt_mask;
 
     vec![
         (
@@ -1163,11 +1162,6 @@ fn cpu_allocation_core_presets(processors: &[LogicalProcessorInfo]) -> Vec<(Stri
             t!("cpu_allocation.p_cores_no_smt").to_string(),
             performance_no_smt_mask,
             performance_no_smt_mask != 0 && performance_no_smt_mask != performance_mask,
-        ),
-        (
-            t!("cpu_allocation.e_cores_no_smt").to_string(),
-            efficiency_no_smt_mask,
-            efficiency_no_smt_mask != 0 && efficiency_no_smt_mask != efficiency_mask,
         ),
     ]
 }
@@ -1255,7 +1249,7 @@ mod tests {
             },
             LogicalProcessorInfo {
                 index: 3,
-                core_index: 1,
+                core_index: 2,
                 kind: LogicalProcessorKind::Efficiency,
                 efficiency_class: 0,
             },
@@ -1271,9 +1265,8 @@ mod tests {
                 (0b1111, true),
                 (0b0011, true),
                 (0b1100, true),
-                (0b0101, true),
-                (0b0001, true),
-                (0b0100, true)
+                (0b1101, true),
+                (0b0001, true)
             ]
         );
     }

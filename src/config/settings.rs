@@ -460,12 +460,11 @@ pub enum BackgroundProcessorSelection {
     EfficiencyCores,
     AllCoresNoSmt,
     PerformanceCoresNoSmt,
-    EfficiencyCoresNoSmt,
     Custom,
 }
 
 impl BackgroundProcessorSelection {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::LeastUsed,
         Self::LeastUsedPerformanceCores,
         Self::LeastUsedEfficiencyCores,
@@ -473,7 +472,6 @@ impl BackgroundProcessorSelection {
         Self::EfficiencyCores,
         Self::AllCoresNoSmt,
         Self::PerformanceCoresNoSmt,
-        Self::EfficiencyCoresNoSmt,
         Self::Custom,
     ];
 
