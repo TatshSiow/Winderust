@@ -22,7 +22,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Power Plan Control and Advanced Power Plan Tuning | `src/rules/decision_engine.rs`, `src/control/power_plan.rs`, `src/application/advanced_power_plan_tuning.rs`, `src/power/powercfg.rs`, and `src/platform/windows/power_plan.rs` | Power policy, automatic lifecycle/recovery, typed persistent tuning, domain façade, and the sole native power-scheme boundary |
 | Automation event wake handling | `src/backend/automation.rs`, `src/activity/input_hook.rs`, and `src/backend/windows_events.rs` | Runtime-owned low-level input hooks, foreground/window WinEvent hooks, power, suspend/resume, and session notifications |
 | Winderust self-power | `src/backend/self_power.rs` and `src/platform/windows/self_power.rs` | Strict baseline/composition lifecycle plus the sole raw current-process priority and Power Throttling adapter |
-| System tray lifecycle | `src/backend/tray.rs` | Notification-area icon, window-procedure subclassing, popup menu, and restore/quit messages |
+| System tray lifecycle | `src/backend/tray.rs`, `src/ui/app/tray_state.rs`, and `vendor/gpui/src/platform/windows/platform.rs` | Notification-area icon, window-procedure subclassing, popup menu, restore/quit messages, bounded install failure, and hidden-window vsync suppression |
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, named App Suspension jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/cpu_scheduler.rs`, `cpu_scheduler/policy.rs`, `cpu_scheduler/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
@@ -106,7 +106,9 @@ User-facing behavior:
 
 ## System Tray Lifecycle
 
-`src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live GPUI window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`.
+`src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live GPUI window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`. `src/ui/app/tray_state.rs` latches a failed install for the current Hide to tray / Start minimized configuration, preventing the visible UI tick from retrying `Shell_NotifyIconW` every second; changing that configuration permits one new attempt and the original failure remains visible when Start minimized falls back to ordinary minimization.
+
+The crates.io `gpui 0.2.2` source is patched locally under `vendor/gpui`. Its Windows `VSyncProvider` otherwise calls `DwmFlush` and invalidates every GPUI HWND at display cadence even when all windows are hidden. The patch checks `IsWindowVisible` first and, while every HWND is hidden, skips compositor/device/redraw work and polls visibility at 250 ms. This bounds tray restore detection without retaining a 60 Hz background wake source.
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -114,6 +116,9 @@ User-facing behavior:
 | `ShowWindow` | Hides the window with `SW_HIDE` and shows it with `SW_SHOW`, preserving its current size and maximized state instead of resetting it with `SW_RESTORE`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow |
 | `SetWindowLongPtrW` | Installs and restores the temporary `GWLP_WNDPROC` tray callback. A zero return is a failure only when `GetLastError` is nonzero after first clearing it with `SetLastError(0)`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw |
 | `CallWindowProcW` | Forwards unhandled messages to the exact original window procedure. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw |
+| `IsWindowVisible` | Lets the patched GPUI Windows vsync loop skip compositor and redraw work while every GPUI HWND is hidden. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-iswindowvisible |
+| `DwmFlush` | GPUI uses this to synchronize visible rendering with DWM; Winderust's local patch does not call it while all GPUI windows are hidden. | https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmflush |
+| `RedrawWindow` | GPUI invalidates visible HWNDs after each vsync; hidden-only iterations are suppressed by the local patch. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-redrawwindow |
 
 ## Administrator Relaunch And Single-Instance Handoff
 

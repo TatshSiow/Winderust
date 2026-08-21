@@ -2,14 +2,23 @@ use crate::ui::app::*;
 
 impl WinderustApp {
     pub(in crate::ui::app) fn sync_tray_icon(&mut self) -> bool {
-        let tray_required =
-            self.settings.general.hide_to_tray || self.settings.persisted().general.start_minimized;
+        let tray_configuration = (
+            self.settings.general.hide_to_tray,
+            self.settings.persisted().general.start_minimized,
+        );
+        let tray_required = tray_configuration.0 || tray_configuration.1;
         let tray_present = self.tray_icon.is_some();
         let mut changed = false;
 
         if tray_required {
-            if self.tray_icon.is_none() {
+            if self.tray_icon.is_none()
+                && tray_install_should_be_attempted(
+                    self.tray_install_failed_for,
+                    tray_configuration,
+                )
+            {
                 let Some(hwnd) = self.hwnd else {
+                    self.tray_install_failed_for = Some(tray_configuration);
                     self.set_tray_hide_on_close(false);
                     let message = t!("status.system_tray_unavailable").to_string();
                     if self.status_message != message {
@@ -22,6 +31,7 @@ impl WinderustApp {
                 match TrayIcon::install(hwnd) {
                     Ok(icon) => {
                         self.tray_icon = Some(icon);
+                        self.tray_install_failed_for = None;
                         changed = true;
                         let message = t!("status.system_tray_enabled").to_string();
                         if self.status_message != message {
@@ -30,6 +40,7 @@ impl WinderustApp {
                         }
                     }
                     Err(err) => {
+                        self.tray_install_failed_for = Some(tray_configuration);
                         if self.status_message != err {
                             self.status_message = err;
                             changed = true;
@@ -41,6 +52,7 @@ impl WinderustApp {
                 self.settings.general.hide_to_tray && self.tray_icon.is_some(),
             );
         } else if self.tray_icon.take().is_some() {
+            self.tray_install_failed_for = None;
             self.set_tray_hide_on_close(false);
             changed = true;
             let message = t!("status.system_tray_disabled").to_string();
@@ -49,6 +61,7 @@ impl WinderustApp {
                 changed = true;
             }
         } else {
+            self.tray_install_failed_for = None;
             self.set_tray_hide_on_close(false);
         }
 
@@ -83,7 +96,9 @@ impl WinderustApp {
         }
 
         window.minimize_window();
-        self.status_message = t!("status.started_minimized").to_string();
+        if self.tray_install_failed_for.is_none() {
+            self.status_message = t!("status.started_minimized").to_string();
+        }
         true
     }
 
@@ -102,5 +117,32 @@ impl WinderustApp {
             }
             TickOutcome::Stop => {}
         }
+    }
+}
+
+fn tray_install_should_be_attempted(
+    failed_for: Option<(bool, bool)>,
+    configuration: (bool, bool),
+) -> bool {
+    failed_for != Some(configuration)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tray_install_should_be_attempted;
+
+    #[test]
+    fn tray_install_failure_is_retried_only_after_configuration_changes() {
+        let configuration = (true, false);
+
+        assert!(tray_install_should_be_attempted(None, configuration));
+        assert!(!tray_install_should_be_attempted(
+            Some(configuration),
+            configuration
+        ));
+        assert!(tray_install_should_be_attempted(
+            Some(configuration),
+            (true, true)
+        ));
     }
 }

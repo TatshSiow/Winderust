@@ -60,6 +60,9 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 winreg = "0.56.0"
 
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
