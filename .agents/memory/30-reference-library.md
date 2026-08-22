@@ -127,8 +127,10 @@ argument through `ShellExecuteExW`. `SEE_MASK_NOASYNC` completes process creatio
 standard instance begins shutdown, and `SEE_MASK_NOCLOSEPROCESS` confirms that Windows returned a
 live replacement-process handle. `src/main.rs` recognizes only that private argument and waits on
 the existing path-scoped single-instance mutex; ordinary duplicate launches retain their zero-wait
-behavior. The elevated replacement continues when the standard instance releases the mutex during
-normal shutdown or Windows abandons it after forced termination.
+behavior and signal a path-scoped auto-reset event that restores the existing GPUI window through
+`src/backend/tray.rs`. The primary waits on that event from a blocked listener thread, so the
+handoff adds no polling wake source. The elevated replacement continues when the standard instance
+releases the mutex during normal shutdown or Windows abandons it after forced termination.
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -136,6 +138,7 @@ normal shutdown or Windows abandons it after forced termination.
 | `SEE_MASK_NOASYNC` | Keeps shell activation synchronous because the standard instance exits immediately after a successful launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
 | `SEE_MASK_NOCLOSEPROCESS` | Requests the replacement process handle used to distinguish accepted shell execution from an actual process launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
 | Named mutex / `WaitForSingleObject` | Keeps normal launches single-instance while allowing the explicit elevated replacement to wait for the closing instance's ownership to end. | https://learn.microsoft.com/en-us/windows/win32/sync/mutex-objects / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
+| `CreateEventW` / `OpenEventW` / `SetEvent` | Carries a duplicate normal launch to the existing process as a coalescing restore request without polling. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-openeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setevent |
 
 ## Winderust Self-Power
 

@@ -275,10 +275,11 @@ unsafe extern "system" fn tray_wnd_proc(
     }
 }
 
-fn show_window(hwnd: HWND) {
+pub(crate) fn show_window(hwnd: HWND) {
     set_hidden_to_tray(false);
     RESTORE_REQUESTED.store(true, Ordering::Relaxed);
-    // SAFETY: hwnd is the live application window supplied by its window procedure callback.
+    // SAFETY: hwnd is the live application window supplied by its window procedure callback or
+    // captured when the single-instance restore listener starts.
     unsafe {
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
