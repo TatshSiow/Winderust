@@ -1,0 +1,53 @@
+﻿{
+    "recorded_at":  "2026-08-22T09:35:07.8623733+00:00",
+    "duration_seconds":  30.47,
+    "sample_interval_seconds":  5,
+    "samples":  6,
+    "dominant_state":  "Headroom",
+    "dominant_state_percent":  100,
+    "probe_cpu_percent":  0.0929,
+    "observations":  [
+                         {
+                             "timestamp":  "2026-08-22T09:34:42.6717402Z",
+                             "cpu_total_percent":  1.74,
+                             "cpu_busiest_processor_percent":  6.5,
+                             "gpu_busiest_engine_percent":  0.02,
+                             "state":  "Headroom"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T09:34:47.6753331Z",
+                             "cpu_total_percent":  1.67,
+                             "cpu_busiest_processor_percent":  6.15,
+                             "gpu_busiest_engine_percent":  0,
+                             "state":  "Headroom"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T09:34:52.6912840Z",
+                             "cpu_total_percent":  1.39,
+                             "cpu_busiest_processor_percent":  5.43,
+                             "gpu_busiest_engine_percent":  0,
+                             "state":  "Headroom"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T09:34:57.7049289Z",
+                             "cpu_total_percent":  1.56,
+                             "cpu_busiest_processor_percent":  6.25,
+                             "gpu_busiest_engine_percent":  0,
+                             "state":  "Headroom"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T09:35:02.7202317Z",
+                             "cpu_total_percent":  1.58,
+                             "cpu_busiest_processor_percent":  6.2,
+                             "gpu_busiest_engine_percent":  0,
+                             "state":  "Headroom"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T09:35:07.7232124Z",
+                             "cpu_total_percent":  2.58,
+                             "cpu_busiest_processor_percent":  8.21,
+                             "gpu_busiest_engine_percent":  0,
+                             "state":  "Headroom"
+                         }
+                     ]
+}
