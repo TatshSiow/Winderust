@@ -495,9 +495,6 @@ pub struct WinderustApp {
     about_updates_focus_handle: FocusHandle,
     about_page_scroll_handle: ScrollHandle,
     about_updates_scroll_anchor: ScrollAnchor,
-    admin_rights_prompt_visible: bool,
-    admin_rights_prompt_reveal_pending: bool,
-    admin_rights_prompt_vanish_started: Option<Instant>,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
@@ -901,10 +898,6 @@ impl WinderustApp {
                 cx.notify();
             },
         );
-        let admin_rights_prompt_required = !privilege::is_running_as_admin();
-        let admin_rights_prompt_reveal_pending =
-            admin_rights_prompt_required && ui_animations_enabled();
-
         let about_page_scroll_handle = ScrollHandle::new();
         let about_updates_scroll_anchor =
             ScrollAnchor::for_handle(about_page_scroll_handle.clone());
@@ -1009,10 +1002,6 @@ impl WinderustApp {
             about_updates_focus_handle: cx.focus_handle(),
             about_page_scroll_handle,
             about_updates_scroll_anchor,
-            admin_rights_prompt_visible: admin_rights_prompt_required
-                && !admin_rights_prompt_reveal_pending,
-            admin_rights_prompt_reveal_pending,
-            admin_rights_prompt_vanish_started: None,
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
             pending_list_item_removals: HashMap::new(),
@@ -1111,17 +1100,6 @@ impl Render for WinderustApp {
         let unsaved = self.has_pending_changes();
         let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
         let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
-        let admin_rights_prompt_reveal_pending = self.admin_rights_prompt_reveal_pending;
-        if admin_rights_prompt_reveal_pending {
-            self.admin_rights_prompt_reveal_pending = false;
-            self.admin_rights_prompt_visible = true;
-            window.request_animation_frame();
-        }
-        let admin_rights_prompt_vanish_progress =
-            popup_vanish_progress(&mut self.admin_rights_prompt_vanish_started, window);
-        let show_admin_rights_prompt = !admin_rights_prompt_reveal_pending
-            && (self.admin_rights_prompt_visible || admin_rights_prompt_vanish_progress.is_some());
-        let admin_rights_prompt_bottom = if show_unsaved_popup { 190.0 } else { 54.0 };
         let page_content = animated_page_content_frame(
             page_content_frame(page_header, page_body, page_uses_inner_scroll),
             self.active_breadcrumb_transition(self.shell.page),
@@ -1226,15 +1204,6 @@ impl Render for WinderustApp {
             .child(if show_unsaved_popup {
                 self.render_unsaved_popup(unsaved_popup_vanish_progress, cx)
                     .into_any_element()
-            } else {
-                div().into_any_element()
-            })
-            .child(if show_admin_rights_prompt {
-                self.render_admin_rights_prompt(
-                    admin_rights_prompt_bottom,
-                    admin_rights_prompt_vanish_progress,
-                    cx,
-                )
             } else {
                 div().into_any_element()
             })

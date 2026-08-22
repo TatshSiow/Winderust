@@ -193,9 +193,6 @@ unsaved:
   message: "請先儲存這些變更，避免設定停留在草稿狀態。"
 
 admin_rights:
-  title: "需要系統管理員權限"
-  message: "Winderust 目前未以系統管理員權限執行。部分程序、記憶體、I/O 與電源控制可能會被略過或失敗。"
-  ignore: "忽略"
   relaunch: "重新啟動"
 
 runtime_status:

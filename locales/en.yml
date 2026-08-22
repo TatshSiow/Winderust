@@ -193,9 +193,6 @@ unsaved:
   message: "Save these changes before leaving them in draft state."
 
 admin_rights:
-  title: "Administrator rights required"
-  message: "Winderust is running without administrator rights. Some process, memory, I/O, and power controls may be skipped or fail."
-  ignore: "Ignore"
   relaunch: "Relaunch"
 
 runtime_status:
