@@ -13,6 +13,7 @@ pub(crate) enum RefreshDomain {
     CpuAllocationReconciliation,
     ByRunningApp,
     CpuScheduler,
+    BottleneckClassifier,
     AdaptivePowerPlan,
     ProcessPriority,
     ThreadPriority,
@@ -26,7 +27,7 @@ pub(crate) enum RefreshDomain {
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 21] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 22] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -37,6 +38,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 21] = [
     RefreshDomain::CpuAllocationReconciliation,
     RefreshDomain::ByRunningApp,
     RefreshDomain::CpuScheduler,
+    RefreshDomain::BottleneckClassifier,
     RefreshDomain::AdaptivePowerPlan,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,

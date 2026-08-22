@@ -629,3 +629,14 @@ Windows exposes no documented process-wide suspension query. The Process List
 therefore reports suspension only for process IDs currently suspended and
 tracked by Winderust; it does not infer suspension from undocumented NT thread
 state.
+
+# GPU Engine utilization
+
+- Implementation: `src/platform/windows/gpu_usage.rs` owns the English PDH wildcard query for
+  `\\GPU Engine(*)\\Utilization Percentage`, formatted-array parsing, per-engine aggregation, and
+  query cleanup. `src/bottleneck_classifier.rs` consumes only the resulting observation.
+- References: [PdhAddEnglishCounterW](https://learn.microsoft.com/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw),
+  [PdhGetFormattedCounterArrayW](https://learn.microsoft.com/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw).
+- Contract: GPU Engine instances are process-scoped. Strip only the `pid_<number>_` prefix, sum
+  matching physical-engine instances, clamp each engine to 100%, and report the busiest engine.
+  Missing or invalid samples are unavailable observations, not zero utilization.

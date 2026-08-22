@@ -212,6 +212,7 @@ impl WinderustApp {
                     self.render_normalized_feature_status(Page::AdaptiveEngine)
                         .expect("Adaptive Engine always has normalized runtime status"),
                 )
+                .child(self.render_bottleneck_classifier_status())
                 .into_any_element()
         } else {
             self.render_adaptive_engine_presets_content(cx)
