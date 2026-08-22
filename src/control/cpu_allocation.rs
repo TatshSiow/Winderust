@@ -2968,6 +2968,7 @@ mod tests {
 
     #[test]
     #[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         struct DisposableProcess(Child);
 

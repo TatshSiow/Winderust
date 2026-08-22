@@ -2241,6 +2241,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     fn affinity_recovery_restores_a_disposable_process() -> Result<(), String> {
         let child = DisposableChild::spawn()?;
         let process = child.process_handle()?;

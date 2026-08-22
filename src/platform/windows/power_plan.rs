@@ -465,8 +465,10 @@ fn encode_power_string(value: &str) -> Vec<u8> {
 
 fn decode_power_string(buffer: &[u8]) -> String {
     let utf16 = buffer
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_le_bytes(*chunk))
         .take_while(|code| *code != 0)
         .collect::<Vec<_>>();
     String::from_utf16_lossy(&utf16)
