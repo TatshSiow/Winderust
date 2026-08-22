@@ -1005,6 +1005,18 @@ fn automation_worker_runs_for_adaptive_power_plan_alone() {
 }
 
 #[test]
+fn automation_worker_runs_for_bottleneck_classifier_alone() {
+    let mut settings = Settings::default();
+    settings.by_activity.enabled = false;
+    settings.by_foreground.enabled = false;
+    settings.adaptive_engine.enabled = true;
+    settings.adaptive_engine.processor_power_policy_enabled = false;
+
+    assert!(bottleneck_classifier_required(&settings));
+    assert!(automation_worker_required(&settings));
+}
+
+#[test]
 fn adaptive_engine_uses_low_power_refresh_cadence() {
     assert_eq!(
         automation_refresh_interval(false, true, Duration::from_secs(1)),

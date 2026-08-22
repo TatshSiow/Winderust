@@ -20,6 +20,7 @@ use crate::{
     app_suspension::{AppSuspensionManager, AppSuspensionSnapshot},
     application::settings::{AutoExclusionPatch, RuntimeSettingsSnapshot, SettingsRevision},
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
+    bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
     config::{
         AccentColorSource, AnimationMode, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
         ProcessGpuPriority, ProcessIoPriority, ProcessMemoryPriority, ProcessPrioritySetting,
@@ -103,6 +104,7 @@ const CPU_ALLOCATION_RECONCILIATION_RETRY_MAX: Duration = Duration::from_secs(60
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+const BOTTLENECK_CLASSIFIER_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const ADAPTIVE_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const THREAD_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -289,6 +291,7 @@ impl ProcessControlCommand {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeFeatureStatus {
+    pub bottleneck_classifier: BottleneckSnapshot,
     pub background_efficiency: BackgroundEfficiencySnapshot,
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_sets_soft: CpuAllocationSnapshot,
@@ -1109,6 +1112,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             || feature_refresh_required(&settings, by_running_app_required(&settings));
         let cpu_scheduler_refresh_required = settings_changed
             || feature_refresh_required(&settings, cpu_scheduler_required(&settings));
+        let bottleneck_classifier_refresh_required = settings_changed
+            || feature_refresh_required(&settings, bottleneck_classifier_required(&settings));
         let adaptive_power_plan_refresh_required = settings_changed
             || feature_refresh_required(&settings, adaptive_power_plan_required(&settings))
             || runner.adaptive_power_plan_active();
@@ -1191,6 +1196,17 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 RefreshDomain::CpuScheduler,
                 now,
                 cpu_scheduler_refresh_interval,
+            );
+        }
+        if bottleneck_classifier_refresh_required
+            && scheduler.is_due(RefreshDomain::BottleneckClassifier, now)
+        {
+            let status = runner.run_bottleneck_classifier_update(&settings);
+            update_bottleneck_classifier_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::BottleneckClassifier,
+                now,
+                BOTTLENECK_CLASSIFIER_REFRESH_INTERVAL,
             );
         }
         if adaptive_power_plan_refresh_required
@@ -1470,6 +1486,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                     cpu_scheduler_refresh_required,
                     RefreshDomain::CpuScheduler,
                     cpu_scheduler_refresh_interval,
+                ),
+                (
+                    bottleneck_classifier_refresh_required,
+                    RefreshDomain::BottleneckClassifier,
+                    BOTTLENECK_CLASSIFIER_REFRESH_INTERVAL,
                 ),
                 (
                     adaptive_power_plan_refresh_required,

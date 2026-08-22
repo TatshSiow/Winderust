@@ -207,6 +207,18 @@ pub(super) fn update_cpu_scheduler_status(
     );
 }
 
+pub(super) fn update_bottleneck_classifier_status(
+    shared: &SharedAutomationState,
+    status: BottleneckSnapshot,
+) {
+    update_feature_status(
+        shared,
+        status,
+        |feature_status| &feature_status.bottleneck_classifier,
+        |feature_status| &mut feature_status.bottleneck_classifier,
+    );
+}
+
 pub(super) fn update_io_priority_status(
     shared: &SharedAutomationState,
     status: IoPrioritySnapshot,

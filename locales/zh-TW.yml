@@ -612,6 +612,15 @@ background_efficiency:
   no_custom_rules: "尚未設定自訂規則。"
 
 adaptive_engine:
+  bottleneck_classifier: "系統瓶頸"
+  bottleneck_unknown: "正在收集資料"
+  bottleneck_headroom: "仍有餘裕"
+  bottleneck_cpu_bound: "CPU 受限"
+  bottleneck_gpu_bound: "GPU 受限"
+  bottleneck_mixed: "CPU/GPU 混合受限"
+  total_cpu: "CPU 總使用率"
+  busiest_cpu: "最忙碌 CPU"
+  busiest_gpu: "最忙碌 GPU 引擎"
   intro_1: "自適應引擎會整合動態處理器電源控制與工作負載感知 CPU 排程。"
   intro_2: "省電和平衡會依需求動態調整；效能和速度會維持固定的處理器目標。"
   intro_3: "日常使用建議選擇平衡；只有需要持續高效能時才使用固定模式。"

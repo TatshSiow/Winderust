@@ -1,6 +1,7 @@
 /target/
 /target-next/
 /target-bench/
+/target-bottleneck/
 /benchmark-results/
 /dist/
 

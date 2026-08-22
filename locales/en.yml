@@ -610,6 +610,15 @@ background_efficiency:
   no_custom_rules: "No custom rules are configured."
 
 adaptive_engine:
+  bottleneck_classifier: "System Bottleneck"
+  bottleneck_unknown: "Collecting data"
+  bottleneck_headroom: "Headroom"
+  bottleneck_cpu_bound: "CPU Bound"
+  bottleneck_gpu_bound: "GPU Bound"
+  bottleneck_mixed: "Mixed CPU/GPU"
+  total_cpu: "Total CPU"
+  busiest_cpu: "Busiest CPU"
+  busiest_gpu: "Busiest GPU engine"
   intro_1: "Adaptive Engine combines dynamic processor power control with workload-aware CPU scheduling."
   intro_2: "Power Save and Balanced scale with demand. Performance and Speed hold fixed processor targets."
   intro_3: "Balanced is recommended for everyday use; choose a fixed profile only for sustained performance."

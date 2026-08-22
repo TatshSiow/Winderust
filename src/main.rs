@@ -9,6 +9,7 @@ mod action_log;
 mod activity;
 mod application;
 mod backend;
+mod bottleneck_classifier;
 mod config;
 mod control;
 mod cpu;
