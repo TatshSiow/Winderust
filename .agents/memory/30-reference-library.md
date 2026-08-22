@@ -122,15 +122,15 @@ The crates.io `gpui 0.2.2` source is patched locally under `vendor/gpui`. Its Wi
 
 ## Administrator Relaunch And Single-Instance Handoff
 
-`src/backend/privilege.rs` launches the current executable with the private elevated-relaunch
-argument through `ShellExecuteExW`. `SEE_MASK_NOASYNC` completes process creation before the
-standard instance begins shutdown, and `SEE_MASK_NOCLOSEPROCESS` confirms that Windows returned a
-live replacement-process handle. `src/main.rs` recognizes only that private argument and waits on
-the existing path-scoped single-instance mutex; ordinary duplicate launches retain their zero-wait
-behavior and signal a path-scoped auto-reset event that restores the existing GPUI window through
-`src/backend/tray.rs`. The primary waits on that event from a blocked listener thread, so the
-handoff adds no polling wake source. The elevated replacement continues when the standard instance
-releases the mutex during normal shutdown or Windows abandons it after forced termination.
+`src/main.rs` acquires the path-scoped single-instance mutex before its administrator check. A fresh
+normal launch therefore requests elevation immediately through `src/backend/privilege.rs`, then
+exits while the elevated replacement waits for its mutex ownership to end. `ShellExecuteExW` uses
+the private elevated-relaunch argument, `SEE_MASK_NOASYNC` completes process creation before the
+standard process exits, and `SEE_MASK_NOCLOSEPROCESS` confirms that Windows returned a live
+replacement-process handle. If an instance already owns the mutex, an ordinary duplicate instead
+signals the path-scoped auto-reset event that restores the existing GPUI window through
+`src/backend/tray.rs`; it does not open another UAC prompt or elevated waiter. The primary waits on
+that event from a blocked listener thread, so the handoff adds no polling wake source.
 
 | API | Used for | Reference |
 | --- | --- | --- |

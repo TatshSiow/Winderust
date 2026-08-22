@@ -57,6 +57,10 @@ fn main() {
         }
         return;
     };
+    if !privilege::is_running_as_admin() {
+        privilege::relaunch_as_admin();
+        return;
+    }
     let restore_event = SingleInstanceRestoreEvent::create();
 
     let (mut settings, settings_load_error) = match SettingsEditor::load() {
@@ -333,6 +337,12 @@ mod tests {
         let single_instance = main_body
             .find("SingleInstanceGuard::acquire")
             .expect("single-instance guard");
+        let admin_check = main_body
+            .find("is_running_as_admin")
+            .expect("administrator check");
+        let admin_relaunch = main_body
+            .find("relaunch_as_admin")
+            .expect("administrator relaunch");
         let settings = main_body
             .find("SettingsEditor::load")
             .expect("settings load");
@@ -352,7 +362,9 @@ mod tests {
 
         assert!(helper_mode < elevated_relaunch);
         assert!(elevated_relaunch < single_instance);
-        assert!(single_instance < settings);
+        assert!(single_instance < admin_check);
+        assert!(admin_check < admin_relaunch);
+        assert!(admin_relaunch < settings);
         assert!(settings < recovery);
         assert!(recovery < stale_plan_recovery);
         assert!(stale_plan_recovery < runtime);
