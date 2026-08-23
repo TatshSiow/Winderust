@@ -1448,6 +1448,9 @@ mod tests {
         assert!(power_save.limit_background_processors_enabled);
         assert!(performance.limit_background_processors_enabled);
         assert!(speed.limit_background_processors_enabled);
+        assert!(!power_save.dynamic_resource_zones_enabled);
+        assert!(performance.dynamic_resource_zones_enabled);
+        assert!(speed.dynamic_resource_zones_enabled);
         assert!(power_save.process_priority_enabled);
         assert!(performance.process_priority_enabled);
         assert!(speed.process_priority_enabled);
@@ -1510,8 +1513,8 @@ mod tests {
             );
         }
         assert_eq!(power_save.processor_limit_percent, 60);
-        assert_eq!(performance.processor_limit_percent, 16);
-        assert_eq!(speed.processor_limit_percent, 10);
+        assert_eq!(performance.processor_limit_percent, 75);
+        assert_eq!(speed.processor_limit_percent, 75);
         assert!(!thread_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled);
         assert!(
             !dynamic_priority_boost_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled

@@ -512,6 +512,34 @@ fn load_aware_core_mask_picks_low_load_standard_processors() {
 }
 
 #[test]
+fn processor_limiting_detects_pressure_without_priority_restraint() {
+    let settings = CpuSchedulerSettings {
+        cpu_pressure_restraint_enabled: false,
+        limit_background_processors_enabled: true,
+        foreground_or_system_cpu_threshold_percent: 70,
+        ..Default::default()
+    };
+
+    assert!(cpu_pressure_restraint_should_run(
+        &settings,
+        None,
+        Some(70.0)
+    ));
+}
+
+#[test]
+fn dynamic_resource_zones_keep_foreground_and_background_disjoint() {
+    assert_eq!(dynamic_background_zone_percent(75), 25);
+    assert_eq!(dynamic_background_zone_percent(100), 1);
+    assert_eq!(
+        dynamic_resource_zone_masks(0xFFFF, 0xF000),
+        Some((0x0FFF, 0xF000))
+    );
+    assert_eq!(dynamic_resource_zone_masks(0xFFFF, 0xFFFF), None);
+    assert_eq!(dynamic_resource_zone_masks(0xFFFF, 0), None);
+}
+
+#[test]
 fn load_aware_core_mask_respects_all_performance_and_efficiency_pools() {
     let processors = vec![
         LogicalProcessorInfo {

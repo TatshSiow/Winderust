@@ -420,6 +420,7 @@ mod tests {
                 background_memory_priority: ProcessMemoryPrioritySetting::Low,
                 cpu_pressure_restraint_enabled: true,
                 limit_background_processors_enabled: true,
+                dynamic_resource_zones_enabled: true,
                 cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
                 background_processor_selection: BackgroundProcessorSelection::LeastUsed,
                 processor_limit_percent: 50,

@@ -80,7 +80,7 @@ pub(super) fn cpu_pressure_restraint_should_run(
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
-    if !settings.cpu_pressure_restraint_enabled {
+    if !settings.cpu_pressure_restraint_enabled && !settings.limit_background_processors_enabled {
         return false;
     }
     let threshold = f32::from(settings.foreground_or_system_cpu_threshold_percent.min(100));
@@ -245,6 +245,19 @@ pub(super) fn average_masked_core_load(mask: u64, usages: &[f32]) -> Option<f32>
         }
     }
     (count > 0).then_some(total / count as f32)
+}
+
+pub(super) fn dynamic_background_zone_percent(foreground_percent: u8) -> u8 {
+    100_u8.saturating_sub(foreground_percent.min(99)).max(1)
+}
+
+pub(super) fn dynamic_resource_zone_masks(
+    all_mask: u64,
+    background_mask: u64,
+) -> Option<(u64, u64)> {
+    let background_mask = background_mask & all_mask;
+    let foreground_mask = all_mask & !background_mask;
+    (foreground_mask != 0 && background_mask != 0).then_some((foreground_mask, background_mask))
 }
 
 pub(super) fn focus_and_launch_profile_eligible(process_id: u32) -> bool {

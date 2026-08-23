@@ -1480,20 +1480,53 @@ impl WinderustApp {
                 true,
             )
             .into_any_element(),
-            setting_group_action_row(
-                format!("adaptive-engine-{target_key}-cpu-allocation-method"),
-                t!("cpu_scheduler.cpu_allocation_method").to_string(),
-                self.render_cpu_allocation_method_selector(target, window, cx),
+            setting_group_action_row_with_help(
+                format!("adaptive-engine-{target_key}-dynamic-resource-zones"),
+                t!("cpu_scheduler.dynamic_resource_zones").to_string(),
+                t!("cpu_scheduler.dynamic_resource_zones_help").to_string(),
+                setting_group_switch_action(
+                    format!("adaptive-engine-{target_key}-dynamic-resource-zones-switch"),
+                    settings.dynamic_resource_zones_enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        app.update_adaptive_engine_tuning(target, |tuning| {
+                            tuning.cpu_scheduler.dynamic_resource_zones_enabled = *checked;
+                        });
+                        cx.notify();
+                    }),
+                ),
                 true,
             )
             .into_any_element(),
         ];
+        if !settings.dynamic_resource_zones_enabled {
+            cpu_allocation_rows.push(
+                setting_group_action_row(
+                    format!("adaptive-engine-{target_key}-cpu-allocation-method"),
+                    t!("cpu_scheduler.cpu_allocation_method").to_string(),
+                    self.render_cpu_allocation_method_selector(target, window, cx),
+                    true,
+                )
+                .into_any_element(),
+            );
+        }
         if settings.background_processor_selection.is_least_used() {
+            let (processor_limit_title, processor_limit_help) =
+                if settings.dynamic_resource_zones_enabled {
+                    (
+                        t!("cpu_scheduler.foreground_zone_share").to_string(),
+                        t!("cpu_scheduler.foreground_zone_share_help").to_string(),
+                    )
+                } else {
+                    (
+                        t!("cpu_scheduler.processor_limit").to_string(),
+                        t!("cpu_scheduler.processor_limit_help").to_string(),
+                    )
+                };
             cpu_allocation_rows.push(
                 setting_group_stepper_row_u64_with_help(
                     format!("adaptive-engine-{target_key}-processor-limit"),
-                    t!("cpu_scheduler.processor_limit").to_string(),
-                    t!("cpu_scheduler.processor_limit_help").to_string(),
+                    processor_limit_title,
+                    processor_limit_help,
                     u64::from(settings.processor_limit_percent),
                     self.render_numeric_value(
                         NumericField::AdaptiveEngineTuning(
