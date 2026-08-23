@@ -60,8 +60,26 @@ impl WinderustApp {
         }
     }
 
-    pub(in crate::ui::app) fn export_settings_toml(&mut self, cx: &mut Context<Self>) {
-        match choose_settings_file(self.hwnd, FileDialogMode::Save) {
+    pub(in crate::ui::app) fn export_settings_toml(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hwnd = self.hwnd;
+        cx.spawn_in(window, async move |this, cx| {
+            let path = choose_settings_file(hwnd, FileDialogMode::Save).await;
+            let _ = cx.update(move |_window, app_cx| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
+                this.update(app_cx, |app, cx| app.finish_export_settings(path, cx));
+            });
+        })
+        .detach();
+    }
+
+    fn finish_export_settings(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        match path {
             Some(path) => match self.settings.export_toml_to(&path) {
                 Ok(()) => {
                     self.status_message =
@@ -87,13 +105,31 @@ impl WinderustApp {
         }
     }
 
-    pub(in crate::ui::app) fn export_action_log_csv(&mut self) {
+    pub(in crate::ui::app) fn export_action_log_csv(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.action_log_entries.is_empty() {
             self.status_message = t!("status.action_log_export_empty").to_string();
             return;
         }
 
-        match choose_action_log_export_file(self.hwnd) {
+        let hwnd = self.hwnd;
+        cx.spawn_in(window, async move |this, cx| {
+            let path = choose_action_log_export_file(hwnd).await;
+            let _ = cx.update(move |_window, app_cx| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
+                this.update(app_cx, |app, _cx| app.finish_export_action_log(path));
+            });
+        })
+        .detach();
+    }
+
+    fn finish_export_action_log(&mut self, path: Option<PathBuf>) {
+        match path {
             Some(path) => {
                 let csv = action_log_entries_to_csv(self.action_log_entries.as_slice());
                 match config::storage::write_bytes_atomically(&path, csv.as_bytes()) {
@@ -122,7 +158,28 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match choose_settings_file(self.hwnd, FileDialogMode::Open) {
+        let hwnd = self.hwnd;
+        cx.spawn_in(window, async move |this, cx| {
+            let path = choose_settings_file(hwnd, FileDialogMode::Open).await;
+            let _ = cx.update(move |window, app_cx| {
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
+                this.update(app_cx, |app, cx| {
+                    app.finish_import_settings(path, window, cx)
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn finish_import_settings(
+        &mut self,
+        path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match path {
             Some(path) => match self.settings.import_toml_from(&path) {
                 Ok(outcome) => {
                     apply_language(self.settings.general.language);
@@ -211,7 +268,7 @@ impl WinderustApp {
 
         with_optional_motion(
             card,
-            SharedString::from(format!("settings-io-toast-{:?}", toast.shown_at)),
+            "settings-io-toast",
             MotionSpeed::Standard,
             |card| card,
             |card, delta| card.opacity(0.18 + 0.82 * delta),

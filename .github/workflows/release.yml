@@ -44,6 +44,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist\Winderust | Out-Null
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $pattern = "(?ms)^## $([regex]::Escape($version)) - [^\r\n]+\r?\n.*?(?=^## |\z)"
+          $section = [regex]::Match((Get-Content CHANGELOG.md -Raw), $pattern)
+          if (-not $section.Success) {
+              throw "CHANGELOG.md has no release section for $version"
+          }
+          $section.Value.TrimEnd() | Set-Content -Encoding utf8 dist\release-notes.md
           Copy-Item target\release\winderust.exe, LICENSE, README.md, CHANGELOG.md dist\Winderust
           Compress-Archive -Path dist\Winderust -DestinationPath dist\Winderust-${{ github.ref_name }}-windows-x64.zip
           Get-FileHash dist\Winderust-${{ github.ref_name }}-windows-x64.zip -Algorithm SHA256 |
@@ -64,4 +71,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release create "${{ github.ref_name }}" dist\Winderust-${{ github.ref_name }}-windows-x64.zip dist\Winderust-${{ github.ref_name }}-windows-x64.zip.sha256 --draft --prerelease --generate-notes --verify-tag --title "${{ github.ref_name }}"
+          gh release create "${{ github.ref_name }}" dist\Winderust-${{ github.ref_name }}-windows-x64.zip dist\Winderust-${{ github.ref_name }}-windows-x64.zip.sha256 --draft --prerelease --notes-file dist\release-notes.md --verify-tag --title "${{ github.ref_name }}"

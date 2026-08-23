@@ -107,8 +107,8 @@ impl WinderustApp {
                         Button::new("export-settings")
                             .small()
                             .label(t!("settings.export_settings").to_string())
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.export_settings_toml(cx);
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.export_settings_toml(window, cx);
                                 cx.notify();
                             })),
                     )
