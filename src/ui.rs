@@ -130,6 +130,31 @@ const PAGE_SECTIONS: [PageSection; 10] = [
 ];
 
 impl Page {
+    pub const fn supports_power_source_profiles(self) -> bool {
+        matches!(
+            self,
+            Self::ByActivity
+                | Self::ByCpuLoad
+                | Self::ProcessPriority
+                | Self::ThreadPriority
+                | Self::DynamicPriorityBoost
+                | Self::CoreLimiter
+                | Self::CpuSetsSoft
+                | Self::AdaptiveEngine
+                | Self::BackgroundEfficiency
+                | Self::AppSuspension
+                | Self::ByRunningApp
+                | Self::IoPriority
+                | Self::GpuPriority
+                | Self::MemoryPriority
+                | Self::MemoryTrim
+                | Self::ProcessorAffinityHard
+                | Self::ByForeground
+                | Self::ByTime
+                | Self::TimerResolution
+        )
+    }
+
     pub fn label(self) -> String {
         match self {
             Self::Home => t!("nav.home"),
@@ -254,5 +279,18 @@ mod tests {
                 assert!(pages.insert(*page), "{page:?} belongs to multiple sections");
             }
         }
+    }
+
+    #[test]
+    fn power_source_profiles_are_limited_to_configurable_feature_pages() {
+        assert!(Page::AdaptiveEngine.supports_power_source_profiles());
+        assert!(Page::ByForeground.supports_power_source_profiles());
+        assert!(Page::TimerResolution.supports_power_source_profiles());
+        assert!(!Page::Home.supports_power_source_profiles());
+        assert!(!Page::PowerPlanControl.supports_power_source_profiles());
+        assert!(!Page::ProcessList.supports_power_source_profiles());
+        assert!(!Page::ActionLog.supports_power_source_profiles());
+        assert!(!Page::WinderustBehaviour.supports_power_source_profiles());
+        assert!(!Page::About.supports_power_source_profiles());
     }
 }

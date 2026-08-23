@@ -887,9 +887,14 @@ impl RuntimeHandle {
         if lock_unpoisoned(&self.shared.state).stop_requested {
             return;
         }
-        if let Err(error) = lock_unpoisoned(&self.self_power)
-            .set_adaptive_engine(settings.value.adaptive_engine.enabled)
-        {
+        if let Err(error) = lock_unpoisoned(&self.self_power).set_adaptive_engine(
+            settings.value.adaptive_engine.enabled
+                || settings
+                    .value
+                    .on_battery
+                    .as_deref()
+                    .is_some_and(|settings| settings.adaptive_engine.enabled),
+        ) {
             update_worker_error(&self.shared, Some(error));
         }
     }
@@ -927,7 +932,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
 
     while let Some(snapshot) = automation_snapshot(&shared) {
-        let settings = snapshot.settings;
+        let configured_settings = snapshot.settings;
+        let settings = active_power_source_settings(
+            configured_settings.as_ref(),
+            power_source::is_plugged_in(),
+        );
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =
             runner.cpu_allocation_release_retry_pending();
@@ -976,7 +985,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             adaptive_engine_enabled,
             PERFORMANCE_MODE_REFRESH_INTERVAL,
         );
-        let cpu_scheduler_refresh_interval = cpu_scheduler_refresh_interval(&settings);
+        let cpu_scheduler_refresh_interval = cpu_scheduler_refresh_interval(settings);
         let process_priority_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1028,7 +1037,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL,
         );
         let event_now = Instant::now();
-        let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
+        let settings_changed = wake_events.settings_changed || runner.note_settings(settings);
         if settings_changed {
             scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }
@@ -1052,7 +1061,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         if wake_events.input_activity {
             scheduler.invalidate(SchedulerEvent::InputActivity, event_now);
         }
-        let controller_poll_required = controller_activity_poll_required(&settings);
+        let controller_poll_required = controller_activity_poll_required(settings);
         if controller_poll_required
             && scheduler.is_due(RefreshDomain::ControllerActivity, event_now)
         {
@@ -1092,48 +1101,48 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             }
         }
         let now = Instant::now();
-        let power_plan_checks_required = power_plan_checks_required(&settings);
-        let scan_process_appearance = process_appearance_scan_required(&settings);
+        let power_plan_checks_required = power_plan_checks_required(settings);
+        let scan_process_appearance = process_appearance_scan_required(settings);
         let background_efficiency_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.background_efficiency.enabled);
+            || feature_refresh_required(settings, settings.background_efficiency.enabled);
         let app_suspension_refresh_required = settings_changed
-            || feature_refresh_required(&settings, app_suspension_required(&settings))
+            || feature_refresh_required(settings, app_suspension_required(settings))
             || app_suspension_command_requested
             || runner
                 .app_suspension_manager
                 .has_suspended_processes(&runner.app_suspension_controller);
         let cpu_sets_soft_refresh_required = settings_changed
-            || feature_refresh_required(&settings, cpu_sets_soft_required(&settings));
+            || feature_refresh_required(settings, cpu_sets_soft_required(settings));
         let processor_affinity_hard_refresh_required = settings_changed
-            || feature_refresh_required(&settings, processor_affinity_hard_required(&settings));
-        let core_limiter_refresh_required = settings_changed
-            || feature_refresh_required(&settings, core_limiter_required(&settings));
+            || feature_refresh_required(settings, processor_affinity_hard_required(settings));
+        let core_limiter_refresh_required =
+            settings_changed || feature_refresh_required(settings, core_limiter_required(settings));
         let by_running_app_refresh_required = settings_changed
-            || feature_refresh_required(&settings, by_running_app_required(&settings));
+            || feature_refresh_required(settings, by_running_app_required(settings));
         let cpu_scheduler_refresh_required = settings_changed
-            || feature_refresh_required(&settings, cpu_scheduler_required(&settings));
+            || feature_refresh_required(settings, cpu_scheduler_required(settings));
         let bottleneck_classifier_refresh_required = settings_changed
-            || feature_refresh_required(&settings, bottleneck_classifier_required(&settings));
+            || feature_refresh_required(settings, bottleneck_classifier_required(settings));
         let adaptive_power_plan_refresh_required = settings_changed
-            || feature_refresh_required(&settings, adaptive_power_plan_required(&settings))
+            || feature_refresh_required(settings, adaptive_power_plan_required(settings))
             || runner.adaptive_power_plan_active();
         let process_priority_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.process_priority.enabled);
+            || feature_refresh_required(settings, settings.process_priority.enabled);
         let thread_priority_refresh_required = settings_changed
-            || feature_refresh_required(&settings, thread_priority_required(&settings));
+            || feature_refresh_required(settings, thread_priority_required(settings));
         let dynamic_priority_boost_refresh_required = settings_changed
-            || feature_refresh_required(&settings, dynamic_priority_boost_required(&settings));
-        let io_priority_refresh_required = settings_changed
-            || feature_refresh_required(&settings, io_priority_required(&settings));
-        let gpu_priority_refresh_required = settings_changed
-            || feature_refresh_required(&settings, gpu_priority_required(&settings));
+            || feature_refresh_required(settings, dynamic_priority_boost_required(settings));
+        let io_priority_refresh_required =
+            settings_changed || feature_refresh_required(settings, io_priority_required(settings));
+        let gpu_priority_refresh_required =
+            settings_changed || feature_refresh_required(settings, gpu_priority_required(settings));
         let memory_priority_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.memory_priority.enabled);
+            || feature_refresh_required(settings, settings.memory_priority.enabled);
         let memory_trim_refresh_required = settings_changed
             || memory_trim_command_requested
-            || feature_refresh_required(&settings, settings.memory_trim.enabled);
+            || feature_refresh_required(settings, settings.memory_trim.enabled);
         let timer_resolution_refresh_required = settings_changed
-            || feature_refresh_required(&settings, timer_resolution_required(&settings));
+            || feature_refresh_required(settings, timer_resolution_required(settings));
         if app_suspension_command_requested {
             scheduler.invalidate(SchedulerEvent::AppSuspensionRequested, now);
         }
@@ -1180,7 +1189,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             && scheduler.is_due(RefreshDomain::BackgroundEfficiency, now)
         {
             let background_efficiency_status =
-                runner.run_background_efficiency_update(&settings, &mut observations);
+                runner.run_background_efficiency_update(settings, &mut observations);
             update_background_efficiency_status(&shared, background_efficiency_status);
             scheduler.schedule_after(
                 RefreshDomain::BackgroundEfficiency,
@@ -1189,8 +1198,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             );
         }
         if cpu_scheduler_refresh_required && scheduler.is_due(RefreshDomain::CpuScheduler, now) {
-            let cpu_scheduler_status =
-                runner.run_cpu_scheduler_update(&settings, &mut observations);
+            let cpu_scheduler_status = runner.run_cpu_scheduler_update(settings, &mut observations);
             update_cpu_scheduler_status(&shared, cpu_scheduler_status);
             scheduler.schedule_after(
                 RefreshDomain::CpuScheduler,
@@ -1201,7 +1209,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         if bottleneck_classifier_refresh_required
             && scheduler.is_due(RefreshDomain::BottleneckClassifier, now)
         {
-            let status = runner.run_bottleneck_classifier_update(&settings);
+            let status = runner.run_bottleneck_classifier_update(settings);
             update_bottleneck_classifier_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::BottleneckClassifier,
@@ -1212,8 +1220,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         if adaptive_power_plan_refresh_required
             && scheduler.is_due(RefreshDomain::AdaptivePowerPlan, now)
         {
-            if let Err(error) = runner.run_adaptive_power_plan_update(&settings, &mut observations)
-            {
+            if let Err(error) = runner.run_adaptive_power_plan_update(settings, &mut observations) {
                 update_worker_error(&shared, Some(error));
             }
             scheduler.schedule_after(
@@ -1223,7 +1230,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             );
         }
         if io_priority_refresh_required && scheduler.is_due(RefreshDomain::IoPriority, now) {
-            let io_priority_status = runner.run_io_priority_update(&settings, &mut observations);
+            let io_priority_status = runner.run_io_priority_update(settings, &mut observations);
             update_io_priority_status(&shared, io_priority_status);
             scheduler.schedule_after(RefreshDomain::IoPriority, now, io_priority_refresh_interval);
         }
@@ -1231,7 +1238,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             && scheduler.is_due(RefreshDomain::ProcessPriority, now)
         {
             let process_priority_status =
-                runner.run_process_priority_update(&settings, &mut observations);
+                runner.run_process_priority_update(settings, &mut observations);
             update_process_priority_status(&shared, process_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::ProcessPriority,
@@ -1242,7 +1249,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         if thread_priority_refresh_required && scheduler.is_due(RefreshDomain::ThreadPriority, now)
         {
             let thread_priority_status =
-                runner.run_thread_priority_update(&settings, &mut observations);
+                runner.run_thread_priority_update(settings, &mut observations);
             update_thread_priority_status(&shared, thread_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::ThreadPriority,
@@ -1254,7 +1261,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             && scheduler.is_due(RefreshDomain::DynamicPriorityBoost, now)
         {
             let dynamic_priority_boost_status =
-                runner.run_dynamic_priority_boost_update(&settings, &mut observations);
+                runner.run_dynamic_priority_boost_update(settings, &mut observations);
             update_dynamic_priority_boost_status(&shared, dynamic_priority_boost_status);
             scheduler.schedule_after(
                 RefreshDomain::DynamicPriorityBoost,
@@ -1263,7 +1270,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             );
         }
         if gpu_priority_refresh_required && scheduler.is_due(RefreshDomain::GpuPriority, now) {
-            let gpu_priority_status = runner.run_gpu_priority_update(&settings, &mut observations);
+            let gpu_priority_status = runner.run_gpu_priority_update(settings, &mut observations);
             update_gpu_priority_status(&shared, gpu_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::GpuPriority,
@@ -1274,7 +1281,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         if memory_priority_refresh_required && scheduler.is_due(RefreshDomain::MemoryPriority, now)
         {
             let memory_priority_status =
-                runner.run_memory_priority_update(&settings, &mut observations);
+                runner.run_memory_priority_update(settings, &mut observations);
             update_memory_priority_status(&shared, memory_priority_status);
             scheduler.schedule_after(
                 RefreshDomain::MemoryPriority,
@@ -1286,7 +1293,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             ProcessControlCommandStatuses::default()
         } else {
             runner.run_process_control_commands(
-                &settings,
+                settings,
                 process_control_commands,
                 &mut observations,
             )
@@ -1306,7 +1313,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
         if app_suspension_refresh_required && scheduler.is_due(RefreshDomain::AppSuspension, now) {
             let app_suspension_status =
-                runner.run_app_suspension_update(&settings, &[], &mut observations);
+                runner.run_app_suspension_update(settings, &[], &mut observations);
             update_app_suspension_status(&shared, app_suspension_status);
             scheduler.schedule_after(
                 RefreshDomain::AppSuspension,
@@ -1321,7 +1328,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             }
         }
         if cpu_sets_soft_refresh_required && scheduler.is_due(RefreshDomain::CpuSetsSoft, now) {
-            let status = runner.run_cpu_sets_soft_update(&settings, &mut observations);
+            let status = runner.run_cpu_sets_soft_update(settings, &mut observations);
             update_cpu_sets_soft_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::CpuSetsSoft,
@@ -1332,7 +1339,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         if processor_affinity_hard_refresh_required
             && scheduler.is_due(RefreshDomain::ProcessorAffinityHard, now)
         {
-            let status = runner.run_processor_affinity_hard_update(&settings, &mut observations);
+            let status = runner.run_processor_affinity_hard_update(settings, &mut observations);
             update_processor_affinity_hard_status(&shared, status);
             scheduler.schedule_after(
                 RefreshDomain::ProcessorAffinityHard,
@@ -1341,7 +1348,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             );
         }
         if core_limiter_refresh_required && scheduler.is_due(RefreshDomain::CoreLimiter, now) {
-            let core_limiter_status = runner.run_core_limiter_update(&settings, &mut observations);
+            let core_limiter_status = runner.run_core_limiter_update(settings, &mut observations);
             update_core_limiter_status(&shared, core_limiter_status);
             scheduler.schedule_after(
                 RefreshDomain::CoreLimiter,
@@ -1354,7 +1361,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         let cpu_allocation_release_retry_due = cpu_allocation_release_retry_pending_at_pass_start
             && scheduler.is_due(RefreshDomain::CpuAllocationReconciliation, now);
         if immediate_cpu_allocation_reconciliation || cpu_allocation_release_retry_due {
-            runner.run_cpu_allocation_reconciliation(&settings, cpu_allocation_release_retry_due);
+            runner.run_cpu_allocation_reconciliation(settings, cpu_allocation_release_retry_due);
         }
         let cpu_allocation_release_retry_pending = runner.cpu_allocation_release_retry_pending();
         if cpu_allocation_release_retry_due {
@@ -1392,7 +1399,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
         if by_running_app_refresh_required && scheduler.is_due(RefreshDomain::ByRunningApp, now) {
             let by_running_app_status =
-                runner.run_by_running_app_update(&settings, &mut observations);
+                runner.run_by_running_app_update(settings, &mut observations);
             update_by_running_app_status(&shared, by_running_app_status);
             scheduler.schedule_after(
                 RefreshDomain::ByRunningApp,
@@ -1404,7 +1411,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             && memory_trim_refresh_required
             && scheduler.is_due(RefreshDomain::MemoryTrim, now)
         {
-            let memory_trim_status = runner.run_memory_trim_update(&settings, &mut observations);
+            let memory_trim_status = runner.run_memory_trim_update(settings, &mut observations);
             update_memory_trim_status(&shared, memory_trim_status);
             scheduler.schedule_after(RefreshDomain::MemoryTrim, now, memory_trim_refresh_interval);
         }
@@ -1412,7 +1419,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             && scheduler.is_due(RefreshDomain::TimerResolution, now)
         {
             let timer_resolution_status =
-                runner.run_timer_resolution_update(&settings, &mut observations);
+                runner.run_timer_resolution_update(settings, &mut observations);
             update_timer_resolution_status(&shared, timer_resolution_status);
             scheduler.schedule_after(
                 RefreshDomain::TimerResolution,
@@ -1424,12 +1431,12 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {
             if scheduler.is_due(RefreshDomain::PowerPlanCheck, wait_now) {
-                if let Err(error) = runner.run_check(&settings, &mut observations) {
+                if let Err(error) = runner.run_check(settings, &mut observations) {
                     update_worker_error(&shared, Some(error));
                 }
             }
 
-            if let Some(delay) = power_plan_check_delay(&settings, windows_event_watcher_active) {
+            if let Some(delay) = power_plan_check_delay(settings, windows_event_watcher_active) {
                 scheduler.schedule_after(RefreshDomain::PowerPlanCheck, wait_now, delay);
                 Some(delay)
             } else {
@@ -1561,7 +1568,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
         if automation_worker_can_exit(
             wait_for,
-            automation_worker_required(&settings),
+            automation_worker_required(settings),
             runner.has_managed_process_control_state(),
         ) {
             if !worker_exit_is_still_idle(&shared, change_generation) {
@@ -1592,6 +1599,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
     }
 
     runner.shutdown()
+}
+
+fn active_power_source_settings(settings: &Settings, plugged_in: Option<bool>) -> &Settings {
+    if plugged_in == Some(false) {
+        settings.battery_profile()
+    } else {
+        settings
+    }
 }
 
 fn next_cpu_allocation_reconciliation_retry_interval(current: Duration) -> Duration {

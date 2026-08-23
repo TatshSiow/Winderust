@@ -1092,3 +1092,6 @@ update_channel:
   pre_release: "Pre-release"
 power_plan_control:
   pause_plugged: "Pause power plan switching on A/C"
+power_source:
+  plugged_in: "Plugged In"
+  on_battery: "On Battery"

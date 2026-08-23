@@ -1426,30 +1426,73 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn sync_input_values(&mut self, cx: &mut Context<Self>) {
-        for (rule, input) in self
+        for index in 0..self
             .settings
             .by_cpu_load
             .rules
-            .iter_mut()
-            .zip(&self.inputs.by_cpu_load_rule_names)
+            .len()
+            .min(self.inputs.by_cpu_load_rule_names.len())
         {
-            rule.name = input.read(cx).value().to_string();
+            let value = self.inputs.by_cpu_load_rule_names[index]
+                .read(cx)
+                .value()
+                .to_string();
+            if self.settings.by_cpu_load.rules[index].name != value {
+                self.settings.by_cpu_load.rules[index].name = value;
+            }
         }
-        for (index, rule) in self.settings.by_time.rules.iter_mut().enumerate() {
+        for index in 0..self.settings.by_time.rules.len() {
             if let Some(input) = self.inputs.by_time_rule_names.get(index) {
-                rule.name = input.read(cx).value().to_string();
+                let value = input.read(cx).value().to_string();
+                if self.settings.by_time.rules[index].name != value {
+                    self.settings.by_time.rules[index].name = value;
+                }
             }
             if let Some(input) = self.inputs.schedule_start_times.get(index) {
-                rule.start_time = input.read(cx).value().to_string();
+                let value = input.read(cx).value().to_string();
+                if self.settings.by_time.rules[index].start_time != value {
+                    self.settings.by_time.rules[index].start_time = value;
+                }
             }
             if let Some(input) = self.inputs.schedule_end_times.get(index) {
-                rule.end_time = input.read(cx).value().to_string();
+                let value = input.read(cx).value().to_string();
+                if self.settings.by_time.rules[index].end_time != value {
+                    self.settings.by_time.rules[index].end_time = value;
+                }
             }
         }
     }
 }
 
 impl WinderustApp {
+    pub(in crate::ui::app) fn load_power_source_input_values(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.inputs.ensure_for_settings(window, cx, &self.settings);
+        for (rule, input) in self
+            .settings
+            .by_cpu_load
+            .rules
+            .iter()
+            .zip(&self.inputs.by_cpu_load_rule_names)
+        {
+            clear_input_to(input, &rule.name, window, cx);
+        }
+        for (index, rule) in self.settings.by_time.rules.iter().enumerate() {
+            if let Some(input) = self.inputs.by_time_rule_names.get(index) {
+                clear_input_to(input, &rule.name, window, cx);
+            }
+            if let Some(input) = self.inputs.schedule_start_times.get(index) {
+                clear_input_to(input, &rule.start_time, window, cx);
+            }
+            if let Some(input) = self.inputs.schedule_end_times.get(index) {
+                clear_input_to(input, &rule.end_time, window, cx);
+            }
+        }
+    }
+
     pub(in crate::ui::app) fn set_cpu_threshold_slider_value(
         &mut self,
         slider: CpuThresholdSlider,

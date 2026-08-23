@@ -1095,3 +1095,6 @@ update_channel:
   pre_release: "預覽版"
 power_plan_control:
   pause_plugged: "使用 AC 電源時暫停切換電源計畫"
+power_source:
+  plugged_in: "已插電"
+  on_battery: "使用電池"

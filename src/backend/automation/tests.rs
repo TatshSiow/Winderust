@@ -1574,6 +1574,41 @@ fn cpu_scheduler_behaviours_independently_drive_polling() {
 }
 
 #[test]
+fn battery_only_feature_keeps_automation_and_power_events_available() {
+    let mut settings = Settings::default();
+    let mut battery = settings.clone();
+    battery.process_priority.enabled = true;
+    battery.on_battery = None;
+    settings.on_battery = Some(Box::new(battery));
+
+    assert!(automation_worker_required(&settings));
+    assert!(windows_event_watcher_required(&settings));
+}
+
+#[test]
+fn active_power_source_selects_the_matching_feature_profile() {
+    let mut settings = Settings::default();
+    settings.process_priority.enabled = false;
+    settings.battery_profile_mut().process_priority.enabled = true;
+
+    assert!(
+        !active_power_source_settings(&settings, Some(true))
+            .process_priority
+            .enabled
+    );
+    assert!(
+        active_power_source_settings(&settings, Some(false))
+            .process_priority
+            .enabled
+    );
+    assert!(
+        !active_power_source_settings(&settings, None)
+            .process_priority
+            .enabled
+    );
+}
+
+#[test]
 fn cpu_scheduler_priority_assist_temporarily_overrides_global_priority_defaults() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
@@ -2088,7 +2123,7 @@ fn cpu_allocation_handoffs_bypass_release_retry_deadlines() {
     assert!(route.contains("cpu_allocation_release_retry_pending_at_pass_start"));
     assert!(route.contains("cpu_allocation_release_retry_due"));
     assert!(route.contains(
-        "runner.run_cpu_allocation_reconciliation(&settings, cpu_allocation_release_retry_due)"
+        "runner.run_cpu_allocation_reconciliation(settings, cpu_allocation_release_retry_due)"
     ));
 }
 

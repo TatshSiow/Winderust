@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn toml_round_trip_preserves_settings() {
-        let settings = Settings {
+        let mut settings = Settings {
             general: GeneralSettings {
                 enabled: false,
                 startup_with_windows: true,
@@ -536,7 +536,12 @@ mod tests {
                     ..Default::default()
                 }],
             },
+            on_battery: None,
         };
+        settings
+            .battery_profile_mut()
+            .memory_trim
+            .system_memory_load_threshold_percent = 72;
 
         let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
         let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");

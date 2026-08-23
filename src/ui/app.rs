@@ -63,7 +63,7 @@ use crate::{
         ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings,
         CpuAllocationMethod, CpuAllocationRule, CpuSchedulerSettings, CpuUsageComparison,
         DynamicPriorityBoostSettings, GpuPrioritySettings, IoPrioritySettings,
-        MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit, PowerSourceProfile,
         ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPriority,
         ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
         ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
@@ -419,6 +419,7 @@ struct ProcessResourceUsage {
 pub struct WinderustApp {
     settings: SettingsEditor,
     shell: ShellModel,
+    editing_power_source_profile: PowerSourceProfile,
     plans: Vec<PowerPlan>,
     current_plan: Option<PowerPlan>,
     activity: ActivitySnapshot,
@@ -904,6 +905,13 @@ impl WinderustApp {
         let mut app = Self {
             settings,
             shell: ShellModel::new(Page::Home),
+            editing_power_source_profile: if crate::backend::power_source::is_plugged_in()
+                == Some(false)
+            {
+                PowerSourceProfile::OnBattery
+            } else {
+                PowerSourceProfile::PluggedIn
+            },
             plans: initial_processor_power.plans,
             current_plan: initial_processor_power.current_plan,
             activity: ActivitySnapshot {
