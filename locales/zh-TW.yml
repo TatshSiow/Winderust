@@ -1098,3 +1098,8 @@ power_plan_control:
 power_source:
   plugged_in: "已插電"
   on_battery: "使用電池"
+settings_io_toast:
+  exported: "設定已匯出"
+  imported: "設定已匯入"
+  export_failed: "設定匯出失敗"
+  import_failed: "設定匯入失敗"

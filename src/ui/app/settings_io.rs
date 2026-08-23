@@ -60,14 +60,26 @@ impl WinderustApp {
         }
     }
 
-    pub(in crate::ui::app) fn export_settings_toml(&mut self) {
+    pub(in crate::ui::app) fn export_settings_toml(&mut self, cx: &mut Context<Self>) {
         match choose_settings_file(self.hwnd, FileDialogMode::Save) {
             Some(path) => match self.settings.export_toml_to(&path) {
                 Ok(()) => {
                     self.status_message =
                         t!("status.exported_settings", path = path.display()).to_string();
+                    self.show_settings_io_toast(
+                        t!("settings_io_toast.exported").to_string(),
+                        true,
+                        cx,
+                    );
                 }
-                Err(err) => self.status_message = err.to_string(),
+                Err(err) => {
+                    self.status_message = err.to_string();
+                    self.show_settings_io_toast(
+                        t!("settings_io_toast.export_failed").to_string(),
+                        false,
+                        cx,
+                    );
+                }
             },
             None => {
                 self.status_message = t!("status.export_canceled").to_string();
@@ -121,15 +133,89 @@ impl WinderustApp {
                             t!("status.imported_settings_with_error", error = error).to_string()
                         }
                     };
+                    let (title, success) = if outcome.startup_registration_error().is_none() {
+                        (t!("settings_io_toast.imported").to_string(), true)
+                    } else {
+                        (t!("settings_io_toast.import_failed").to_string(), false)
+                    };
+                    self.show_settings_io_toast(title, success, cx);
                     self.rebuild_inputs(window, cx);
                     self.sync_runtime_settings();
                 }
-                Err(err) => self.status_message = err.to_string(),
+                Err(err) => {
+                    self.status_message = err.to_string();
+                    self.show_settings_io_toast(
+                        t!("settings_io_toast.import_failed").to_string(),
+                        false,
+                        cx,
+                    );
+                }
             },
             None => {
                 self.status_message = t!("status.import_canceled").to_string();
             }
         }
+    }
+
+    fn show_settings_io_toast(&mut self, title: String, success: bool, cx: &mut Context<Self>) {
+        let shown_at = Instant::now();
+        self.settings_io_toast = Some(SettingsIoToast {
+            title,
+            message: self.status_message.clone(),
+            success,
+            shown_at,
+        });
+        cx.spawn(async move |this, cx| {
+            Timer::after(Duration::from_secs(3)).await;
+            let _ = this.update(cx, |app, cx| {
+                if app.settings_io_toast.as_ref().map(|toast| toast.shown_at) == Some(shown_at) {
+                    app.settings_io_toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(in crate::ui::app) fn render_settings_io_toast(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(toast) = self.settings_io_toast.as_ref() else {
+            return div().into_any_element();
+        };
+        let color = if toast.success {
+            rgb(success_text_color()).into()
+        } else {
+            cx.theme().danger_foreground
+        };
+        let card = v_flex()
+            .absolute()
+            .right(px(24.0))
+            .top(px(64.0))
+            .w(px(372.0))
+            .occlude()
+            .gap_2()
+            .p_3()
+            .rounded(px(BRAND_RADIUS_OVERLAY))
+            .border_1()
+            .border_color(color)
+            .bg(cx.theme().popover)
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(color)
+                    .child(toast.title.clone()),
+            )
+            .child(text_muted(toast.message.clone()));
+
+        with_optional_motion(
+            card,
+            SharedString::from(format!("settings-io-toast-{:?}", toast.shown_at)),
+            MotionSpeed::Standard,
+            |card| card,
+            |card, delta| card.opacity(0.18 + 0.82 * delta),
+        )
     }
 
     pub(in crate::ui::app) fn page_uses_process_candidates(&self) -> bool {

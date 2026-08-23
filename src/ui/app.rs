@@ -416,6 +416,13 @@ struct ProcessResourceUsage {
     efficiency_mode: Option<bool>,
 }
 
+struct SettingsIoToast {
+    title: String,
+    message: String,
+    success: bool,
+    shown_at: Instant,
+}
+
 pub struct WinderustApp {
     settings: SettingsEditor,
     shell: ShellModel,
@@ -498,6 +505,7 @@ pub struct WinderustApp {
     about_updates_scroll_anchor: ScrollAnchor,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
+    settings_io_toast: Option<SettingsIoToast>,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     accent_color_picker: Entity<ColorPickerState>,
@@ -1012,6 +1020,7 @@ impl WinderustApp {
             about_updates_scroll_anchor,
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
+            settings_io_toast: None,
             pending_list_item_removals: HashMap::new(),
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             accent_color_picker,
@@ -1215,6 +1224,7 @@ impl Render for WinderustApp {
             } else {
                 div().into_any_element()
             })
+            .child(self.render_settings_io_toast(cx))
             .child(if self.process_list.details.is_some() {
                 self.render_process_details_modal(window, cx)
             } else {

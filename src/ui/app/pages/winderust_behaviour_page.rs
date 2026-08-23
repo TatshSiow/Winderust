@@ -108,7 +108,7 @@ impl WinderustApp {
                             .small()
                             .label(t!("settings.export_settings").to_string())
                             .on_click(cx.listener(|app, _, _, cx| {
-                                app.export_settings_toml();
+                                app.export_settings_toml(cx);
                                 cx.notify();
                             })),
                     )

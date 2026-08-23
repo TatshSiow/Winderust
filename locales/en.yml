@@ -1095,3 +1095,8 @@ power_plan_control:
 power_source:
   plugged_in: "Plugged In"
   on_battery: "On Battery"
+settings_io_toast:
+  exported: "Settings exported"
+  imported: "Settings imported"
+  export_failed: "Settings export failed"
+  import_failed: "Settings import failed"
