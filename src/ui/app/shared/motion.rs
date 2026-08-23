@@ -102,6 +102,29 @@ where
     }
 }
 
+pub(in crate::ui::app) fn animated_tab_content(
+    content: AnyElement,
+    id: impl Into<SharedString>,
+    from_x: f32,
+) -> AnyElement {
+    with_optional_motion(
+        div()
+            .relative()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .child(content),
+        id,
+        MotionSpeed::Fast,
+        |content| content,
+        move |content, delta| {
+            content
+                .left(px(from_x * (1.0 - delta)))
+                .opacity(0.35 + 0.65 * delta)
+        },
+    )
+}
+
 pub(in crate::ui::app) fn popup_vanish_progress(
     started: &mut Option<Instant>,
     window: &mut Window,

@@ -1109,6 +1109,23 @@ impl Render for WinderustApp {
         } else {
             self.render_page(window, cx)
         };
+        let page_body = if !search_active && self.shell.page.supports_power_source_profiles() {
+            let profile = self.editing_power_source_profile;
+            animated_tab_content(
+                page_body,
+                SharedString::from(format!(
+                    "power-source-content-{:?}-{profile:?}",
+                    self.shell.page
+                )),
+                if profile == PowerSourceProfile::OnBattery {
+                    12.0
+                } else {
+                    -12.0
+                },
+            )
+        } else {
+            page_body
+        };
         let page_header = if search_active {
             search_results_page_header(cx).into_any_element()
         } else {

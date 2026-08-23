@@ -374,6 +374,15 @@ impl WinderustApp {
             self.render_cpu_allocation_presets_content(cx)
         };
 
+        let body = animated_tab_content(
+            body,
+            SharedString::from(format!(
+                "cpu-allocation-{:?}-{}-content",
+                page,
+                if status_selected { "status" } else { "presets" }
+            )),
+            if status_selected { -12.0 } else { 12.0 },
+        );
         page_side_panel(header, body)
     }
 

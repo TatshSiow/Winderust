@@ -217,6 +217,15 @@ impl WinderustApp {
         } else {
             self.render_adaptive_engine_presets_content(cx)
         };
+        let body = animated_tab_content(
+            body,
+            if status_selected {
+                "adaptive-engine-status-content"
+            } else {
+                "adaptive-engine-presets-content"
+            },
+            if status_selected { -12.0 } else { 12.0 },
+        );
         page_side_panel(header, body)
     }
 
