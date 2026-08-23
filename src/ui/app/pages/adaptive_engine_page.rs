@@ -177,6 +177,10 @@ impl WinderustApp {
                     .when(status_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
+                        if app.adaptive_engine_side_panel_tab == PresetSidePanelTab::Status {
+                            return;
+                        }
+                        app.begin_tab_content_motion("adaptive-engine-status".to_string(), -12.0);
                         app.adaptive_engine_side_panel_tab = PresetSidePanelTab::Status;
                         cx.notify();
                     }))
@@ -196,6 +200,10 @@ impl WinderustApp {
                     .when(!status_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
+                        if app.adaptive_engine_side_panel_tab == PresetSidePanelTab::Presets {
+                            return;
+                        }
+                        app.begin_tab_content_motion("adaptive-engine-presets".to_string(), 12.0);
                         app.adaptive_engine_side_panel_tab = PresetSidePanelTab::Presets;
                         cx.notify();
                     }))
@@ -217,14 +225,13 @@ impl WinderustApp {
         } else {
             self.render_adaptive_engine_presets_content(cx)
         };
-        let body = animated_tab_content(
+        let body = self.animated_tab_content(
             body,
             if status_selected {
-                "adaptive-engine-status-content"
+                "adaptive-engine-status"
             } else {
-                "adaptive-engine-presets-content"
+                "adaptive-engine-presets"
             },
-            if status_selected { -12.0 } else { 12.0 },
         );
         page_side_panel(header, body)
     }

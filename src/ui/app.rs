@@ -424,6 +424,13 @@ struct SettingsIoToast {
     closing: bool,
 }
 
+struct TabContentTransition {
+    target: String,
+    generation: u64,
+    started_at: Instant,
+    from_x: f32,
+}
+
 pub struct WinderustApp {
     settings: SettingsEditor,
     shell: ShellModel,
@@ -507,6 +514,8 @@ pub struct WinderustApp {
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
     settings_io_toast: Option<SettingsIoToast>,
+    tab_content_transition: Option<TabContentTransition>,
+    tab_content_transition_generation: u64,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     accent_color_picker: Entity<ColorPickerState>,
@@ -1022,6 +1031,8 @@ impl WinderustApp {
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
             settings_io_toast: None,
+            tab_content_transition: None,
+            tab_content_transition_generation: 0,
             pending_list_item_removals: HashMap::new(),
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             accent_color_picker,
@@ -1100,6 +1111,7 @@ impl Render for WinderustApp {
             Ordering::Relaxed,
         );
         self.clear_finished_breadcrumb_transition();
+        self.clear_finished_tab_content_motion();
 
         let search_query = self.dashboard_search_query(cx);
         let search_active = !search_query.is_empty();
@@ -1111,18 +1123,8 @@ impl Render for WinderustApp {
         };
         let page_body = if !search_active && self.shell.page.supports_power_source_profiles() {
             let profile = self.editing_power_source_profile;
-            animated_tab_content(
-                page_body,
-                SharedString::from(format!(
-                    "power-source-content-{:?}-{profile:?}",
-                    self.shell.page
-                )),
-                if profile == PowerSourceProfile::OnBattery {
-                    12.0
-                } else {
-                    -12.0
-                },
-            )
+            let target = format!("power-source-{:?}-{profile:?}", self.shell.page);
+            self.animated_tab_content(page_body, &target)
         } else {
             page_body
         };

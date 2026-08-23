@@ -102,27 +102,67 @@ where
     }
 }
 
-pub(in crate::ui::app) fn animated_tab_content(
-    content: AnyElement,
-    id: impl Into<SharedString>,
-    from_x: f32,
-) -> AnyElement {
-    with_optional_motion(
-        div()
+impl WinderustApp {
+    pub(in crate::ui::app) fn begin_tab_content_motion(&mut self, target: String, from_x: f32) {
+        if !ui_animations_enabled() {
+            self.tab_content_transition = None;
+            return;
+        }
+        self.tab_content_transition_generation =
+            self.tab_content_transition_generation.wrapping_add(1);
+        self.tab_content_transition = Some(TabContentTransition {
+            target,
+            generation: self.tab_content_transition_generation,
+            started_at: Instant::now(),
+            from_x,
+        });
+    }
+
+    pub(in crate::ui::app) fn clear_finished_tab_content_motion(&mut self) {
+        if self
+            .tab_content_transition
+            .as_ref()
+            .is_some_and(|transition| {
+                transition.started_at.elapsed() >= Duration::from_secs_f64(MOTION_FAST_SECONDS)
+            })
+        {
+            self.tab_content_transition = None;
+        }
+    }
+
+    pub(in crate::ui::app) fn animated_tab_content(
+        &self,
+        content: AnyElement,
+        target: &str,
+    ) -> AnyElement {
+        let frame = div()
             .relative()
+            .flex()
+            .flex_col()
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .child(content),
-        id,
-        MotionSpeed::Fast,
-        |content| content,
-        move |content, delta| {
-            content
-                .left(px(from_x * (1.0 - delta)))
-                .opacity(0.35 + 0.65 * delta)
-        },
-    )
+            .child(content);
+        let Some(transition) = self
+            .tab_content_transition
+            .as_ref()
+            .filter(|transition| transition.target == target)
+        else {
+            return frame.into_any_element();
+        };
+        let from_x = transition.from_x;
+        with_optional_motion(
+            frame,
+            SharedString::from(format!("tab-content-{}", transition.generation)),
+            MotionSpeed::Fast,
+            |content| content,
+            move |content, delta| {
+                content
+                    .left(px(from_x * (1.0 - delta)))
+                    .opacity(0.35 + 0.65 * delta)
+            },
+        )
+    }
 }
 
 pub(in crate::ui::app) fn popup_vanish_progress(

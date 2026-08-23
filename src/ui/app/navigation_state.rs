@@ -124,7 +124,18 @@ impl WinderustApp {
                     .when(selected, |item| item.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(move |app, _, window, cx| {
+                        if app.editing_power_source_profile == profile {
+                            return;
+                        }
                         app.sync_input_values(cx);
+                        app.begin_tab_content_motion(
+                            format!("power-source-{:?}-{profile:?}", app.shell.page),
+                            if profile == PowerSourceProfile::OnBattery {
+                                12.0
+                            } else {
+                                -12.0
+                            },
+                        );
                         app.editing_power_source_profile = profile;
                         app.settings.select_power_source(profile);
                         app.load_power_source_input_values(window, cx);
