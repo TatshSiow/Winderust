@@ -58,8 +58,8 @@ impl WinderustApp {
                 control_button(Button::new("export-action-log"))
                     .label(t!("action_log.export_csv").to_string())
                     .disabled(self.action_log_entries.is_empty())
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        app.export_action_log_csv();
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.export_action_log_csv(window, cx);
                         cx.notify();
                     })),
             );

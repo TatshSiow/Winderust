@@ -186,6 +186,12 @@ fn status_metric_row(label: String, value: String) -> gpui::Div {
         )
 }
 
+fn percent_tenths(value: Option<u16>) -> String {
+    value
+        .map(|value| format!("{}.{:01}%", value / 10, value % 10))
+        .unwrap_or_else(|| "—".to_owned())
+}
+
 fn status_log_row(
     label: String,
     entry: Option<&ActionLogEntry>,
@@ -628,6 +634,42 @@ impl WinderustApp {
                 ))
                 .into_any_element(),
         )
+    }
+
+    pub(in crate::ui::app) fn render_bottleneck_classifier_status(&self) -> AnyElement {
+        use crate::bottleneck_classifier::BottleneckState;
+
+        let status = &self.feature_status.bottleneck_classifier;
+        let state = match status.state {
+            BottleneckState::Unknown => t!("adaptive_engine.bottleneck_unknown"),
+            BottleneckState::Headroom => t!("adaptive_engine.bottleneck_headroom"),
+            BottleneckState::CpuBound => t!("adaptive_engine.bottleneck_cpu_bound"),
+            BottleneckState::GpuBound => t!("adaptive_engine.bottleneck_gpu_bound"),
+            BottleneckState::Mixed => t!("adaptive_engine.bottleneck_mixed"),
+        };
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(text_muted(
+                t!("adaptive_engine.bottleneck_classifier").to_string(),
+            ))
+            .child(status_metric_row(
+                t!("common.status").to_string(),
+                state.to_string(),
+            ))
+            .child(status_metric_row(
+                t!("adaptive_engine.total_cpu").to_string(),
+                percent_tenths(status.total_cpu_tenths),
+            ))
+            .child(status_metric_row(
+                t!("adaptive_engine.busiest_cpu").to_string(),
+                percent_tenths(status.busiest_cpu_tenths),
+            ))
+            .child(status_metric_row(
+                t!("adaptive_engine.busiest_gpu").to_string(),
+                percent_tenths(status.busiest_gpu_tenths),
+            ))
+            .into_any_element()
     }
 
     pub(in crate::ui::app) fn render_page_status_panel(

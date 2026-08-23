@@ -8,7 +8,7 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
-use rfd::{AsyncFileDialog, FileDialog};
+use rfd::AsyncFileDialog;
 use rust_i18n::t;
 use windows_sys::Win32::Foundation::HWND;
 
@@ -20,12 +20,15 @@ pub(crate) enum FileDialogMode {
     Save,
 }
 
-pub(crate) fn choose_settings_file(hwnd: Option<HWND>, mode: FileDialogMode) -> Option<PathBuf> {
+pub(crate) async fn choose_settings_file(
+    hwnd: Option<HWND>,
+    mode: FileDialogMode,
+) -> Option<PathBuf> {
     let default_path = match mode {
         FileDialogMode::Open => config::storage::config_path(),
         FileDialogMode::Save => config::storage::default_export_toml_path(),
     };
-    let dialog = dialog(hwnd)
+    let dialog = async_dialog(hwnd)
         .add_filter(t!("settings.settings_files").to_string(), &["toml"])
         .set_directory(default_path.parent().unwrap_or_else(|| Path::new(".")))
         .set_file_name(
@@ -38,19 +41,20 @@ pub(crate) fn choose_settings_file(hwnd: Option<HWND>, mode: FileDialogMode) -> 
             FileDialogMode::Open => t!("settings.import_settings").to_string(),
             FileDialogMode::Save => t!("settings.export_settings").to_string(),
         });
-    match mode {
-        FileDialogMode::Open => dialog.pick_file(),
-        FileDialogMode::Save => dialog.save_file(),
-    }
+    let file = match mode {
+        FileDialogMode::Open => dialog.pick_file().await,
+        FileDialogMode::Save => dialog.save_file().await,
+    }?;
+    Some(file.path().to_owned())
 }
 
-pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBuf> {
+pub(crate) async fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBuf> {
     let filename = format!(
         "winderust_action_log_{}_{}.csv",
         env!("CARGO_PKG_VERSION"),
         Local::now().format("%Y-%m-%d")
     );
-    dialog(hwnd)
+    let file = async_dialog(hwnd)
         .add_filter(t!("action_log.csv_files").to_string(), &["csv"])
         .set_directory(
             config::storage::config_path()
@@ -60,6 +64,8 @@ pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBu
         .set_file_name(filename)
         .set_title(t!("action_log.export_csv").to_string())
         .save_file()
+        .await?;
+    Some(file.path().to_owned())
 }
 
 pub(crate) async fn choose_executable_file(hwnd: Option<HWND>) -> Option<PathBuf> {
@@ -76,13 +82,6 @@ fn is_executable_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-}
-
-fn dialog(hwnd: Option<HWND>) -> FileDialog {
-    hwnd.and_then(DialogParent::new)
-        .map_or_else(FileDialog::new, |parent| {
-            FileDialog::new().set_parent(&parent)
-        })
 }
 
 struct DialogParent(NonZeroIsize);

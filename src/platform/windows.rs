@@ -5,6 +5,7 @@ use crate::win_util::last_error;
 pub(crate) mod cpu_allocation;
 pub(crate) mod dynamic_priority_boost;
 pub(crate) mod gpu_priority;
+pub(crate) mod gpu_usage;
 pub(crate) mod io_priority;
 pub(crate) mod memory_priority;
 pub(crate) mod memory_trim;

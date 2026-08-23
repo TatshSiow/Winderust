@@ -59,6 +59,45 @@ pub struct Settings {
     pub memory_trim: MemoryTrimSettings,
     #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_battery: Option<Box<Settings>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PowerSourceProfile {
+    #[default]
+    PluggedIn,
+    OnBattery,
+}
+
+impl Settings {
+    pub fn battery_profile(&self) -> &Self {
+        self.on_battery.as_deref().unwrap_or(self)
+    }
+
+    pub fn battery_profile_mut(&mut self) -> &mut Self {
+        if self.on_battery.is_none() {
+            let mut profile = self.clone();
+            profile.on_battery = None;
+            self.on_battery = Some(Box::new(profile));
+        }
+        self.on_battery
+            .get_or_insert_with(|| Box::new(Self::default()))
+            .as_mut()
+    }
+
+    pub fn sync_shared_settings_to_battery(&mut self) {
+        let Some(battery) = self.on_battery.as_deref_mut() else {
+            return;
+        };
+        battery.general = self.general.clone();
+        battery.advanced = self.advanced.clone();
+        battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
+        battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
+        battery.advanced_power_plan_tuning_presets =
+            self.advanced_power_plan_tuning_presets.clone();
+        battery.on_battery = None;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -925,6 +964,7 @@ pub struct CpuSchedulerSettings {
     pub background_memory_priority: ProcessMemoryPrioritySetting,
     pub cpu_pressure_restraint_enabled: bool,
     pub limit_background_processors_enabled: bool,
+    pub dynamic_resource_zones_enabled: bool,
     pub cpu_allocation_method: CpuAllocationMethod,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
@@ -1632,6 +1672,7 @@ impl Default for Settings {
             memory_priority: MemoryPrioritySettings::default(),
             memory_trim: MemoryTrimSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
+            on_battery: None,
         }
     }
 }
@@ -1986,6 +2027,7 @@ impl Default for CpuSchedulerSettings {
             background_memory_priority: ProcessMemoryPrioritySetting::Low,
             cpu_pressure_restraint_enabled: false,
             limit_background_processors_enabled: false,
+            dynamic_resource_zones_enabled: false,
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,

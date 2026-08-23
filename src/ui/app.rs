@@ -63,7 +63,7 @@ use crate::{
         ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings,
         CpuAllocationMethod, CpuAllocationRule, CpuSchedulerSettings, CpuUsageComparison,
         DynamicPriorityBoostSettings, GpuPrioritySettings, IoPrioritySettings,
-        MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit, PowerSourceProfile,
         ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPriority,
         ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
         ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
@@ -416,9 +416,25 @@ struct ProcessResourceUsage {
     efficiency_mode: Option<bool>,
 }
 
+struct SettingsIoToast {
+    title: String,
+    message: String,
+    success: bool,
+    shown_at: Instant,
+    closing: bool,
+}
+
+struct TabContentTransition {
+    target: String,
+    generation: u64,
+    started_at: Instant,
+    from_x: f32,
+}
+
 pub struct WinderustApp {
     settings: SettingsEditor,
     shell: ShellModel,
+    editing_power_source_profile: PowerSourceProfile,
     plans: Vec<PowerPlan>,
     current_plan: Option<PowerPlan>,
     activity: ActivitySnapshot,
@@ -451,6 +467,7 @@ pub struct WinderustApp {
     tray_hide_on_close: bool,
     hwnd: Option<HWND>,
     tray_icon: Option<TrayIcon>,
+    tray_install_failed_for: Option<(bool, bool)>,
     status_message: String,
     process_catalog: ProcessCatalogModel,
     process_list: ProcessListModel,
@@ -494,11 +511,11 @@ pub struct WinderustApp {
     about_updates_focus_handle: FocusHandle,
     about_page_scroll_handle: ScrollHandle,
     about_updates_scroll_anchor: ScrollAnchor,
-    admin_rights_prompt_visible: bool,
-    admin_rights_prompt_reveal_pending: bool,
-    admin_rights_prompt_vanish_started: Option<Instant>,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
+    settings_io_toast: Option<SettingsIoToast>,
+    tab_content_transition: Option<TabContentTransition>,
+    tab_content_transition_generation: u64,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     accent_color_picker: Entity<ColorPickerState>,
@@ -900,16 +917,19 @@ impl WinderustApp {
                 cx.notify();
             },
         );
-        let admin_rights_prompt_required = !privilege::is_running_as_admin();
-        let admin_rights_prompt_reveal_pending =
-            admin_rights_prompt_required && ui_animations_enabled();
-
         let about_page_scroll_handle = ScrollHandle::new();
         let about_updates_scroll_anchor =
             ScrollAnchor::for_handle(about_page_scroll_handle.clone());
         let mut app = Self {
             settings,
             shell: ShellModel::new(Page::Home),
+            editing_power_source_profile: if crate::backend::power_source::is_plugged_in()
+                == Some(false)
+            {
+                PowerSourceProfile::OnBattery
+            } else {
+                PowerSourceProfile::PluggedIn
+            },
             plans: initial_processor_power.plans,
             current_plan: initial_processor_power.current_plan,
             activity: ActivitySnapshot {
@@ -948,6 +968,7 @@ impl WinderustApp {
             tray_hide_on_close: false,
             hwnd,
             tray_icon: None,
+            tray_install_failed_for: None,
             status_message: initial_processor_power.status_message,
             process_catalog: ProcessCatalogModel::new(initial_process_load_state.clone()),
             process_list: ProcessListModel::new(initial_process_load_state),
@@ -1007,12 +1028,11 @@ impl WinderustApp {
             about_updates_focus_handle: cx.focus_handle(),
             about_page_scroll_handle,
             about_updates_scroll_anchor,
-            admin_rights_prompt_visible: admin_rights_prompt_required
-                && !admin_rights_prompt_reveal_pending,
-            admin_rights_prompt_reveal_pending,
-            admin_rights_prompt_vanish_started: None,
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
+            settings_io_toast: None,
+            tab_content_transition: None,
+            tab_content_transition_generation: 0,
             pending_list_item_removals: HashMap::new(),
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             accent_color_picker,
@@ -1091,6 +1111,7 @@ impl Render for WinderustApp {
             Ordering::Relaxed,
         );
         self.clear_finished_breadcrumb_transition();
+        self.clear_finished_tab_content_motion();
 
         let search_query = self.dashboard_search_query(cx);
         let search_active = !search_query.is_empty();
@@ -1099,6 +1120,13 @@ impl Render for WinderustApp {
             self.render_search_results_page(&search_query, cx)
         } else {
             self.render_page(window, cx)
+        };
+        let page_body = if !search_active && self.shell.page.supports_power_source_profiles() {
+            let profile = self.editing_power_source_profile;
+            let target = format!("power-source-{:?}-{profile:?}", self.shell.page);
+            self.animated_tab_content(page_body, &target)
+        } else {
+            page_body
         };
         let page_header = if search_active {
             search_results_page_header(cx).into_any_element()
@@ -1109,17 +1137,6 @@ impl Render for WinderustApp {
         let unsaved = self.has_pending_changes();
         let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
         let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
-        let admin_rights_prompt_reveal_pending = self.admin_rights_prompt_reveal_pending;
-        if admin_rights_prompt_reveal_pending {
-            self.admin_rights_prompt_reveal_pending = false;
-            self.admin_rights_prompt_visible = true;
-            window.request_animation_frame();
-        }
-        let admin_rights_prompt_vanish_progress =
-            popup_vanish_progress(&mut self.admin_rights_prompt_vanish_started, window);
-        let show_admin_rights_prompt = !admin_rights_prompt_reveal_pending
-            && (self.admin_rights_prompt_visible || admin_rights_prompt_vanish_progress.is_some());
-        let admin_rights_prompt_bottom = if show_unsaved_popup { 190.0 } else { 54.0 };
         let page_content = animated_page_content_frame(
             page_content_frame(page_header, page_body, page_uses_inner_scroll),
             self.active_breadcrumb_transition(self.shell.page),
@@ -1227,15 +1244,7 @@ impl Render for WinderustApp {
             } else {
                 div().into_any_element()
             })
-            .child(if show_admin_rights_prompt {
-                self.render_admin_rights_prompt(
-                    admin_rights_prompt_bottom,
-                    admin_rights_prompt_vanish_progress,
-                    cx,
-                )
-            } else {
-                div().into_any_element()
-            })
+            .child(self.render_settings_io_toast(cx))
             .child(if self.process_list.details.is_some() {
                 self.render_process_details_modal(window, cx)
             } else {
@@ -1477,6 +1486,9 @@ mod tests {
         assert!(power_save.limit_background_processors_enabled);
         assert!(performance.limit_background_processors_enabled);
         assert!(speed.limit_background_processors_enabled);
+        assert!(!power_save.dynamic_resource_zones_enabled);
+        assert!(performance.dynamic_resource_zones_enabled);
+        assert!(speed.dynamic_resource_zones_enabled);
         assert!(power_save.process_priority_enabled);
         assert!(performance.process_priority_enabled);
         assert!(speed.process_priority_enabled);
@@ -1539,8 +1551,8 @@ mod tests {
             );
         }
         assert_eq!(power_save.processor_limit_percent, 60);
-        assert_eq!(performance.processor_limit_percent, 16);
-        assert_eq!(speed.processor_limit_percent, 10);
+        assert_eq!(performance.processor_limit_percent, 75);
+        assert_eq!(speed.processor_limit_percent, 75);
         assert!(!thread_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled);
         assert!(
             !dynamic_priority_boost_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled

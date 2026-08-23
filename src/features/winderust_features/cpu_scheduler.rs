@@ -419,6 +419,8 @@ impl CpuSchedulerManager {
             settings.cpu_pressure_restraint_enabled && background_pressure_applies;
         let cpu_allocation_applies =
             settings.limit_background_processors_enabled && background_pressure_applies;
+        let dynamic_resource_zones_apply =
+            settings.dynamic_resource_zones_enabled && cpu_allocation_applies;
         let mut auto_excluded_processes = BTreeSet::new();
 
         let mut cpu_allocation_targets = Vec::new();
@@ -511,9 +513,65 @@ impl CpuSchedulerManager {
             }
 
             let now = Instant::now();
+            let allocation_percent = if dynamic_resource_zones_apply {
+                dynamic_background_zone_percent(settings.processor_limit_percent)
+            } else {
+                settings.processor_limit_percent
+            };
             let cpu_allocation_mask = cpu_allocation_applies
-                .then(|| self.cpu_allocation_mask(settings, now))
+                .then(|| self.cpu_allocation_mask(settings, allocation_percent, now))
                 .flatten();
+            if dynamic_resource_zones_apply {
+                let processors = cpu_allocation::logical_processors();
+                let all_mask = cpu_allocation::logical_processor_mask(&processors);
+                if let Some((foreground_mask, _background_mask)) =
+                    cpu_allocation_mask.and_then(|background_mask| {
+                        dynamic_resource_zone_masks(all_mask, background_mask)
+                    })
+                {
+                    for process_id in &foreground_process_group_ids {
+                        let Some(process) = processes_by_id.get(process_id) else {
+                            continue;
+                        };
+                        if process.is_critical != Some(false)
+                            || !process.can_set_information
+                            || excluded_process_ids.contains(process_id)
+                            || !focus_process_priority_eligible(
+                                *process_id,
+                                &process.name,
+                                current_process_id,
+                                current_session_id,
+                            )
+                        {
+                            continue;
+                        }
+                        let Some(executable_path) =
+                            cached_executable_path(process, &mut executable_paths)
+                        else {
+                            continue;
+                        };
+                        if settings.custom_rule_enabled_for(&executable_path)
+                            || cpu_allocation::contains_process(
+                                explicit_cpu_allocation_paths,
+                                &executable_path,
+                            )
+                        {
+                            continue;
+                        }
+                        let Some(creation_time) = process.creation_time else {
+                            continue;
+                        };
+                        cpu_allocation_targets.push(CpuAllocationTarget {
+                            process_id: *process_id,
+                            process_name: process.name.clone(),
+                            executable_path,
+                            mode: CpuAllocationMode::SoftCpuSets,
+                            core_mask: foreground_mask,
+                            creation_time,
+                        });
+                    }
+                }
+            }
             let current_ids = restrainable_processes
                 .keys()
                 .copied()
@@ -622,7 +680,11 @@ impl CpuSchedulerManager {
                             process_id: candidate.process_id,
                             process_name: candidate.process_name.clone(),
                             executable_path,
-                            mode: cpu_allocation_method(settings),
+                            mode: if dynamic_resource_zones_apply {
+                                CpuAllocationMode::SoftCpuSets
+                            } else {
+                                cpu_allocation_method(settings)
+                            },
                             core_mask,
                             creation_time,
                         });
@@ -970,7 +1032,8 @@ impl CpuSchedulerManager {
             enabled: true,
             scanned_processes,
             adjusted_processes: priority_efficiency_controller
-                .policy_managed_process_count(ControlOwner::AdaptiveEngine),
+                .policy_managed_process_count(ControlOwner::AdaptiveEngine)
+                .max(cpu_allocation_snapshot.adjusted_processes),
             focus_and_launch_profile_active,
             cpu_pressure_restraint_active: cpu_pressure_restraint_applies,
             foreground_cpu_usage_tenths,
@@ -1560,26 +1623,23 @@ impl CpuSchedulerManager {
     fn cpu_allocation_mask(
         &mut self,
         settings: &CpuSchedulerSettings,
+        percent: u8,
         now: Instant,
     ) -> Option<u64> {
         match settings.background_processor_selection {
             BackgroundProcessorSelection::LeastUsed => {
-                return self.load_aware_cpu_allocation_mask(
-                    settings.processor_limit_percent,
-                    None,
-                    now,
-                );
+                return self.load_aware_cpu_allocation_mask(percent, None, now);
             }
             BackgroundProcessorSelection::LeastUsedPerformanceCores => {
                 return self.load_aware_cpu_allocation_mask(
-                    settings.processor_limit_percent,
+                    percent,
                     Some(LogicalProcessorKind::Performance),
                     now,
                 );
             }
             BackgroundProcessorSelection::LeastUsedEfficiencyCores => {
                 return self.load_aware_cpu_allocation_mask(
-                    settings.processor_limit_percent,
+                    percent,
                     Some(LogicalProcessorKind::Efficiency),
                     now,
                 );

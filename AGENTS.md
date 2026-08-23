@@ -18,6 +18,7 @@ Read `.agents/memory/README.md` first.
 
 ## Change Checklist
 
+- Treat `vendor/gpui/` as read-only vendored framework code. Do not modify it for application-level features, refactors, cleanup, or workarounds; modify it only for a confirmed GPUI framework defect when the user explicitly authorizes that framework-level change.
 - Trace all callers before renaming or removing a setting.
 - Keep `Page`, navigation sections, render dispatch, locale keys, settings fields, backend status, scripts, and docs aligned with the same UI term.
 - Preserve runtime safety behavior: process-state restoration, protected-process filtering, conservative defaults, and failure handling are not legacy compatibility.

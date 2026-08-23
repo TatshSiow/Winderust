@@ -16,15 +16,31 @@ pub(super) fn automation_refresh_interval(
 }
 
 pub(super) fn input_hook_required(settings: &Settings) -> bool {
+    input_hook_required_for_profile(settings)
+        || settings
+            .on_battery
+            .as_deref()
+            .is_some_and(input_hook_required_for_profile)
+}
+
+fn input_hook_required_for_profile(settings: &Settings) -> bool {
     settings.general.enabled
         && (activity_input_hook_required(settings) || app_suspension_input_hook_required(settings))
 }
 
 pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
-    let app_suspension = app_suspension_input_hook_required(settings);
+    let plugged_in_app_suspension = app_suspension_input_hook_required(settings);
+    let battery = settings.on_battery.as_deref();
+    let battery_app_suspension = battery.is_some_and(app_suspension_input_hook_required);
     InputHookConfig {
-        keyboard: settings.by_activity.input_detection.keyboard || app_suspension,
-        mouse: settings.by_activity.input_detection.mouse || app_suspension,
+        keyboard: settings.by_activity.input_detection.keyboard
+            || plugged_in_app_suspension
+            || battery.is_some_and(|settings| settings.by_activity.input_detection.keyboard)
+            || battery_app_suspension,
+        mouse: settings.by_activity.input_detection.mouse
+            || plugged_in_app_suspension
+            || battery.is_some_and(|settings| settings.by_activity.input_detection.mouse)
+            || battery_app_suspension,
     }
 }
 
@@ -316,15 +332,36 @@ pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn automation_worker_required(settings: &Settings) -> bool {
+    automation_worker_required_for_profile(settings)
+        || settings
+            .on_battery
+            .as_deref()
+            .is_some_and(automation_worker_required_for_profile)
+}
+
+fn automation_worker_required_for_profile(settings: &Settings) -> bool {
     settings.general.enabled
         && (power_plan_checks_required(settings)
             || adaptive_power_plan_required(settings)
+            || bottleneck_classifier_required(settings)
             || app_suspension_required(settings)
             || process_appearance_scan_required(settings)
             || timer_resolution_required(settings))
 }
 
+pub(super) fn bottleneck_classifier_required(settings: &Settings) -> bool {
+    settings.general.enabled && settings.adaptive_engine.enabled
+}
+
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
+    windows_event_watcher_required_for_profile(settings)
+        || settings
+            .on_battery
+            .as_deref()
+            .is_some_and(windows_event_watcher_required_for_profile)
+}
+
+fn windows_event_watcher_required_for_profile(settings: &Settings) -> bool {
     automation_windows_event_watcher_required(settings)
         || (!settings.adaptive_engine.enabled && appearance_events_required(settings))
 }

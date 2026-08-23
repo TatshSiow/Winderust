@@ -9,6 +9,7 @@ mod action_log;
 mod activity;
 mod application;
 mod backend;
+mod bottleneck_classifier;
 mod config;
 mod control;
 mod cpu;
@@ -52,8 +53,16 @@ fn main() {
     let wait_for_previous_instance = privilege::elevated_relaunch_requested();
     let Some(_single_instance_guard) = SingleInstanceGuard::acquire(wait_for_previous_instance)
     else {
+        if !wait_for_previous_instance {
+            SingleInstanceRestoreEvent::signal_existing();
+        }
         return;
     };
+    if !privilege::is_running_as_admin() {
+        privilege::relaunch_as_admin();
+        return;
+    }
+    let restore_event = SingleInstanceRestoreEvent::create();
 
     let (mut settings, settings_load_error) = match SettingsEditor::load() {
         Ok((settings, outcome)) => (
@@ -92,6 +101,11 @@ fn main() {
                 },
                 move |window, cx| {
                     window.set_window_title("Winderust");
+                    if let (Some(event), Some(hwnd)) =
+                        (restore_event, tray::hwnd_from_window(window))
+                    {
+                        event.listen(hwnd);
+                    }
                     let view = cx.new(|cx| {
                         app::WinderustApp::new(
                             window,
@@ -111,6 +125,72 @@ fn main() {
     }
 }
 
+struct SingleInstanceRestoreEvent {
+    handle: win_util::WinHandle,
+}
+
+// SAFETY: Win32 event handles may be waited on and closed from a different thread.
+unsafe impl Send for SingleInstanceRestoreEvent {}
+
+impl SingleInstanceRestoreEvent {
+    fn create() -> Option<Self> {
+        Self::create_named(&single_instance_object_name("RestoreWindow"))
+    }
+
+    fn create_named(name: &str) -> Option<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+
+        let name = win_util::wide_null(name);
+        // SAFETY: name is terminated UTF-16 and the returned auto-reset event handle is owned by
+        // this process.
+        let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        (!handle.is_null()).then(|| Self {
+            handle: win_util::WinHandle::new(handle),
+        })
+    }
+
+    fn signal_existing() {
+        Self::signal_named(&single_instance_object_name("RestoreWindow"));
+    }
+
+    fn signal_named(name: &str) -> bool {
+        use windows_sys::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+
+        let name = win_util::wide_null(name);
+        // SAFETY: name is terminated UTF-16 and the requested access is limited to signaling.
+        let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+        if handle.is_null() {
+            return false;
+        }
+        let handle = win_util::WinHandle::new(handle);
+        // SAFETY: handle owns a live event opened with EVENT_MODIFY_STATE access.
+        unsafe { SetEvent(handle.raw()) != 0 }
+    }
+
+    fn wait(&self, wait_milliseconds: u32) -> bool {
+        use windows_sys::Win32::{
+            Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject,
+        };
+
+        // SAFETY: handle owns a live event and the wait does not retain pointers.
+        unsafe { WaitForSingleObject(self.handle.raw(), wait_milliseconds) == WAIT_OBJECT_0 }
+    }
+
+    fn listen(self, hwnd: windows_sys::Win32::Foundation::HWND) {
+        let hwnd = hwnd as usize;
+        if let Err(error) = std::thread::Builder::new()
+            .name("single-instance-restore".to_owned())
+            .spawn(move || {
+                while self.wait(windows_sys::Win32::System::Threading::INFINITE) {
+                    tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
+                }
+            })
+        {
+            eprintln!("Failed to start the single-instance restore listener: {error}");
+        }
+    }
+}
+
 struct SingleInstanceGuard {
     handle: win_util::WinHandle,
 }
@@ -122,7 +202,10 @@ impl SingleInstanceGuard {
         } else {
             0
         };
-        Self::acquire_named(&single_instance_mutex_name(), wait_milliseconds)
+        Self::acquire_named(
+            &single_instance_object_name("SingleInstance"),
+            wait_milliseconds,
+        )
     }
 
     fn acquire_named(name: &str, wait_milliseconds: u32) -> Option<Self> {
@@ -161,7 +244,7 @@ impl Drop for SingleInstanceGuard {
     }
 }
 
-fn single_instance_mutex_name() -> String {
+fn single_instance_object_name(kind: &str) -> String {
     use std::os::windows::ffi::OsStrExt;
 
     // Scope the mutex to this executable path so separate portable copies can run independently.
@@ -171,7 +254,7 @@ fn single_instance_mutex_name() -> String {
         .map(|path| fnv1a64(path.as_os_str().encode_wide()))
         .unwrap_or(0x5f3f_2a4e_13a5_59f0);
 
-    format!("Local\\Winderust.SingleInstance.{digest:016x}")
+    format!("Local\\Winderust.{kind}.{digest:016x}")
 }
 
 fn fnv1a64(input: impl IntoIterator<Item = u16>) -> u64 {
@@ -227,6 +310,16 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_launch_signal_wakes_restore_event() {
+        let name = format!("Local\\Winderust.RestoreWindow.Test.{}", std::process::id());
+        let event = SingleInstanceRestoreEvent::create_named(&name).expect("create restore event");
+
+        assert!(SingleInstanceRestoreEvent::signal_named(&name));
+        assert!(event.wait(0));
+        assert!(!event.wait(0));
+    }
+
+    #[test]
     fn application_lifecycle_orders_settings_recovery_runtime_and_helper_finish() {
         let source = include_str!("main.rs");
         let main_body = source
@@ -245,6 +338,12 @@ mod tests {
         let single_instance = main_body
             .find("SingleInstanceGuard::acquire")
             .expect("single-instance guard");
+        let admin_check = main_body
+            .find("is_running_as_admin")
+            .expect("administrator check");
+        let admin_relaunch = main_body
+            .find("relaunch_as_admin")
+            .expect("administrator relaunch");
         let settings = main_body
             .find("SettingsEditor::load")
             .expect("settings load");
@@ -264,7 +363,9 @@ mod tests {
 
         assert!(helper_mode < elevated_relaunch);
         assert!(elevated_relaunch < single_instance);
-        assert!(single_instance < settings);
+        assert!(single_instance < admin_check);
+        assert!(admin_check < admin_relaunch);
+        assert!(admin_relaunch < settings);
         assert!(settings < recovery);
         assert!(recovery < stale_plan_recovery);
         assert!(stale_plan_recovery < runtime);

@@ -333,6 +333,13 @@ impl WinderustApp {
                     .when(status_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
+                        if app.cpu_allocation_side_panel_tab == PresetSidePanelTab::Status {
+                            return;
+                        }
+                        app.begin_tab_content_motion(
+                            format!("cpu-allocation-{:?}-status", app.shell.page),
+                            -12.0,
+                        );
                         app.cpu_allocation_side_panel_tab = PresetSidePanelTab::Status;
                         cx.notify();
                     }))
@@ -352,6 +359,13 @@ impl WinderustApp {
                     .when(presets_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
+                        if app.cpu_allocation_side_panel_tab == PresetSidePanelTab::Presets {
+                            return;
+                        }
+                        app.begin_tab_content_motion(
+                            format!("cpu-allocation-{:?}-presets", app.shell.page),
+                            12.0,
+                        );
                         app.cpu_allocation_side_panel_tab = PresetSidePanelTab::Presets;
                         cx.notify();
                     }))
@@ -374,6 +388,12 @@ impl WinderustApp {
             self.render_cpu_allocation_presets_content(cx)
         };
 
+        let target = format!(
+            "cpu-allocation-{:?}-{}",
+            page,
+            if status_selected { "status" } else { "presets" }
+        );
+        let body = self.animated_tab_content(body, &target);
         page_side_panel(header, body)
     }
 

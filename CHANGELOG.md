@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## 0.7.0-alpha - 2026-08-23
+
+### Added
+
+- Add Dynamic Resource Zones to Adaptive Engine CPU scheduling.
+- Add separate Plugged In and On Battery settings for configurable features.
+- Add success and failure toasts for settings import and export.
+
+### Changed
+
+- Force admin permission on launch by default.
+- Remove obsolete admin rights modal.
+
+### Fixed
+
+- High idle CPU drain on tray.
+- Opens the window when executable launched.
+
+
+
 ## 0.6.1-alpha - 2026-08-20
 
 ### Added

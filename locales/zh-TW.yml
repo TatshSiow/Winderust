@@ -193,9 +193,6 @@ unsaved:
   message: "請先儲存這些變更，避免設定停留在草稿狀態。"
 
 admin_rights:
-  title: "需要系統管理員權限"
-  message: "Winderust 目前未以系統管理員權限執行。部分程序、記憶體、I/O 與電源控制可能會被略過或失敗。"
-  ignore: "忽略"
   relaunch: "重新啟動"
 
 runtime_status:
@@ -615,6 +612,15 @@ background_efficiency:
   no_custom_rules: "尚未設定自訂規則。"
 
 adaptive_engine:
+  bottleneck_classifier: "系統瓶頸"
+  bottleneck_unknown: "正在收集資料"
+  bottleneck_headroom: "仍有餘裕"
+  bottleneck_cpu_bound: "CPU 受限"
+  bottleneck_gpu_bound: "GPU 受限"
+  bottleneck_mixed: "CPU/GPU 混合受限"
+  total_cpu: "CPU 總使用率"
+  busiest_cpu: "最忙碌 CPU"
+  busiest_gpu: "最忙碌 GPU 引擎"
   intro_1: "自適應引擎會整合動態處理器電源控制與工作負載感知 CPU 排程。"
   intro_2: "省電和平衡會依需求動態調整；效能和速度會維持固定的處理器目標。"
   intro_3: "日常使用建議選擇平衡；只有需要持續高效能時才使用固定模式。"
@@ -735,13 +741,17 @@ cpu_scheduler:
   io_priority_help: "降低符合條件的背景程式磁碟 I/O 優先順序，讓前景工作較不容易被背景讀寫阻塞。"
   limit_background_processors: "限制背景處理器"
   limit_background_processors_help: "背景應用程式超過 CPU 閾值時，將其限制在選取的處理器。最低使用率處理器會逐步重新平衡；拓撲與自訂選擇則維持固定。"
+  dynamic_resource_zones: "動態資源區域（實驗性）"
+  dynamic_resource_zones_help: "CPU 壓力期間，使用 CPU Sets（軟體）將前景應用程式群組配置至指定比例的處理器，並將高負載背景應用程式配置至互補區域。"
+  foreground_zone_share: "前景區域比例"
+  foreground_zone_share_help: "為前景應用程式群組保留的所選處理器集區比例，其餘部分會成為背景區域。"
   memory_priority_help: "調整前景與符合條件的背景程式記憶體回收優先順序。較低的值會讓 Windows 在壓力下更早回收該程式的記憶體頁面，較高的值會讓記憶體保留更久。"
   processor_selection: "處理器選擇"
   processor_selection_least_used_all: "使用率最低的處理器（全部）"
   processor_selection_least_used_p_cores: "使用率最低的處理器（P 核心）"
   processor_selection_least_used_e_cores: "使用率最低的處理器（E 核心）"
   processor_limit: "處理器上限"
-  processor_limit_help: "使用最低使用率選擇時，每個高負載背景應用程式最多可分配的所選處理器池比例。"
+  processor_limit_help: "使用最低使用率選擇時，啟用動態資源區域會將此比例指派給前景區域；否則此比例是每個高負載背景應用程式可使用的上限。"
   specific_processors: "指定處理器"
   foreground_or_system_cpu_threshold: "前景或系統 CPU 限制閾值"
   foreground_or_system_cpu_threshold_help: "前景應用程式群組或系統總 CPU 使用率達到此數值後，Winderust 才會開始偵測壓力。"
@@ -1085,3 +1095,11 @@ update_channel:
   pre_release: "預覽版"
 power_plan_control:
   pause_plugged: "使用 AC 電源時暫停切換電源計畫"
+power_source:
+  plugged_in: "已插電"
+  on_battery: "使用電池"
+settings_io_toast:
+  exported: "設定已匯出"
+  imported: "設定已匯入"
+  export_failed: "設定匯出失敗"
+  import_failed: "設定匯入失敗"

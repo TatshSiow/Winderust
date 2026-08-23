@@ -1,0 +1,116 @@
+﻿{
+    "recorded_at":  "2026-08-22T12:38:28.7350869+00:00",
+    "duration_seconds":  17.14,
+    "sample_interval_seconds":  1,
+    "samples":  15,
+    "dominant_state":  "CPU Bound",
+    "dominant_state_percent":  100,
+    "probe_cpu_percent":  0.45,
+    "observations":  [
+                         {
+                             "timestamp":  "2026-08-22T12:38:13.4598546Z",
+                             "cpu_total_percent":  100.15,
+                             "cpu_busiest_processor_percent":  100.16,
+                             "gpu_busiest_engine_percent":  36.41,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:14.4914947Z",
+                             "cpu_total_percent":  99.73,
+                             "cpu_busiest_processor_percent":  99.73,
+                             "gpu_busiest_engine_percent":  39.22,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:15.5233236Z",
+                             "cpu_total_percent":  100.09,
+                             "cpu_busiest_processor_percent":  100.09,
+                             "gpu_busiest_engine_percent":  50.25,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:16.5389609Z",
+                             "cpu_total_percent":  100.02,
+                             "cpu_busiest_processor_percent":  100.02,
+                             "gpu_busiest_engine_percent":  45.71,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:17.5657991Z",
+                             "cpu_total_percent":  99.89,
+                             "cpu_busiest_processor_percent":  99.89,
+                             "gpu_busiest_engine_percent":  52.45,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:18.5884354Z",
+                             "cpu_total_percent":  99.9,
+                             "cpu_busiest_processor_percent":  99.9,
+                             "gpu_busiest_engine_percent":  59.01,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:19.6145388Z",
+                             "cpu_total_percent":  99.81,
+                             "cpu_busiest_processor_percent":  99.81,
+                             "gpu_busiest_engine_percent":  59.96,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:20.6498191Z",
+                             "cpu_total_percent":  100.06,
+                             "cpu_busiest_processor_percent":  100.08,
+                             "gpu_busiest_engine_percent":  55.98,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:21.6700547Z",
+                             "cpu_total_percent":  100.02,
+                             "cpu_busiest_processor_percent":  100.01,
+                             "gpu_busiest_engine_percent":  44.92,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:22.6931352Z",
+                             "cpu_total_percent":  99.81,
+                             "cpu_busiest_processor_percent":  99.83,
+                             "gpu_busiest_engine_percent":  42.69,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:23.7184296Z",
+                             "cpu_total_percent":  100.01,
+                             "cpu_busiest_processor_percent":  100.01,
+                             "gpu_busiest_engine_percent":  52.18,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:24.7431519Z",
+                             "cpu_total_percent":  99.82,
+                             "cpu_busiest_processor_percent":  99.83,
+                             "gpu_busiest_engine_percent":  43.39,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:25.7557799Z",
+                             "cpu_total_percent":  99.89,
+                             "cpu_busiest_processor_percent":  99.88,
+                             "gpu_busiest_engine_percent":  50.74,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:26.7694392Z",
+                             "cpu_total_percent":  100.36,
+                             "cpu_busiest_processor_percent":  100.36,
+                             "gpu_busiest_engine_percent":  61.06,
+                             "state":  "CPU Bound"
+                         },
+                         {
+                             "timestamp":  "2026-08-22T12:38:27.7991169Z",
+                             "cpu_total_percent":  99.83,
+                             "cpu_busiest_processor_percent":  99.83,
+                             "gpu_busiest_engine_percent":  48.29,
+                             "state":  "CPU Bound"
+                         }
+                     ]
+}

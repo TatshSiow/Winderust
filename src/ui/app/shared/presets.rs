@@ -241,6 +241,7 @@ pub(in crate::ui::app) fn apply_cpu_scheduler_preset(
     settings.visible_window_memory_priority = values.visible_window_memory_priority;
     settings.background_memory_priority = values.background_memory_priority;
     settings.limit_background_processors_enabled = values.limit_background_processors_enabled;
+    settings.dynamic_resource_zones_enabled = values.dynamic_resource_zones_enabled;
     settings.background_processor_selection = values.background_processor_selection;
     settings.processor_limit_percent = values.processor_limit_percent;
     settings.foreground_or_system_cpu_threshold_percent =
@@ -290,6 +291,7 @@ pub(in crate::ui::app) fn cpu_scheduler_matches_preset(
         && settings.background_memory_priority == values.background_memory_priority
         && settings.limit_background_processors_enabled
             == values.limit_background_processors_enabled
+        && settings.dynamic_resource_zones_enabled == values.dynamic_resource_zones_enabled
         && settings.background_processor_selection == values.background_processor_selection
         && settings.processor_limit_percent == values.processor_limit_percent
         && settings.foreground_or_system_cpu_threshold_percent
@@ -320,6 +322,7 @@ pub(in crate::ui::app) struct CpuSchedulerPresetValues {
     pub(in crate::ui::app) visible_window_memory_priority: ProcessMemoryPrioritySetting,
     pub(in crate::ui::app) background_memory_priority: ProcessMemoryPrioritySetting,
     pub(in crate::ui::app) limit_background_processors_enabled: bool,
+    pub(in crate::ui::app) dynamic_resource_zones_enabled: bool,
     pub(in crate::ui::app) background_processor_selection: BackgroundProcessorSelection,
     pub(in crate::ui::app) processor_limit_percent: u8,
     pub(in crate::ui::app) foreground_or_system_cpu_threshold_percent: u8,
@@ -352,6 +355,7 @@ pub(in crate::ui::app) fn cpu_scheduler_preset_values(
                 visible_window_memory_priority: ProcessMemoryPrioritySetting::Default,
                 background_memory_priority: ProcessMemoryPrioritySetting::Low,
                 limit_background_processors_enabled: true,
+                dynamic_resource_zones_enabled: false,
                 background_processor_selection: BackgroundProcessorSelection::LeastUsed,
                 processor_limit_percent: 60,
                 foreground_or_system_cpu_threshold_percent: 75,
@@ -379,8 +383,9 @@ pub(in crate::ui::app) fn cpu_scheduler_preset_values(
             visible_window_memory_priority: ProcessMemoryPrioritySetting::BelowNormal,
             background_memory_priority: ProcessMemoryPrioritySetting::VeryLow,
             limit_background_processors_enabled: true,
+            dynamic_resource_zones_enabled: true,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
-            processor_limit_percent: 16,
+            processor_limit_percent: 75,
             foreground_or_system_cpu_threshold_percent: 60,
             background_app_cpu_threshold_percent: 8,
             cpu_recovery_threshold_percent: 4,
@@ -405,8 +410,9 @@ pub(in crate::ui::app) fn cpu_scheduler_preset_values(
             visible_window_memory_priority: ProcessMemoryPrioritySetting::Medium,
             background_memory_priority: ProcessMemoryPrioritySetting::VeryLow,
             limit_background_processors_enabled: true,
+            dynamic_resource_zones_enabled: true,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
-            processor_limit_percent: 10,
+            processor_limit_percent: 75,
             foreground_or_system_cpu_threshold_percent: 35,
             background_app_cpu_threshold_percent: 4,
             cpu_recovery_threshold_percent: 2,

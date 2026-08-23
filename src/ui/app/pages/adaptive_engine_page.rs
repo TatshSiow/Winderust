@@ -177,6 +177,10 @@ impl WinderustApp {
                     .when(status_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
+                        if app.adaptive_engine_side_panel_tab == PresetSidePanelTab::Status {
+                            return;
+                        }
+                        app.begin_tab_content_motion("adaptive-engine-status".to_string(), -12.0);
                         app.adaptive_engine_side_panel_tab = PresetSidePanelTab::Status;
                         cx.notify();
                     }))
@@ -196,6 +200,10 @@ impl WinderustApp {
                     .when(!status_selected, |tab| tab.bg(selected_background))
                     .hover(move |style| style.bg(hover_background))
                     .on_click(cx.listener(|app, _, _, cx| {
+                        if app.adaptive_engine_side_panel_tab == PresetSidePanelTab::Presets {
+                            return;
+                        }
+                        app.begin_tab_content_motion("adaptive-engine-presets".to_string(), 12.0);
                         app.adaptive_engine_side_panel_tab = PresetSidePanelTab::Presets;
                         cx.notify();
                     }))
@@ -212,10 +220,19 @@ impl WinderustApp {
                     self.render_normalized_feature_status(Page::AdaptiveEngine)
                         .expect("Adaptive Engine always has normalized runtime status"),
                 )
+                .child(self.render_bottleneck_classifier_status())
                 .into_any_element()
         } else {
             self.render_adaptive_engine_presets_content(cx)
         };
+        let body = self.animated_tab_content(
+            body,
+            if status_selected {
+                "adaptive-engine-status"
+            } else {
+                "adaptive-engine-presets"
+            },
+        );
         page_side_panel(header, body)
     }
 
@@ -1479,20 +1496,53 @@ impl WinderustApp {
                 true,
             )
             .into_any_element(),
-            setting_group_action_row(
-                format!("adaptive-engine-{target_key}-cpu-allocation-method"),
-                t!("cpu_scheduler.cpu_allocation_method").to_string(),
-                self.render_cpu_allocation_method_selector(target, window, cx),
+            setting_group_action_row_with_help(
+                format!("adaptive-engine-{target_key}-dynamic-resource-zones"),
+                t!("cpu_scheduler.dynamic_resource_zones").to_string(),
+                t!("cpu_scheduler.dynamic_resource_zones_help").to_string(),
+                setting_group_switch_action(
+                    format!("adaptive-engine-{target_key}-dynamic-resource-zones-switch"),
+                    settings.dynamic_resource_zones_enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        app.update_adaptive_engine_tuning(target, |tuning| {
+                            tuning.cpu_scheduler.dynamic_resource_zones_enabled = *checked;
+                        });
+                        cx.notify();
+                    }),
+                ),
                 true,
             )
             .into_any_element(),
         ];
+        if !settings.dynamic_resource_zones_enabled {
+            cpu_allocation_rows.push(
+                setting_group_action_row(
+                    format!("adaptive-engine-{target_key}-cpu-allocation-method"),
+                    t!("cpu_scheduler.cpu_allocation_method").to_string(),
+                    self.render_cpu_allocation_method_selector(target, window, cx),
+                    true,
+                )
+                .into_any_element(),
+            );
+        }
         if settings.background_processor_selection.is_least_used() {
+            let (processor_limit_title, processor_limit_help) =
+                if settings.dynamic_resource_zones_enabled {
+                    (
+                        t!("cpu_scheduler.foreground_zone_share").to_string(),
+                        t!("cpu_scheduler.foreground_zone_share_help").to_string(),
+                    )
+                } else {
+                    (
+                        t!("cpu_scheduler.processor_limit").to_string(),
+                        t!("cpu_scheduler.processor_limit_help").to_string(),
+                    )
+                };
             cpu_allocation_rows.push(
                 setting_group_stepper_row_u64_with_help(
                     format!("adaptive-engine-{target_key}-processor-limit"),
-                    t!("cpu_scheduler.processor_limit").to_string(),
-                    t!("cpu_scheduler.processor_limit_help").to_string(),
+                    processor_limit_title,
+                    processor_limit_help,
                     u64::from(settings.processor_limit_percent),
                     self.render_numeric_value(
                         NumericField::AdaptiveEngineTuning(

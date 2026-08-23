@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::backend::startup::{self, StartupRegistrationError};
-use crate::config::{self, Settings};
+use crate::config::{self, PowerSourceProfile, Settings};
 use crate::foreground::{executable_path_key, same_executable_path};
 
 pub(crate) type SettingsResult<T> = Result<T, SettingsCoordinatorError>;
@@ -138,6 +138,7 @@ struct SettingsCoordinator {
 pub(crate) struct SettingsEditor {
     coordinator: SettingsCoordinator,
     draft: SettingsDraft,
+    selected_power_source: PowerSourceProfile,
     startup_registration: Box<dyn StartupRegistration>,
 }
 
@@ -299,13 +300,15 @@ impl SettingsCoordinator {
 
     fn save(&mut self, draft: &mut SettingsDraft) -> SettingsResult<SettingsRevision> {
         ensure_draft_revision(self.persisted_revision, draft.base_revision)?;
-        let candidate = draft.value.clone();
+        let mut candidate = draft.value.clone();
+        candidate.sync_shared_settings_to_battery();
         self.storage
             .save(&candidate)
             .map_err(SettingsCoordinatorError::Save)?;
         let next_revision = self.persisted_revision.next();
         self.persisted = candidate;
         self.persisted_revision = next_revision;
+        draft.value = self.persisted.clone();
         draft.base_revision = next_revision;
         self.refresh_runtime_settings_snapshot(draft);
         Ok(next_revision)
@@ -369,6 +372,7 @@ impl SettingsEditor {
         Self {
             coordinator,
             draft,
+            selected_power_source: PowerSourceProfile::PluggedIn,
             startup_registration,
         }
     }
@@ -401,6 +405,10 @@ impl SettingsEditor {
 
     pub(crate) fn base_revision(&self) -> SettingsRevision {
         self.draft.base_revision()
+    }
+
+    pub(crate) fn select_power_source(&mut self, profile: PowerSourceProfile) {
+        self.selected_power_source = profile;
     }
 
     pub(crate) fn runtime_settings_snapshot(&mut self) -> RuntimeSettingsSnapshot {
@@ -466,13 +474,20 @@ impl Deref for SettingsEditor {
     type Target = Settings;
 
     fn deref(&self) -> &Self::Target {
-        self.draft.deref()
+        match self.selected_power_source {
+            PowerSourceProfile::PluggedIn => &self.draft.value,
+            PowerSourceProfile::OnBattery => self.draft.value.battery_profile(),
+        }
     }
 }
 
 impl DerefMut for SettingsEditor {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.draft.deref_mut()
+        self.draft.mark_changed();
+        match self.selected_power_source {
+            PowerSourceProfile::PluggedIn => &mut self.draft.value,
+            PowerSourceProfile::OnBattery => self.draft.value.battery_profile_mut(),
+        }
     }
 }
 
@@ -511,6 +526,17 @@ fn set_enabled_value(current: &mut bool, enabled: bool) -> bool {
 }
 
 fn apply_auto_exclusion_patch_to(settings: &mut Settings, patch: &AutoExclusionPatch) -> bool {
+    let mut changed = apply_auto_exclusion_patch_to_profile(settings, patch);
+    if let Some(battery) = settings.on_battery.as_deref_mut() {
+        changed |= apply_auto_exclusion_patch_to_profile(battery, patch);
+    }
+    changed
+}
+
+fn apply_auto_exclusion_patch_to_profile(
+    settings: &mut Settings,
+    patch: &AutoExclusionPatch,
+) -> bool {
     let mut changed = false;
     changed |= apply_auto_exclusion_paths(
         &mut settings.app_suspension.suspendable_apps,
@@ -695,6 +721,7 @@ pub fn runtime_settings_for(current: &Settings, persisted: &Settings) -> Setting
     projected.general.enabled = persisted.general.enabled;
     projected.advanced = current.advanced.clone();
     projected.cpu_allocation_presets.clear();
+    projected.sync_shared_settings_to_battery();
     projected
 }
 
@@ -964,6 +991,7 @@ mod tests {
             .exclusions
             .push(process_exclusion_rule(r"C:\Apps\Worker.exe"));
         draft.process_priority.exclusions[0].enabled = false;
+        draft.battery_profile_mut().process_priority.exclusions[0].enabled = false;
         coordinator.save(&mut draft).expect("save fixture rule");
         let patch = AutoExclusionPatch {
             base_revision: draft.base_revision,
@@ -976,6 +1004,7 @@ mod tests {
             .expect("apply patch"));
         assert_eq!(draft.process_priority.exclusions.len(), 1);
         assert!(draft.process_priority.exclusions[0].enabled);
+        assert!(draft.battery_profile().process_priority.exclusions[0].enabled);
         assert_eq!(storage.saved_payloads().len(), 2);
     }
 
@@ -1000,6 +1029,27 @@ mod tests {
         );
         assert_eq!(runtime.advanced, current.advanced);
         assert!(runtime.cpu_allocation_presets.is_empty());
+    }
+
+    #[test]
+    fn settings_editor_keeps_power_source_profiles_independent() {
+        let mut editor = SettingsEditor::with_settings(Settings::default());
+        editor.process_priority.enabled = false;
+
+        editor.select_power_source(PowerSourceProfile::OnBattery);
+        editor.process_priority.enabled = true;
+        assert!(editor.process_priority.enabled);
+
+        editor.select_power_source(PowerSourceProfile::PluggedIn);
+        assert!(!editor.process_priority.enabled);
+        assert!(
+            editor
+                .draft
+                .value
+                .battery_profile()
+                .process_priority
+                .enabled
+        );
     }
 
     #[test]

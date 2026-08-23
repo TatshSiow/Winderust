@@ -55,6 +55,7 @@ pub(super) struct RuntimeCore {
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
+    bottleneck_classifier: BottleneckClassifier,
     per_processor_cpu_monitor: PerProcessorUsageMonitor,
     io_monitor: IoUsageMonitor,
     adaptive_processor_topology: Vec<LogicalProcessorInfo>,
@@ -558,6 +559,17 @@ impl RuntimeCore {
         self.cpu_pressure_restraint_active = snapshot.cpu_pressure_restraint_active;
         self.cpu_scheduler_foreground_cpu_usage_tenths = snapshot.foreground_cpu_usage_tenths;
         snapshot
+    }
+
+    pub(super) fn run_bottleneck_classifier_update(
+        &mut self,
+        settings: &Settings,
+    ) -> BottleneckSnapshot {
+        if !bottleneck_classifier_required(settings) {
+            return self.bottleneck_classifier.reset();
+        }
+        self.refresh_cpu_usage();
+        self.bottleneck_classifier.sample(self.cpu_usage.percent)
     }
 
     pub(super) fn run_adaptive_power_plan_update(
