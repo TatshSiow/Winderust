@@ -421,6 +421,7 @@ struct SettingsIoToast {
     message: String,
     success: bool,
     shown_at: Instant,
+    closing: bool,
 }
 
 pub struct WinderustApp {

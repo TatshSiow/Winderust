@@ -221,9 +221,21 @@ impl WinderustApp {
             message: self.status_message.clone(),
             success,
             shown_at,
+            closing: false,
         });
         cx.spawn(async move |this, cx| {
             Timer::after(Duration::from_secs(3)).await;
+            let _ = this.update(cx, |app, cx| {
+                if let Some(toast) = app
+                    .settings_io_toast
+                    .as_mut()
+                    .filter(|toast| toast.shown_at == shown_at)
+                {
+                    toast.closing = true;
+                    cx.notify();
+                }
+            });
+            Timer::after(Duration::from_secs_f64(MOTION_STANDARD_SECONDS)).await;
             let _ = this.update(cx, |app, cx| {
                 if app.settings_io_toast.as_ref().map(|toast| toast.shown_at) == Some(shown_at) {
                     app.settings_io_toast = None;
@@ -266,13 +278,23 @@ impl WinderustApp {
             )
             .child(text_muted(toast.message.clone()));
 
-        with_optional_motion(
-            card,
-            "settings-io-toast",
-            MotionSpeed::Standard,
-            |card| card,
-            |card, delta| card.opacity(0.18 + 0.82 * delta),
-        )
+        if toast.closing {
+            with_optional_motion(
+                card,
+                "settings-io-toast-exit",
+                MotionSpeed::Standard,
+                |card| card.opacity(0.0),
+                |card, delta| card.opacity(1.0 - delta),
+            )
+        } else {
+            with_optional_motion(
+                card,
+                "settings-io-toast-enter",
+                MotionSpeed::Standard,
+                |card| card,
+                |card, delta| card.opacity(0.18 + 0.82 * delta),
+            )
+        }
     }
 
     pub(in crate::ui::app) fn page_uses_process_candidates(&self) -> bool {
