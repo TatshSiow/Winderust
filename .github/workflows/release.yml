@@ -50,7 +50,15 @@ jobs:
           if (-not $section.Success) {
               throw "CHANGELOG.md has no release section for $version"
           }
-          $section.Value.TrimEnd() | Set-Content -Encoding utf8 dist\release-notes.md
+          git fetch --force --tags
+          $previousTag = git tag --sort=-version:refname |
+              Where-Object { $_ -ne "${{ github.ref_name }}" } |
+              Select-Object -First 1
+          $notes = $section.Value.TrimEnd()
+          if ($previousTag) {
+              $notes += "`r`n`r`n**Full Changelog**: https://github.com/${{ github.repository }}/compare/$previousTag...${{ github.ref_name }}"
+          }
+          $notes | Set-Content -Encoding utf8 dist\release-notes.md
           Copy-Item target\release\winderust.exe, LICENSE, README.md, CHANGELOG.md dist\Winderust
           Compress-Archive -Path dist\Winderust -DestinationPath dist\Winderust-${{ github.ref_name }}-windows-x64.zip
           Get-FileHash dist\Winderust-${{ github.ref_name }}-windows-x64.zip -Algorithm SHA256 |
