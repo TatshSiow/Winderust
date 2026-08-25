@@ -2500,8 +2500,7 @@ impl WinderustApp {
             PriorityDefaultTarget::Foreground => cpu_scheduler.focus_process_priority,
             PriorityDefaultTarget::VisibleWindow => cpu_scheduler.visible_window_priority,
             PriorityDefaultTarget::Background => cpu_scheduler.background_priority,
-        }
-        .safe_for_automatic_control();
+        };
         let id = format!(
             "{}-cpu-scheduler-{}-process-priority",
             adaptive_engine_tuning_target_key(tuning_target),
@@ -2511,7 +2510,12 @@ impl WinderustApp {
                 PriorityDefaultTarget::Background => "background",
             }
         );
-        let priorities = &ProcessPrioritySetting::AUTOMATIC_ALL;
+        let priorities: &[ProcessPrioritySetting] =
+            if self.settings.advanced.expose_all_priority_values {
+                &ProcessPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessPrioritySetting::ALL
+            };
         self.render_dropdown_select(
             &id,
             process_priority_setting_label(selected),

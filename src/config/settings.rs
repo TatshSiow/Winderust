@@ -1485,13 +1485,6 @@ impl ProcessPrioritySetting {
         Self::High,
         Self::Realtime,
     ];
-    pub const AUTOMATIC_ALL: [Self; 5] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-    ];
     pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
         Self::Default,
         Self::Idle,
@@ -1505,13 +1498,6 @@ impl ProcessPrioritySetting {
     pub const fn safe_when_advanced_disabled(self) -> Self {
         match self {
             Self::Realtime => Self::High,
-            _ => self,
-        }
-    }
-
-    pub const fn safe_for_automatic_control(self) -> Self {
-        match self {
-            Self::High | Self::Realtime => Self::Default,
             _ => self,
         }
     }

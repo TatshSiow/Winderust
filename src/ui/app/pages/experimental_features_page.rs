@@ -64,6 +64,16 @@ impl WinderustApp {
                                 .io_priority
                                 .background_priority
                                 .safe_when_advanced_disabled();
+                            app.settings.cpu_scheduler.background_priority = app
+                                .settings
+                                .cpu_scheduler
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.cpu_scheduler.focus_process_priority = app
+                                .settings
+                                .cpu_scheduler
+                                .focus_process_priority
+                                .safe_when_advanced_disabled();
                             app.settings.cpu_scheduler.io_priority.foreground_priority = app
                                 .settings
                                 .cpu_scheduler
@@ -205,6 +215,10 @@ fn sanitize_visible_window_priority_values(settings: &mut Settings) {
         .io_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
+    settings.cpu_scheduler.visible_window_priority = settings
+        .cpu_scheduler
+        .visible_window_priority
+        .safe_when_advanced_disabled();
     settings
         .cpu_scheduler
         .thread_priority
@@ -234,6 +248,7 @@ mod tests {
         settings.gpu_priority.visible_window_priority = ProcessGpuPrioritySetting::Realtime;
         settings.cpu_scheduler.io_priority.visible_window_priority =
             ProcessIoPrioritySetting::Critical;
+        settings.cpu_scheduler.visible_window_priority = ProcessPrioritySetting::Realtime;
         settings
             .cpu_scheduler
             .thread_priority
@@ -262,6 +277,10 @@ mod tests {
         assert_eq!(
             settings.cpu_scheduler.io_priority.visible_window_priority,
             ProcessIoPrioritySetting::Normal
+        );
+        assert_eq!(
+            settings.cpu_scheduler.visible_window_priority,
+            ProcessPrioritySetting::High
         );
         assert_eq!(
             settings
