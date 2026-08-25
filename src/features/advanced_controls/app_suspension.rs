@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
-    mem,
+    fmt, mem,
     path::Path,
     ptr,
     ptr::null_mut,
@@ -45,7 +45,7 @@ mod wake_activity;
 
 use wake_activity::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AppSuspensionSnapshot {
     pub enabled: bool,
     pub unsupported: bool,
@@ -65,8 +65,36 @@ pub struct AppSuspensionSnapshot {
     pub skipped_processes: usize,
     pub failed_actions: usize,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub status: AppSuspensionStatus,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AppSuspensionStatus {
+    AutomationDisabled,
+    #[default]
+    Disabled,
+    NoRulesConfigured,
+    Unsupported,
+    ForegroundUnknown,
+    SessionUnknown,
+    Active,
+    Error(String),
+}
+
+impl fmt::Display for AppSuspensionStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::AutomationDisabled => "Automation disabled.",
+            Self::Disabled => "App Suspension disabled.",
+            Self::NoRulesConfigured => "No App Suspension rules configured.",
+            Self::Unsupported => "App Suspension unavailable: Windows Job Object freeze is not supported on this system.",
+            Self::ForegroundUnknown => "Paused: foreground app is unknown.",
+            Self::SessionUnknown => "Paused: current Windows session is unknown.",
+            Self::Active => "App Suspension active.",
+            Self::Error(error) => error,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -355,7 +383,7 @@ impl AppSuspensionManager {
             self.job_freeze_unsupported,
             0,
             failed_actions,
-            "App Suspension active.".to_owned(),
+            AppSuspensionStatus::Active,
             None,
         ))
     }
@@ -396,7 +424,7 @@ impl AppSuspensionManager {
                 self.job_freeze_unsupported,
                 0,
                 failed,
-                "Automation disabled.".to_owned(),
+                AppSuspensionStatus::AutomationDisabled,
                 None,
             );
         }
@@ -410,7 +438,7 @@ impl AppSuspensionManager {
                 self.job_freeze_unsupported,
                 0,
                 failed,
-                "App Suspension disabled.".to_owned(),
+                AppSuspensionStatus::Disabled,
                 None,
             );
         }
@@ -435,7 +463,7 @@ impl AppSuspensionManager {
                 self.job_freeze_unsupported,
                 0,
                 failed,
-                "No App Suspension rules configured.".to_owned(),
+                AppSuspensionStatus::NoRulesConfigured,
                 None,
             );
         }
@@ -449,15 +477,14 @@ impl AppSuspensionManager {
                 true,
                 0,
                 failed_actions,
-                "App Suspension unavailable: Windows Job Object freeze is not supported on this system."
-                    .to_owned(),
+                AppSuspensionStatus::Unsupported,
                 None,
             );
         }
 
         let Some(foreground_process_id) = foreground_process_id else {
             return self.pause_without_clearing(
-                "Paused: foreground app is unknown.".to_owned(),
+                AppSuspensionStatus::ForegroundUnknown,
                 failed_actions,
                 None,
             );
@@ -467,7 +494,7 @@ impl AppSuspensionManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             return self.pause_without_clearing(
-                "Paused: current Windows session is unknown.".to_owned(),
+                AppSuspensionStatus::SessionUnknown,
                 failed_actions,
                 None,
             );
@@ -477,7 +504,11 @@ impl AppSuspensionManager {
             Ok(processes) => processes,
             Err(err) => {
                 failed_actions += 1;
-                return self.pause_without_clearing(err.clone(), failed_actions, Some(err));
+                return self.pause_without_clearing(
+                    AppSuspensionStatus::Error(err.clone()),
+                    failed_actions,
+                    Some(err),
+                );
             }
         };
 
@@ -890,10 +921,9 @@ impl AppSuspensionManager {
             skipped_processes,
             failed_actions,
             if unsupported {
-                "App Suspension unavailable: Windows Job Object freeze is not supported on this system."
-                    .to_owned()
+                AppSuspensionStatus::Unsupported
             } else {
-                "App Suspension active.".to_owned()
+                AppSuspensionStatus::Active
             },
             last_error,
         );
@@ -971,7 +1001,7 @@ impl AppSuspensionManager {
 
     fn pause_without_clearing(
         &mut self,
-        message: String,
+        status: AppSuspensionStatus,
         failed_actions: usize,
         last_error: Option<String>,
     ) -> AppSuspensionSnapshot {
@@ -982,7 +1012,7 @@ impl AppSuspensionManager {
             self.job_freeze_unsupported,
             0,
             failed_actions,
-            message,
+            status,
             last_error,
         );
         snapshot.status_unknown = true;
@@ -1185,7 +1215,7 @@ impl AppSuspensionManager {
             self.job_freeze_unsupported,
             0,
             failed_actions,
-            "App Suspension active.".to_owned(),
+            AppSuspensionStatus::Active,
             None,
         )
     }
@@ -1862,7 +1892,7 @@ impl AppSuspensionManager {
         unsupported: bool,
         skipped_processes: usize,
         failed_actions: usize,
-        message: String,
+        status: AppSuspensionStatus,
         last_error: Option<String>,
     ) -> AppSuspensionSnapshot {
         AppSuspensionSnapshot {
@@ -1918,7 +1948,7 @@ impl AppSuspensionManager {
             skipped_processes,
             failed_actions,
             auto_excluded_processes: Vec::new(),
-            message,
+            status,
             last_error,
         }
     }
@@ -1980,33 +2010,6 @@ impl AppSuspensionManager {
         }
 
         true
-    }
-}
-
-impl Default for AppSuspensionSnapshot {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            unsupported: false,
-            grace_apps: 0,
-            suspended_processes: 0,
-            suspended_process_ids: Vec::new(),
-            temporary_thawed_processes: 0,
-            network_wake_processes: 0,
-            audio_wake_processes: 0,
-            background_grace_apps: Vec::new(),
-            suspended_apps: Vec::new(),
-            temporary_thawed_apps: Vec::new(),
-            network_wake_apps: Vec::new(),
-            audio_wake_apps: Vec::new(),
-            running_apps: Vec::new(),
-            status_unknown: false,
-            skipped_processes: 0,
-            failed_actions: 0,
-            auto_excluded_processes: Vec::new(),
-            message: "App Suspension disabled.".to_owned(),
-            last_error: None,
-        }
     }
 }
 
@@ -2827,7 +2830,7 @@ mod tests {
             },
         );
 
-        let status = manager.snapshot(true, false, 0, 0, "App Suspension active.".to_owned(), None);
+        let status = manager.snapshot(true, false, 0, 0, AppSuspensionStatus::Active, None);
 
         assert_eq!(status.running_apps, vec![r"C:\Apps\chat.exe".to_owned()]);
         assert_eq!(status.suspended_apps, vec![r"C:\Apps\chat.exe".to_owned()]);
@@ -2941,7 +2944,11 @@ mod tests {
             &mut log,
         );
 
-        assert_eq!(status.message, "Paused: foreground app is unknown.");
+        assert_eq!(status.status, AppSuspensionStatus::ForegroundUnknown);
+        assert_eq!(
+            status.status.to_string(),
+            "Paused: foreground app is unknown."
+        );
         assert!(status.status_unknown);
         assert_eq!(status.grace_apps, 0);
         assert_eq!(status.suspended_processes, 1);

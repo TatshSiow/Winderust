@@ -114,7 +114,7 @@ impl WinderustApp {
         now: Instant,
     ) -> ActivitySnapshot {
         let idle_timeout = Duration::from_secs(settings.by_activity.idle_timeout_seconds);
-        let snapshot = self.idle_detector.snapshot(idle_timeout);
+        let snapshot = activity_snapshot(idle_timeout);
         let controller_idle_for = if settings.by_activity.input_detection.controller {
             self.controller_activity_detector.poll(now);
             self.controller_activity_detector.idle_for(now)

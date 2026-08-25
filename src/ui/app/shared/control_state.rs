@@ -785,11 +785,7 @@ impl WinderustApp {
         self.rebuild_rule_title_input_subscriptions(window, cx);
         self.rebuild_process_picker_input_subscriptions(window, cx);
         self.subscribe_to_numeric_input(window, cx);
-        self.subscribe_to_dashboard_search_input(window, cx);
-        self.subscribe_to_process_list_search_input(window, cx);
-        self.subscribe_to_adaptive_engine_preset_name_input(window, cx);
-        self.subscribe_to_cpu_allocation_preset_name_input(window, cx);
-        self.subscribe_to_advanced_power_plan_tuning_preset_name_input(window, cx);
+        self.rebuild_notify_input_subscriptions(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
         self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         self.subscribe_to_activity_sliders(window, cx);
@@ -912,66 +908,26 @@ impl WinderustApp {
         ));
     }
 
-    pub(in crate::ui::app) fn subscribe_to_dashboard_search_input(
+    pub(in crate::ui::app) fn rebuild_notify_input_subscriptions(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self._dashboard_search_subscription = Some(cx.subscribe_in(
-            &self.inputs.dashboard_search,
-            window,
-            move |_, _, _: &InputEvent, _, cx| {
-                cx.notify();
-            },
-        ));
-    }
-
-    pub(in crate::ui::app) fn subscribe_to_process_list_search_input(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self._process_list_search_subscription = Some(cx.subscribe_in(
-            &self.inputs.process_list_search,
-            window,
-            move |_, _, _: &InputEvent, _, cx| cx.notify(),
-        ));
-    }
-
-    pub(in crate::ui::app) fn subscribe_to_cpu_allocation_preset_name_input(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self._cpu_allocation_preset_name_subscription = Some(cx.subscribe_in(
-            &self.inputs.cpu_allocation_preset_name,
-            window,
-            move |_, _, _: &InputEvent, _, cx| cx.notify(),
-        ));
-    }
-
-    pub(in crate::ui::app) fn subscribe_to_adaptive_engine_preset_name_input(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self._adaptive_engine_preset_name_subscription = Some(cx.subscribe_in(
-            &self.inputs.adaptive_engine_preset_name,
-            window,
-            move |_, _, _: &InputEvent, _, cx| cx.notify(),
-        ));
-    }
-
-    pub(in crate::ui::app) fn subscribe_to_advanced_power_plan_tuning_preset_name_input(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self._advanced_power_plan_tuning_preset_name_subscription = Some(cx.subscribe_in(
-            &self.inputs.advanced_power_plan_tuning_preset_name,
-            window,
-            move |_, _, _: &InputEvent, _, cx| cx.notify(),
-        ));
+        let inputs = [
+            self.inputs.dashboard_search.clone(),
+            self.inputs.process_list_search.clone(),
+            self.inputs.adaptive_engine_preset_name.clone(),
+            self.inputs.cpu_allocation_preset_name.clone(),
+            self.inputs.advanced_power_plan_tuning_preset_name.clone(),
+        ];
+        self._notify_input_subscriptions = inputs
+            .into_iter()
+            .map(|input| {
+                cx.subscribe_in(&input, window, |_, _, _: &InputEvent, _, cx| {
+                    cx.notify();
+                })
+            })
+            .collect();
     }
 
     pub(in crate::ui::app) fn subscribe_to_processor_power_sliders(

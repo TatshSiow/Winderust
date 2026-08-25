@@ -12,7 +12,7 @@ impl WinderustApp {
             cx,
         );
         let enabled = self.settings.by_running_app.enabled;
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(section_title_text(t!("common.rules").to_string()))
             .child(
                 h_flex()
@@ -65,7 +65,7 @@ impl WinderustApp {
             t!("common.power_plan_pause_priority").to_string(),
         ]);
 
-        self.page_shell(Page::ByRunningApp, cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 "by-running-app-enabled",
                 t!("by_running_app.enable").to_string(),

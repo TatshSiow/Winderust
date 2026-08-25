@@ -14,7 +14,7 @@ impl WinderustApp {
         let settings = &self.settings.memory_trim;
         let enabled = settings.enabled;
 
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_group_with_help(
                 SettingGroupTarget::MemoryTrimThresholds,
                 (
@@ -147,7 +147,7 @@ impl WinderustApp {
                 window,
                 cx,
             ));
-        self.page_shell(Page::MemoryTrim, cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 "memory-trim-enabled",
                 t!("memory_trim.enable").to_string(),
@@ -206,7 +206,7 @@ impl WinderustApp {
                                 match result {
                                     Ok(status) => {
                                         app.status_message =
-                                            localized_runtime_status(&status.message);
+                                            localized_memory_trim_status(&status.status);
                                         Arc::make_mut(&mut app.feature_status).memory_trim = status;
                                     }
                                     Err(error) => app.status_message = error,

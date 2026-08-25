@@ -63,7 +63,7 @@ impl WinderustApp {
             window,
             cx,
         );
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_group_with_help(
                 SettingGroupTarget::IoPriorityForegroundDetection,
                 (
@@ -215,7 +215,7 @@ impl WinderustApp {
             )
             .child(self.render_io_priority_exclusions(window, cx));
 
-        self.page_shell(Page::IoPriority, cx)
+        page_body_shell()
             .child(master_card)
             .child(disabled_feature_body("io-priority-body", body, enabled, cx))
             .into_any_element()

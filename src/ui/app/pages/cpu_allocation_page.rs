@@ -10,13 +10,6 @@ enum CpuAllocationPage {
 }
 
 impl CpuAllocationPage {
-    fn page(self) -> Page {
-        match self {
-            Self::CpuSetsSoft => Page::CpuSetsSoft,
-            Self::ProcessorAffinityHard => Page::ProcessorAffinityHard,
-        }
-    }
-
     fn suggestion_target(self) -> SuggestionTarget {
         match self {
             Self::CpuSetsSoft => SuggestionTarget::CpuSetsSoft,
@@ -231,7 +224,7 @@ impl WinderustApp {
         let input = kind.suggestion_target().input(&self.inputs);
         let input_value = self.process_picker_path(kind.suggestion_target(), input, cx);
         let key = kind.key();
-        let mut body = feature_body(enabled).child(section_header(
+        let mut body = feature_body().child(section_header(
             &t!("cpu_allocation.rules"),
             t!("cpu_allocation.rules_help").to_string(),
         ));
@@ -291,7 +284,7 @@ impl WinderustApp {
         let body =
             disabled_feature_body(SharedString::from(format!("{key}-body")), body, enabled, cx);
 
-        self.page_shell(kind.page(), cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 SharedString::from(format!("{key}-enabled")),
                 t!(format!("{key}.enable")).to_string(),

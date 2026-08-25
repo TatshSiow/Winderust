@@ -197,7 +197,7 @@ pub(in crate::ui::app) fn setting_group_with_title_element_with_body_height(
                         .min_w(px(0.0))
                         .flex_shrink_0()
                         .child(action)
-                        .child(setting_group_collapse_button(chevron_target, collapsed, cx)),
+                        .child(setting_group_collapse_button(chevron_target, collapsed)),
                 ),
         );
     if !collapsed || motion_progress.is_some() {
@@ -275,7 +275,6 @@ pub(in crate::ui::app) fn setting_group_body_animation_height(
 pub(in crate::ui::app) fn setting_group_collapse_button(
     target: SettingGroupTarget,
     collapsed: bool,
-    _cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     div()
         .id(SharedString::from(format!(

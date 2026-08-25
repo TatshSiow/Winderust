@@ -152,82 +152,61 @@ pub(in crate::ui::app) fn activity_state_label(state: ActivityState) -> String {
     .to_string()
 }
 
-pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
-    if let Some(threshold) = message
-        .strip_prefix("Memory Trim waiting for system memory load >= ")
-        .and_then(|value| value.strip_suffix("%."))
-    {
-        return t!("runtime_status.memory_trim_waiting", threshold = threshold).to_string();
+pub(in crate::ui::app) fn localized_memory_trim_status(
+    status: &memory_trim::MemoryTrimStatus,
+) -> String {
+    match status {
+        memory_trim::MemoryTrimStatus::AutomationDisabled => {
+            t!("runtime_status.automation_disabled").to_string()
+        }
+        memory_trim::MemoryTrimStatus::Disabled => {
+            t!("runtime_status.memory_trim_disabled").to_string()
+        }
+        memory_trim::MemoryTrimStatus::ForegroundUnknown => {
+            t!("runtime_status.foreground_unknown").to_string()
+        }
+        memory_trim::MemoryTrimStatus::WaitingForMemoryLoad { threshold_percent } => t!(
+            "runtime_status.memory_trim_waiting",
+            threshold = threshold_percent
+        )
+        .to_string(),
+        memory_trim::MemoryTrimStatus::Active => {
+            t!("runtime_status.memory_trim_active").to_string()
+        }
+        memory_trim::MemoryTrimStatus::ManualCompleted => {
+            t!("runtime_status.memory_trim_manual_completed").to_string()
+        }
+        memory_trim::MemoryTrimStatus::Error(error) => error.clone(),
     }
+}
 
-    let key = match message {
-        "Automation disabled." => "runtime_status.automation_disabled",
-        "Paused: foreground app is unknown." => "runtime_status.foreground_unknown",
-        "Paused: visible windows are unavailable." => "runtime_status.visible_windows_unavailable",
-        "Paused: current Windows session is unknown." => "runtime_status.session_unknown",
-        "CPU Sets (Soft) disabled." => "runtime_status.cpu_sets_soft_disabled",
-        "Processor Affinity (Hard) disabled." => {
-            "runtime_status.processor_affinity_hard_disabled"
+pub(in crate::ui::app) fn localized_app_suspension_status(
+    status: &app_suspension::AppSuspensionStatus,
+) -> String {
+    match status {
+        app_suspension::AppSuspensionStatus::AutomationDisabled => {
+            t!("runtime_status.automation_disabled").to_string()
         }
-        "Core Limiter disabled." => "runtime_status.core_limiter_disabled",
-        "Core Limiter active." => "runtime_status.core_limiter_active",
-        "Timer resolution query failed." => "runtime_status.timer_resolution_query_failed",
-        "Timer resolution request update failed." => {
-            "runtime_status.timer_resolution_update_failed"
+        app_suspension::AppSuspensionStatus::Disabled => {
+            t!("runtime_status.app_suspension_disabled").to_string()
         }
-        "Timer resolution request failed." => "runtime_status.timer_resolution_request_failed",
-        "Timer resolution request active." => "runtime_status.timer_resolution_active",
-        "Timer resolution control disabled." => "runtime_status.timer_resolution_disabled",
-        "Timer resolution status loaded." => "runtime_status.timer_resolution_loaded",
-        "App Suspension disabled." => "runtime_status.app_suspension_disabled",
-        "App Suspension unavailable: Windows Job Object freeze is not supported on this system." => {
-            "runtime_status.app_suspension_unsupported"
+        app_suspension::AppSuspensionStatus::NoRulesConfigured => {
+            t!("runtime_status.app_suspension_no_rules").to_string()
         }
-        "By Running App disabled." => "runtime_status.by_running_app_disabled",
-        "By Running App waiting for a matching process." => {
-            "runtime_status.by_running_app_waiting"
+        app_suspension::AppSuspensionStatus::Unsupported => {
+            t!("runtime_status.app_suspension_unsupported").to_string()
         }
-        "By Running App active." => "runtime_status.by_running_app_active",
-        "GPU priority defaults disabled." => "runtime_status.gpu_priority_disabled",
-        "GPU priority defaults active." => "runtime_status.gpu_priority_active",
-        "GPU priority defaults active with failures." => {
-            "runtime_status.gpu_priority_active_with_failures"
+        app_suspension::AppSuspensionStatus::ForegroundUnknown => {
+            t!("runtime_status.foreground_unknown").to_string()
         }
-        "GPU priority defaults active; some protected processes were skipped." => {
-            "runtime_status.gpu_priority_protected_skipped"
+        app_suspension::AppSuspensionStatus::SessionUnknown => {
+            t!("runtime_status.session_unknown").to_string()
         }
-        "GPU priority defaults active; repeated failures are being suppressed." => {
-            "runtime_status.gpu_priority_failures_suppressed"
+        app_suspension::AppSuspensionStatus::Active => {
+            t!("runtime_status.app_suspension_active").to_string()
         }
-        "GPU priority defaults active; waiting for GPU scheduling contexts." => {
-            "runtime_status.gpu_priority_waiting_for_contexts"
-        }
-        "I/O priority defaults disabled." => "runtime_status.io_priority_disabled",
-        "I/O priority defaults active." => "runtime_status.io_priority_active",
-        "Background Efficiency disabled." => "runtime_status.background_efficiency_disabled",
-        "Background Efficiency active." => "runtime_status.background_efficiency_active",
-        "Dynamic priority boost defaults disabled." => {
-            "runtime_status.dynamic_priority_boost_disabled"
-        }
-        "Dynamic priority boost defaults active." => {
-            "runtime_status.dynamic_priority_boost_active"
-        }
-        "Memory Trim disabled." => "runtime_status.memory_trim_disabled",
-        "Memory Trim active." => "runtime_status.memory_trim_active",
-        "Manual Memory Trim pass completed." => "runtime_status.memory_trim_manual_completed",
-        "Thread Priority disabled." => "runtime_status.thread_priority_disabled",
-        "Thread Priority active." => "runtime_status.thread_priority_active",
-        "Process priority defaults disabled." => "runtime_status.process_priority_disabled",
-        "Process priority defaults active." => "runtime_status.process_priority_active",
-        "CPU Scheduler disabled." => "runtime_status.cpu_scheduler_disabled",
-        "CPU Scheduler active." => "runtime_status.cpu_pressure_restraint_active",
-        "CPU Sets (Soft) active." => "runtime_status.cpu_sets_soft_active",
-        "Processor Affinity (Hard) active." => {
-            "runtime_status.processor_affinity_hard_active"
-        }
-        _ => return message.to_owned(),
-    };
-    t!(key).to_string()
+        app_suspension::AppSuspensionStatus::Error(error) => error.clone(),
+    }
 }
 
 pub(in crate::ui::app) fn weekday_short_label(day: WeekdaySetting) -> String {

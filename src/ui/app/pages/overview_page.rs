@@ -64,9 +64,7 @@ impl WinderustApp {
             }
         }
 
-        self.page_shell(section_page, cx)
-            .child(cards)
-            .into_any_element()
+        page_body_shell().child(cards).into_any_element()
     }
 
     pub(in crate::ui::app) fn render_home_page_page_card(
@@ -209,7 +207,7 @@ impl WinderustApp {
                 .into_any_element(),
             ));
 
-        self.page_shell(Page::Home, cx)
+        page_body_shell()
             .child(section_title_text(t!("home.home").to_string()))
             .child(summary)
             .child(section_title_text(t!("home.main_sections").to_string()))

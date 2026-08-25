@@ -31,7 +31,7 @@ const CPU_IDLE_THRESHOLD_PERCENT: f32 = 1.0;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemoryTrimSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
@@ -42,8 +42,22 @@ pub struct MemoryTrimSnapshot {
     pub memory_load_percent: Option<u8>,
     pub trimmed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub status: MemoryTrimStatus,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum MemoryTrimStatus {
+    AutomationDisabled,
+    #[default]
+    Disabled,
+    ForegroundUnknown,
+    WaitingForMemoryLoad {
+        threshold_percent: u8,
+    },
+    Active,
+    ManualCompleted,
+    Error(String),
 }
 
 #[derive(Default)]
@@ -134,7 +148,7 @@ impl MemoryTrimManager {
             self.clear_failure_suppression();
             return MemoryTrimSnapshot {
                 enabled: false,
-                message: "Automation disabled.".to_owned(),
+                status: MemoryTrimStatus::AutomationDisabled,
                 ..Default::default()
             };
         }
@@ -144,7 +158,6 @@ impl MemoryTrimManager {
             self.clear_failure_suppression();
             return MemoryTrimSnapshot {
                 enabled: false,
-                message: "Memory Trim disabled.".to_owned(),
                 ..Default::default()
             };
         }
@@ -153,7 +166,7 @@ impl MemoryTrimManager {
             self.clear_tracking();
             return MemoryTrimSnapshot {
                 enabled: true,
-                message: "Paused: foreground app is unknown.".to_owned(),
+                status: MemoryTrimStatus::ForegroundUnknown,
                 ..Default::default()
             };
         }
@@ -164,7 +177,7 @@ impl MemoryTrimManager {
                 self.clear_tracking();
                 return MemoryTrimSnapshot {
                     enabled: true,
-                    message: err.clone(),
+                    status: MemoryTrimStatus::Error(err.clone()),
                     last_error: Some(err),
                     ..Default::default()
                 };
@@ -177,7 +190,9 @@ impl MemoryTrimManager {
             return MemoryTrimSnapshot {
                 enabled: true,
                 memory_load_percent: Some(memory_load_percent),
-                message: format!("Memory Trim waiting for system memory load >= {threshold}%."),
+                status: MemoryTrimStatus::WaitingForMemoryLoad {
+                    threshold_percent: threshold,
+                },
                 ..Default::default()
             };
         }
@@ -192,7 +207,7 @@ impl MemoryTrimManager {
                 return MemoryTrimSnapshot {
                     enabled: true,
                     memory_load_percent: Some(memory_load_percent),
-                    message: err,
+                    status: MemoryTrimStatus::Error(err),
                     ..Default::default()
                 };
             }
@@ -337,9 +352,9 @@ impl MemoryTrimManager {
             memory_load_percent: Some(memory_load_percent),
             trimmed_apps: trimmed_apps.into_iter().collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: match mode {
-                MemoryTrimMode::Automatic => "Memory Trim active.".to_owned(),
-                MemoryTrimMode::Manual => "Manual Memory Trim pass completed.".to_owned(),
+            status: match mode {
+                MemoryTrimMode::Automatic => MemoryTrimStatus::Active,
+                MemoryTrimMode::Manual => MemoryTrimStatus::ManualCompleted,
             },
             last_error: failures.last_error,
         }
@@ -568,24 +583,6 @@ fn size_label(bytes: u64) -> String {
         format!("{} MiB", bytes / MB)
     } else {
         format!("{} KiB", bytes / 1024)
-    }
-}
-
-impl Default for MemoryTrimSnapshot {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            scanned_processes: 0,
-            candidate_processes: 0,
-            trimmed_processes: 0,
-            skipped_processes: 0,
-            failed_processes: 0,
-            memory_load_percent: None,
-            trimmed_apps: Vec::new(),
-            auto_excluded_processes: Vec::new(),
-            message: "Memory Trim disabled.".to_owned(),
-            last_error: None,
-        }
     }
 }
 

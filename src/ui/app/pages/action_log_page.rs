@@ -65,7 +65,7 @@ impl WinderustApp {
             );
         let page_controls = action_log_page_controls(visible_count, current_page, page_count, cx);
 
-        self.page_shell(Page::ActionLog, cx)
+        page_body_shell()
             .child(self.render_action_log_feature_filter(window, cx))
             .child(self.render_action_log_result_filter(window, cx))
             .child(action_log_command_row(

@@ -6,7 +6,7 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::AdvancedPowerPlanTuning, cx)
+        page_body_shell()
             .child(self.render_processor_power_card(window, cx))
             .into_any_element()
     }
@@ -743,28 +743,28 @@ impl WinderustApp {
                         t!("processor_power.core_parking_min").to_string(),
                         NumericField::ProcessorAcCoreParkingMin,
                         ProcessorPowerSlider::AcCoreParkingMin,
-                        self.processor_power_ac_core_parking_min,
+                        self.processor_power_draft.ac.core_parking_min as u64,
                     ),
                     (
                         "processor-power-ac-performance-min",
                         t!("processor_power.processor_min").to_string(),
                         NumericField::ProcessorAcPerformanceMin,
                         ProcessorPowerSlider::AcPerformanceMin,
-                        self.processor_power_ac_performance_min,
+                        self.processor_power_draft.ac.performance_min as u64,
                     ),
                     (
                         "processor-power-ac-performance-max",
                         t!("processor_power.processor_max").to_string(),
                         NumericField::ProcessorAcPerformanceMax,
                         ProcessorPowerSlider::AcPerformanceMax,
-                        self.processor_power_ac_performance_max,
+                        self.processor_power_draft.ac.performance_max as u64,
                     ),
                     (
                         "processor-power-ac-boost-policy",
                         t!("processor_power.boost_policy").to_string(),
                         NumericField::ProcessorAcBoostPolicy,
                         ProcessorPowerSlider::AcBoostPolicy,
-                        self.processor_power_ac_boost_policy,
+                        self.processor_power_draft.ac.boost_policy as u64,
                     ),
                 ],
             ),
@@ -778,28 +778,28 @@ impl WinderustApp {
                         t!("processor_power.core_parking_min").to_string(),
                         NumericField::ProcessorDcCoreParkingMin,
                         ProcessorPowerSlider::BatteryCoreParkingMin,
-                        self.processor_power_battery_core_parking_min,
+                        self.processor_power_draft.battery.core_parking_min as u64,
                     ),
                     (
                         "processor-power-battery-performance-min",
                         t!("processor_power.processor_min").to_string(),
                         NumericField::ProcessorDcPerformanceMin,
                         ProcessorPowerSlider::BatteryPerformanceMin,
-                        self.processor_power_battery_performance_min,
+                        self.processor_power_draft.battery.performance_min as u64,
                     ),
                     (
                         "processor-power-battery-performance-max",
                         t!("processor_power.processor_max").to_string(),
                         NumericField::ProcessorDcPerformanceMax,
                         ProcessorPowerSlider::BatteryPerformanceMax,
-                        self.processor_power_battery_performance_max,
+                        self.processor_power_draft.battery.performance_max as u64,
                     ),
                     (
                         "processor-power-battery-boost-policy",
                         t!("processor_power.boost_policy").to_string(),
                         NumericField::ProcessorDcBoostPolicy,
                         ProcessorPowerSlider::BatteryBoostPolicy,
-                        self.processor_power_battery_boost_policy,
+                        self.processor_power_draft.battery.boost_policy as u64,
                     ),
                 ],
             ),
@@ -973,8 +973,8 @@ impl WinderustApp {
             window,
         );
         let selected = match source {
-            ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode,
-            ProcessorPowerSource::Battery => self.processor_power_battery_boost_mode,
+            ProcessorPowerSource::Ac => self.processor_power_values().ac.boost_mode,
+            ProcessorPowerSource::Battery => self.processor_power_values().battery.boost_mode,
         };
         let mut options = dropdown_surface(cx, placement.max_height);
         for boost_mode in ProcessorBoostMode::ALL {

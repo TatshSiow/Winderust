@@ -13,21 +13,18 @@ impl WinderustApp {
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content = self
-            .page_shell(Page::ByTime, cx)
-            .child(feature_toggle_switch_with_help(
-                "schedule-enabled",
-                t!("by_time.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.by_time.enabled = *checked;
-                    cx.notify();
-                }),
-            ));
+        let mut content = page_body_shell().child(feature_toggle_switch_with_help(
+            "schedule-enabled",
+            t!("by_time.enable").to_string(),
+            help,
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.by_time.enabled = *checked;
+                cx.notify();
+            }),
+        ));
 
-        let mut body =
-            feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
+        let mut body = feature_body().child(section_title_text(t!("common.rules").to_string()));
         body = body.child(create_rule_card(
             "create-time-rule-card",
             t!("by_time.rule_title").to_string(),

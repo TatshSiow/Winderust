@@ -494,7 +494,7 @@ pub(in crate::ui::app) fn page_body_shell() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
-pub(in crate::ui::app) fn search_results_page_header(_cx: &mut Context<WinderustApp>) -> gpui::Div {
+pub(in crate::ui::app) fn search_results_page_header() -> gpui::Div {
     h_flex()
         .w_full()
         .min_h(px(PAGE_HEADER_HEIGHT))

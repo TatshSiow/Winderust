@@ -62,7 +62,6 @@ pub(super) struct RuntimeCore {
     adaptive_io_usage: IoUsageSnapshot,
     next_adaptive_io_refresh: Option<Instant>,
     adaptive_foreground_process_id: Option<u32>,
-    idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     background_efficiency_manager: BackgroundEfficiencyManager,
@@ -302,7 +301,7 @@ impl RuntimeCore {
         now: Instant,
     ) -> crate::activity::ActivitySnapshot {
         let idle_timeout = Duration::from_secs(settings.by_activity.idle_timeout_seconds);
-        let snapshot = self.idle_detector.snapshot(idle_timeout);
+        let snapshot = activity_snapshot(idle_timeout);
         let controller_idle_for = settings
             .by_activity
             .input_detection
@@ -935,7 +934,7 @@ impl RuntimeCore {
                                         || status.unsupported
                                         || status.status_unknown
                                     {
-                                        status.message.clone()
+                                        status.status.to_string()
                                     } else {
                                         error
                                     },

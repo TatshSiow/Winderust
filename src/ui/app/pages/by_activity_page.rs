@@ -8,7 +8,7 @@ impl WinderustApp {
     ) -> AnyElement {
         self.sync_activity_slider_states(window, cx);
         let enabled = self.settings.by_activity.enabled;
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_action_card(
                 "activity-idle-plan-card",
                 t!("by_activity.idle_plan").to_string(),
@@ -172,7 +172,7 @@ impl WinderustApp {
             t!("common.power_plan_pause_priority").to_string(),
         ]);
 
-        self.page_shell(Page::ByActivity, cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 "activity-enabled",
                 t!("by_activity.enable").to_string(),

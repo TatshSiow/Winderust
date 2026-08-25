@@ -18,7 +18,7 @@ impl WinderustApp {
             self.is_setting_group_collapsed(SettingGroupTarget::SuspensionAudio);
         let network_group_collapsed =
             self.is_setting_group_collapsed(SettingGroupTarget::SuspensionNetwork);
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_stepper_card_u64(
                 "suspension-background-delay",
                 t!("app_suspension.background_delay").to_string(),
@@ -249,7 +249,7 @@ impl WinderustApp {
             t!("app_suspension.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::AppSuspension, cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 "app-suspension-enabled",
                 t!("app_suspension.enable").to_string(),
@@ -490,7 +490,9 @@ impl WinderustApp {
                                             match result {
                                                 Ok(status) => {
                                                     app.status_message =
-                                                        localized_runtime_status(&status.message);
+                                                        localized_app_suspension_status(
+                                                            &status.status,
+                                                        );
                                                     Arc::make_mut(&mut app.feature_status)
                                                         .app_suspension = status;
                                                 }

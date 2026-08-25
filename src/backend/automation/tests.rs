@@ -303,7 +303,10 @@ fn manual_memory_trim_request_starts_worker_and_always_replies() {
         .expect("runtime should process the request");
 
     assert!(!status.enabled);
-    assert_eq!(status.message, "Automation disabled.");
+    assert_eq!(
+        status.status,
+        crate::memory_trim::MemoryTrimStatus::AutomationDisabled
+    );
     automation.shutdown().expect("shutdown");
 }
 

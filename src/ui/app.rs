@@ -41,8 +41,8 @@ use gpui_component::{
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult, ActionLogSummaries},
     activity::{
-        merge_activity_snapshot, ActivitySnapshot, ActivityState, ControllerActivityDetector,
-        IdleDetector,
+        activity_snapshot, merge_activity_snapshot, ActivitySnapshot, ActivityState,
+        ControllerActivityDetector,
     },
     app_suspension::{self, AppSuspensionSnapshot},
     application::{
@@ -462,7 +462,6 @@ pub struct WinderustApp {
     cpu_monitor: CpuUsageMonitor,
     io_monitor: IoUsageMonitor,
     network_monitor: NetworkUsageMonitor,
-    idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     tray_hide_on_close: bool,
     hwnd: Option<HWND>,
@@ -474,16 +473,7 @@ pub struct WinderustApp {
     app_icon: Option<Arc<Image>>,
     active_power_plan_picker: Option<String>,
     advanced_power_plan_tuning_service: AdvancedPowerPlanTuningService,
-    processor_power_ac_core_parking_min: u64,
-    processor_power_ac_performance_min: u64,
-    processor_power_ac_performance_max: u64,
-    processor_power_ac_boost_policy: u64,
-    processor_power_ac_boost_mode: ProcessorBoostMode,
-    processor_power_battery_core_parking_min: u64,
-    processor_power_battery_performance_min: u64,
-    processor_power_battery_performance_max: u64,
-    processor_power_battery_boost_policy: u64,
-    processor_power_battery_boost_mode: ProcessorBoostMode,
+    processor_power_draft: ProcessorPowerSourceValues,
     processor_power_target_plan_guid: Option<String>,
     processor_power_loaded_plan_guid: Option<String>,
     processor_power_target_plan_personality: Option<PowerPlanPersonality>,
@@ -522,11 +512,7 @@ pub struct WinderustApp {
     _rule_title_input_subscriptions: Vec<Subscription>,
     _process_picker_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
-    _dashboard_search_subscription: Option<Subscription>,
-    _process_list_search_subscription: Option<Subscription>,
-    _adaptive_engine_preset_name_subscription: Option<Subscription>,
-    _cpu_allocation_preset_name_subscription: Option<Subscription>,
-    _advanced_power_plan_tuning_preset_name_subscription: Option<Subscription>,
+    _notify_input_subscriptions: Vec<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
@@ -963,7 +949,6 @@ impl WinderustApp {
             cpu_monitor: CpuUsageMonitor::default(),
             io_monitor: IoUsageMonitor::default(),
             network_monitor: NetworkUsageMonitor::default(),
-            idle_detector: IdleDetector,
             controller_activity_detector: ControllerActivityDetector::default(),
             tray_hide_on_close: false,
             hwnd,
@@ -975,31 +960,7 @@ impl WinderustApp {
             app_icon,
             active_power_plan_picker: None,
             advanced_power_plan_tuning_service,
-            processor_power_ac_core_parking_min: initial_processor_power.values.ac.core_parking_min
-                as u64,
-            processor_power_ac_performance_min: initial_processor_power.values.ac.performance_min
-                as u64,
-            processor_power_ac_performance_max: initial_processor_power.values.ac.performance_max
-                as u64,
-            processor_power_ac_boost_policy: initial_processor_power.values.ac.boost_policy as u64,
-            processor_power_ac_boost_mode: initial_processor_power.values.ac.boost_mode,
-            processor_power_battery_core_parking_min: initial_processor_power
-                .values
-                .battery
-                .core_parking_min as u64,
-            processor_power_battery_performance_min: initial_processor_power
-                .values
-                .battery
-                .performance_min as u64,
-            processor_power_battery_performance_max: initial_processor_power
-                .values
-                .battery
-                .performance_max as u64,
-            processor_power_battery_boost_policy: initial_processor_power
-                .values
-                .battery
-                .boost_policy as u64,
-            processor_power_battery_boost_mode: initial_processor_power.values.battery.boost_mode,
+            processor_power_draft: initial_processor_power.values,
             processor_power_target_plan_guid: initial_processor_power.target_plan_guid,
             processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
             processor_power_target_plan_personality: initial_processor_power
@@ -1039,11 +1000,7 @@ impl WinderustApp {
             _rule_title_input_subscriptions: Vec::new(),
             _process_picker_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
-            _dashboard_search_subscription: None,
-            _process_list_search_subscription: None,
-            _adaptive_engine_preset_name_subscription: None,
-            _cpu_allocation_preset_name_subscription: None,
-            _advanced_power_plan_tuning_preset_name_subscription: None,
+            _notify_input_subscriptions: Vec::new(),
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
@@ -1064,11 +1021,7 @@ impl WinderustApp {
         app.rebuild_rule_title_input_subscriptions(window, cx);
         app.rebuild_process_picker_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
-        app.subscribe_to_dashboard_search_input(window, cx);
-        app.subscribe_to_process_list_search_input(window, cx);
-        app.subscribe_to_adaptive_engine_preset_name_input(window, cx);
-        app.subscribe_to_cpu_allocation_preset_name_input(window, cx);
-        app.subscribe_to_advanced_power_plan_tuning_preset_name_input(window, cx);
+        app.rebuild_notify_input_subscriptions(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
         app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         app.subscribe_to_activity_sliders(window, cx);
@@ -1129,7 +1082,7 @@ impl Render for WinderustApp {
             page_body
         };
         let page_header = if search_active {
-            search_results_page_header(cx).into_any_element()
+            search_results_page_header().into_any_element()
         } else {
             self.page_header(self.shell.page, cx).into_any_element()
         };
@@ -1306,16 +1259,33 @@ mod tests {
     }
 
     #[test]
-    fn runtime_status_localizes_known_messages_and_preserves_errors() {
+    fn memory_trim_status_localizes_structured_values_and_preserves_errors() {
         assert_eq!(
-            localized_runtime_status("Automation disabled."),
-            t!("runtime_status.automation_disabled").to_string()
+            localized_memory_trim_status(&memory_trim::MemoryTrimStatus::WaitingForMemoryLoad {
+                threshold_percent: 80,
+            }),
+            t!("runtime_status.memory_trim_waiting", threshold = 80).to_string()
         );
         assert_eq!(
-            localized_runtime_status("Memory Trim waiting for system memory load >= 80%."),
-            t!("runtime_status.memory_trim_waiting", threshold = "80").to_string()
+            localized_memory_trim_status(&memory_trim::MemoryTrimStatus::Error(
+                "Win32 error 5".to_owned()
+            )),
+            "Win32 error 5"
         );
-        assert_eq!(localized_runtime_status("Win32 error 5"), "Win32 error 5");
+    }
+
+    #[test]
+    fn app_suspension_status_localizes_typed_values_and_preserves_errors() {
+        assert_eq!(
+            localized_app_suspension_status(&app_suspension::AppSuspensionStatus::Active),
+            t!("runtime_status.app_suspension_active").to_string()
+        );
+        assert_eq!(
+            localized_app_suspension_status(&app_suspension::AppSuspensionStatus::Error(
+                "Win32 error 5".to_owned()
+            )),
+            "Win32 error 5"
+        );
     }
 
     #[test]

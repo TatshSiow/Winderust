@@ -6,7 +6,7 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::LanguageAndAppearance, cx)
+        page_body_shell()
             .child(self.render_language_selector(window, cx))
             .child(self.render_accent_selector(window, cx))
             .child(self.render_theme_selector(window, cx))

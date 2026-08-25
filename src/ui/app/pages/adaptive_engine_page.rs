@@ -48,7 +48,7 @@ impl WinderustApp {
             t!("adaptive_engine.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::AdaptiveEngine, cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 "adaptive-engine-enabled",
                 t!("adaptive_engine.enable").to_string(),
@@ -844,13 +844,13 @@ impl WinderustApp {
         }
 
         let content = match selected_tab {
-            AdaptiveEngineTuningTab::CpuBehaviour => feature_body(true)
+            AdaptiveEngineTuningTab::CpuBehaviour => feature_body()
                 .child(self.render_cpu_scheduler_cpu_behaviour_groups(target, window, cx))
                 .into_any_element(),
             AdaptiveEngineTuningTab::ProcessorPower => {
                 self.render_adaptive_engine_processor_power_policy_cards(target, window, cx)
             }
-            AdaptiveEngineTuningTab::PriorityControl => feature_body(true)
+            AdaptiveEngineTuningTab::PriorityControl => feature_body()
                 .child(self.render_cpu_scheduler_priority_table(target, window, cx))
                 .into_any_element(),
             AdaptiveEngineTuningTab::CustomRules => {
@@ -859,13 +859,13 @@ impl WinderustApp {
                     AdaptiveEngineTuningTarget::Live,
                     "Adaptive Engine Custom Rules are live-only"
                 );
-                feature_body(true)
+                feature_body()
                     .child(self.render_custom_rules_section(window, cx))
                     .into_any_element()
             }
         };
         let controls_enabled = editable;
-        let body = feature_body(controls_enabled).child(content);
+        let body = feature_body().child(content);
 
         v_flex()
             .id(SharedString::from(format!(
@@ -1075,7 +1075,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let (processor_power_policy_enabled, _) = self.adaptive_engine_processor_tuning(target);
         let target_key = adaptive_engine_tuning_target_key(target);
-        let controls = feature_body(true)
+        let controls = feature_body()
             .child(section_header(
                 t!("adaptive_engine.base_processor_policy").as_ref(),
                 t!("adaptive_engine.base_processor_policy_help").to_string(),
@@ -1136,7 +1136,7 @@ impl WinderustApp {
                 cx,
             ));
 
-        feature_body(true)
+        feature_body()
             .child(setting_action_card_with_help(
                 format!("adaptive-engine-{target_key}-processor-policy"),
                 t!("adaptive_engine.processor_power_policy").to_string(),

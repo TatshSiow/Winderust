@@ -14,7 +14,7 @@ use std::{
 use crate::{
     action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
-        input_tracker, merge_activity_snapshot, ControllerActivityDetector, IdleDetector,
+        activity_snapshot, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
         InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
     app_suspension::{AppSuspensionManager, AppSuspensionSnapshot},

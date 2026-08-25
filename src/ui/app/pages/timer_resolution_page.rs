@@ -17,7 +17,7 @@ impl WinderustApp {
             t!("timer_resolution.intro_2").to_string(),
             t!("timer_resolution.intro_3").to_string(),
         ]);
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(section_title_text(t!("common.rules").to_string()))
             .child(
                 h_flex()
@@ -64,7 +64,7 @@ impl WinderustApp {
             )
             .child(self.render_timer_resolution_rules(cx));
 
-        self.page_shell(Page::TimerResolution, cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 "timer-resolution-enabled",
                 t!("timer_resolution.enable").to_string(),

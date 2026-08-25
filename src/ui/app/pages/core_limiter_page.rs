@@ -31,7 +31,7 @@ impl WinderustApp {
             cx,
         );
         let enabled = self.settings.core_limiter.enabled;
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(feature_toggle_switch_with_help(
                 "core-limiter-foreground",
                 t!("common.protect_foreground_app").to_string(),
@@ -106,7 +106,7 @@ impl WinderustApp {
             t!("core_limiter.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::CoreLimiter, cx)
+        page_body_shell()
             .child(feature_toggle_switch_with_help(
                 "core-limiter-enabled",
                 t!("core_limiter.enable").to_string(),

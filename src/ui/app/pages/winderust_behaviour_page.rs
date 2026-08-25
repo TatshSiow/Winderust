@@ -6,7 +6,7 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::WinderustBehaviour, cx)
+        page_body_shell()
             .child(checkbox(
                 "general-enabled",
                 t!("settings.master_switch").to_string(),

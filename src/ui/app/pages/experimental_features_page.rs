@@ -6,7 +6,7 @@ impl WinderustApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::ExperimentalFeatures, cx)
+        page_body_shell()
             .child(setting_action_card_with_help(
                 "experimental-priority-values",
                 t!("settings.expose_all_priority_values").to_string(),

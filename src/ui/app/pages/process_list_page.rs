@@ -104,7 +104,7 @@ impl WinderustApp {
             .into_any_element()
         };
 
-        self.page_shell(Page::ProcessList, cx)
+        page_body_shell()
             .flex_1()
             .h_full()
             .min_h(px(0.0))
