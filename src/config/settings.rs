@@ -1459,21 +1459,19 @@ impl ProcessThreadPrioritySetting {
 }
 
 impl ProcessPrioritySetting {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Default,
         Self::Idle,
         Self::BelowNormal,
         Self::Normal,
         Self::AboveNormal,
-        Self::High,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 6] = [
+    pub const CUSTOM_RULE_ALL: [Self; 5] = [
         Self::Default,
         Self::Idle,
         Self::BelowNormal,
         Self::Normal,
         Self::AboveNormal,
-        Self::High,
     ];
 
     pub const ADVANCED_ALL: [Self; 7] = [
@@ -1497,7 +1495,7 @@ impl ProcessPrioritySetting {
 
     pub const fn safe_when_advanced_disabled(self) -> Self {
         match self {
-            Self::Realtime => Self::High,
+            Self::High | Self::Realtime => Self::AboveNormal,
             _ => self,
         }
     }
@@ -2716,10 +2714,14 @@ mod tests {
     }
 
     #[test]
-    fn realtime_process_priority_downgrades_when_advanced_is_hidden() {
+    fn high_process_priorities_downgrade_when_advanced_is_hidden() {
         assert_eq!(
             ProcessPrioritySetting::Realtime.safe_when_advanced_disabled(),
-            ProcessPrioritySetting::High
+            ProcessPrioritySetting::AboveNormal
+        );
+        assert_eq!(
+            ProcessPrioritySetting::High.safe_when_advanced_disabled(),
+            ProcessPrioritySetting::AboveNormal
         );
         assert_eq!(
             ProcessPrioritySetting::BelowNormal.safe_when_advanced_disabled(),

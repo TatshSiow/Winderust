@@ -51,6 +51,8 @@ nav:
   about: "關於"
 
 common:
+  caution: "注意"
+  danger: "危險"
   control: "控制項"
   focus_process: "焦點程序"
   visible_window: "可見視窗"

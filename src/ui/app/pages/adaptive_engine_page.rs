@@ -2169,9 +2169,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for priority in priorities.iter().copied() {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
                             process_io_priority_setting_label(priority),
+                            priority,
                             selected_priority == priority,
                             cx,
                         )
@@ -2241,9 +2242,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for priority in priorities.iter().copied() {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
                             process_thread_priority_setting_label(priority),
+                            priority,
                             selected_priority == priority,
                             cx,
                         )
@@ -2307,9 +2309,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for boost in ProcessDynamicPriorityBoostSetting::ALL {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id}-option-{boost:?}")),
                             process_dynamic_priority_boost_setting_label(boost),
+                            boost,
                             selected_boost == boost,
                             cx,
                         )
@@ -2383,9 +2386,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for priority in priorities.iter().copied() {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
                             process_gpu_priority_setting_label(priority),
+                            priority,
                             selected_priority == priority,
                             cx,
                         )
@@ -2528,9 +2532,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for priority in priorities.iter().copied() {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
                             process_priority_setting_label(priority),
+                            priority,
                             selected == priority,
                             cx,
                         )
@@ -2684,9 +2689,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for priority in ProcessMemoryPrioritySetting::ALL {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
                             process_memory_priority_setting_label(priority),
+                            priority,
                             selected == priority,
                             cx,
                         )

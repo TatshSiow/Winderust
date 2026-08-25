@@ -51,6 +51,8 @@ nav:
   about: "About"
 
 common:
+  caution: "Caution"
+  danger: "Danger"
   control: "Control"
   focus_process: "Focus Process"
   visible_window: "Visible Window"

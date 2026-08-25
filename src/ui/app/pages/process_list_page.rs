@@ -2584,19 +2584,18 @@ pub(in crate::ui::app) fn process_list_priority_editor_options<T>(
     cx: &mut Context<WinderustApp>,
 ) -> Scrollable<gpui::Div>
 where
-    T: Copy + PartialEq + 'static,
+    T: PriorityDropdownValue + PartialEq + 'static,
 {
     for value in values.iter().copied() {
         let process_name = process_name.to_owned();
         let value_label = label(value);
         let option_id = process_list_editor_option_id(&process_name, column, &value_label);
         options = options.child(
-            dropdown_option_row(option_id, value_label, selected == value, cx).on_click(
-                cx.listener(move |app, _, _, cx| {
+            priority_dropdown_option_row(option_id, value_label, value, selected == value, cx)
+                .on_click(cx.listener(move |app, _, _, cx| {
                     apply(app, process_name.clone(), tier, value, cx);
                     cx.stop_propagation();
-                }),
-            ),
+                })),
         );
     }
     options

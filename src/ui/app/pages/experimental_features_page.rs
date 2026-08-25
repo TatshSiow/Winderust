@@ -171,6 +171,9 @@ impl WinderustApp {
                     }),
                 ),
             ))
+            .child(text_warning(
+                t!("settings.expose_all_priority_values_help").to_string(),
+            ))
             .child(setting_action_card_with_help(
                 "experimental-advanced-controls",
                 t!("settings.show_advanced_controls").to_string(),
@@ -260,7 +263,7 @@ mod tests {
 
         assert_eq!(
             settings.process_priority.visible_window_priority,
-            ProcessPrioritySetting::High
+            ProcessPrioritySetting::AboveNormal
         );
         assert_eq!(
             settings.thread_priority.visible_window_priority,
@@ -280,7 +283,7 @@ mod tests {
         );
         assert_eq!(
             settings.cpu_scheduler.visible_window_priority,
-            ProcessPrioritySetting::High
+            ProcessPrioritySetting::AboveNormal
         );
         assert_eq!(
             settings

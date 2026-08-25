@@ -362,7 +362,7 @@ pub(in crate::ui::app) fn dropdown_surface_frame(
 
 pub(in crate::ui::app) fn dropdown_option_row(
     id: SharedString,
-    label: String,
+    label: impl IntoElement,
     selected: bool,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
@@ -392,6 +392,142 @@ pub(in crate::ui::app) fn dropdown_option_row(
         .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
         .cursor_pointer()
         .child(label)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui::app) enum PriorityOptionTone {
+    Default,
+    Caution,
+    Danger,
+}
+
+pub(in crate::ui::app) trait PriorityDropdownValue: Copy {
+    fn option_tone(self) -> PriorityOptionTone;
+}
+
+impl PriorityDropdownValue for ProcessPrioritySetting {
+    fn option_tone(self) -> PriorityOptionTone {
+        match self {
+            Self::High => PriorityOptionTone::Caution,
+            Self::Realtime => PriorityOptionTone::Danger,
+            _ => PriorityOptionTone::Default,
+        }
+    }
+}
+
+impl PriorityDropdownValue for ProcessThreadPrioritySetting {
+    fn option_tone(self) -> PriorityOptionTone {
+        match self {
+            Self::TimeCritical => PriorityOptionTone::Danger,
+            _ => PriorityOptionTone::Default,
+        }
+    }
+}
+
+impl PriorityDropdownValue for ProcessIoPrioritySetting {
+    fn option_tone(self) -> PriorityOptionTone {
+        match self {
+            Self::High => PriorityOptionTone::Caution,
+            Self::Critical => PriorityOptionTone::Danger,
+            _ => PriorityOptionTone::Default,
+        }
+    }
+}
+
+impl PriorityDropdownValue for ProcessGpuPrioritySetting {
+    fn option_tone(self) -> PriorityOptionTone {
+        match self {
+            Self::High => PriorityOptionTone::Caution,
+            Self::Realtime => PriorityOptionTone::Danger,
+            _ => PriorityOptionTone::Default,
+        }
+    }
+}
+
+impl PriorityDropdownValue for ProcessDynamicPriorityBoostSetting {
+    fn option_tone(self) -> PriorityOptionTone {
+        PriorityOptionTone::Default
+    }
+}
+
+impl PriorityDropdownValue for ProcessMemoryPrioritySetting {
+    fn option_tone(self) -> PriorityOptionTone {
+        PriorityOptionTone::Default
+    }
+}
+
+pub(in crate::ui::app) fn priority_dropdown_option_row<T: PriorityDropdownValue>(
+    id: SharedString,
+    label: String,
+    value: T,
+    selected: bool,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let tone = value.option_tone();
+    let risk_label = match tone {
+        PriorityOptionTone::Default => None,
+        PriorityOptionTone::Caution => Some(t!("common.caution").to_string()),
+        PriorityOptionTone::Danger => Some(t!("common.danger").to_string()),
+    };
+    let content = h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .gap_2()
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+        .when_some(risk_label, |content, risk_label| {
+            content.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(TEXT_LABEL_SIZE))
+                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(risk_label),
+            )
+        });
+    let row = dropdown_option_row(id, content, selected, cx);
+
+    match tone {
+        PriorityOptionTone::Default => row,
+        PriorityOptionTone::Caution => row.text_color(rgb(warning_text_color())),
+        PriorityOptionTone::Danger => row.text_color(cx.theme().danger_foreground),
+    }
+}
+
+#[cfg(test)]
+mod priority_option_tests {
+    use super::*;
+
+    #[test]
+    fn advanced_priority_values_have_semantic_tones() {
+        assert_eq!(
+            ProcessPrioritySetting::High.option_tone(),
+            PriorityOptionTone::Caution
+        );
+        assert_eq!(
+            ProcessPrioritySetting::Realtime.option_tone(),
+            PriorityOptionTone::Danger
+        );
+        assert_eq!(
+            ProcessThreadPrioritySetting::TimeCritical.option_tone(),
+            PriorityOptionTone::Danger
+        );
+        assert_eq!(
+            ProcessIoPrioritySetting::High.option_tone(),
+            PriorityOptionTone::Caution
+        );
+        assert_eq!(
+            ProcessIoPrioritySetting::Critical.option_tone(),
+            PriorityOptionTone::Danger
+        );
+        assert_eq!(
+            ProcessGpuPrioritySetting::High.option_tone(),
+            PriorityOptionTone::Caution
+        );
+        assert_eq!(
+            ProcessGpuPrioritySetting::Realtime.option_tone(),
+            PriorityOptionTone::Danger
+        );
+    }
 }
 
 pub(in crate::ui::app) fn dropdown_action_row(

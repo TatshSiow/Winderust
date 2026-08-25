@@ -314,7 +314,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement
     where
-        T: Copy + PartialEq + std::fmt::Debug + 'static,
+        T: PriorityDropdownValue + PartialEq + std::fmt::Debug + 'static,
     {
         self.render_dropdown_select(
             id,
@@ -328,9 +328,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for value in values.iter().copied() {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id}-option-{value:?}")),
                             label(value),
+                            value,
                             selected == value,
                             cx,
                         )
@@ -363,7 +364,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement
     where
-        T: Copy + PartialEq + std::fmt::Debug + 'static,
+        T: PriorityDropdownValue + PartialEq + std::fmt::Debug + 'static,
     {
         let side = tier.key();
         self.render_dropdown_select(
@@ -378,9 +379,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for value in values.iter().copied() {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id_prefix}-{side}-{index}-{value:?}")),
                             label(value),
+                            value,
                             selected == value,
                             cx,
                         )
