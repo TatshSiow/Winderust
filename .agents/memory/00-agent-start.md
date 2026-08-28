@@ -20,7 +20,7 @@
 
 ## Current Decisions
 
-- UI wording is the naming source of truth. Current feature names include Adaptive Engine, Background Efficiency, Memory Trim, By Foreground, By Running App, By CPU Load, By Activity, By Time, Core Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Dynamic Priority Boost.
+- UI wording is the naming source of truth. Current feature names include Adaptive Engine, Background Efficiency, Memory Trim, By Foreground, By Running App, By CPU Load, By Activity, By Time, CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Dynamic Priority Boost.
 - Use native mechanism names only at Windows boundaries: EcoQoS, affinity masks, CPU Sets, and exact Win32 function names remain technical terms.
 - Winderust is public pre-release software under GPL-3.0-only, Copyright (C) 2026 Tatsh Siow. Settings use only the current schema; do not add serde aliases, migration code, old brand paths, or compatibility-only fallbacks.
 - Keep personal tooling local-only: .codex/, .agents/skills/, and graphify-out/ must remain ignored and excluded from release artifacts.
@@ -48,7 +48,7 @@
 - Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
-- Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), Core Limiter, App Suspension.
+- Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), CPU Limiter, App Suspension.
 - App Suspension rejects Session 0, LocalSystem, LocalService, and NetworkService processes plus
   curated Windows shell/shared-host processes. Process List and the App Suspension picker keep
   unavailable targets visible, labeled, and disabled; grouped Process List actions cover every
@@ -58,10 +58,10 @@
   owns grace/wake/reporting policy only. The controller retains failed thaw/finalization state for
   bounded retry and explicit shutdown. The crash helper opens the exact named job before freeze and
   thaws that retained job even if the recorded root exits while inherited children remain. Raw Job
-  Object creation, assignment, membership, freeze/thaw, and the shared undocumented layout live in
-  `src/platform/windows/suspension.rs`.
+  Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw
+  and the shared undocumented layout live in `src/platform/windows/suspension.rs`.
 - CPU allocation has one runtime coordinator and deterministic precedence: CPU Sets (Soft) >
-  Processor Affinity (Hard) > Core Limiter > Adaptive Engine / CPU Scheduler. Feature modules own
+  Processor Affinity (Hard) > Adaptive Engine / CPU Scheduler. Feature modules own
   policy only; the coordinator alone owns affinity/CPU Set baselines, mutation, compensation,
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
@@ -69,9 +69,19 @@
 - Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection
   layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
   off, and each layer owns an Enabled/Disabled Efficiency Mode default.
-- Background Efficiency and Core Limiter custom rules use Focus, Visible Window, and Background
+- Background Efficiency and CPU Limiter custom rules use Focus, Visible Window, and Background
   columns with Default/Enabled/Disabled values and Focus > Visible Window > Background precedence.
   Default inherits the page-wide foreground/visible protection behavior.
+- CPU Limiter is a 100 ms freeze/thaw duty cycle with separate Focus, Visible Window,
+  and Background Allowed CPU Time values from 1% to 99% per rule. It shares
+  `SuspensionController` with App Suspension; independent owner phases combine
+  into one effective frozen state, and one feature cannot thaw the other's claim. One native
+  high-resolution waitable-timer worker owns all limiter schedules. Job Object control remains the
+  primary backend; only `NotSupported` job assignment selects CPU Limiter's exact-thread fallback.
+  That fallback owns one suspend-count increment per exact thread and never applies to App
+  Suspension. Active limiter target and process-appearance refresh remain at one second even while
+  hidden or under Adaptive Engine saver cadence. CPU Limiter does not own CPU allocation or Windows
+  CPU-rate state.
 - Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and CPU Scheduler tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
@@ -126,7 +136,7 @@
   remembers that unavailable control for the exact process instance so it does
   not retry-spam.
 - Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping CPU Scheduler claim, while non-overlapping CPU Scheduler claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
-- CPU Sets, Processor Affinity, Core Limiter, and CPU Scheduler CPU allocation are a complete
+- CPU Sets, Processor Affinity, and CPU Scheduler CPU allocation are a complete
   typed family cutover through `src/control/cpu_allocation.rs`. Do not restore feature-owned raw
   setters, property baselines, recovery calls, or affinity-owning `Drop` paths. Exact identity,
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of

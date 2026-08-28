@@ -78,7 +78,15 @@ target, but every mutation reopens and revalidates the exact process or thread i
 - Process List reversible actions use the same RuntimeCore controllers as automatic policy and
   may be superseded by a later automatic reconciliation.
 - CPU allocation has one coordinator with this precedence: CPU Sets (Soft), Processor Affinity
-  (Hard), Core Limiter, then Adaptive Engine / CPU Scheduler.
+  (Hard), then Adaptive Engine / CPU Scheduler.
+- App Suspension and CPU Limiter share one Job Object suspension controller. Their independent
+  claims combine into one effective frozen state, so releasing either feature cannot thaw the
+  other feature's claim.
+- CPU Limiter keeps that Job Object path primary. Only an incompatible existing-job result selects
+  its private exact-thread fallback; App Suspension remains Job-only. The fallback owns one
+  suspend-count increment per exact thread and uses the same limiter worker and schedule.
+- While a valid CPU Limiter rule is active, target refresh and process appearance discovery remain
+  at one second even when Winderust is hidden or Adaptive Engine saver cadence is active.
 - Process Priority and Power Throttling share one compound controller so Efficiency Mode cannot
   leave a half-applied state.
 

@@ -179,8 +179,8 @@ and the corrected commit must be the tagged source.
   time.
 - `src/control/cpu_allocation.rs`: sole live CPU Sets and process-affinity baseline, claim
   arbitration, compensation, and clean-release boundary for CPU Sets (Soft), Processor Affinity
-  (Hard), Core Limiter, and CPU Scheduler CPU allocation. Its precedence is CPU Sets (Soft) >
-  Processor Affinity (Hard) > Core Limiter > Adaptive Engine.
+  (Hard), and CPU Scheduler CPU allocation. Its precedence is CPU Sets (Soft) > Processor
+  Affinity (Hard) > Adaptive Engine.
   `src/platform/windows/cpu_allocation.rs` owns the raw affinity/CPU Set query and write calls plus
   packed system CPU Set topology conversion.
 - `src/control/memory_trim.rs` and `src/control/process_termination.rs`: sole
@@ -194,14 +194,17 @@ and the corrected commit must be the tagged source.
 - `src/control/timer_resolution.rs`: sole WinMM capability/query and process-lifetime request
   boundary. It owns the active period, exact begin/end pairing, switching, explicit shutdown, and
   Drop backstop; foreground matching and Action Log policy stay in the Timer Resolution feature.
-- `src/control/suspension.rs`: sole normal App Suspension process/job handle,
-  freeze/thaw transaction, retry, and clean-release boundary. Automatic rules,
+- `src/control/suspension.rs`: shared App Suspension and CPU Limiter process/job handle,
+  freeze/thaw transaction, retry, owner-phase arbitration, and clean-release boundary. Automatic rules,
   App-page Freeze, and Process List Suspend/Resume share its typed RuntimeCore
   routes. Pending compensation and journal cleanup reconcile on later feature
   passes; feature records retain exact creation time and are pruned when the
   controller no longer owns a frozen exact instance. The feature manager owns
-  rule/grace/wake/reporting policy only. `src/platform/windows/suspension.rs` owns raw Job Object
-  creation, assignment, membership, freeze/thaw, and the shared compatibility-sensitive layout.
+  rule/grace/wake/reporting policy only. CPU Limiter policy is immediate rule matching, while
+  `src/control/cpu_limiter.rs` owns its single duty-cycle worker. `src/platform/windows/job.rs`
+  owns shared Job Object creation, assignment, and membership; `src/platform/windows/suspension.rs`
+  owns freeze/thaw and the compatibility-sensitive layout; `src/platform/windows/cpu_limiter.rs`
+  owns the high-resolution waitable timer and command event.
 - `src/backend/self_power.rs`: instance-owned composition, verification, compensation, retry, and
   restoration of Winderust's hidden/Adaptive process priority and Power Throttling state.
   `src/platform/windows/self_power.rs` is the sole raw current-process query/set adapter; this
@@ -213,8 +216,8 @@ and the corrected commit must be the tagged source.
   (Hard) retain separate settings, pages, rules, status, and Action Log labels;
   `src/features/cpu_control/cpu_allocation.rs` owns their discovery, topology,
   tier selection, and reporting policy, while the typed controller owns the shared
-  Windows mechanism and restoration state. Core Limiter retains sampling and
-  hysteresis only. CPU Scheduler retains pressure, selection, and tuning only.
+  Windows mechanism and restoration state. CPU Limiter remains separate from CPU allocation and
+  uses shared Job Object freeze/thaw duty cycling. CPU Scheduler retains pressure, selection, and tuning only.
   CPU Scheduler process sampling and identity helpers live in
   `cpu_scheduler/process_control.rs`; its Process Priority, Power Throttling,
   and Memory Priority mutations route through typed controllers. Pure workload
@@ -231,7 +234,7 @@ Pages are grouped in `src/ui.rs`:
 - Power Plan Control: By Foreground, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
 - Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
   IO Priority, GPU Priority, Memory Priority.
-- CPU Control: Core Limiter, CPU Sets (Soft), Processor Affinity (Hard).
+- CPU Control: CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard).
 - Action Log.
 - Settings: Winderust Behaviour, Language and Appearance, Experimental
   Features.
@@ -259,9 +262,9 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 ## Naming
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
-- Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CoreLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
+- Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CpuLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
 - CPU Scheduler is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
-- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, Background CPU Restriction, Core Steering, Soft CPU Sets, Hard CPU Affinity, or CPU Limiter feature names. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
+- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, Background CPU Restriction, Core Steering, Core Limiter, Soft CPU Sets, or Hard CPU Affinity. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 
 Run this quick compatibility/naming check before handoff:
@@ -335,7 +338,7 @@ Process-control features must keep these defaults:
   `src/control/process_termination.rs`; raw calls in the matching `src/platform/windows/` modules.
 - Shared process-control acquisition: typed identity/safety validation in `src/control/process.rs`;
   minimal mutation/command access masks and raw `OpenProcess` in
-  `src/platform/windows/process.rs`. Read-only Process List, Core Limiter, and CPU Scheduler
+  `src/platform/windows/process.rs`. Read-only Process List, CPU Limiter, and CPU Scheduler
   sampling remains observation input and cannot authorize a write; every mutation reopens the
   exact target through the shared control boundary.
 - Process Priority and Power Throttling: shared lifecycle/arbitration in
@@ -347,8 +350,11 @@ Process-control features must keep these defaults:
 - CPU Sets and affinity: shared arbitration/restoration in `src/control/cpu_allocation.rs`; raw
   affinity, CPU Set, and system CPU Set topology calls in
   `src/platform/windows/cpu_allocation.rs`.
-- App Suspension: exact lifecycle/recovery transaction in `src/control/suspension.rs`; raw named
-  Job Object operations and freeze layout in `src/platform/windows/suspension.rs`.
+- App Suspension and CPU Limiter: shared exact lifecycle/recovery and owner phases in
+  `src/control/suspension.rs`; limiter scheduling in `src/control/cpu_limiter.rs`; shared named Job
+  Object operations in `src/platform/windows/job.rs`; freeze layout in
+  `src/platform/windows/suspension.rs`; native limiter timing in
+  `src/platform/windows/cpu_limiter.rs`.
 - Win32 Priority Separation: page logic in
   `src/ui/app/pages/win32_priority_separation_page.rs`, bit/value helpers in
   `src/ui/app/shared/appearance.rs`, and registry access in

@@ -39,7 +39,7 @@ pub struct Settings {
     #[serde(default)]
     pub advanced_power_plan_tuning_presets: Vec<AdvancedPowerPlanTuningPreset>,
     #[serde(default)]
-    pub core_limiter: CoreLimiterSettings,
+    pub cpu_limiter: CpuLimiterSettings,
     #[serde(default)]
     pub by_running_app: ByRunningAppSettings,
     pub cpu_scheduler: CpuSchedulerSettings,
@@ -880,38 +880,44 @@ impl CpuAllocationRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoreLimiterSettings {
+pub struct CpuLimiterSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub protect_foreground_app: bool,
     #[serde(default)]
     pub protect_visible_window_apps: bool,
     #[serde(default)]
-    pub rules: Vec<CoreLimiterRule>,
+    pub rules: Vec<CpuLimiterRule>,
+}
+
+impl CpuLimiterSettings {
+    pub fn rule_enabled(&self, rule: &CpuLimiterRule, focus: bool, visible_window: bool) -> bool {
+        let page_default = !(self.protect_foreground_app && focus
+            || self.protect_visible_window_apps && visible_window);
+        rule.mode_for(focus, visible_window).resolve(page_default)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoreLimiterRule {
+pub struct CpuLimiterRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
-    #[serde(default)]
+    #[serde(default = "default_cpu_limiter_focus_mode")]
     pub focus_mode: ProcessRuleMode,
-    #[serde(default)]
+    #[serde(default = "default_cpu_limiter_visible_window_mode")]
     pub visible_window_mode: ProcessRuleMode,
-    #[serde(default)]
+    #[serde(default = "default_cpu_limiter_background_mode")]
     pub background_mode: ProcessRuleMode,
-    #[serde(default = "default_core_limiter_threshold_percent")]
-    pub threshold_percent: u8,
-    #[serde(default = "default_core_limiter_sustain_seconds")]
-    pub sustain_seconds: u64,
-    #[serde(default = "default_core_limiter_cooldown_seconds")]
-    pub cooldown_seconds: u64,
-    #[serde(default = "default_core_limiter_max_logical_processors")]
-    pub max_logical_processors: u8,
+    #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
+    pub focus_allowed_cpu_time_percent: u8,
+    #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
+    pub visible_window_allowed_cpu_time_percent: u8,
+    #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
+    pub background_allowed_cpu_time_percent: u8,
 }
 
-impl CoreLimiterRule {
+impl CpuLimiterRule {
     pub const fn mode_for(&self, focus: bool, visible_window: bool) -> ProcessRuleMode {
         if focus {
             self.focus_mode
@@ -920,6 +926,16 @@ impl CoreLimiterRule {
         } else {
             self.background_mode
         }
+    }
+
+    pub fn has_valid_allowed_cpu_time(&self) -> bool {
+        [
+            self.focus_allowed_cpu_time_percent,
+            self.visible_window_allowed_cpu_time_percent,
+            self.background_allowed_cpu_time_percent,
+        ]
+        .into_iter()
+        .all(|value| (1..=99).contains(&value))
     }
 }
 
@@ -1645,7 +1661,7 @@ impl Default for Settings {
             processor_affinity_hard: CpuAllocationSettings::default(),
             cpu_allocation_presets: Vec::new(),
             advanced_power_plan_tuning_presets: Vec::new(),
-            core_limiter: CoreLimiterSettings::default(),
+            cpu_limiter: CpuLimiterSettings::default(),
             by_running_app: ByRunningAppSettings::default(),
             cpu_scheduler: CpuSchedulerSettings::default(),
             process_priority: ProcessPrioritySettings::default(),
@@ -1845,20 +1861,20 @@ fn default_gpu_priority_settings() -> GpuPrioritySettings {
     }
 }
 
-const fn default_core_limiter_threshold_percent() -> u8 {
-    75
+const fn default_cpu_limiter_focus_mode() -> ProcessRuleMode {
+    ProcessRuleMode::Disabled
 }
 
-const fn default_core_limiter_sustain_seconds() -> u64 {
-    5
+const fn default_cpu_limiter_visible_window_mode() -> ProcessRuleMode {
+    ProcessRuleMode::Disabled
 }
 
-const fn default_core_limiter_cooldown_seconds() -> u64 {
-    10
+const fn default_cpu_limiter_background_mode() -> ProcessRuleMode {
+    ProcessRuleMode::Enabled
 }
 
-const fn default_core_limiter_max_logical_processors() -> u8 {
-    1
+const fn default_cpu_limiter_allowed_cpu_time_percent() -> u8 {
+    50
 }
 
 const fn default_memory_trim_system_memory_load_threshold_percent() -> u8 {
@@ -1977,7 +1993,7 @@ impl Default for AppSuspensionSettings {
     }
 }
 
-impl Default for CoreLimiterSettings {
+impl Default for CpuLimiterSettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -2629,7 +2645,7 @@ mod tests {
             settings.app_suspension.enabled,
             settings.cpu_sets_soft.enabled,
             settings.processor_affinity_hard.enabled,
-            settings.core_limiter.enabled,
+            settings.cpu_limiter.enabled,
             settings.by_running_app.enabled,
             settings.process_priority.enabled,
             settings.thread_priority.enabled,

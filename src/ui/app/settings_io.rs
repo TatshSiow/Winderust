@@ -305,7 +305,7 @@ impl WinderustApp {
                 | Page::AppSuspension
                 | Page::ProcessPriority
                 | Page::DynamicPriorityBoost
-                | Page::CoreLimiter
+                | Page::CpuLimiter
                 | Page::CpuSetsSoft
                 | Page::IoPriority
                 | Page::GpuPriority

@@ -21,7 +21,6 @@ use super::process::{
 pub(crate) enum CpuAllocationRequest {
     SoftCpuSets { logical_processor_mask: u64 },
     HardAffinity { logical_processor_mask: u64 },
-    LimitLogicalProcessors { maximum: u8 },
 }
 
 #[derive(Debug, Clone)]
@@ -349,12 +348,6 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 claim.owner,
                 HardAffinityRequest::Exact(logical_processor_mask),
             ),
-            CpuAllocationRequest::LimitLogicalProcessors { maximum } => self.apply_hard_claim(
-                &identity,
-                &process,
-                claim.owner,
-                HardAffinityRequest::Limit(maximum),
-            ),
         }
     }
 
@@ -400,13 +393,8 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         request: HardAffinityRequest,
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
         let (current, system) = self.platform.query_affinity(process)?;
-        let baseline = self
-            .managed_affinity
-            .get(identity)
-            .map_or(current, |managed| managed.baseline);
         let desired = match request {
             HardAffinityRequest::Exact(mask) => target_affinity_mask(mask, system),
-            HardAffinityRequest::Limit(maximum) => limited_affinity_mask(baseline, system, maximum),
         };
         let released_cpu_sets = self.release_cpu_sets_for_switch(identity, process)?;
         let Some(desired) = desired else {
@@ -1227,13 +1215,6 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_paths(&self, owner: ControlOwner) -> Vec<String> {
-        self.managed_identities(owner)
-            .into_iter()
-            .map(|identity| identity.executable_path.to_string_lossy().into_owned())
-            .collect()
-    }
-
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
         self.managed_identities(owner).len()
     }
@@ -1360,7 +1341,6 @@ enum ManagedProperty {
 #[derive(Clone, Copy)]
 enum HardAffinityRequest {
     Exact(u64),
-    Limit(u8),
 }
 
 enum SwitchCompensation {
@@ -1689,7 +1669,6 @@ fn cpu_allocation_owner_precedence() -> &'static [ControlOwner] {
     &[
         ControlOwner::CpuSetsSoft,
         ControlOwner::ProcessorAffinityHard,
-        ControlOwner::CoreLimiter,
         ControlOwner::AdaptiveEngine,
     ]
 }
@@ -1710,31 +1689,6 @@ fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize>
         mask &= system_affinity;
     }
     (mask != 0).then_some(mask)
-}
-
-fn limited_affinity_mask(
-    baseline_affinity: usize,
-    system_affinity: usize,
-    maximum: u8,
-) -> Option<usize> {
-    let available = if baseline_affinity != 0 {
-        baseline_affinity
-    } else {
-        system_affinity
-    };
-    let mut target = 0_usize;
-    let mut selected = 0_usize;
-    for bit in 0..usize::BITS as usize {
-        let processor = 1_usize << bit;
-        if available & processor != 0 {
-            target |= processor;
-            selected += 1;
-            if selected >= usize::from(maximum.max(1)) {
-                break;
-            }
-        }
-    }
-    (target != 0 && target != baseline_affinity).then_some(target)
 }
 
 fn normalize_cpu_set_ids(ids: &mut Vec<u32>) {
@@ -2112,19 +2066,6 @@ mod tests {
         assert_eq!(
             coordinator.apply_policy_claim(
                 claim(
-                    ControlOwner::CoreLimiter,
-                    CpuAllocationRequest::LimitLogicalProcessors { maximum: 1 },
-                    7,
-                ),
-                true,
-            ),
-            Ok(CpuAllocationApplyOutcome::Applied)
-        );
-        assert_eq!(process_state(&coordinator).affinity, 0b0001);
-
-        assert_eq!(
-            coordinator.apply_policy_claim(
-                claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
                         logical_processor_mask: 0b0010,
@@ -2180,22 +2121,12 @@ mod tests {
         assert_eq!(reconciliation.applications.len(), 1);
         assert_eq!(
             reconciliation.applications[0].owner,
-            ControlOwner::CoreLimiter
-        );
-        assert_eq!(process_state(&coordinator).affinity, 0b0001);
-
-        coordinator.release_all_policy(ControlOwner::CoreLimiter);
-        assert_eq!(process_state(&coordinator).affinity, 0b0001);
-        let reconciliation = coordinator.reconcile_pending(true, true);
-        assert!(reconciliation.failures.is_empty());
-        assert_eq!(reconciliation.applications.len(), 1);
-        assert_eq!(
-            reconciliation.applications[0].owner,
             ControlOwner::AdaptiveEngine
         );
         assert_eq!(process_state(&coordinator).affinity, 0b0011);
 
-        coordinator.release_policy_except(ControlOwner::AdaptiveEngine, &BTreeSet::new());
+        let summary = coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
+        assert!(summary.failures.is_empty());
         assert_eq!(process_state(&coordinator).affinity, 0b1111);
         assert!(coordinator.effective_claim(&workload_key).is_none());
         assert!(!coordinator.has_managed_state());
@@ -2239,8 +2170,10 @@ mod tests {
             .apply_policy_claim(
                 claim_for(
                     43,
-                    ControlOwner::CoreLimiter,
-                    CpuAllocationRequest::LimitLogicalProcessors { maximum: 1 },
+                    ControlOwner::AdaptiveEngine,
+                    CpuAllocationRequest::HardAffinity {
+                        logical_processor_mask: 0b0001,
+                    },
                     8,
                 ),
                 true,
@@ -2285,7 +2218,7 @@ mod tests {
         let completed_retry = coordinator.reconcile_pending(true, true);
         assert!(completed_retry.releases.failures.is_empty());
         assert!(!coordinator.has_pending_release_retry());
-        coordinator.release_all_policy(ControlOwner::CoreLimiter);
+        coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
     }
 
     #[test]
@@ -2294,8 +2227,10 @@ mod tests {
         coordinator
             .apply_policy_claim(
                 claim(
-                    ControlOwner::CoreLimiter,
-                    CpuAllocationRequest::LimitLogicalProcessors { maximum: 1 },
+                    ControlOwner::AdaptiveEngine,
+                    CpuAllocationRequest::HardAffinity {
+                        logical_processor_mask: 0b0001,
+                    },
                     7,
                 ),
                 true,
@@ -2351,10 +2286,10 @@ mod tests {
         let handoff = coordinator.reconcile_pending(true, false);
         assert!(handoff.failures.is_empty());
         assert_eq!(handoff.applications.len(), 1);
-        assert_eq!(handoff.applications[0].owner, ControlOwner::CoreLimiter);
+        assert_eq!(handoff.applications[0].owner, ControlOwner::AdaptiveEngine);
         assert_eq!(process_state(&coordinator).affinity, 0b0001);
         assert!(process_state(&coordinator).cpu_sets.is_empty());
-        coordinator.release_all_policy(ControlOwner::CoreLimiter);
+        coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
     }
 
     #[test]
@@ -2957,12 +2892,9 @@ mod tests {
     }
 
     #[test]
-    fn mask_helpers_preserve_group_zero_and_core_limiter_semantics() {
+    fn target_affinity_mask_preserves_group_zero() {
         assert_eq!(target_affinity_mask(0b1110, 0b0110), Some(0b0110));
         assert_eq!(target_affinity_mask(0b1000, 0b0111), None);
-        assert_eq!(limited_affinity_mask(0b1111, 0b1111, 2), Some(0b0011));
-        assert_eq!(limited_affinity_mask(0b1010, 0b1111, 1), Some(0b0010));
-        assert_eq!(limited_affinity_mask(0b0011, 0b1111, 2), None);
         assert!(Path::new(r"C:\Apps\worker.exe").is_absolute());
     }
 

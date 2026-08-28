@@ -127,12 +127,12 @@ impl WinderustApp {
             ListItemRemovalKind::AdvancedPowerPlanTuningPreset => {
                 remove_at(&mut self.settings.advanced_power_plan_tuning_presets, index);
             }
-            ListItemRemovalKind::CoreLimiterRule => {
-                if let Some(rule) = self.settings.core_limiter.rules.get(index) {
+            ListItemRemovalKind::CpuLimiterRule => {
+                if let Some(rule) = self.settings.cpu_limiter.rules.get(index) {
                     self.expanded_rule_cards
-                        .remove(&RuleCardTarget::CoreLimiter(rule.executable_path.clone()));
+                        .remove(&RuleCardTarget::CpuLimiter(rule.executable_path.clone()));
                 }
-                remove_at(&mut self.settings.core_limiter.rules, index);
+                remove_at(&mut self.settings.cpu_limiter.rules, index);
             }
             ListItemRemovalKind::ByRunningAppRule => {
                 remove_at(&mut self.settings.by_running_app.rules, index);

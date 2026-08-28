@@ -362,21 +362,32 @@ Assert-NoSourceMatch `
     -Pattern 'SetProcessAffinityMask|SetProcessDefaultCpuSets|record_(?:affinity|cpu_sets)_change|previous_(?:affinity|cpu_sets)|applied_(?:affinity|cpu_sets)|adjusted_process_ids|struct AffinityAdjustment|struct AdjustedProcess' `
     -Paths @(
         'src/features/cpu_control/cpu_allocation.rs',
-        'src/features/cpu_control/core_limiter.rs',
+        'src/features/cpu_control/cpu_limiter.rs',
         'src/features/winderust_features/cpu_scheduler.rs',
         'src/features/winderust_features/cpu_scheduler/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
-    -Mechanism 'App Suspension Job Object' `
+    -Mechanism 'Job Object information' `
     -ApiPattern 'SetInformationJobObject' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\suspension)\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\(?:job|suspension))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'single App Suspension production adapter call' `
     -Pattern 'SetInformationJobObject\s*\(' `
     -Paths @('src/platform/windows/suspension.rs') `
     -ExpectedCount 1
+
+Assert-SourceMatchCount `
+    -Boundary 'single foreign-job test UI restriction adapter call' `
+    -Pattern 'SetInformationJobObject\s*\(' `
+    -Paths @('src/platform/windows/job.rs') `
+    -ExpectedCount 1
+
+Assert-NoSourceMatch `
+    -Boundary 'shared Job Object adapter imports no policy layer' `
+    -Pattern 'crate::(?:control|features|foreground|rules|ui)' `
+    -Paths @('src/platform/windows/job.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'single App Suspension freeze-layout contract' `
@@ -386,13 +397,43 @@ Assert-SourceMatchCount `
 
 Assert-NoSourceMatch `
     -Boundary 'App Suspension controller owns lifecycle without raw Job Object APIs' `
-    -Pattern 'CreateJobObjectW|AssignProcessToJobObject|IsProcessInJob|SetInformationJobObject|SetLastError|JobObjectFreezeInformation|JOB_OBJECT_FREEZE_INFORMATION_CLASS|windows_sys|unsafe' `
+    -Pattern 'CreateJobObjectW|AssignProcessToJobObject|IsProcessInJob|SetInformationJobObject|SetLastError|JobObjectFreezeInformation|JOB_OBJECT_FREEZE_INFORMATION_CLASS|windows_sys' `
     -Paths @('src/control/suspension.rs')
+
+Assert-SourceMatchCount `
+    -Boundary 'single shared suspension handle thread-safety contract' `
+    -Pattern 'unsafe impl Send for WindowsSuspensionHandle' `
+    -Paths @('src/control/suspension.rs') `
+    -ExpectedCount 1
 
 Assert-NoSourceMatch `
     -Boundary 'App Suspension Windows adapter imports no policy layer' `
     -Pattern 'crate::(?:control|features|foreground|rules|ui)' `
     -Paths @('src/platform/windows/suspension.rs')
+
+Assert-NoUnexpectedWriter `
+    -Mechanism 'CPU Limiter waitable timer' `
+    -ApiPattern 'CreateWaitableTimerExW|SetWaitableTimer|CancelWaitableTimer|WaitForMultipleObjects' `
+    -AllowedLocationPattern '^src\\platform\\windows\\cpu_limiter\.rs:'
+
+Assert-NoUnexpectedWriter `
+    -Mechanism 'CPU Limiter thread suspension' `
+    -ApiPattern '(?:PssCaptureSnapshot|PssWalkSnapshot|SuspendThread|ResumeThread)\s*(?:,|\()' `
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\thread_suspension)\.rs:'
+
+Assert-NoSourceMatch `
+    -Boundary 'CPU Limiter policy uses only the typed thread-suspension adapter' `
+    -Pattern '(?:PssCaptureSnapshot|PssWalkSnapshot|SuspendThread|ResumeThread)\s*\(' `
+    -Paths @(
+        'src/control/cpu_limiter.rs',
+        'src/control/cpu_limiter/thread_fallback.rs',
+        'src/features/cpu_control/cpu_limiter.rs'
+    )
+
+Assert-NoSourceMatch `
+    -Boundary 'CPU Limiter controller owns timing without raw Win32' `
+    -Pattern 'CreateWaitableTimerExW|SetWaitableTimer|CancelWaitableTimer|WaitForMultipleObjects|windows_sys|unsafe' `
+    -Paths @('src/control/cpu_limiter.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'App Suspension feature and UI layers do not own mutation or restoration' `
@@ -757,7 +798,7 @@ Assert-SourceMatchCount `
 
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror individual runtime feature snapshots' `
-    -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|core_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|cpu_scheduler_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
+    -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|cpu_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|cpu_scheduler_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
     -Paths @('src/ui/app.rs')
 
 Assert-SourceMatchCount `

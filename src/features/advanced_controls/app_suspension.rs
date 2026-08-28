@@ -350,13 +350,16 @@ impl AppSuspensionManager {
         controller: &mut SuspensionController,
         action_log: &mut ActionLog,
     ) -> Result<(), String> {
-        let _ = self.clear_all(controller, action_log, "Winderust is shutting down");
-        let result = controller.shutdown();
-        if result.is_ok() {
+        let failed = self.clear_all(controller, action_log, "Winderust is shutting down");
+        if failed == 0 {
             self.suspended.clear();
             self.temporary_thawed.clear();
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed to restore {failed} App Suspension process(es)."
+            ))
         }
-        result
     }
 
     pub fn release_interactive_process(

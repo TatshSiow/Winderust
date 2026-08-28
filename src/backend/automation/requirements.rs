@@ -15,6 +15,22 @@ pub(super) fn automation_refresh_interval(
     }
 }
 
+pub(super) fn process_appearance_refresh_interval(
+    settings: &Settings,
+    hidden_to_tray: bool,
+    adaptive_engine_enabled: bool,
+) -> Duration {
+    if cpu_limiter_required(settings) {
+        PROCESS_APPEARANCE_SCAN_INTERVAL
+    } else {
+        automation_refresh_interval(
+            hidden_to_tray,
+            adaptive_engine_enabled,
+            PROCESS_APPEARANCE_SCAN_INTERVAL,
+        )
+    }
+}
+
 pub(super) fn input_hook_required(settings: &Settings) -> bool {
     input_hook_required_for_profile(settings)
         || settings
@@ -107,13 +123,12 @@ pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
         })
 }
 
-pub(super) fn core_limiter_required(settings: &Settings) -> bool {
-    settings.core_limiter.enabled
-        && settings
-            .core_limiter
-            .rules
-            .iter()
-            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+pub(super) fn cpu_limiter_required(settings: &Settings) -> bool {
+    settings.cpu_limiter.enabled
+        && settings.cpu_limiter.rules.iter().any(|rule| {
+            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+                && rule.has_valid_allowed_cpu_time()
+        })
 }
 
 pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
@@ -310,7 +325,7 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
         && (settings.background_efficiency.enabled
             || cpu_sets_soft_required(settings)
             || processor_affinity_hard_required(settings)
-            || core_limiter_required(settings)
+            || cpu_limiter_required(settings)
             || by_running_app_required(settings)
             || cpu_scheduler_required(settings)
             || settings.process_priority.enabled

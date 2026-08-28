@@ -60,17 +60,16 @@ use crate::{
         AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
         BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
         ByCpuLoadRule, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
-        ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings,
-        CpuAllocationMethod, CpuAllocationRule, CpuSchedulerSettings, CpuUsageComparison,
-        DynamicPriorityBoostSettings, GpuPrioritySettings, IoPrioritySettings,
-        MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit, PowerSourceProfile,
-        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPriority,
-        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
-        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPrioritySetting,
-        ProcessPrioritySettings, ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings,
-        TimerResolutionRule, TimerResolutionSettings, UpdateChannel, WeekdaySetting,
-        CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS, CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS,
-        CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS,
+        ByRunningAppSettings, ByTimeRule, CpuAllocationMethod, CpuAllocationRule, CpuLimiterRule,
+        CpuLimiterSettings, CpuSchedulerSettings, CpuUsageComparison, DynamicPriorityBoostSettings,
+        GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings,
+        NetworkThresholdUnit, PowerSourceProfile, ProcessDynamicPriorityBoostSetting,
+        ProcessExclusionRule, ProcessGpuPriority, ProcessGpuPrioritySetting, ProcessIoPriority,
+        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
+        ProcessPrioritySetting, ProcessPrioritySettings, ProcessThreadPrioritySetting, Settings,
+        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, UpdateChannel,
+        WeekdaySetting, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS, CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS,
     },
     control::{
         dynamic_priority_boost::{current_dynamic_priority_boost_state, DynamicPriorityBoostState},
@@ -81,9 +80,9 @@ use crate::{
         priority_efficiency::{current_efficiency_mode, current_process_priority},
         thread_priority::current_process_thread_priority,
     },
-    core_limiter::{self, CoreLimiterSnapshot},
     cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
     cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind},
+    cpu_limiter::{self, CpuLimiterSnapshot},
     cpu_scheduler, crash_recovery,
     dashboard_metrics::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
@@ -515,6 +514,7 @@ pub struct WinderustApp {
     _notify_input_subscriptions: Vec<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
+    _cpu_limiter_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
     _accent_color_picker_subscription: Subscription,
     _window_activation_subscription: Subscription,
@@ -632,7 +632,7 @@ enum ListItemRemovalKind {
     AdaptiveEnginePreset,
     CpuAllocationPreset,
     AdvancedPowerPlanTuningPreset,
-    CoreLimiterRule,
+    CpuLimiterRule,
     ByRunningAppRule,
     CpuSchedulerCustomRule,
     ProcessPriorityExclusion,
@@ -707,6 +707,9 @@ struct UiInputs {
     by_cpu_load_rule_names: Vec<Entity<InputState>>,
     cpu_rule_thresholds: Vec<Entity<SliderState>>,
     cpu_rule_upper_thresholds: Vec<Entity<SliderState>>,
+    cpu_limiter_focus_allowed_times: Vec<Entity<SliderState>>,
+    cpu_limiter_visible_window_allowed_times: Vec<Entity<SliderState>>,
+    cpu_limiter_background_allowed_times: Vec<Entity<SliderState>>,
     by_time_rule_names: Vec<Entity<InputState>>,
     schedule_start_times: Vec<Entity<InputState>>,
     schedule_end_times: Vec<Entity<InputState>>,
@@ -714,7 +717,7 @@ struct UiInputs {
     background_efficiency_process: Entity<InputState>,
     memory_trim_exclusion: Entity<InputState>,
     app_suspension_process: Entity<InputState>,
-    core_limiter_process: Entity<InputState>,
+    cpu_limiter_process: Entity<InputState>,
     performance_process: Entity<InputState>,
     cpu_sets_soft_process: Entity<InputState>,
     processor_affinity_hard_process: Entity<InputState>,
@@ -1003,6 +1006,7 @@ impl WinderustApp {
             _notify_input_subscriptions: Vec::new(),
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
+            _cpu_limiter_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
             _accent_color_picker_subscription: accent_color_picker_subscription,
             _window_activation_subscription: window_activation_subscription,
@@ -1024,6 +1028,7 @@ impl WinderustApp {
         app.rebuild_notify_input_subscriptions(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
         app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
+        app.rebuild_cpu_limiter_slider_subscriptions(window, cx);
         app.subscribe_to_activity_sliders(window, cx);
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
@@ -1058,6 +1063,7 @@ impl Render for WinderustApp {
         self.inputs.ensure_for_settings(window, cx, &self.settings);
         self.ensure_rule_title_input_subscriptions(window, cx);
         self.ensure_cpu_threshold_slider_subscriptions(window, cx);
+        self.ensure_cpu_limiter_slider_subscriptions(window, cx);
         self.sync_input_values(cx);
         UI_ANIMATIONS_ENABLED.store(
             resolve_animation_enabled(self.settings.general.animation_mode),

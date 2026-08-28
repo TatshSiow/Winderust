@@ -11,12 +11,15 @@ use crate::{
         contains_process_name, process_runs_as_service_account_from_handle, ProcessActionTarget,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
-    platform::windows::suspension::{self as windows_suspension, JobObjectError},
+    platform::windows::{
+        job::{self as windows_job, JobHandle, JobObjectError},
+        suspension as windows_suspension,
+    },
     win_util::WinHandle,
 };
 
 use super::process::{
-    open_process_for_suspension, ProcessControlError, ProcessControlTarget, ProcessIdentity,
+    open_process_for_job_assignment, ProcessControlError, ProcessControlTarget, ProcessIdentity,
     ProcessTargetKey,
 };
 
@@ -127,6 +130,12 @@ pub(crate) trait SuspensionPlatform {
         target: &SuspensionTarget,
         allow_cross_session_process_control: bool,
     ) -> Result<(ProcessIdentity, Self::Handle), SuspensionError>;
+    fn contains_process(
+        &mut self,
+        handle: &Self::Handle,
+        target: &SuspensionTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<bool, SuspensionError>;
     fn begin_freeze(
         &mut self,
         identity: &ProcessIdentity,
@@ -155,6 +164,9 @@ struct ManagedSuspension<H> {
     identity: ProcessIdentity,
     handle: H,
     state: SuspensionState,
+    app_suspension_phase: Option<bool>,
+    cpu_limiter_phase: Option<bool>,
+    recovery_armed: bool,
     retry: Option<RetryState>,
 }
 
@@ -221,9 +233,16 @@ where
                     identity,
                     handle,
                     state: SuspensionState::Thawed,
+                    app_suspension_phase: None,
+                    cpu_limiter_phase: None,
+                    recovery_armed: false,
                     retry: None,
                 },
             );
+        }
+
+        if let Some(managed) = self.managed.get_mut(&key) {
+            managed.app_suspension_phase = Some(true);
         }
 
         self.prepare_for_freeze(&key)?;
@@ -233,6 +252,31 @@ where
             .is_some_and(|managed| managed.state == SuspensionState::Frozen)
         {
             return Ok(SuspensionFreezeOutcome::Unchanged);
+        }
+
+        if self
+            .managed
+            .get(&key)
+            .is_some_and(|managed| managed.recovery_armed)
+        {
+            self.ensure_retry_due(&key, false)?;
+            let apply_result = {
+                let managed = self
+                    .managed
+                    .get(&key)
+                    .ok_or(SuspensionError::ProcessExited)?;
+                self.platform.set_frozen(&managed.handle, true)
+            };
+            if let Err(error) = apply_result {
+                return Err(self.retain_failure(&key, error.to_string(), false));
+            }
+            let managed = self
+                .managed
+                .get_mut(&key)
+                .ok_or(SuspensionError::ProcessExited)?;
+            managed.state = SuspensionState::Frozen;
+            managed.retry = None;
+            return Ok(SuspensionFreezeOutcome::Frozen);
         }
 
         let intent_result = {
@@ -270,6 +314,7 @@ where
                     .get_mut(&key)
                     .ok_or(SuspensionError::ProcessExited)?;
                 managed.state = SuspensionState::Frozen;
+                managed.recovery_armed = true;
                 managed.retry = None;
                 Ok(SuspensionFreezeOutcome::Frozen)
             }
@@ -332,6 +377,9 @@ where
         let Some(key) = self.key_for_process_id(process_id) else {
             return Ok(SuspensionThawOutcome::Unchanged);
         };
+        if let Some(managed) = self.managed.get_mut(&key) {
+            managed.app_suspension_phase = Some(false);
+        }
         self.thaw_keep_key(&key, force)
     }
 
@@ -344,7 +392,115 @@ where
         if !self.managed.contains_key(&key) {
             return Err(SuspensionError::ProcessExited);
         }
+        if let Some(managed) = self.managed.get_mut(&key) {
+            managed.app_suspension_phase = Some(false);
+        }
         self.thaw_keep_key(&key, force)
+    }
+
+    pub(crate) fn set_cpu_limiter_phase(
+        &mut self,
+        target: &SuspensionTarget,
+        frozen: bool,
+        allow_cross_session_process_control: bool,
+    ) -> Result<(), SuspensionError> {
+        let key = target.key();
+        if frozen {
+            let app_suspension_phase = self
+                .managed
+                .get(&key)
+                .and_then(|managed| managed.app_suspension_phase);
+            if let Some(managed) = self.managed.get_mut(&key) {
+                managed.cpu_limiter_phase = Some(true);
+            }
+            let result = self.freeze(target, allow_cross_session_process_control);
+            if let Some(managed) = self.managed.get_mut(&key) {
+                managed.app_suspension_phase = app_suspension_phase;
+                managed.cpu_limiter_phase = Some(true);
+            }
+            result.map(|_| ())
+        } else {
+            let stale_keys = self
+                .managed
+                .keys()
+                .filter(|candidate| candidate.id == target.process.id && **candidate != key)
+                .cloned()
+                .collect::<Vec<_>>();
+            for stale_key in stale_keys {
+                self.release_key(&stale_key, true)?;
+            }
+            if !self.managed.contains_key(&key) {
+                let (identity, handle) = self
+                    .platform
+                    .assign(target, allow_cross_session_process_control)?;
+                self.managed.insert(
+                    key.clone(),
+                    ManagedSuspension {
+                        identity,
+                        handle,
+                        state: SuspensionState::Thawed,
+                        app_suspension_phase: None,
+                        cpu_limiter_phase: Some(false),
+                        recovery_armed: false,
+                        retry: None,
+                    },
+                );
+                return Ok(());
+            }
+            if let Some(managed) = self.managed.get_mut(&key) {
+                managed.cpu_limiter_phase = Some(false);
+            }
+            if self
+                .managed
+                .get(&key)
+                .is_some_and(|managed| managed.app_suspension_phase == Some(true))
+            {
+                return Ok(());
+            }
+            self.thaw_keep_key(&key, false).map(|_| ())
+        }
+    }
+
+    pub(crate) fn cpu_limiter_job_contains(
+        &mut self,
+        owner: &SuspensionTarget,
+        candidate: &SuspensionTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<bool, SuspensionError> {
+        let Some(managed) = self.managed.get(&owner.key()) else {
+            return Ok(false);
+        };
+        if managed.cpu_limiter_phase.is_none() {
+            return Ok(false);
+        }
+        self.platform.contains_process(
+            &managed.handle,
+            candidate,
+            allow_cross_session_process_control,
+        )
+    }
+
+    pub(crate) fn release_cpu_limiter_target(
+        &mut self,
+        target: &SuspensionTarget,
+        force: bool,
+    ) -> Result<bool, SuspensionError> {
+        let key = target.key();
+        let Some(app_suspension_phase) = self
+            .managed
+            .get(&key)
+            .map(|managed| managed.app_suspension_phase)
+        else {
+            return Ok(false);
+        };
+        if let Some(managed) = self.managed.get_mut(&key) {
+            managed.cpu_limiter_phase = None;
+        }
+        match app_suspension_phase {
+            Some(true) => Ok(true),
+            Some(false) => self.thaw_keep_key(&key, force).map(|_| true),
+            None => self.release_key(&key, force).map(|()| true),
+        }
     }
 
     pub(crate) fn release_process(
@@ -362,26 +518,45 @@ where
             return Ok(false);
         }
         for key in keys {
-            self.release_key(&key, force)?;
+            let cpu_limiter_phase = self
+                .managed
+                .get(&key)
+                .and_then(|managed| managed.cpu_limiter_phase);
+            if cpu_limiter_phase.is_some() {
+                if let Some(managed) = self.managed.get_mut(&key) {
+                    managed.app_suspension_phase = None;
+                }
+                self.thaw_keep_key(&key, force)?;
+            } else {
+                self.release_key(&key, force)?;
+            }
         }
         Ok(true)
     }
 
     pub(crate) fn managed_process_ids(&self) -> impl Iterator<Item = u32> + '_ {
-        self.managed.keys().map(|key| key.id)
+        self.managed
+            .iter()
+            .filter(|(_key, managed)| managed.app_suspension_phase.is_some())
+            .map(|(key, _managed)| key.id)
     }
 
     pub(crate) fn contains_process(&self, process_id: u32) -> bool {
-        self.managed.keys().any(|key| key.id == process_id)
+        self.managed
+            .iter()
+            .any(|(key, managed)| key.id == process_id && managed.app_suspension_phase.is_some())
     }
 
     pub(crate) fn matches_target(&self, target: &SuspensionTarget) -> bool {
-        self.managed.contains_key(&target.key())
+        self.managed
+            .get(&target.key())
+            .is_some_and(|managed| managed.app_suspension_phase.is_some())
     }
 
     pub(crate) fn matches_process_path(&self, process_id: u32, executable_path: &Path) -> bool {
         self.managed.iter().any(|(key, managed)| {
             key.id == process_id
+                && managed.app_suspension_phase.is_some()
                 && crate::foreground::same_executable_path(
                     &managed.identity.executable_path,
                     executable_path,
@@ -392,6 +567,7 @@ where
     pub(crate) fn is_frozen_process(&self, process_id: u32) -> bool {
         self.managed.iter().any(|(key, managed)| {
             key.id == process_id
+                && managed.app_suspension_phase.is_some()
                 && matches!(
                     managed.state,
                     SuspensionState::Frozen | SuspensionState::FrozenCompensationPending
@@ -489,10 +665,28 @@ where
         key: &ProcessTargetKey,
         force: bool,
     ) -> Result<SuspensionThawOutcome, SuspensionError> {
+        if self
+            .managed
+            .get(key)
+            .is_some_and(|managed| managed.cpu_limiter_phase == Some(true))
+        {
+            return Ok(SuspensionThawOutcome::Unchanged);
+        }
         let Some(state) = self.managed.get(key).map(|managed| managed.state) else {
             return Ok(SuspensionThawOutcome::Unchanged);
         };
         if let SuspensionState::Thawed = state {
+            let cleanup_required = self.managed.get(key).is_some_and(|managed| {
+                managed.recovery_armed && managed.cpu_limiter_phase.is_none()
+            });
+            if cleanup_required {
+                if let Some(managed) = self.managed.get_mut(key) {
+                    managed.state = SuspensionState::ThawedCleanupPending {
+                        release_after_cleanup: false,
+                    };
+                }
+                self.finish_cleanup(key, force)?;
+            }
             return Ok(SuspensionThawOutcome::Unchanged);
         }
         if matches!(state, SuspensionState::ThawedCleanupPending { .. }) {
@@ -519,6 +713,11 @@ where
                 .managed
                 .get_mut(key)
                 .ok_or(SuspensionError::ProcessExited)?;
+            if managed.cpu_limiter_phase == Some(false) {
+                managed.state = SuspensionState::Thawed;
+                managed.retry = None;
+                return Ok(SuspensionThawOutcome::Thawed);
+            }
             managed.state = SuspensionState::ThawedCleanupPending {
                 release_after_cleanup: false,
             };
@@ -533,6 +732,18 @@ where
             return Ok(());
         };
         if state == SuspensionState::Thawed {
+            if self
+                .managed
+                .get(key)
+                .is_some_and(|managed| managed.recovery_armed)
+            {
+                if let Some(managed) = self.managed.get_mut(key) {
+                    managed.state = SuspensionState::ThawedCleanupPending {
+                        release_after_cleanup: true,
+                    };
+                }
+                return self.finish_cleanup(key, force);
+            }
             self.managed.remove(key);
             return Ok(());
         }
@@ -605,6 +816,7 @@ where
             self.managed.remove(key);
         } else if let Some(managed) = self.managed.get_mut(key) {
             managed.state = SuspensionState::Thawed;
+            managed.recovery_armed = false;
             managed.retry = None;
         }
         Ok(())
@@ -674,10 +886,14 @@ fn schedule_retry<H>(managed: &mut ManagedSuspension<H>, message: String) {
 pub(crate) struct WindowsSuspensionPlatform;
 
 pub(crate) struct WindowsSuspensionHandle {
-    job_handle: Option<windows_suspension::JobHandle>,
+    job_handle: Option<JobHandle>,
     job_name: Option<String>,
     process_handle: Option<WinHandle>,
 }
+
+// SAFETY: these are owned Win32 process and Job Object handles, which may be used and closed from
+// another thread. SuspensionController serializes all access when shared with CPU Limiter.
+unsafe impl Send for WindowsSuspensionHandle {}
 
 impl SuspensionPlatform for WindowsSuspensionPlatform {
     type Handle = WindowsSuspensionHandle;
@@ -692,7 +908,7 @@ impl SuspensionPlatform for WindowsSuspensionPlatform {
             return Err(SuspensionError::AccessDenied);
         }
         let (identity, process_handle) =
-            open_process_for_suspension(&target.process, allow_cross_session_process_control)
+            open_process_for_job_assignment(&target.process, allow_cross_session_process_control)
                 .map_err(map_process_control_error)?;
         if identity.session_id.is_none_or(|session_id| session_id == 0) {
             return Err(SuspensionError::AccessDenied);
@@ -702,10 +918,10 @@ impl SuspensionPlatform for WindowsSuspensionPlatform {
         }
 
         let job_name = crash_recovery::suspension_job_name(identity.id, identity.creation_time);
-        let created = windows_suspension::create_job(&job_name).map_err(map_job_object_error)?;
+        let created = windows_job::create_job(&job_name).map_err(map_job_object_error)?;
         let job_handle = created.handle;
         if created.already_existed {
-            match windows_suspension::process_is_in_job(&process_handle, Some(&job_handle)) {
+            match windows_job::process_is_in_job(&process_handle, Some(&job_handle)) {
                 Some(true) => {}
                 Some(false) => return Err(SuspensionError::NotSupported),
                 None => {
@@ -716,9 +932,9 @@ impl SuspensionPlatform for WindowsSuspensionPlatform {
             }
         } else {
             if let Err(error) =
-                windows_suspension::assign_process(&job_handle, &process_handle, identity.id)
+                windows_job::assign_process(&job_handle, &process_handle, identity.id)
             {
-                if windows_suspension::process_is_in_job(&process_handle, None) == Some(true) {
+                if windows_job::process_is_in_job(&process_handle, None) == Some(true) {
                     return Err(SuspensionError::NotSupported);
                 }
                 return Err(map_job_object_error(error));
@@ -733,6 +949,32 @@ impl SuspensionPlatform for WindowsSuspensionPlatform {
                 process_handle: Some(process_handle),
             },
         ))
+    }
+
+    fn contains_process(
+        &mut self,
+        handle: &Self::Handle,
+        target: &SuspensionTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<bool, SuspensionError> {
+        if is_builtin_excluded(&target.process.name) || target.is_service_account != Some(false) {
+            return Err(SuspensionError::AccessDenied);
+        }
+        let (identity, process_handle) =
+            open_process_for_job_assignment(&target.process, allow_cross_session_process_control)
+                .map_err(map_process_control_error)?;
+        if identity.session_id.is_none_or(|session_id| session_id == 0)
+            || process_runs_as_service_account_from_handle(&process_handle) != Some(false)
+        {
+            return Err(SuspensionError::AccessDenied);
+        }
+        let job_handle = handle
+            .job_handle
+            .as_ref()
+            .ok_or(SuspensionError::ProcessExited)?;
+        windows_job::process_is_in_job(&process_handle, Some(job_handle)).ok_or_else(|| {
+            SuspensionError::Failed("Could not query suspension job membership.".to_owned())
+        })
     }
 
     fn begin_freeze(
@@ -801,6 +1043,9 @@ impl SuspensionController<WindowsSuspensionPlatform> {
                 } else {
                     SuspensionState::Thawed
                 },
+                app_suspension_phase: Some(frozen),
+                cpu_limiter_phase: None,
+                recovery_armed: frozen,
                 retry: None,
             },
         );
@@ -888,6 +1133,15 @@ mod tests {
                 ),
                 target.process.id,
             ))
+        }
+
+        fn contains_process(
+            &mut self,
+            _handle: &Self::Handle,
+            _target: &SuspensionTarget,
+            _allow_cross_session_process_control: bool,
+        ) -> Result<bool, SuspensionError> {
+            Ok(false)
         }
 
         fn begin_freeze(
@@ -1136,6 +1390,73 @@ mod tests {
         );
         assert!(controller.is_frozen_process(42));
         assert_eq!(state.borrow().freeze_calls, vec![true]);
+    }
+
+    #[test]
+    fn cpu_limiter_awake_phase_cannot_thaw_app_suspension() {
+        let (mut controller, state) = controller();
+        controller.freeze(&target(7), true).unwrap();
+
+        controller
+            .set_cpu_limiter_phase(&target(7), false, true)
+            .unwrap();
+
+        assert!(controller.is_frozen_process(42));
+        assert_eq!(state.borrow().freeze_calls, vec![true]);
+    }
+
+    #[test]
+    fn app_suspension_release_cannot_thaw_a_frozen_cpu_limiter_phase() {
+        let (mut controller, state) = controller();
+        let target = target(7);
+        controller
+            .set_cpu_limiter_phase(&target, true, true)
+            .unwrap();
+        controller.freeze(&target, true).unwrap();
+
+        controller.thaw_keep_target(&target, true).unwrap();
+
+        assert!(controller.is_frozen_target(&target));
+        assert_eq!(state.borrow().freeze_calls, vec![true]);
+    }
+
+    #[test]
+    fn cpu_limiter_keeps_recovery_armed_across_duty_cycles() {
+        let (mut controller, state) = controller();
+        controller
+            .set_cpu_limiter_phase(&target(7), true, true)
+            .unwrap();
+        controller
+            .set_cpu_limiter_phase(&target(7), false, true)
+            .unwrap();
+        controller
+            .set_cpu_limiter_phase(&target(7), true, true)
+            .unwrap();
+
+        assert_eq!(state.borrow().freeze_calls, vec![true, false, true]);
+        assert_eq!(state.borrow().forget_calls, 0);
+
+        controller
+            .release_cpu_limiter_target(&target(7), true)
+            .unwrap();
+
+        assert_eq!(state.borrow().freeze_calls, vec![true, false, true, false]);
+        assert_eq!(state.borrow().forget_calls, 1);
+    }
+
+    #[test]
+    fn cpu_limiter_only_targets_are_not_reported_as_app_suspension() {
+        let target = target(7);
+        let (mut controller, _state) = controller();
+        controller
+            .set_cpu_limiter_phase(&target, true, true)
+            .unwrap();
+
+        assert!(!controller.contains_process(42));
+        assert!(controller.managed_process_ids().next().is_none());
+        assert!(!controller.matches_target(&target));
+        assert!(!controller.is_frozen_process(42));
+        assert!(controller.is_frozen_target(&target));
     }
 
     #[test]

@@ -24,9 +24,7 @@ pub(in crate::ui::app) fn process_target_can_accept(
             has_suspendable_instance
                 && can_add_app_suspension_process(&settings.app_suspension, process)
         }
-        SuggestionTarget::CoreLimiter => {
-            can_add_core_limiter_process(&settings.core_limiter, process)
-        }
+        SuggestionTarget::CpuLimiter => can_add_cpu_limiter_process(&settings.cpu_limiter, process),
         SuggestionTarget::ByRunningApp => {
             can_add_by_running_app_process(&settings.by_running_app, process)
         }
@@ -455,8 +453,8 @@ pub(in crate::ui::app) fn can_add_cpu_scheduler_custom_rule(
     )
 }
 
-pub(in crate::ui::app) fn can_add_core_limiter_process(
-    settings: &CoreLimiterSettings,
+pub(in crate::ui::app) fn can_add_cpu_limiter_process(
+    settings: &CpuLimiterSettings,
     process: &str,
 ) -> bool {
     can_add_process_candidate(
@@ -467,7 +465,7 @@ pub(in crate::ui::app) fn can_add_core_limiter_process(
                 .iter()
                 .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
-        core_limiter::is_builtin_excluded,
+        cpu_limiter::is_builtin_excluded,
     )
 }
 
@@ -521,17 +519,16 @@ pub(in crate::ui::app) fn new_timer_resolution_rule(
         desired_100ns,
     }
 }
-pub(in crate::ui::app) fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
-    CoreLimiterRule {
+pub(in crate::ui::app) fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
+    CpuLimiterRule {
         enabled: true,
         executable_path: executable_path_key(Path::new(process)),
-        focus_mode: ProcessRuleMode::Default,
-        visible_window_mode: ProcessRuleMode::Default,
-        background_mode: ProcessRuleMode::Default,
-        threshold_percent: 75,
-        sustain_seconds: 5,
-        cooldown_seconds: 10,
-        max_logical_processors: 1,
+        focus_mode: ProcessRuleMode::Disabled,
+        visible_window_mode: ProcessRuleMode::Disabled,
+        background_mode: ProcessRuleMode::Enabled,
+        focus_allowed_cpu_time_percent: 50,
+        visible_window_allowed_cpu_time_percent: 50,
+        background_allowed_cpu_time_percent: 50,
     }
 }
 pub(in crate::ui::app) fn by_running_app_power_plan_override_guid(
@@ -569,19 +566,19 @@ pub(in crate::ui::app) fn set_by_running_app_power_plan_override(
             .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
-pub(in crate::ui::app) fn core_limiter_indicator(
-    status: &CoreLimiterSnapshot,
+pub(in crate::ui::app) fn cpu_limiter_indicator(
+    status: &CpuLimiterSnapshot,
     process: &str,
 ) -> (String, u32, u32) {
-    if core_limiter::is_builtin_excluded(process) {
+    if cpu_limiter::is_builtin_excluded(process) {
         (
             t!("cpu_allocation.indicator.protected").to_string(),
             settings_card_hover_color(),
             accent_color(),
         )
-    } else if core_limiter_app_contains(&status.limited_apps, process) {
+    } else if cpu_limiter_app_contains(&status.limited_apps, process) {
         (
-            t!("core_limiter.indicator_limited").to_string(),
+            t!("cpu_limiter.indicator_limited").to_string(),
             success_bg_color(),
             success_text_color(),
         )
@@ -600,7 +597,7 @@ pub(in crate::ui::app) fn core_limiter_indicator(
     }
 }
 
-pub(in crate::ui::app) fn core_limiter_app_contains(apps: &[String], process: &str) -> bool {
+pub(in crate::ui::app) fn cpu_limiter_app_contains(apps: &[String], process: &str) -> bool {
     apps.iter()
         .any(|app| same_executable_path(Path::new(app), Path::new(process)))
 }
@@ -1276,5 +1273,17 @@ mod tests {
             process,
             false,
         ));
+    }
+
+    #[test]
+    fn new_cpu_limiter_rules_limit_background_apps_to_half_time() {
+        let rule = new_cpu_limiter_rule(r"C:\Apps\encoder.exe");
+
+        assert_eq!(rule.focus_allowed_cpu_time_percent, 50);
+        assert_eq!(rule.visible_window_allowed_cpu_time_percent, 50);
+        assert_eq!(rule.background_allowed_cpu_time_percent, 50);
+        assert_eq!(rule.focus_mode, ProcessRuleMode::Disabled);
+        assert_eq!(rule.visible_window_mode, ProcessRuleMode::Disabled);
+        assert_eq!(rule.background_mode, ProcessRuleMode::Enabled);
     }
 }

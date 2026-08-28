@@ -7,8 +7,8 @@ use crate::action_log::{
 };
 use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
-    AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CoreLimiterRule,
-    CpuAllocationRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+    AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
+    CpuLimiterRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
     ProcessGpuPrioritySetting, ProcessRuleMode, ProcessThreadPrioritySetting, TimerResolutionRule,
     WeekdaySetting,
 };
@@ -821,7 +821,7 @@ fn enabled_empty_rule_features_do_not_poll() {
     let mut settings = Settings::default();
     settings.app_suspension.enabled = true;
     settings.cpu_sets_soft.enabled = true;
-    settings.core_limiter.enabled = true;
+    settings.cpu_limiter.enabled = true;
     settings.by_running_app.enabled = true;
     settings.timer_resolution.enabled = true;
     settings.by_foreground.enabled = true;
@@ -839,16 +839,15 @@ fn enabled_empty_rule_features_do_not_poll() {
         visible_window_core_mask: 1,
         background_core_mask: 1,
     });
-    settings.core_limiter.rules.push(CoreLimiterRule {
+    settings.cpu_limiter.rules.push(CpuLimiterRule {
         enabled: true,
         executable_path: " ".to_owned(),
-        focus_mode: ProcessRuleMode::Default,
-        visible_window_mode: ProcessRuleMode::Default,
-        background_mode: ProcessRuleMode::Default,
-        threshold_percent: 80,
-        sustain_seconds: 1,
-        cooldown_seconds: 1,
-        max_logical_processors: 1,
+        focus_mode: ProcessRuleMode::Disabled,
+        visible_window_mode: ProcessRuleMode::Disabled,
+        background_mode: ProcessRuleMode::Enabled,
+        focus_allowed_cpu_time_percent: 50,
+        visible_window_allowed_cpu_time_percent: 50,
+        background_allowed_cpu_time_percent: 50,
     });
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
@@ -870,7 +869,7 @@ fn enabled_empty_rule_features_do_not_poll() {
 
     assert!(!app_suspension_required(&settings));
     assert!(!cpu_sets_soft_required(&settings));
-    assert!(!core_limiter_required(&settings));
+    assert!(!cpu_limiter_required(&settings));
     assert!(!by_running_app_required(&settings));
     assert!(!timer_resolution_required(&settings));
     assert!(!foreground_lookup_required(&settings));
@@ -895,17 +894,16 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
         visible_window_core_mask: 1,
         background_core_mask: 1,
     });
-    settings.core_limiter.enabled = true;
-    settings.core_limiter.rules.push(CoreLimiterRule {
+    settings.cpu_limiter.enabled = true;
+    settings.cpu_limiter.rules.push(CpuLimiterRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
-        focus_mode: ProcessRuleMode::Default,
-        visible_window_mode: ProcessRuleMode::Default,
-        background_mode: ProcessRuleMode::Default,
-        threshold_percent: 80,
-        sustain_seconds: 1,
-        cooldown_seconds: 1,
-        max_logical_processors: 1,
+        focus_mode: ProcessRuleMode::Disabled,
+        visible_window_mode: ProcessRuleMode::Disabled,
+        background_mode: ProcessRuleMode::Enabled,
+        focus_allowed_cpu_time_percent: 50,
+        visible_window_allowed_cpu_time_percent: 50,
+        background_allowed_cpu_time_percent: 50,
     });
     settings.by_running_app.enabled = true;
     settings.by_running_app.rules.push(ByRunningAppRule {
@@ -930,7 +928,7 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
 
     assert!(app_suspension_required(&settings));
     assert!(cpu_sets_soft_required(&settings));
-    assert!(core_limiter_required(&settings));
+    assert!(cpu_limiter_required(&settings));
     assert!(by_running_app_required(&settings));
     assert!(timer_resolution_required(&settings));
     assert!(foreground_lookup_required(&settings));
@@ -1036,6 +1034,36 @@ fn adaptive_engine_uses_low_power_refresh_cadence() {
     assert_eq!(
         automation_refresh_interval(true, false, Duration::from_secs(1)),
         HIDDEN_AUTOMATION_REFRESH_INTERVAL
+    );
+}
+
+#[test]
+fn active_cpu_limiter_keeps_process_discovery_at_one_second() {
+    let mut settings = Settings::default();
+    settings.cpu_limiter.enabled = true;
+    settings.cpu_limiter.rules.push(CpuLimiterRule {
+        enabled: true,
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        focus_mode: ProcessRuleMode::Disabled,
+        visible_window_mode: ProcessRuleMode::Disabled,
+        background_mode: ProcessRuleMode::Enabled,
+        focus_allowed_cpu_time_percent: 50,
+        visible_window_allowed_cpu_time_percent: 50,
+        background_allowed_cpu_time_percent: 50,
+    });
+
+    for (hidden_to_tray, adaptive_engine_enabled) in [(false, false), (true, false), (false, true)]
+    {
+        assert_eq!(
+            process_appearance_refresh_interval(&settings, hidden_to_tray, adaptive_engine_enabled,),
+            PROCESS_APPEARANCE_SCAN_INTERVAL
+        );
+    }
+
+    settings.cpu_limiter.enabled = false;
+    assert_eq!(
+        process_appearance_refresh_interval(&settings, false, true),
+        ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL
     );
 }
 
@@ -2105,7 +2133,7 @@ fn automation_feature_execution_order_is_characterized() {
             "runner.run_app_suspension_update(",
             "runner.run_cpu_sets_soft_update(",
             "runner.run_processor_affinity_hard_update(",
-            "runner.run_core_limiter_update(",
+            "runner.run_cpu_limiter_update(",
             "runner.run_cpu_allocation_reconciliation(",
             "runner.run_by_running_app_update(",
             "runner.run_memory_trim_",
@@ -2152,13 +2180,14 @@ fn shared_property_precedence_inputs_are_characterized() {
     assert!(process_priority.contains("ControlOwner::AdaptiveEngine"));
     assert!(process_priority.contains("ControlOwner::CpuSchedulerFocusPriority"));
 
-    let core_limiter = source_scope(
+    let cpu_limiter = source_scope(
         source,
-        "pub(super) fn run_core_limiter_update",
-        "pub(super) fn run_by_running_app_update",
+        "pub(super) fn run_cpu_limiter_update",
+        "pub(super) fn run_cpu_allocation_reconciliation",
     );
-    assert!(core_limiter.contains("cpu_allocation_coordinator"));
-    assert!(!core_limiter.contains("allocated_process_ids"));
+    assert!(!cpu_limiter.contains("cpu_allocation_coordinator"));
+    assert!(cpu_limiter.contains("cpu_limiter_controller"));
+    assert!(cpu_limiter.contains("app_suspension_controller"));
 
     let cpu_allocation = include_str!("../../control/cpu_allocation.rs");
     assert_source_call_order(
@@ -2168,7 +2197,6 @@ fn shared_property_precedence_inputs_are_characterized() {
         &[
             "ControlOwner::CpuSetsSoft",
             "ControlOwner::ProcessorAffinityHard",
-            "ControlOwner::CoreLimiter",
             "ControlOwner::AdaptiveEngine",
         ],
     );
@@ -2211,7 +2239,8 @@ fn automation_shutdown_restores_reversible_features_in_reverse_order() {
         &[
             "self.run_timer_resolution_update(",
             "self.run_by_running_app_update(",
-            "self.run_core_limiter_update(",
+            "self.run_cpu_limiter_update(",
+            "self.cpu_limiter_controller.take()",
             "self.run_processor_affinity_hard_update(",
             "self.run_cpu_sets_soft_update(",
             "self.run_app_suspension_update(",

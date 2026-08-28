@@ -1,0 +1,226 @@
+{
+    "note":  "Release-runtime CPU Limiter benchmark using one disposable single-thread CPU worker. Accuracy is measured against the configured absolute percentage of one logical core; Task Manager percentages are total-system estimates derived from process CPU time.",
+    "cpu_name":  "Intel(R) Core(TM) 5 210H",
+    "logical_processors":  12,
+    "passes":  2,
+    "sample_seconds":  20,
+    "warmup_seconds":  4,
+    "percentages":  [
+                        1,
+                        25,
+                        50
+                    ],
+    "winderust_executable":  "C:\\Users\\User\\Desktop\\Git\\Winderust\\target\\release\\winderust.exe",
+    "validation":  {
+                       "passed":  false,
+                       "off_worker_reached_80_percent_of_one_core":  true,
+                       "retained_cpu_time_is_monotonic":  true,
+                       "all_limited_cases_within_tolerance":  false
+                   },
+    "summary":  [
+                    {
+                        "case":  "off",
+                        "allowed_cpu_time_percent":  null,
+                        "worker_one_core_percent":  93.4336,
+                        "worker_task_manager_percent":  7.7862,
+                        "retained_cpu_time_percent_vs_off":  100,
+                        "error_percentage_points":  0,
+                        "within_tolerance":  true,
+                        "winderust_task_manager_percent":  0.0162,
+                        "backend_observations":  [
+                                                     "disabled"
+                                                 ]
+                    },
+                    {
+                        "case":  "limit_1",
+                        "allowed_cpu_time_percent":  1,
+                        "worker_one_core_percent":  3.7487,
+                        "worker_task_manager_percent":  0.3124,
+                        "retained_cpu_time_percent_vs_off":  4.0112,
+                        "error_percentage_points":  2.7487,
+                        "within_tolerance":  false,
+                        "winderust_task_manager_percent":  1.6498,
+                        "backend_observations":  [
+                                                     "job_object_observed"
+                                                 ]
+                    },
+                    {
+                        "case":  "limit_25",
+                        "allowed_cpu_time_percent":  25,
+                        "worker_one_core_percent":  26.9422,
+                        "worker_task_manager_percent":  2.2452,
+                        "retained_cpu_time_percent_vs_off":  28.8361,
+                        "error_percentage_points":  1.9422,
+                        "within_tolerance":  true,
+                        "winderust_task_manager_percent":  1.4577,
+                        "backend_observations":  [
+                                                     "job_object_observed"
+                                                 ]
+                    },
+                    {
+                        "case":  "limit_50",
+                        "allowed_cpu_time_percent":  50,
+                        "worker_one_core_percent":  55.1776,
+                        "worker_task_manager_percent":  4.5982,
+                        "retained_cpu_time_percent_vs_off":  59.0537,
+                        "error_percentage_points":  5.1776,
+                        "within_tolerance":  true,
+                        "winderust_task_manager_percent":  1.3928,
+                        "backend_observations":  [
+                                                     "job_object_observed"
+                                                 ]
+                    }
+                ],
+    "runs":  [
+                 {
+                     "pass":  1,
+                     "order":  [
+                                   "off",
+                                   "limit_1",
+                                   "limit_25",
+                                   "limit_50"
+                               ],
+                     "cases":  [
+                                   {
+                                       "case":  "off",
+                                       "allowed_cpu_time_percent":  null,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  false,
+                                       "backend_observation":  "disabled",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  18671.875,
+                                                           "worker_one_core_percent":  93.3609,
+                                                           "worker_task_manager_percent":  7.7801,
+                                                           "winderust_cpu_ms":  31.25,
+                                                           "winderust_one_core_percent":  0.1563,
+                                                           "winderust_task_manager_percent":  0.013
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  100
+                                   },
+                                   {
+                                       "case":  "limit_1",
+                                       "allowed_cpu_time_percent":  1,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  true,
+                                       "backend_observation":  "job_object_observed",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  515.625,
+                                                           "worker_one_core_percent":  2.5775,
+                                                           "worker_task_manager_percent":  0.2148,
+                                                           "winderust_cpu_ms":  3781.25,
+                                                           "winderust_one_core_percent":  18.9017,
+                                                           "winderust_task_manager_percent":  1.5751
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  2.7608
+                                   },
+                                   {
+                                       "case":  "limit_25",
+                                       "allowed_cpu_time_percent":  25,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  true,
+                                       "backend_observation":  "job_object_observed",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  5500,
+                                                           "worker_one_core_percent":  27.4881,
+                                                           "worker_task_manager_percent":  2.2907,
+                                                           "winderust_cpu_ms":  3515.625,
+                                                           "winderust_one_core_percent":  17.5705,
+                                                           "winderust_task_manager_percent":  1.4642
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  29.4428
+                                   },
+                                   {
+                                       "case":  "limit_50",
+                                       "allowed_cpu_time_percent":  50,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  true,
+                                       "backend_observation":  "job_object_observed",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  10593.75,
+                                                           "worker_one_core_percent":  52.9487,
+                                                           "worker_task_manager_percent":  4.4124,
+                                                           "winderust_cpu_ms":  4093.75,
+                                                           "winderust_one_core_percent":  20.461,
+                                                           "winderust_task_manager_percent":  1.7051
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  56.714
+                                   }
+                               ]
+                 },
+                 {
+                     "pass":  2,
+                     "order":  [
+                                   "limit_50",
+                                   "limit_25",
+                                   "limit_1",
+                                   "off"
+                               ],
+                     "cases":  [
+                                   {
+                                       "case":  "limit_50",
+                                       "allowed_cpu_time_percent":  50,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  true,
+                                       "backend_observation":  "job_object_observed",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  11484.375,
+                                                           "worker_one_core_percent":  57.4066,
+                                                           "worker_task_manager_percent":  4.7839,
+                                                           "winderust_cpu_ms":  2593.75,
+                                                           "winderust_one_core_percent":  12.9653,
+                                                           "winderust_task_manager_percent":  1.0804
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  61.3934
+                                   },
+                                   {
+                                       "case":  "limit_25",
+                                       "allowed_cpu_time_percent":  25,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  true,
+                                       "backend_observation":  "job_object_observed",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  5281.25,
+                                                           "worker_one_core_percent":  26.3962,
+                                                           "worker_task_manager_percent":  2.1997,
+                                                           "winderust_cpu_ms":  3484.375,
+                                                           "winderust_one_core_percent":  17.4152,
+                                                           "winderust_task_manager_percent":  1.4513
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  28.2294
+                                   },
+                                   {
+                                       "case":  "limit_1",
+                                       "allowed_cpu_time_percent":  1,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  true,
+                                       "backend_observation":  "job_object_observed",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  984.375,
+                                                           "worker_one_core_percent":  4.9198,
+                                                           "worker_task_manager_percent":  0.41,
+                                                           "winderust_cpu_ms":  4140.625,
+                                                           "winderust_one_core_percent":  20.6945,
+                                                           "winderust_task_manager_percent":  1.7245
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  5.2615
+                                   },
+                                   {
+                                       "case":  "off",
+                                       "allowed_cpu_time_percent":  null,
+                                       "worker_in_job_before":  false,
+                                       "worker_in_job_after":  false,
+                                       "backend_observation":  "disabled",
+                                       "measurement":  {
+                                                           "worker_cpu_ms":  18703.125,
+                                                           "worker_one_core_percent":  93.5062,
+                                                           "worker_task_manager_percent":  7.7922,
+                                                           "winderust_cpu_ms":  46.875,
+                                                           "winderust_one_core_percent":  0.2344,
+                                                           "winderust_task_manager_percent":  0.0195
+                                                       },
+                                       "retained_cpu_time_percent_vs_off":  100
+                                   }
+                               ]
+                 }
+             ]
+}

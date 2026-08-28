@@ -29,7 +29,7 @@ use backend::{
 };
 use features::{
     advanced_controls::{app_suspension, timer_resolution},
-    cpu_control::{core_limiter, cpu_allocation},
+    cpu_control::{cpu_allocation, cpu_limiter},
     priority_control::{
         dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
         thread_priority,

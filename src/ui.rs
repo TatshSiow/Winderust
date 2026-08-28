@@ -18,7 +18,7 @@ pub enum Page {
     ProcessPriority,
     ThreadPriority,
     DynamicPriorityBoost,
-    CoreLimiter,
+    CpuLimiter,
     CpuSetsSoft,
     ProcessList,
     AdaptiveEngine,
@@ -57,7 +57,7 @@ const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
     Page::AdvancedPowerPlanTuning,
 ];
 const CPU_CONTROL_PAGES: [Page; 3] = [
-    Page::CoreLimiter,
+    Page::CpuLimiter,
     Page::CpuSetsSoft,
     Page::ProcessorAffinityHard,
 ];
@@ -138,7 +138,7 @@ impl Page {
                 | Self::ProcessPriority
                 | Self::ThreadPriority
                 | Self::DynamicPriorityBoost
-                | Self::CoreLimiter
+                | Self::CpuLimiter
                 | Self::CpuSetsSoft
                 | Self::AdaptiveEngine
                 | Self::BackgroundEfficiency
@@ -170,7 +170,7 @@ impl Page {
             Self::ProcessPriority => t!("nav.process_priority"),
             Self::ThreadPriority => t!("nav.thread_priority"),
             Self::DynamicPriorityBoost => t!("nav.dynamic_priority_boost"),
-            Self::CoreLimiter => t!("nav.core_limiter"),
+            Self::CpuLimiter => t!("nav.cpu_limiter"),
             Self::CpuSetsSoft => t!("nav.cpu_sets_soft"),
             Self::ProcessList => t!("nav.process_list"),
             Self::AdaptiveEngine => t!("nav.adaptive_engine"),
@@ -215,7 +215,7 @@ impl Page {
             | Self::ByCpuLoad
             | Self::AdvancedPowerPlanTuning => Self::PowerPlanControl,
             Self::CpuControl
-            | Self::CoreLimiter
+            | Self::CpuLimiter
             | Self::CpuSetsSoft
             | Self::ProcessorAffinityHard => Self::CpuControl,
             Self::PriorityControl

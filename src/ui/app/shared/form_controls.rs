@@ -170,20 +170,12 @@ pub(in crate::ui::app) fn numeric_value_width(field: NumericField) -> f32 {
             AdaptiveEngineTuningNumericField::ProcessorPowerPolicy(_),
         )
         | NumericField::MemoryTrimMemoryLoadThreshold
-        | NumericField::CoreLimiterThreshold(_)
-        | NumericField::CoreLimiterMaxProcessors(_) => 76.0,
+        | NumericField::CpuLimiterAllowedTime(_, _) => 76.0,
         NumericField::TimerResolutionRule(_) => 104.0,
         NumericField::MemoryTrimWorkingSetThreshold | NumericField::MemoryTrimIdleSeconds => 112.0,
         NumericField::NetworkThreshold(_) => 76.0,
         _ => 96.0,
     }
-}
-
-pub(in crate::ui::app) fn max_logical_processor_count() -> u8 {
-    std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .clamp(1, u8::MAX as usize) as u8
 }
 
 pub(in crate::ui::app) fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
@@ -232,6 +224,11 @@ pub(in crate::ui::app) fn processor_power_group_slider(
             state,
             enabled: true,
             delta: 1_u64,
+            range: SliderRange {
+                min: 0,
+                max: 100,
+                step: 1,
+            },
         },
         window,
         cx,
@@ -698,6 +695,7 @@ where
         state,
         enabled,
         delta,
+        range,
     } = spec;
     let label_color = if enabled {
         primary_text_color()
@@ -715,11 +713,7 @@ where
                 state,
                 enabled,
                 delta,
-                range: SliderRange {
-                    min: 0,
-                    max: 100,
-                    step: 1,
-                },
+                range,
                 width: 220.0,
             },
             window,
@@ -747,6 +741,7 @@ where
         state,
         enabled,
         delta,
+        range,
     } = spec;
     let label_color = if enabled {
         primary_text_color()
@@ -770,11 +765,7 @@ where
                 state,
                 enabled,
                 delta,
-                range: SliderRange {
-                    min: 0,
-                    max: 100,
-                    step: 1,
-                },
+                range,
                 width: 220.0,
             },
             window,

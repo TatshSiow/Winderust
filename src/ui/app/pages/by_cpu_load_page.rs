@@ -177,6 +177,11 @@ impl WinderustApp {
                             state: &threshold_state,
                             enabled: feature_enabled,
                             delta: 1_u8,
+                            range: SliderRange {
+                                min: 0,
+                                max: 100,
+                                step: 1,
+                            },
                         },
                         window,
                         cx,
@@ -213,6 +218,11 @@ impl WinderustApp {
                             state: &upper_threshold_state,
                             enabled: feature_enabled,
                             delta: 1_u8,
+                            range: SliderRange {
+                                min: 0,
+                                max: 100,
+                                step: 1,
+                            },
                         },
                         window,
                         cx,

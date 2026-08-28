@@ -24,15 +24,15 @@ window rendering and infrastructure calls are not duplicated here.
 | Winderust self-power | `src/backend/self_power.rs` and `src/platform/windows/self_power.rs` | Strict baseline/composition lifecycle plus the sole raw current-process priority and Power Throttling adapter |
 | System tray lifecycle | `src/backend/tray.rs`, `src/ui/app/tray_state.rs`, and `vendor/gpui/src/platform/windows/platform.rs` | Notification-area icon, window-procedure subclassing, popup menu, restore/quit messages, bounded install failure, and hidden-window vsync suppression |
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
-| Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, named App Suspension jobs, and automatic power-plan recovery |
+| Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, retained App Suspension and CPU Limiter freeze jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/cpu_scheduler.rs`, `cpu_scheduler/policy.rs`, `cpu_scheduler/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
 | Stop Process / Stop Process Tree | `src/foreground/process_list.rs`, `src/control/process_termination.rs`, and `src/platform/windows/process_termination.rs` | Read-side tree capture, typed batch command, and raw termination adapter |
-| CPU Control | `src/features/cpu_control/`, `src/control/cpu_allocation.rs`, and `src/platform/windows/cpu_allocation.rs` | Policy, shared affinity/CPU Set ownership, and the narrow raw Windows adapter |
+| CPU Control | `src/features/cpu_control/`, `src/control/cpu_allocation.rs`, `src/control/cpu_limiter.rs`, `src/control/suspension.rs`, and the CPU allocation, CPU Limiter timing, and shared Job Object adapters under `src/platform/windows/` | Policy, shared affinity/CPU Set ownership, wall-clock duty-cycle scheduling, shared freeze/thaw ownership, and narrow raw Windows adapters |
 | Priority Control | `src/features/priority_control/`, `src/control/process.rs`, `src/control/priority_efficiency.rs`, `src/control/thread_priority.rs`, `src/control/dynamic_priority_boost.rs`, `src/control/io_priority.rs`, `src/control/gpu_priority.rs`, `src/control/memory_priority.rs`, and mechanism adapters in `src/platform/windows/` | Policy-only feature routes, typed property ownership/transactions, and narrow raw Windows adapters, including the compound Process Priority / Power Throttling adapter |
 | Shared process-control acquisition | `src/control/process.rs` and `src/platform/windows/process.rs` | Typed exact identity/safety validation plus the sole operation-specific `OpenProcess` adapter for control commands |
-| App Suspension | `src/features/advanced_controls/app_suspension.rs`, `src/control/suspension.rs`, `src/platform/windows/suspension.rs`, and `app_suspension/wake_activity.rs` | Policy, sole normal lifecycle controller, narrow named Job Object adapter, compatibility-sensitive freeze information class, and audio/network wake detection |
+| App Suspension | `src/features/advanced_controls/app_suspension.rs`, `src/control/suspension.rs`, `src/platform/windows/job.rs`, `src/platform/windows/suspension.rs`, and `app_suspension/wake_activity.rs` | Policy, shared App Suspension / CPU Limiter lifecycle controller, named Job Object primitives, compatibility-sensitive freeze information class, and audio/network wake detection |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs`, `src/control/timer_resolution.rs`, and `src/platform/windows/timer_resolution.rs` | Foreground-rule policy, process-lifetime ownership, and the sole raw WinMM adapter |
 | Win32 Priority Separation | `src/application/win32_priority_separation.rs`, `src/backend/win_registry.rs`, and `src/ui/app/pages/win32_priority_separation_page.rs` | Typed persistent backup/apply/restore service, narrow registry adapter, and UI presentation for the `Win32PrioritySeparation` value |
 
@@ -188,7 +188,7 @@ default and can remain frozen after their root exits, so root liveness is not a
 valid precondition for restoring a helper-owned job. If the watchdog cannot
 accept an intent, Winderust blocks the corresponding mutation.
 
-For App Suspension intents, the watchdog opens and retains its own Job Object
+For App Suspension and CPU Limiter freeze intents, the watchdog opens and retains its own Job Object
 handle before acknowledging the pending freeze. This keeps the object alive if
 the main process is force-terminated. The handle requests only
 `JOB_OBJECT_SET_ATTRIBUTES`, which is sufficient for the thaw operation and
@@ -200,7 +200,7 @@ before recovery.
 | --- | --- | --- |
 | `GetProcessId`, `GetProcessTimes`, and `QueryFullProcessImageNameW` | Bind recovery entries to a process instance and prevent PID-reuse restoration. | [ID](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessid) / [Times](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) / [Path](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) |
 | `GetThreadTimes` and `GetProcessIdOfThread` | Revalidate a recorded thread instance and owner before restoring thread priority. | [Times](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes) / [Owner](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessidofthread) |
-| `OpenJobObjectW` | Reopens a named App Suspension job so the watchdog can thaw it. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-openjobobjectw |
+| `OpenJobObjectW` | Reopens a named App Suspension or CPU Limiter freeze job so the watchdog can retain and thaw it. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-openjobobjectw |
 
 ## Background Efficiency / EcoQoS
 
@@ -410,9 +410,9 @@ Implementation entry points:
 
 ## CPU Sets (Soft) and Processor Affinity (Hard)
 
-Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / CPU Scheduler. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. CPU Scheduler may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
+Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Adaptive Engine / CPU Scheduler. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. CPU Scheduler may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
 
-Background Efficiency and Core Limiter expose Protect Foreground App and Protect Apps with Visible
+Background Efficiency and CPU Limiter expose Protect Foreground App and Protect Apps with Visible
 Windows. CPU Sets (Soft) and Processor Affinity (Hard) instead classify each matched process as
 Focus, Visible Window, or Background and select that rule's corresponding CPU mask. Foreground
 resolution starts from the active window; visible-window detection keeps top-level windows that are
@@ -432,8 +432,6 @@ Implementation paths:
 - `src/features/cpu_control/cpu_allocation.rs`: explicit-rule discovery,
   Focus/Visible Window/Background tier selection, topology policy, failure suppression,
   status, and Action Log reporting.
-- `src/features/cpu_control/core_limiter.rs`: CPU sampling, sustain/cooldown
-  hysteresis, and limit policy only.
 - `src/features/winderust_features/cpu_scheduler.rs`: pressure, candidate,
   topology, saturation, and rebalance policy only.
 - `src/backend/crash_recovery.rs`: independent crash-recovery mirror for
@@ -474,6 +472,55 @@ Windows adapter and crash-recovery mirror follow this contract.
 | `EnumWindows` / `IsWindowVisible` / `IsIconic` | Enumerates top-level windows and filters hidden or minimized windows for Visible Window tiers and visible-window protection. | [EnumWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows) / [IsWindowVisible](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-iswindowvisible) / [IsIconic](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isiconic) |
 | `DwmGetWindowAttribute(DWMWA_CLOAKED)` | Excludes windows hidden by DWM, including windows not shown on the current virtual desktop. | [DwmGetWindowAttribute](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmgetwindowattribute) / [DWMWINDOWATTRIBUTE](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute) |
 
+## CPU Limiter Duty Cycling
+
+CPU Limiter targets 1% to 99% Allowed CPU Time for each selected app group within a fixed 100 ms cycle.
+This is wall-clock duty cycling, not processor affinity and not Windows Job Object
+CPU-rate control. During the awake phase the app may use any processors Windows schedules for it;
+during the frozen phase its selected backend prevents execution. Future child processes normally
+join the primary Job Object backend. At very low values, timer and freeze/thaw transition latency
+can raise observed CPU use above the target, so those settings are approximate.
+
+Before assigning a matched child its own limiter job, the shared suspension controller revalidates
+the child and uses `IsProcessInJob` against each active Winderust ancestor job identified by the
+verified process snapshot. A child already covered by that job keeps the ancestor's duty cycle and
+does not receive a nested limiter job. A pre-existing or breakaway child that is not a member still
+receives its own exact job.
+
+Job Object acquisition remains primary. Only `SuspensionError::NotSupported`, which identifies an
+incompatible existing Job Object, selects the private fallback in
+`src/control/cpu_limiter/thread_fallback.rs`; access-denied, exited, protected, reused, and
+unverifiable targets remain failures. App Suspension remains Job-only. The fallback captures exact
+thread IDs, creation times, and baseline suspend counts through
+`src/platform/windows/thread_suspension.rs`, owns exactly one suspend-count increment per thread,
+and refuses conflicting counts. Each frozen worker batch freezes known threads, takes one Toolhelp
+inventory for all due fallback processes, and Process-Snapshots only processes with unknown thread
+IDs before adopting them.
+
+The external watchdog records each exact thread before suspension and calls `ResumeThread` once
+only when process identity, thread identity, and the current count all match the recorded owned
+increment. Ordinary awake phases retain that recovery entry; final release thaws before forgetting
+it. CPU Limiter target refresh and process appearance discovery stay at a one-second maximum while
+a valid limiter rule is active, including hidden and Adaptive Engine modes.
+
+`src/control/cpu_limiter.rs` owns one worker and every target schedule.
+`src/platform/windows/cpu_limiter.rs` owns the high-resolution waitable timer, command event, and
+multi-object wait. `src/control/suspension.rs` owns exact-process Job Object acquisition and combines
+CPU Limiter and App Suspension owner phases into one effective frozen state. Recovery stays armed
+across limiter duty cycles and is forgotten only after the last owner releases the job.
+
+| API or behavior | Used for | Reference |
+| --- | --- | --- |
+| `CreateWaitableTimerExW` | Creates the worker's high-resolution waitable timer with `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw |
+| `SetWaitableTimer` | Arms one relative deadline for the next target phase transition. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setwaitabletimer |
+| `WaitForMultipleObjects` | Waits for either the next timer deadline or a target/shutdown command. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjects |
+| `SetInformationJobObject` | Applies the compatibility-sensitive Job Object freeze/thaw operation shared with App Suspension. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject |
+| `IsProcessInJob` | Confirms whether a matched child is already covered by an active Winderust ancestor job before creating another limiter job. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi/nf-jobapi-isprocessinjob |
+| Job Objects | Documents default child membership and Job Object lifetime. | https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects |
+| Nested Jobs | Documents that assigning a process already in a job can create a nested hierarchy, which CPU Limiter avoids for an already-covered child. | https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs |
+| `PssCaptureSnapshot`, `PssWalkSnapshot`, and `PSS_THREAD_ENTRY` | Captures exact thread identity and baseline suspend counts when preparing or extending a fallback target. | [Capture](https://learn.microsoft.com/en-us/windows/win32/api/processsnapshot/nf-processsnapshot-psscapturesnapshot) / [Walk](https://learn.microsoft.com/en-us/windows/win32/api/processsnapshot/nf-processsnapshot-psswalksnapshot) / [Entry](https://learn.microsoft.com/en-us/windows/win32/api/processsnapshot/ns-processsnapshot-pss_thread_entry) |
+| `SuspendThread` / `ResumeThread` | Adds and removes exactly one CPU Limiter-owned suspend-count increment after recovery is armed. | [Suspend](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread) / [Resume](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread) |
+
 ## App Suspension
 
 Winderust App Suspension is manual Win32 Job Object freezing. It is not the same as Windows-managed UWP app suspension shown by Task Manager for some Store apps.
@@ -481,9 +528,9 @@ Winderust App Suspension is manual Win32 Job Object freezing. It is not the same
 Implementation paths:
 
 - `src/features/advanced_controls/app_suspension.rs`: rule, grace, wake, suppression, snapshot, and Action Log policy.
-- `src/control/suspension.rs`: sole normal exact-process assignment, Job Object freeze/thaw transaction, retry, and clean-release boundary.
-- `src/platform/windows/suspension.rs`: sole normal raw named Job Object creation, assignment,
-  membership, freeze/thaw, and shared freeze-information layout boundary.
+- `src/control/suspension.rs`: shared exact-process assignment, owner-phase arbitration, Job Object freeze/thaw transaction, retry, and clean-release boundary.
+- `src/platform/windows/job.rs`: shared named Job Object creation, assignment, and membership primitives.
+- `src/platform/windows/suspension.rs`: sole normal freeze/thaw writer and freeze-information layout boundary.
 - `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 - `src/backend/crash_recovery.rs`: independent helper-held recovery mirror.
 
@@ -502,7 +549,7 @@ User-facing behavior:
 | API | Used for | Reference |
 | --- | --- | --- |
 | `OpenProcess` | Opens the exact target with query, `PROCESS_SET_QUOTA`, and `PROCESS_TERMINATE`; Winderust first attempts to include `SYNCHRONIZE` but does not require it because the owned Job Object, not root-process liveness, governs restoration. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
-| `CreateJobObjectW` | `src/platform/windows/suspension.rs` creates the instance-bound named job, or reopens its still-live exact name after a prior thaw/release; the controller permits existing-name reuse only after exact membership validation. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw |
+| `CreateJobObjectW` | `src/platform/windows/job.rs` creates the instance-bound named job, or reopens its still-live exact name after a prior thaw/release; each controller permits existing-name reuse only after exact membership validation. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw |
 | `AssignProcessToJobObject` | The adapter assigns the controller-validated exact target process to Winderust's private job object. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject |
 | `IsProcessInJob` | The adapter checks exact membership and whether an assignment failure reflects a process already constrained by another job; controller policy fails closed. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi/nf-jobapi-isprocessinjob |
 | `SetInformationJobObject` | The adapter is the sole normal freeze/thaw writer for the controller; crash recovery retains an independent replay path using the same shared layout contract. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject |

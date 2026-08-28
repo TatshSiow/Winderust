@@ -475,7 +475,7 @@ impl WinderustApp {
             Page::ProcessPriority => self.render_process_priority_page(window, cx),
             Page::ThreadPriority => self.render_thread_priority_page(window, cx),
             Page::DynamicPriorityBoost => self.render_dynamic_priority_boost_page(window, cx),
-            Page::CoreLimiter => self.render_core_limiter_page(window, cx),
+            Page::CpuLimiter => self.render_cpu_limiter_page(window, cx),
             Page::CpuSetsSoft => self.render_cpu_sets_soft_page(window, cx),
             Page::AdaptiveEngine => self.render_adaptive_engine_page(window, cx),
             Page::BackgroundEfficiency => self.render_background_efficiency_page(window, cx),

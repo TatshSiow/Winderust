@@ -259,13 +259,13 @@ impl WinderustApp {
                 self.next_schedule.clone(),
             ));
         }
-        if settings.core_limiter.enabled {
+        if settings.cpu_limiter.enabled {
             items.push((
-                Some(Page::CoreLimiter),
-                t!("nav.core_limiter").to_string(),
+                Some(Page::CpuLimiter),
+                t!("nav.cpu_limiter").to_string(),
                 t!(
                     "home.limited_count",
-                    count = self.feature_status.core_limiter.limited_processes
+                    count = self.feature_status.cpu_limiter.limited_processes
                 )
                 .to_string(),
             ));

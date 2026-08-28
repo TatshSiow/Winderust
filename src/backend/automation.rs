@@ -17,7 +17,7 @@ use crate::{
         activity_snapshot, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
         InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
-    app_suspension::{AppSuspensionManager, AppSuspensionSnapshot},
+    app_suspension::{AppSuspensionManager, AppSuspensionSnapshot, AppSuspensionStatus},
     application::settings::{AutoExclusionPatch, RuntimeSettingsSnapshot, SettingsRevision},
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
@@ -28,6 +28,7 @@ use crate::{
     },
     control::{
         cpu_allocation::CpuAllocationCoordinator,
+        cpu_limiter::CpuLimiterController,
         dynamic_priority_boost::{DynamicPriorityBoostController, DynamicPriorityBoostState},
         gpu_priority::GpuPriorityController,
         io_priority::IoPriorityController,
@@ -41,12 +42,12 @@ use crate::{
         thread_priority::ThreadPriorityController,
         timer_resolution::TimerResolutionController,
     },
-    core_limiter::{CoreLimiterManager, CoreLimiterSnapshot},
     cpu::{CpuUsageMonitor, CpuUsageSnapshot, PerProcessorUsageMonitor},
     cpu_allocation::{
         self, record_cpu_allocation_reconciliation, CpuAllocationManager, CpuAllocationSnapshot,
         LogicalProcessorInfo, LogicalProcessorKind,
     },
+    cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     cpu_scheduler::{CpuSchedulerManager, CpuSchedulerSnapshot, CpuSchedulerUpdate},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
@@ -296,7 +297,7 @@ pub struct RuntimeFeatureStatus {
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_sets_soft: CpuAllocationSnapshot,
     pub processor_affinity_hard: CpuAllocationSnapshot,
-    pub core_limiter: CoreLimiterSnapshot,
+    pub cpu_limiter: CpuLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
     pub cpu_scheduler: CpuSchedulerSnapshot,
     pub process_priority: ProcessPrioritySnapshot,
@@ -975,11 +976,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             adaptive_engine_enabled,
             CPU_ALLOCATION_REFRESH_INTERVAL,
         );
-        let core_limiter_refresh_interval = automation_refresh_interval(
-            hidden_to_tray,
-            adaptive_engine_enabled,
-            CPU_LIMITER_REFRESH_INTERVAL,
-        );
+        let cpu_limiter_refresh_interval = CPU_LIMITER_REFRESH_INTERVAL;
         let by_running_app_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1026,11 +1023,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             adaptive_engine_enabled,
             TIMER_RESOLUTION_REFRESH_INTERVAL,
         );
-        let process_appearance_scan_interval = automation_refresh_interval(
-            hidden_to_tray,
-            adaptive_engine_enabled,
-            PROCESS_APPEARANCE_SCAN_INTERVAL,
-        );
+        let process_appearance_scan_interval =
+            process_appearance_refresh_interval(settings, hidden_to_tray, adaptive_engine_enabled);
         let app_suspension_foreground_release_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1086,10 +1080,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 },
                 event_now,
             );
-            if runner
-                .app_suspension_manager
-                .has_suspended_processes(&runner.app_suspension_controller)
-            {
+            if runner.app_suspension_active() {
                 let app_suspension_status = if wake_events.app_switch {
                     runner.run_app_suspension_app_switch_release(&mut observations)
                 } else {
@@ -1108,15 +1099,13 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         let app_suspension_refresh_required = settings_changed
             || feature_refresh_required(settings, app_suspension_required(settings))
             || app_suspension_command_requested
-            || runner
-                .app_suspension_manager
-                .has_suspended_processes(&runner.app_suspension_controller);
+            || runner.app_suspension_active();
         let cpu_sets_soft_refresh_required = settings_changed
             || feature_refresh_required(settings, cpu_sets_soft_required(settings));
         let processor_affinity_hard_refresh_required = settings_changed
             || feature_refresh_required(settings, processor_affinity_hard_required(settings));
-        let core_limiter_refresh_required =
-            settings_changed || feature_refresh_required(settings, core_limiter_required(settings));
+        let cpu_limiter_refresh_required =
+            settings_changed || feature_refresh_required(settings, cpu_limiter_required(settings));
         let by_running_app_refresh_required = settings_changed
             || feature_refresh_required(settings, by_running_app_required(settings));
         let cpu_scheduler_refresh_required = settings_changed
@@ -1168,9 +1157,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             );
         }
 
-        if runner
-            .app_suspension_manager
-            .has_suspended_processes(&runner.app_suspension_controller)
+        if runner.app_suspension_active()
             && scheduler.is_due(RefreshDomain::AppSuspensionForegroundRelease, now)
         {
             if let Some(app_suspension_status) =
@@ -1320,10 +1307,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 now,
                 app_suspension_refresh_interval,
             );
-            if runner
-                .app_suspension_manager
-                .has_suspended_processes(&runner.app_suspension_controller)
-            {
+            if runner.app_suspension_active() {
                 scheduler.schedule_now(RefreshDomain::AppSuspensionForegroundRelease, now);
             }
         }
@@ -1347,14 +1331,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 processor_affinity_hard_refresh_interval,
             );
         }
-        if core_limiter_refresh_required && scheduler.is_due(RefreshDomain::CoreLimiter, now) {
-            let core_limiter_status = runner.run_core_limiter_update(settings, &mut observations);
-            update_core_limiter_status(&shared, core_limiter_status);
-            scheduler.schedule_after(
-                RefreshDomain::CoreLimiter,
-                now,
-                core_limiter_refresh_interval,
-            );
+        if cpu_limiter_refresh_required && scheduler.is_due(RefreshDomain::CpuLimiter, now) {
+            let cpu_limiter_status = runner.run_cpu_limiter_update(settings, &mut observations);
+            update_cpu_limiter_status(&shared, cpu_limiter_status);
+            scheduler.schedule_after(RefreshDomain::CpuLimiter, now, cpu_limiter_refresh_interval);
         }
         let immediate_cpu_allocation_reconciliation =
             runner.cpu_allocation_immediate_reconciliation_pending();
@@ -1475,9 +1455,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                     processor_affinity_hard_refresh_interval,
                 ),
                 (
-                    core_limiter_refresh_required,
-                    RefreshDomain::CoreLimiter,
-                    core_limiter_refresh_interval,
+                    cpu_limiter_refresh_required,
+                    RefreshDomain::CpuLimiter,
+                    cpu_limiter_refresh_interval,
                 ),
                 (
                     runner.cpu_allocation_release_retry_pending(),
@@ -1555,9 +1535,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                     CONTROLLER_ACTIVITY_POLL_INTERVAL,
                 ),
                 (
-                    runner
-                        .app_suspension_manager
-                        .has_suspended_processes(&runner.app_suspension_controller),
+                    runner.app_suspension_active(),
                     RefreshDomain::AppSuspensionForegroundRelease,
                     app_suspension_foreground_release_interval,
                 ),

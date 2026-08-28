@@ -241,7 +241,7 @@ mod tests {
         let entries = vec![ActionLogEntry {
             sequence: 7,
             timestamp_epoch_ms: 1_700_000_000_000,
-            feature: ActionLogFeature::CoreLimiter,
+            feature: ActionLogFeature::CpuLimiter,
             process_id: Some(42),
             process_name: "worker.exe".to_owned(),
             result: ActionLogResult::Failed,
@@ -254,7 +254,7 @@ mod tests {
             "sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n"
         ));
         assert!(csv.contains(
-            ",Core Limiter,42,worker.exe,Fail,Failed,\"Restart failed, access denied\"\r\n"
+            ",CPU Limiter,42,worker.exe,Fail,Failed,\"Restart failed, access denied\"\r\n"
         ));
     }
 }
