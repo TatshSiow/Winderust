@@ -347,8 +347,6 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             t!("cpu_limiter.intro_3").to_string(),
             t!("cpu_limiter.intro_4").to_string(),
             t!("cpu_limiter.intro_5").to_string(),
-            t!("common.protect_foreground_app_help").to_string(),
-            t!("common.protect_visible_window_apps_help").to_string(),
             t!("cpu_limiter.rules_help").to_string(),
             "cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group".to_string(),
         ],

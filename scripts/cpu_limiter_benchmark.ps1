@@ -87,8 +87,8 @@ if (-not (Test-IsAdministrator)) {
 }
 
 $percentages = @($Percentages | Sort-Object -Unique)
-if ($percentages.Count -eq 0 -or @($percentages | Where-Object { $_ -lt 1 -or $_ -gt 99 }).Count -gt 0) {
-    throw 'Percentages must contain unique values from 1 through 99.'
+if ($percentages.Count -eq 0 -or @($percentages | Where-Object { $_ -lt 1 -or $_ -gt 100 }).Count -gt 0) {
+    throw 'Percentages must contain unique values from 1 through 100.'
 }
 if (@(Get-Process -Name winderust -ErrorAction SilentlyContinue).Count -gt 0) {
     throw 'Close Winderust before running the CPU Limiter benchmark.'
@@ -227,8 +227,9 @@ custom_rules = []
 
 [cpu_limiter]
 enabled = __LIMITER_ENABLED__
-protect_foreground_app = false
-protect_visible_window_apps = false
+focus_allowed_cpu_time_percent = __ALLOWED_PERCENT__
+visible_window_allowed_cpu_time_percent = __ALLOWED_PERCENT__
+background_allowed_cpu_time_percent = __ALLOWED_PERCENT__
 
 [[cpu_limiter.rules]]
 enabled = true

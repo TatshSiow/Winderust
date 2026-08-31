@@ -131,9 +131,10 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 - Priority Control custom rules use the same three policy columns and independently select the
   priority for Focus, Visible Window, and Background.
-- CPU Limiter uses the same three policy columns with Default, Enabled, and Disabled. Each rule's
-  expandable details contain a 1% to 99% Allowed CPU Time slider for each tier. An inactive tier
-  retains its configured value while its slider is disabled.
+- CPU Limiter uses the same three policy columns with Follow Default, Custom, and Unlimited. Focus,
+  Visible Window, and Background have editable 1% to 100% page defaults. A rule's expandable
+  details show a 1% to 100% Allowed CPU Time slider only for Custom tiers, and an inactive rule
+  retains its configured values while those sliders are disabled. A 100% target is Unlimited.
 
 ## Localization
 

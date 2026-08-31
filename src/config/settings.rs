@@ -882,20 +882,14 @@ impl CpuAllocationRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuLimiterSettings {
     pub enabled: bool,
-    #[serde(default = "default_true")]
-    pub protect_foreground_app: bool,
-    #[serde(default)]
-    pub protect_visible_window_apps: bool,
+    #[serde(default = "default_cpu_limiter_focus_allowed_cpu_time_percent")]
+    pub focus_allowed_cpu_time_percent: u8,
+    #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
+    pub visible_window_allowed_cpu_time_percent: u8,
+    #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
+    pub background_allowed_cpu_time_percent: u8,
     #[serde(default)]
     pub rules: Vec<CpuLimiterRule>,
-}
-
-impl CpuLimiterSettings {
-    pub fn rule_enabled(&self, rule: &CpuLimiterRule, focus: bool, visible_window: bool) -> bool {
-        let page_default = !(self.protect_foreground_app && focus
-            || self.protect_visible_window_apps && visible_window);
-        rule.mode_for(focus, visible_window).resolve(page_default)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -903,11 +897,11 @@ pub struct CpuLimiterRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
-    #[serde(default = "default_cpu_limiter_focus_mode")]
+    #[serde(default)]
     pub focus_mode: ProcessRuleMode,
-    #[serde(default = "default_cpu_limiter_visible_window_mode")]
+    #[serde(default)]
     pub visible_window_mode: ProcessRuleMode,
-    #[serde(default = "default_cpu_limiter_background_mode")]
+    #[serde(default)]
     pub background_mode: ProcessRuleMode,
     #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
     pub focus_allowed_cpu_time_percent: u8,
@@ -918,16 +912,6 @@ pub struct CpuLimiterRule {
 }
 
 impl CpuLimiterRule {
-    pub const fn mode_for(&self, focus: bool, visible_window: bool) -> ProcessRuleMode {
-        if focus {
-            self.focus_mode
-        } else if visible_window {
-            self.visible_window_mode
-        } else {
-            self.background_mode
-        }
-    }
-
     pub fn has_valid_allowed_cpu_time(&self) -> bool {
         [
             self.focus_allowed_cpu_time_percent,
@@ -935,7 +919,7 @@ impl CpuLimiterRule {
             self.background_allowed_cpu_time_percent,
         ]
         .into_iter()
-        .all(|value| (1..=99).contains(&value))
+        .all(|value| (1..=100).contains(&value))
     }
 }
 
@@ -1861,20 +1845,12 @@ fn default_gpu_priority_settings() -> GpuPrioritySettings {
     }
 }
 
-const fn default_cpu_limiter_focus_mode() -> ProcessRuleMode {
-    ProcessRuleMode::Disabled
-}
-
-const fn default_cpu_limiter_visible_window_mode() -> ProcessRuleMode {
-    ProcessRuleMode::Disabled
-}
-
-const fn default_cpu_limiter_background_mode() -> ProcessRuleMode {
-    ProcessRuleMode::Enabled
-}
-
 const fn default_cpu_limiter_allowed_cpu_time_percent() -> u8 {
     50
+}
+
+const fn default_cpu_limiter_focus_allowed_cpu_time_percent() -> u8 {
+    100
 }
 
 const fn default_memory_trim_system_memory_load_threshold_percent() -> u8 {
@@ -1997,8 +1973,9 @@ impl Default for CpuLimiterSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            protect_foreground_app: default_true(),
-            protect_visible_window_apps: false,
+            focus_allowed_cpu_time_percent: default_cpu_limiter_focus_allowed_cpu_time_percent(),
+            visible_window_allowed_cpu_time_percent: default_cpu_limiter_allowed_cpu_time_percent(),
+            background_allowed_cpu_time_percent: default_cpu_limiter_allowed_cpu_time_percent(),
             rules: Vec::new(),
         }
     }

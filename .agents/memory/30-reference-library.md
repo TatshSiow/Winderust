@@ -412,9 +412,9 @@ Implementation entry points:
 
 Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Adaptive Engine / CPU Scheduler. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. CPU Scheduler may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
 
-Background Efficiency and CPU Limiter expose Protect Foreground App and Protect Apps with Visible
-Windows. CPU Sets (Soft) and Processor Affinity (Hard) instead classify each matched process as
-Focus, Visible Window, or Background and select that rule's corresponding CPU mask. Foreground
+Background Efficiency exposes Foreground Detection and Visible Window Detection. CPU Limiter,
+CPU Sets (Soft), and Processor Affinity (Hard) classify each matched process as Focus, Visible
+Window, or Background and select that tier's policy. Foreground
 resolution starts from the active window; visible-window detection keeps top-level windows that are
 visible, not minimized, and not DWM-cloaked. Both classifications include sibling processes with
 the same executable path. A fully covered window still qualifies because `IsWindowVisible` reports
@@ -474,7 +474,10 @@ Windows adapter and crash-recovery mirror follow this contract.
 
 ## CPU Limiter Duty Cycling
 
-CPU Limiter targets 1% to 99% Allowed CPU Time for each selected app group within a fixed 100 ms cycle.
+CPU Limiter page defaults target 1% to 100% Allowed CPU Time for Focus, Visible Window, and
+Background app groups within a fixed 100 ms cycle. Each rule tier can follow that page default,
+remain Unlimited, or apply its own 1% to 100% target. A 100% target is Unlimited and creates no
+limiter schedule.
 This is wall-clock duty cycling, not processor affinity and not Windows Job Object
 CPU-rate control. During the awake phase the app may use any processors Windows schedules for it;
 during the frozen phase its selected backend prevents execution. Future child processes normally

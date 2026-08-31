@@ -70,10 +70,10 @@
   layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
   off, and each layer owns an Enabled/Disabled Efficiency Mode default.
 - Background Efficiency and CPU Limiter custom rules use Focus, Visible Window, and Background
-  columns with Default/Enabled/Disabled values and Focus > Visible Window > Background precedence.
-  Default inherits the page-wide foreground/visible protection behavior.
-- CPU Limiter is a 100 ms freeze/thaw duty cycle with separate Focus, Visible Window,
-  and Background Allowed CPU Time values from 1% to 99% per rule. It shares
+  columns with Focus > Visible Window > Background precedence. CPU Limiter page defaults set
+  1% to 100% Focus, Visible Window, and Background targets; each rule tier selects Follow Default,
+  Custom, or Unlimited, with Custom owning its own 1% to 100% target. A 100% target is Unlimited.
+- CPU Limiter is a 100 ms freeze/thaw duty cycle. It shares
   `SuspensionController` with App Suspension; independent owner phases combine
   into one effective frozen state, and one feature cannot thaw the other's claim. One native
   high-resolution waitable-timer worker owns all limiter schedules. Job Object control remains the

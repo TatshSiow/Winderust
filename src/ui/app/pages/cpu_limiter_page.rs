@@ -41,27 +41,44 @@ impl WinderustApp {
             cx,
         );
         let enabled = self.settings.cpu_limiter.enabled;
+        let help = tooltip_lines(vec![
+            t!("cpu_limiter.intro_1").to_string(),
+            t!("cpu_limiter.intro_2").to_string(),
+            t!("cpu_limiter.intro_3").to_string(),
+            t!("cpu_limiter.intro_4").to_string(),
+            t!("cpu_limiter.intro_5").to_string(),
+        ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::CpuLimiterMaster,
+            (t!("cpu_limiter.enable").to_string(), help),
+            setting_group_switch_action(
+                "cpu-limiter-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.cpu_limiter.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::CpuLimiterMaster),
+            vec![
+                self.render_cpu_limiter_default_slider(ProcessRuleTier::Focus, enabled, window, cx),
+                self.render_cpu_limiter_default_slider(
+                    ProcessRuleTier::VisibleWindow,
+                    enabled,
+                    window,
+                    cx,
+                ),
+                self.render_cpu_limiter_default_slider(
+                    ProcessRuleTier::Background,
+                    enabled,
+                    window,
+                    cx,
+                ),
+            ],
+            window,
+            cx,
+        );
         let body = feature_body()
-            .child(feature_toggle_switch_with_help(
-                "cpu-limiter-foreground",
-                t!("common.protect_foreground_app").to_string(),
-                t!("common.protect_foreground_app_help").to_string(),
-                self.settings.cpu_limiter.protect_foreground_app,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_limiter.protect_foreground_app = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(feature_toggle_switch_with_help(
-                "cpu-limiter-visible-windows",
-                t!("common.protect_visible_window_apps").to_string(),
-                t!("common.protect_visible_window_apps_help").to_string(),
-                self.settings.cpu_limiter.protect_visible_window_apps,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_limiter.protect_visible_window_apps = *checked;
-                    cx.notify();
-                }),
-            ))
             .child(section_header(
                 &t!("cpu_limiter.rules"),
                 t!("cpu_limiter.rules_help").to_string(),
@@ -108,27 +125,65 @@ impl WinderustApp {
             )
             .child(self.render_cpu_limiter_rules(window, cx));
 
-        let help = tooltip_lines(vec![
-            t!("cpu_limiter.intro_1").to_string(),
-            t!("cpu_limiter.intro_2").to_string(),
-            t!("cpu_limiter.intro_3").to_string(),
-            t!("cpu_limiter.intro_4").to_string(),
-            t!("cpu_limiter.intro_5").to_string(),
-        ]);
-
         page_body_shell()
-            .child(feature_toggle_switch_with_help(
-                "cpu-limiter-enabled",
-                t!("cpu_limiter.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_limiter.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+            .child(master_card)
             .child(disabled_feature_body("cpu-limiter-body", body, enabled, cx))
             .into_any_element()
+    }
+
+    fn render_cpu_limiter_default_slider(
+        &self,
+        tier: ProcessRuleTier,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = cpu_limiter_default_slider_input(&self.inputs, tier);
+        let value = match tier {
+            ProcessRuleTier::Focus => self.settings.cpu_limiter.focus_allowed_cpu_time_percent,
+            ProcessRuleTier::VisibleWindow => {
+                self.settings
+                    .cpu_limiter
+                    .visible_window_allowed_cpu_time_percent
+            }
+            ProcessRuleTier::Background => {
+                self.settings
+                    .cpu_limiter
+                    .background_allowed_cpu_time_percent
+            }
+        };
+        let field = NumericField::CpuLimiterDefaultAllowedTime(tier);
+        let value_element = if enabled {
+            self.render_numeric_value(field, format!("{value}%"), value.to_string(), cx)
+        } else {
+            value_pill(format!("{value}%"))
+                .w(px(numeric_value_width(field)))
+                .into_any_element()
+        };
+        percent_slider_group_row(
+            SliderRowSpec {
+                id: SharedString::from(format!("cpu-limiter-{}-default", tier.key())),
+                label: SharedString::from(tier.cpu_limiter_allowed_time_label()),
+                value_element,
+                state: &state,
+                enabled,
+                delta: 1_u8,
+                range: SliderRange {
+                    min: 1,
+                    max: 100,
+                    step: 1,
+                },
+            },
+            window,
+            cx,
+            cx.listener(move |app, change: &StepChange<u8>, _, cx| {
+                app.set_cpu_limiter_default_slider_value(
+                    tier,
+                    apply_u8_step(value, change, 1, 100),
+                );
+                cx.notify();
+            }),
+        )
     }
 
     pub(in crate::ui::app) fn render_cpu_limiter_rules(
@@ -192,25 +247,21 @@ impl WinderustApp {
             if rule_card_body_visible(&card_target, collapsed, window) {
                 let mut limiter_rows = Vec::new();
                 for tier in ProcessRuleTier::ALL {
+                    if tier.cpu_limiter_mode(rule) != ProcessRuleMode::Enabled {
+                        continue;
+                    }
                     let Some(state) = cpu_limiter_slider_input(&self.inputs, index, tier) else {
                         continue;
                     };
                     let value = tier.cpu_limiter_allowed_time(rule);
-                    let (focus, visible_window) = tier.flags();
-                    let tier_enabled = rule.enabled
-                        && self
-                            .settings
-                            .cpu_limiter
-                            .rule_enabled(rule, focus, visible_window);
+                    let tier_enabled = rule.enabled;
+                    let field = NumericField::CpuLimiterAllowedTime(index, tier);
                     let value_element = if tier_enabled {
-                        self.render_numeric_value(
-                            NumericField::CpuLimiterAllowedTime(index, tier),
-                            format!("{value}%"),
-                            value.to_string(),
-                            cx,
-                        )
+                        self.render_numeric_value(field, format!("{value}%"), value.to_string(), cx)
                     } else {
-                        value_pill(format!("{value}%")).into_any_element()
+                        value_pill(format!("{value}%"))
+                            .w(px(numeric_value_width(field)))
+                            .into_any_element()
                     };
                     limiter_rows.push(rule_percent_slider_row(
                         SliderRowSpec {
@@ -225,7 +276,7 @@ impl WinderustApp {
                             delta: 1_u8,
                             range: SliderRange {
                                 min: 1,
-                                max: 99,
+                                max: 100,
                                 step: 1,
                             },
                         },
@@ -238,7 +289,7 @@ impl WinderustApp {
                                         tier.cpu_limiter_allowed_time(rule),
                                         change,
                                         1,
-                                        99,
+                                        100,
                                     )
                                 })
                             {
@@ -249,46 +300,48 @@ impl WinderustApp {
                     ));
                 }
 
-                card = card
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        0,
-                        1,
-                        rule_card_body_row(vec![rule_action_row(
-                            format!("cpu-limiter-rule-status-{index}"),
-                            t!("common.status").to_string(),
-                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                        )
-                        .into_any_element()]),
-                    ))
-                    .child(animated_rule_card_body_child(
+                let has_limiter_rows = !limiter_rows.is_empty();
+                card = card.child(animated_rule_card_body_child(
+                    &card_target,
+                    0,
+                    1,
+                    rule_card_body_row(vec![rule_action_row(
+                        format!("cpu-limiter-rule-status-{index}"),
+                        t!("common.status").to_string(),
+                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                    )
+                    .into_any_element()]),
+                ));
+                if has_limiter_rows {
+                    card = card.child(animated_rule_card_body_child(
                         &card_target,
                         1,
                         limiter_rows.len(),
                         rule_card_body_row(limiter_rows),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        2,
-                        1,
-                        rule_card_body_action(
-                            remove_control_button(Button::new(SharedString::from(format!(
-                                "remove-cpu-limiter-{index}"
-                            ))))
-                            .on_click(cx.listener({
-                                move |app, _, _, cx| {
-                                    app.request_list_item_removal(
-                                        ListItemRemovalTarget::new(
-                                            ListItemRemovalKind::CpuLimiterRule,
-                                            index,
-                                        ),
-                                        cx,
-                                    );
-                                }
-                            }))
-                            .into_any_element(),
-                        ),
                     ));
+                }
+                card = card.child(animated_rule_card_body_child(
+                    &card_target,
+                    if has_limiter_rows { 2 } else { 1 },
+                    1,
+                    rule_card_body_action(
+                        remove_control_button(Button::new(SharedString::from(format!(
+                            "remove-cpu-limiter-{index}"
+                        ))))
+                        .on_click(cx.listener({
+                            move |app, _, _, cx| {
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::new(
+                                        ListItemRemovalKind::CpuLimiterRule,
+                                        index,
+                                    ),
+                                    cx,
+                                );
+                            }
+                        }))
+                        .into_any_element(),
+                    ),
+                ));
             }
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::CpuLimiterRule, index),
@@ -348,8 +401,8 @@ impl WinderustApp {
 
 fn cpu_limiter_rule_mode_label(mode: ProcessRuleMode) -> String {
     match mode {
-        ProcessRuleMode::Default => t!("common.default").to_string(),
-        ProcessRuleMode::Enabled => t!("common.enabled").to_string(),
-        ProcessRuleMode::Disabled => t!("common.disabled").to_string(),
+        ProcessRuleMode::Default => t!("cpu_limiter.follow_default").to_string(),
+        ProcessRuleMode::Enabled => t!("cpu_limiter.custom").to_string(),
+        ProcessRuleMode::Disabled => t!("cpu_limiter.unlimited").to_string(),
     }
 }

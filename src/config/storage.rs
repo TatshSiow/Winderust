@@ -129,13 +129,14 @@ mod tests {
     }
 
     #[test]
-    fn cpu_limiter_schema_defaults_to_background_only_at_half_time() {
-        let raw = toml::to_string_pretty(&Settings::default())
-            .expect("default settings should serialize")
-            .replace(
-                "protect_visible_window_apps = false\nrules = []",
-                "protect_visible_window_apps = false",
-            );
+    fn cpu_limiter_schema_defaults_rules_to_the_page_policy() {
+        let defaults = toml::to_string_pretty(&Settings::default())
+            .expect("default settings should serialize");
+        assert!(defaults.contains("focus_allowed_cpu_time_percent = 100"));
+        let raw = defaults.replace(
+            "background_allowed_cpu_time_percent = 50\nrules = []",
+            "background_allowed_cpu_time_percent = 50",
+        );
         let raw = format!("{raw}\n[[cpu_limiter.rules]]\nexecutable_path = \"encoder.exe\"\n");
 
         let parsed: Settings = toml::from_str(&raw).expect("CPU Limiter settings should parse");
@@ -148,9 +149,9 @@ mod tests {
         assert!(!round_trip
             .lines()
             .any(|line| line.trim_start().starts_with("allowed_cpu_time_percent =")));
-        assert!(round_trip.contains("focus_mode = \"disabled\""));
-        assert!(round_trip.contains("visible_window_mode = \"disabled\""));
-        assert!(round_trip.contains("background_mode = \"enabled\""));
+        assert!(round_trip.contains("focus_mode = \"default\""));
+        assert!(round_trip.contains("visible_window_mode = \"default\""));
+        assert!(round_trip.contains("background_mode = \"default\""));
     }
 
     #[test]
@@ -163,7 +164,7 @@ mod tests {
             background_mode: ProcessRuleMode::Enabled,
             focus_allowed_cpu_time_percent: 1,
             visible_window_allowed_cpu_time_percent: 50,
-            background_allowed_cpu_time_percent: 99,
+            background_allowed_cpu_time_percent: 100,
         };
 
         let serialized = toml::to_string_pretty(&rule).expect("CPU Limiter rule should serialize");
@@ -421,8 +422,9 @@ mod tests {
             }],
             cpu_limiter: CpuLimiterSettings {
                 enabled: true,
-                protect_foreground_app: true,
-                protect_visible_window_apps: false,
+                focus_allowed_cpu_time_percent: 100,
+                visible_window_allowed_cpu_time_percent: 50,
+                background_allowed_cpu_time_percent: 50,
                 rules: vec![CpuLimiterRule {
                     enabled: true,
                     executable_path: "encoder.exe".to_owned(),

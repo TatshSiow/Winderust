@@ -523,9 +523,9 @@ pub(in crate::ui::app) fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule 
     CpuLimiterRule {
         enabled: true,
         executable_path: executable_path_key(Path::new(process)),
-        focus_mode: ProcessRuleMode::Disabled,
-        visible_window_mode: ProcessRuleMode::Disabled,
-        background_mode: ProcessRuleMode::Enabled,
+        focus_mode: ProcessRuleMode::Default,
+        visible_window_mode: ProcessRuleMode::Default,
+        background_mode: ProcessRuleMode::Default,
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
@@ -1276,14 +1276,14 @@ mod tests {
     }
 
     #[test]
-    fn new_cpu_limiter_rules_limit_background_apps_to_half_time() {
+    fn new_cpu_limiter_rules_follow_all_page_defaults() {
         let rule = new_cpu_limiter_rule(r"C:\Apps\encoder.exe");
 
         assert_eq!(rule.focus_allowed_cpu_time_percent, 50);
         assert_eq!(rule.visible_window_allowed_cpu_time_percent, 50);
         assert_eq!(rule.background_allowed_cpu_time_percent, 50);
-        assert_eq!(rule.focus_mode, ProcessRuleMode::Disabled);
-        assert_eq!(rule.visible_window_mode, ProcessRuleMode::Disabled);
-        assert_eq!(rule.background_mode, ProcessRuleMode::Enabled);
+        assert_eq!(rule.focus_mode, ProcessRuleMode::Default);
+        assert_eq!(rule.visible_window_mode, ProcessRuleMode::Default);
+        assert_eq!(rule.background_mode, ProcessRuleMode::Default);
     }
 }

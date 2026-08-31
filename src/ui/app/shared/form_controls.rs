@@ -170,6 +170,7 @@ pub(in crate::ui::app) fn numeric_value_width(field: NumericField) -> f32 {
             AdaptiveEngineTuningNumericField::ProcessorPowerPolicy(_),
         )
         | NumericField::MemoryTrimMemoryLoadThreshold
+        | NumericField::CpuLimiterDefaultAllowedTime(_)
         | NumericField::CpuLimiterAllowedTime(_, _) => 76.0,
         NumericField::TimerResolutionRule(_) => 104.0,
         NumericField::MemoryTrimWorkingSetThreshold | NumericField::MemoryTrimIdleSeconds => 112.0,
@@ -725,7 +726,7 @@ where
     .into_any_element()
 }
 
-fn percent_slider_group_row<T>(
+pub(in crate::ui::app) fn percent_slider_group_row<T>(
     spec: SliderRowSpec<'_, T>,
     window: &mut Window,
     cx: &mut Context<WinderustApp>,

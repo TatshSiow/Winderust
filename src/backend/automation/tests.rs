@@ -938,6 +938,34 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
 }
 
 #[test]
+fn all_unlimited_cpu_limiter_rules_do_not_require_runtime_work() {
+    let mut settings = Settings::default();
+    settings.cpu_limiter.enabled = true;
+    settings.cpu_limiter.focus_allowed_cpu_time_percent = 100;
+    settings.cpu_limiter.visible_window_allowed_cpu_time_percent = 100;
+    settings.cpu_limiter.background_allowed_cpu_time_percent = 100;
+    settings.cpu_limiter.rules.push(CpuLimiterRule {
+        enabled: true,
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        focus_mode: ProcessRuleMode::Default,
+        visible_window_mode: ProcessRuleMode::Default,
+        background_mode: ProcessRuleMode::Default,
+        focus_allowed_cpu_time_percent: 50,
+        visible_window_allowed_cpu_time_percent: 50,
+        background_allowed_cpu_time_percent: 50,
+    });
+
+    assert!(!cpu_limiter_required(&settings));
+    assert!(!process_appearance_scan_required(&settings));
+
+    settings.cpu_limiter.rules[0].background_mode = ProcessRuleMode::Enabled;
+    settings.cpu_limiter.rules[0].background_allowed_cpu_time_percent = 5;
+
+    assert!(cpu_limiter_required(&settings));
+    assert!(process_appearance_scan_required(&settings));
+}
+
+#[test]
 fn cpu_sets_soft_owns_duplicate_cpu_allocation_rules() {
     let mut settings = Settings::default();
     let rule = CpuAllocationRule {

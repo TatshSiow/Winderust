@@ -126,8 +126,10 @@ pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
 pub(super) fn cpu_limiter_required(settings: &Settings) -> bool {
     settings.cpu_limiter.enabled
         && settings.cpu_limiter.rules.iter().any(|rule| {
-            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && rule.has_valid_allowed_cpu_time()
+            crate::features::cpu_control::cpu_limiter::rule_has_finite_limit(
+                &settings.cpu_limiter,
+                rule,
+            )
         })
 }
 

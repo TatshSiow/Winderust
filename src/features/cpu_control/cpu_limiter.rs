@@ -7,15 +7,15 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{CpuLimiterRule, CpuLimiterSettings},
+    config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode},
     control::{
         cpu_limiter::{CpuLimiterController, CpuLimiterTarget},
         process::ProcessTargetKey,
         suspension::{self as suspension_control, SuspensionTarget},
     },
     foreground::{
-        process_executable_path, process_failure_key, process_session_id, same_executable_path,
-        ProcessInfo,
+        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
+        same_executable_path, ProcessInfo, ProtectedProcesses,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -121,6 +121,18 @@ impl CpuLimiterManager {
         };
 
         let scanned_processes = processes.len();
+        let foreground_executable_path = foreground_process_id.and_then(|id| {
+            processes
+                .iter()
+                .find(|process| process.id == id)
+                .and_then(process_executable_path)
+        });
+        let visible_processes = ProtectedProcesses::capture(
+            processes.as_ref(),
+            false,
+            None,
+            visible_window_process_ids,
+        );
         let processes_by_id = processes
             .iter()
             .map(|process| (process.id, process))
@@ -136,6 +148,13 @@ impl CpuLimiterManager {
             let Some(rule) = matching_rule(settings, &executable_path) else {
                 continue;
             };
+            let (focus, visible_window) = detected_process_tier(
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+                &visible_processes,
+            );
             let executable_path = executable_path.to_string_lossy().into_owned();
             let failure_key = process_failure_key(&executable_path);
             active_failure_keys.insert(failure_key);
@@ -156,8 +175,6 @@ impl CpuLimiterManager {
                 skipped_processes += 1;
                 continue;
             };
-            let focus = foreground_process_id == Some(process.id);
-            let visible_window = !focus && visible_window_process_ids.contains(&process.id);
             let Some(allowed_cpu_time_percent) =
                 resolved_allowed_cpu_time_percent(settings, rule, focus, visible_window)
             else {
@@ -429,21 +446,57 @@ fn matching_rule<'a>(
     })
 }
 
+fn detected_process_tier(
+    process_id: u32,
+    executable_path: &Path,
+    foreground_process_id: Option<u32>,
+    foreground_executable_path: Option<&Path>,
+    visible_processes: &ProtectedProcesses,
+) -> (bool, bool) {
+    let focus = is_foreground_process(
+        process_id,
+        executable_path,
+        foreground_process_id,
+        foreground_executable_path,
+    );
+    (
+        focus,
+        !focus && visible_processes.contains(process_id, executable_path),
+    )
+}
+
 fn resolved_allowed_cpu_time_percent(
     settings: &CpuLimiterSettings,
     rule: &CpuLimiterRule,
     focus: bool,
     visible_window: bool,
 ) -> Option<u8> {
-    settings
-        .rule_enabled(rule, focus, visible_window)
-        .then_some(if focus {
-            rule.focus_allowed_cpu_time_percent
-        } else if visible_window {
-            rule.visible_window_allowed_cpu_time_percent
-        } else {
-            rule.background_allowed_cpu_time_percent
-        })
+    let (mode, custom, page_default) = if focus {
+        (
+            rule.focus_mode,
+            rule.focus_allowed_cpu_time_percent,
+            Some(settings.focus_allowed_cpu_time_percent),
+        )
+    } else if visible_window {
+        (
+            rule.visible_window_mode,
+            rule.visible_window_allowed_cpu_time_percent,
+            Some(settings.visible_window_allowed_cpu_time_percent),
+        )
+    } else {
+        (
+            rule.background_mode,
+            rule.background_allowed_cpu_time_percent,
+            Some(settings.background_allowed_cpu_time_percent),
+        )
+    };
+    match mode {
+        ProcessRuleMode::Default => page_default,
+        ProcessRuleMode::Enabled => Some(custom),
+        ProcessRuleMode::Disabled => None,
+    }
+    // A 100% target is Unlimited, so it does not create a limiter schedule.
+    .filter(|percent| (1..=99).contains(percent))
 }
 
 fn requires_foreground_observation(settings: &CpuLimiterSettings) -> bool {
@@ -454,8 +507,16 @@ fn requires_foreground_observation(settings: &CpuLimiterSettings) -> bool {
         .any(|rule| {
             let focus = resolved_allowed_cpu_time_percent(settings, rule, true, false);
             focus != resolved_allowed_cpu_time_percent(settings, rule, false, true)
-                || focus != resolved_allowed_cpu_time_percent(settings, rule, false, false)
         })
+}
+
+pub(crate) fn rule_has_finite_limit(settings: &CpuLimiterSettings, rule: &CpuLimiterRule) -> bool {
+    valid_rule(rule)
+        && [(true, false), (false, true), (false, false)]
+            .into_iter()
+            .any(|(focus, visible_window)| {
+                resolved_allowed_cpu_time_percent(settings, rule, focus, visible_window).is_some()
+            })
 }
 
 fn requires_visible_window_observation(settings: &CpuLimiterSettings) -> bool {
@@ -565,8 +626,9 @@ mod tests {
     fn detected_tier_selects_its_allowed_cpu_time() {
         let settings = CpuLimiterSettings {
             enabled: true,
-            protect_foreground_app: false,
-            protect_visible_window_apps: false,
+            focus_allowed_cpu_time_percent: 100,
+            visible_window_allowed_cpu_time_percent: 60,
+            background_allowed_cpu_time_percent: 25,
             rules: Vec::new(),
         };
         let mut rule = rule();
@@ -592,6 +654,38 @@ mod tests {
     }
 
     #[test]
+    fn detected_tier_groups_processes_from_the_same_app() {
+        let app_path = Path::new(r"C:\Apps\Browser\browser.exe");
+        let visible_process = ProcessInfo {
+            id: 7,
+            creation_time: Some(7),
+            parent_id: None,
+            session_id: Some(1),
+            user_name: None,
+            is_service_account: Some(false),
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "browser.exe".to_owned(),
+            image_path: Some(app_path.to_path_buf()),
+        };
+        let visible_processes = crate::foreground::ProtectedProcesses::capture(
+            &[visible_process],
+            false,
+            None,
+            BTreeSet::from([7]),
+        );
+
+        assert_eq!(
+            detected_process_tier(8, app_path, Some(7), Some(app_path), &visible_processes),
+            (true, false)
+        );
+        assert_eq!(
+            detected_process_tier(8, app_path, Some(9), None, &visible_processes),
+            (false, true)
+        );
+    }
+
+    #[test]
     fn tier_specific_percentages_require_tier_observations() {
         let mut rule = rule();
         rule.focus_mode = ProcessRuleMode::Enabled;
@@ -602,8 +696,9 @@ mod tests {
         rule.background_allowed_cpu_time_percent = 25;
         let settings = CpuLimiterSettings {
             enabled: true,
-            protect_foreground_app: false,
-            protect_visible_window_apps: false,
+            focus_allowed_cpu_time_percent: 100,
+            visible_window_allowed_cpu_time_percent: 60,
+            background_allowed_cpu_time_percent: 25,
             rules: vec![rule],
         };
 
@@ -612,33 +707,104 @@ mod tests {
     }
 
     #[test]
-    fn page_protection_and_tier_overrides_decide_immediately() {
+    fn matching_focus_and_visible_tiers_do_not_require_foreground_observation() {
         let settings = CpuLimiterSettings {
             enabled: true,
-            protect_foreground_app: true,
-            protect_visible_window_apps: false,
+            focus_allowed_cpu_time_percent: 60,
+            visible_window_allowed_cpu_time_percent: 60,
+            background_allowed_cpu_time_percent: 25,
+            rules: vec![rule()],
+        };
+
+        assert!(!requires_foreground_observation(&settings));
+        assert!(requires_visible_window_observation(&settings));
+    }
+
+    #[test]
+    fn default_rule_uses_all_page_percentages_and_100_is_unlimited() {
+        let settings = CpuLimiterSettings {
+            enabled: true,
+            focus_allowed_cpu_time_percent: 75,
+            visible_window_allowed_cpu_time_percent: 100,
+            background_allowed_cpu_time_percent: 25,
+            rules: Vec::new(),
+        };
+        let rule = rule();
+
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, true, false),
+            Some(75)
+        );
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, false, true),
+            None
+        );
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, false, false),
+            Some(25)
+        );
+    }
+
+    #[test]
+    fn custom_and_unlimited_modes_override_page_percentages() {
+        let settings = CpuLimiterSettings {
+            enabled: true,
+            focus_allowed_cpu_time_percent: 100,
+            visible_window_allowed_cpu_time_percent: 60,
+            background_allowed_cpu_time_percent: 25,
             rules: Vec::new(),
         };
         let mut rule = rule();
 
-        assert!(!settings.rule_enabled(&rule, true, false));
-        assert!(settings.rule_enabled(&rule, false, true));
-        assert!(settings.rule_enabled(&rule, false, false));
-
         rule.focus_mode = ProcessRuleMode::Enabled;
         rule.visible_window_mode = ProcessRuleMode::Disabled;
-        assert!(settings.rule_enabled(&rule, true, false));
-        assert!(!settings.rule_enabled(&rule, false, true));
+        rule.focus_allowed_cpu_time_percent = 100;
+
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, true, false),
+            None
+        );
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, false, true),
+            None
+        );
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, false, false),
+            Some(25)
+        );
     }
 
     #[test]
-    fn invalid_percentages_are_not_runnable_rules() {
+    fn invalid_page_percentages_do_not_reach_the_limiter() {
+        let settings = CpuLimiterSettings {
+            enabled: true,
+            focus_allowed_cpu_time_percent: 100,
+            visible_window_allowed_cpu_time_percent: 0,
+            background_allowed_cpu_time_percent: 101,
+            rules: Vec::new(),
+        };
+        let rule = rule();
+
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, false, true),
+            None
+        );
+        assert_eq!(
+            resolved_allowed_cpu_time_percent(&settings, &rule, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn runnable_rule_percentages_are_limited_to_one_through_one_hundred() {
         let mut rule = rule();
         assert!(valid_rule(&rule));
         rule.focus_allowed_cpu_time_percent = 0;
         assert!(!valid_rule(&rule));
-        rule.focus_allowed_cpu_time_percent = 50;
+        rule.focus_allowed_cpu_time_percent = 1;
         rule.visible_window_allowed_cpu_time_percent = 100;
+        assert!(valid_rule(&rule));
+        rule.visible_window_allowed_cpu_time_percent = 101;
         assert!(!valid_rule(&rule));
         rule.visible_window_allowed_cpu_time_percent = 50;
         rule.background_allowed_cpu_time_percent = 0;

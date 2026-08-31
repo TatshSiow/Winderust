@@ -697,9 +697,9 @@ fn cpu_limiter_rule(path: &str) -> crate::config::CpuLimiterRule {
     crate::config::CpuLimiterRule {
         enabled: false,
         executable_path: path.to_owned(),
-        focus_mode: crate::config::ProcessRuleMode::Disabled,
-        visible_window_mode: crate::config::ProcessRuleMode::Disabled,
-        background_mode: crate::config::ProcessRuleMode::Enabled,
+        focus_mode: crate::config::ProcessRuleMode::Default,
+        visible_window_mode: crate::config::ProcessRuleMode::Default,
+        background_mode: crate::config::ProcessRuleMode::Default,
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,

@@ -97,6 +97,7 @@ pub(in crate::ui::app) enum SettingGroupTarget {
     EfficiencyEnable,
     BackgroundEfficiencyForegroundDetection,
     BackgroundEfficiencyVisibleWindowDetection,
+    CpuLimiterMaster,
     GpuPriorityMaster,
     GpuPriorityForegroundDetection,
     GpuPriorityVisibleWindowDetection,
@@ -291,6 +292,7 @@ pub(in crate::ui::app) enum NumericField {
     CpuThreshold(usize),
     CpuUpperThreshold(usize),
     CpuDuration(usize),
+    CpuLimiterDefaultAllowedTime(ProcessRuleTier),
     CpuLimiterAllowedTime(usize, ProcessRuleTier),
     TimerResolutionRule(usize),
     NetworkThreshold(ThresholdField),
@@ -484,6 +486,19 @@ pub(in crate::ui::app) fn cpu_limiter_slider_input(
     .cloned()
 }
 
+pub(in crate::ui::app) fn cpu_limiter_default_slider_input(
+    inputs: &UiInputs,
+    tier: ProcessRuleTier,
+) -> Entity<SliderState> {
+    match tier {
+        ProcessRuleTier::Focus => inputs.cpu_limiter_focus_default_allowed_time.clone(),
+        ProcessRuleTier::VisibleWindow => inputs
+            .cpu_limiter_visible_window_default_allowed_time
+            .clone(),
+        ProcessRuleTier::Background => inputs.cpu_limiter_background_default_allowed_time.clone(),
+    }
+}
+
 pub(in crate::ui::app) fn sync_input_vec(
     inputs: &mut Vec<Entity<InputState>>,
     len: usize,
@@ -579,12 +594,33 @@ impl UiInputs {
                     make_percent_slider(cx, rule.upper_threshold_percent.unwrap_or(100) as u64)
                 })
                 .collect(),
+            cpu_limiter_focus_default_allowed_time: make_range_slider(
+                cx,
+                settings.cpu_limiter.focus_allowed_cpu_time_percent as u64,
+                1,
+                100,
+                1,
+            ),
+            cpu_limiter_visible_window_default_allowed_time: make_range_slider(
+                cx,
+                settings.cpu_limiter.visible_window_allowed_cpu_time_percent as u64,
+                1,
+                100,
+                1,
+            ),
+            cpu_limiter_background_default_allowed_time: make_range_slider(
+                cx,
+                settings.cpu_limiter.background_allowed_cpu_time_percent as u64,
+                1,
+                100,
+                1,
+            ),
             cpu_limiter_focus_allowed_times: settings
                 .cpu_limiter
                 .rules
                 .iter()
                 .map(|rule| {
-                    make_range_slider(cx, rule.focus_allowed_cpu_time_percent as u64, 1, 99, 1)
+                    make_range_slider(cx, rule.focus_allowed_cpu_time_percent as u64, 1, 100, 1)
                 })
                 .collect(),
             cpu_limiter_visible_window_allowed_times: settings
@@ -596,7 +632,7 @@ impl UiInputs {
                         cx,
                         rule.visible_window_allowed_cpu_time_percent as u64,
                         1,
-                        99,
+                        100,
                         1,
                     )
                 })
@@ -610,7 +646,7 @@ impl UiInputs {
                         cx,
                         rule.background_allowed_cpu_time_percent as u64,
                         1,
-                        99,
+                        100,
                         1,
                     )
                 })
@@ -774,7 +810,7 @@ impl UiInputs {
         );
         let cpu_limiter_range = SliderRange {
             min: 1,
-            max: 99,
+            max: 100,
             step: 1,
         };
         sync_slider_vec(
@@ -1148,7 +1184,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn cpu_limiter_slider_input_count(&self) -> usize {
-        self.inputs.cpu_limiter_focus_allowed_times.len()
+        3 + self.inputs.cpu_limiter_focus_allowed_times.len()
             + self.inputs.cpu_limiter_visible_window_allowed_times.len()
             + self.inputs.cpu_limiter_background_allowed_times.len()
     }
@@ -1168,6 +1204,24 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let default_inputs = [
+            (
+                self.inputs.cpu_limiter_focus_default_allowed_time.clone(),
+                ProcessRuleTier::Focus,
+            ),
+            (
+                self.inputs
+                    .cpu_limiter_visible_window_default_allowed_time
+                    .clone(),
+                ProcessRuleTier::VisibleWindow,
+            ),
+            (
+                self.inputs
+                    .cpu_limiter_background_default_allowed_time
+                    .clone(),
+                ProcessRuleTier::Background,
+            ),
+        ];
         let mut inputs = Vec::new();
         for tier in ProcessRuleTier::ALL {
             let tier_inputs = match tier {
@@ -1187,6 +1241,20 @@ impl WinderustApp {
         }
 
         self._cpu_limiter_slider_subscriptions.clear();
+        for (input, tier) in default_inputs {
+            self._cpu_limiter_slider_subscriptions.push(cx.subscribe_in(
+                &input,
+                window,
+                move |app, _, event: &SliderEvent, _, cx| {
+                    let SliderEvent::Change(value) = event;
+                    app.set_cpu_limiter_default_slider_value(
+                        tier,
+                        value.end().round().clamp(1.0, 100.0) as u8,
+                    );
+                    cx.notify();
+                },
+            ));
+        }
         for (input, index, tier) in inputs {
             self._cpu_limiter_slider_subscriptions.push(cx.subscribe_in(
                 &input,
@@ -1196,7 +1264,7 @@ impl WinderustApp {
                     app.set_cpu_limiter_slider_value(
                         index,
                         tier,
-                        value.end().round().clamp(1.0, 99.0) as u8,
+                        value.end().round().clamp(1.0, 100.0) as u8,
                     );
                     cx.notify();
                 },
@@ -1469,6 +1537,11 @@ impl WinderustApp {
                     rule.duration_seconds = value;
                 }
             }
+            NumericField::CpuLimiterDefaultAllowedTime(tier) => {
+                if let Some(value) = parse_cpu_limiter_allowed_time_percent(&value) {
+                    self.set_cpu_limiter_default_slider_value(tier, value);
+                }
+            }
             NumericField::CpuLimiterAllowedTime(index, tier) => {
                 if let Some(value) = parse_cpu_limiter_allowed_time_percent(&value) {
                     self.set_cpu_limiter_slider_value(index, tier, value);
@@ -1571,7 +1644,7 @@ fn parse_cpu_limiter_allowed_time_percent(value: &str) -> Option<u8> {
     value
         .parse::<u8>()
         .ok()
-        .filter(|value| (1..=99).contains(value))
+        .filter(|value| (1..=100).contains(value))
 }
 
 impl WinderustApp {
@@ -1630,7 +1703,29 @@ impl WinderustApp {
         value: u8,
     ) {
         if let Some(rule) = self.settings.cpu_limiter.rules.get_mut(index) {
-            tier.set_cpu_limiter_allowed_time(rule, value.clamp(1, 99));
+            tier.set_cpu_limiter_allowed_time(rule, value.clamp(1, 100));
+        }
+    }
+
+    pub(in crate::ui::app) fn set_cpu_limiter_default_slider_value(
+        &mut self,
+        tier: ProcessRuleTier,
+        value: u8,
+    ) {
+        match tier {
+            ProcessRuleTier::Focus => {
+                self.settings.cpu_limiter.focus_allowed_cpu_time_percent = value.clamp(1, 100);
+            }
+            ProcessRuleTier::VisibleWindow => {
+                self.settings
+                    .cpu_limiter
+                    .visible_window_allowed_cpu_time_percent = value.clamp(1, 100);
+            }
+            ProcessRuleTier::Background => {
+                self.settings
+                    .cpu_limiter
+                    .background_allowed_cpu_time_percent = value.clamp(1, 100);
+            }
         }
     }
 
@@ -1639,12 +1734,38 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        for (tier, value) in [
+            (
+                ProcessRuleTier::Focus,
+                self.settings.cpu_limiter.focus_allowed_cpu_time_percent,
+            ),
+            (
+                ProcessRuleTier::VisibleWindow,
+                self.settings
+                    .cpu_limiter
+                    .visible_window_allowed_cpu_time_percent,
+            ),
+            (
+                ProcessRuleTier::Background,
+                self.settings
+                    .cpu_limiter
+                    .background_allowed_cpu_time_percent,
+            ),
+        ] {
+            let input = cpu_limiter_default_slider_input(&self.inputs, tier);
+            let value = value.clamp(1, 100) as f32;
+            input.update(cx, |state, cx| {
+                if (state.value().end() - value).abs() > f32::EPSILON {
+                    state.set_value(value, window, cx);
+                }
+            });
+        }
         for (index, rule) in self.settings.cpu_limiter.rules.iter().enumerate() {
             for tier in ProcessRuleTier::ALL {
                 let Some(input) = cpu_limiter_slider_input(&self.inputs, index, tier) else {
                     continue;
                 };
-                let value = tier.cpu_limiter_allowed_time(rule).clamp(1, 99) as f32;
+                let value = tier.cpu_limiter_allowed_time(rule).clamp(1, 100) as f32;
                 input.update(cx, |state, cx| {
                     if (state.value().end() - value).abs() > f32::EPSILON {
                         state.set_value(value, window, cx);
@@ -1803,10 +1924,10 @@ mod tests {
     use super::parse_cpu_limiter_allowed_time_percent;
 
     #[test]
-    fn cpu_limiter_allowed_time_input_accepts_only_one_through_ninety_nine() {
+    fn cpu_limiter_allowed_time_input_accepts_only_one_through_one_hundred() {
         assert_eq!(parse_cpu_limiter_allowed_time_percent("1"), Some(1));
-        assert_eq!(parse_cpu_limiter_allowed_time_percent("99"), Some(99));
+        assert_eq!(parse_cpu_limiter_allowed_time_percent("100"), Some(100));
         assert_eq!(parse_cpu_limiter_allowed_time_percent("0"), None);
-        assert_eq!(parse_cpu_limiter_allowed_time_percent("100"), None);
+        assert_eq!(parse_cpu_limiter_allowed_time_percent("101"), None);
     }
 }
