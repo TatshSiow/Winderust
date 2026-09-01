@@ -17,14 +17,17 @@ use windows_sys::{
         D3DKMT_SCHEDULINGPRIORITYCLASS,
     },
     Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
+        Foundation::{
+            ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, STILL_ACTIVE,
+        },
         System::{
             JobObjects::{OpenJobObjectW, SetInformationJobObject},
             SystemServices::JOB_OBJECT_SET_ATTRIBUTES,
             Threading::{
-                GetPriorityClass, GetProcessAffinityMask, GetProcessDefaultCpuSets, GetProcessId,
-                GetProcessInformation, GetProcessPriorityBoost, GetProcessTimes, GetThreadId,
-                GetThreadPriority, GetThreadTimes, OpenProcess, OpenThread, ProcessMemoryPriority,
+                GetExitCodeProcess, GetPriorityClass, GetProcessAffinityMask,
+                GetProcessDefaultCpuSets, GetProcessId, GetProcessInformation,
+                GetProcessPriorityBoost, GetProcessTimes, GetThreadId, GetThreadPriority,
+                GetThreadTimes, OpenProcess, OpenThread, ProcessMemoryPriority,
                 ProcessPowerThrottling, QueryFullProcessImageNameW, SetPriorityClass,
                 SetProcessAffinityMask, SetProcessDefaultCpuSets, SetProcessInformation,
                 SetProcessPriorityBoost, SetThreadPriority, MEMORY_PRIORITY_INFORMATION,
@@ -1350,6 +1353,18 @@ fn open_matching_process_with_access(
         };
     }
     let handle = WinHandle::new(handle);
+    let mut exit_code = 0;
+    // SAFETY: handle is live and opened with process query access; exit_code is writable.
+    if unsafe { GetExitCodeProcess(handle.raw(), &mut exit_code) } == 0 {
+        return Err(format!(
+            "GetExitCodeProcess({}) failed with error {}.",
+            identity.id,
+            last_error()
+        ));
+    }
+    if exit_code != STILL_ACTIVE as u32 {
+        return Ok(None);
+    }
     if process_creation_time(handle.raw())? != identity.creation_time
         || !same_executable_path(
             Path::new(&process_executable_path(handle.raw())?),
@@ -1643,7 +1658,7 @@ mod tests {
                 .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
             let executable = Path::new(&system_root).join("System32").join("ping.exe");
             let child = Command::new(executable)
-                .args(["127.0.0.1", "-t"])
+                .args(["127.0.0.1", "-n", "120", "-w", "1000"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
