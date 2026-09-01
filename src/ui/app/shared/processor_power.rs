@@ -112,40 +112,14 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn processor_power_values(&self) -> ProcessorPowerSourceValues {
-        ProcessorPowerSourceValues::new(
-            ProcessorPowerValues::new_with_boost_mode(
-                self.processor_power_ac_core_parking_min as u32,
-                self.processor_power_ac_performance_min as u32,
-                self.processor_power_ac_performance_max as u32,
-                self.processor_power_ac_boost_policy as u32,
-                self.processor_power_ac_boost_mode,
-            ),
-            ProcessorPowerValues::new_with_boost_mode(
-                self.processor_power_battery_core_parking_min as u32,
-                self.processor_power_battery_performance_min as u32,
-                self.processor_power_battery_performance_max as u32,
-                self.processor_power_battery_boost_policy as u32,
-                self.processor_power_battery_boost_mode,
-            ),
-        )
-        .normalized()
+        self.processor_power_draft.normalized()
     }
 
     pub(in crate::ui::app) fn set_processor_power_values(
         &mut self,
         values: ProcessorPowerSourceValues,
     ) {
-        let values = values.normalized();
-        self.processor_power_ac_core_parking_min = values.ac.core_parking_min as u64;
-        self.processor_power_ac_performance_min = values.ac.performance_min as u64;
-        self.processor_power_ac_performance_max = values.ac.performance_max as u64;
-        self.processor_power_ac_boost_policy = values.ac.boost_policy as u64;
-        self.processor_power_ac_boost_mode = values.ac.boost_mode;
-        self.processor_power_battery_core_parking_min = values.battery.core_parking_min as u64;
-        self.processor_power_battery_performance_min = values.battery.performance_min as u64;
-        self.processor_power_battery_performance_max = values.battery.performance_max as u64;
-        self.processor_power_battery_boost_policy = values.battery.boost_policy as u64;
-        self.processor_power_battery_boost_mode = values.battery.boost_mode;
+        self.processor_power_draft = values.normalized();
     }
 
     pub(in crate::ui::app) fn set_processor_power_boost_mode(
@@ -154,8 +128,10 @@ impl WinderustApp {
         boost_mode: ProcessorBoostMode,
     ) {
         match source {
-            ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode = boost_mode,
-            ProcessorPowerSource::Battery => self.processor_power_battery_boost_mode = boost_mode,
+            ProcessorPowerSource::Ac => self.processor_power_draft.ac.boost_mode = boost_mode,
+            ProcessorPowerSource::Battery => {
+                self.processor_power_draft.battery.boost_mode = boost_mode;
+            }
         }
         self.active_power_plan_picker = None;
         self.processor_power_dirty = true;
@@ -166,31 +142,31 @@ impl WinderustApp {
         slider: ProcessorPowerSlider,
         value: u64,
     ) {
-        let value = value.min(100);
+        let value = value.min(100) as u32;
         match slider {
             ProcessorPowerSlider::AcCoreParkingMin => {
-                self.processor_power_ac_core_parking_min = value;
+                self.processor_power_draft.ac.core_parking_min = value;
             }
             ProcessorPowerSlider::AcPerformanceMin => {
-                self.processor_power_ac_performance_min = value;
+                self.processor_power_draft.ac.performance_min = value;
             }
             ProcessorPowerSlider::AcPerformanceMax => {
-                self.processor_power_ac_performance_max = value;
+                self.processor_power_draft.ac.performance_max = value;
             }
             ProcessorPowerSlider::AcBoostPolicy => {
-                self.processor_power_ac_boost_policy = value;
+                self.processor_power_draft.ac.boost_policy = value;
             }
             ProcessorPowerSlider::BatteryCoreParkingMin => {
-                self.processor_power_battery_core_parking_min = value;
+                self.processor_power_draft.battery.core_parking_min = value;
             }
             ProcessorPowerSlider::BatteryPerformanceMin => {
-                self.processor_power_battery_performance_min = value;
+                self.processor_power_draft.battery.performance_min = value;
             }
             ProcessorPowerSlider::BatteryPerformanceMax => {
-                self.processor_power_battery_performance_max = value;
+                self.processor_power_draft.battery.performance_max = value;
             }
             ProcessorPowerSlider::BatteryBoostPolicy => {
-                self.processor_power_battery_boost_policy = value;
+                self.processor_power_draft.battery.boost_policy = value;
             }
         }
         self.processor_power_dirty = true;
@@ -204,35 +180,35 @@ impl WinderustApp {
         for (slider, value) in [
             (
                 ProcessorPowerSlider::AcCoreParkingMin,
-                self.processor_power_ac_core_parking_min,
+                self.processor_power_draft.ac.core_parking_min,
             ),
             (
                 ProcessorPowerSlider::AcPerformanceMin,
-                self.processor_power_ac_performance_min,
+                self.processor_power_draft.ac.performance_min,
             ),
             (
                 ProcessorPowerSlider::AcPerformanceMax,
-                self.processor_power_ac_performance_max,
+                self.processor_power_draft.ac.performance_max,
             ),
             (
                 ProcessorPowerSlider::AcBoostPolicy,
-                self.processor_power_ac_boost_policy,
+                self.processor_power_draft.ac.boost_policy,
             ),
             (
                 ProcessorPowerSlider::BatteryCoreParkingMin,
-                self.processor_power_battery_core_parking_min,
+                self.processor_power_draft.battery.core_parking_min,
             ),
             (
                 ProcessorPowerSlider::BatteryPerformanceMin,
-                self.processor_power_battery_performance_min,
+                self.processor_power_draft.battery.performance_min,
             ),
             (
                 ProcessorPowerSlider::BatteryPerformanceMax,
-                self.processor_power_battery_performance_max,
+                self.processor_power_draft.battery.performance_max,
             ),
             (
                 ProcessorPowerSlider::BatteryBoostPolicy,
-                self.processor_power_battery_boost_policy,
+                self.processor_power_draft.battery.boost_policy,
             ),
         ] {
             let input = processor_power_slider_input(&self.inputs, slider);

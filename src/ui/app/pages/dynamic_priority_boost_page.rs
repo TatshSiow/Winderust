@@ -47,7 +47,7 @@ impl WinderustApp {
             window,
             cx,
         );
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_group_with_help(
                 SettingGroupTarget::DynamicPriorityBoostForegroundDetection,
                 (
@@ -183,7 +183,7 @@ impl WinderustApp {
             )
             .child(self.render_dynamic_priority_boost_exclusions(window, cx));
 
-        self.page_shell(Page::DynamicPriorityBoost, cx)
+        page_body_shell()
             .child(master_card)
             .child(disabled_feature_body(
                 "dynamic-priority-boost-body",
@@ -222,44 +222,26 @@ impl WinderustApp {
             PriorityDefaultTarget::VisibleWindow => "dynamic-priority-boost-visible-window-default",
             PriorityDefaultTarget::Foreground => "dynamic-priority-boost-foreground-default",
         };
-        self.render_dropdown_select(
+        self.render_priority_default_dropdown(
             id,
-            process_dynamic_priority_boost_setting_label(selected_boost),
+            target,
+            selected_boost,
             enabled,
-            DropdownSelectWidth::Standard,
-            ProcessDynamicPriorityBoostSetting::ALL.len(),
+            &ProcessDynamicPriorityBoostSetting::ALL,
+            process_dynamic_priority_boost_setting_label,
+            |app, target, boost| match target {
+                PriorityDefaultTarget::Background => {
+                    app.settings.dynamic_priority_boost.background_boost = boost;
+                }
+                PriorityDefaultTarget::VisibleWindow => {
+                    app.settings.dynamic_priority_boost.visible_window_boost = boost;
+                }
+                PriorityDefaultTarget::Foreground => {
+                    app.settings.dynamic_priority_boost.foreground_boost = boost;
+                }
+            },
             window,
             cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for boost in ProcessDynamicPriorityBoostSetting::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("{id}-option-{boost:?}")),
-                            process_dynamic_priority_boost_setting_label(boost),
-                            selected_boost == boost,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            match target {
-                                PriorityDefaultTarget::Background => {
-                                    app.settings.dynamic_priority_boost.background_boost = boost;
-                                }
-                                PriorityDefaultTarget::VisibleWindow => {
-                                    app.settings.dynamic_priority_boost.visible_window_boost =
-                                        boost;
-                                }
-                                PriorityDefaultTarget::Foreground => {
-                                    app.settings.dynamic_priority_boost.foreground_boost = boost;
-                                }
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
         )
     }
 }

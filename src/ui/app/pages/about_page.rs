@@ -25,7 +25,7 @@ impl WinderustApp {
             }
         });
 
-        self.page_shell(Page::About, cx)
+        page_body_shell()
             .child(section_title_text(t!("nav.about").to_string()))
             .child(
                 branded_panel()

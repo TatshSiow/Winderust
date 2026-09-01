@@ -499,8 +499,8 @@ impl WinderustApp {
                     action_log_feature: ActionLogFeature::MemoryPriority,
                 }
             }
-            Page::CoreLimiter => {
-                let status = &self.feature_status.core_limiter;
+            Page::CpuLimiter => {
+                let status = &self.feature_status.cpu_limiter;
                 FeatureStatusSummary {
                     state: feature_run_state(status.enabled, false),
                     scanned: Some(status.scanned_processes),
@@ -508,7 +508,7 @@ impl WinderustApp {
                     protected_or_denied: None,
                     skipped: Some(status.skipped_processes),
                     last_error: status.last_error.clone(),
-                    action_log_feature: ActionLogFeature::CoreLimiter,
+                    action_log_feature: ActionLogFeature::CpuLimiter,
                 }
             }
             Page::CpuSetsSoft | Page::ProcessorAffinityHard => {

@@ -15,21 +15,18 @@ impl WinderustApp {
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content =
-            self.page_shell(Page::ByCpuLoad, cx)
-                .child(feature_toggle_switch_with_help(
-                    "cpu-usage-enabled",
-                    t!("by_cpu_load.enable").to_string(),
-                    help,
-                    enabled,
-                    cx.listener(|app, checked, _, cx| {
-                        app.settings.by_cpu_load.enabled = *checked;
-                        cx.notify();
-                    }),
-                ));
+        let mut content = page_body_shell().child(feature_toggle_switch_with_help(
+            "cpu-usage-enabled",
+            t!("by_cpu_load.enable").to_string(),
+            help,
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.by_cpu_load.enabled = *checked;
+                cx.notify();
+            }),
+        ));
 
-        let mut body =
-            feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
+        let mut body = feature_body().child(section_title_text(t!("common.rules").to_string()));
         body = body.child(create_rule_card(
             "create-cpu-rule-card",
             t!("by_cpu_load.rule_title").to_string(),
@@ -180,6 +177,11 @@ impl WinderustApp {
                             state: &threshold_state,
                             enabled: feature_enabled,
                             delta: 1_u8,
+                            range: SliderRange {
+                                min: 0,
+                                max: 100,
+                                step: 1,
+                            },
                         },
                         window,
                         cx,
@@ -216,6 +218,11 @@ impl WinderustApp {
                             state: &upper_threshold_state,
                             enabled: feature_enabled,
                             delta: 1_u8,
+                            range: SliderRange {
+                                min: 0,
+                                max: 100,
+                                step: 1,
+                            },
                         },
                         window,
                         cx,

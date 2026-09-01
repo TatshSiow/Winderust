@@ -649,7 +649,6 @@ pub(crate) fn cpu_allocation_action_log_context(
             ActionLogFeature::ProcessorAffinityHard,
             "Processor Affinity (Hard)",
         ),
-        ControlOwner::CoreLimiter => (ActionLogFeature::CoreLimiter, "Core Limiter"),
         ControlOwner::AdaptiveEngine => (ActionLogFeature::CpuScheduler, "CPU Scheduler"),
         unsupported => {
             unreachable!("unsupported CPU allocation Action Log owner: {unsupported:?}")
@@ -723,7 +722,6 @@ fn cpu_allocation_request_label(request: CpuAllocationRequest) -> &'static str {
     match request {
         CpuAllocationRequest::SoftCpuSets { .. } => "CPU Sets (Soft)",
         CpuAllocationRequest::HardAffinity { .. } => "Processor Affinity (Hard)",
-        CpuAllocationRequest::LimitLogicalProcessors { .. } => "Core Limiter",
     }
 }
 
@@ -1254,10 +1252,12 @@ mod tests {
             CpuAllocationReconciliationSummary {
                 applications: vec![
                     crate::control::cpu_allocation::CpuAllocationReconciledApplication {
-                        owner: ControlOwner::CoreLimiter,
+                        owner: ControlOwner::AdaptiveEngine,
                         process_id: 42,
                         process_name: "worker.exe".to_owned(),
-                        request: CpuAllocationRequest::LimitLogicalProcessors { maximum: 2 },
+                        request: CpuAllocationRequest::HardAffinity {
+                            logical_processor_mask: 0b0011,
+                        },
                     },
                 ],
                 ..Default::default()
@@ -1267,9 +1267,9 @@ mod tests {
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::CoreLimiter);
+        assert_eq!(entries[0].feature, ActionLogFeature::CpuScheduler);
         assert_eq!(entries[0].result, ActionLogResult::Applied);
-        assert!(entries[0].reason.contains("Core Limiter"));
+        assert!(entries[0].reason.contains("Processor Affinity (Hard)"));
     }
 
     #[test]

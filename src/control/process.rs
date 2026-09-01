@@ -16,7 +16,6 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ControlOwner {
     BackgroundEfficiency,
-    CoreLimiter,
     CpuSetsSoft,
     DynamicPriorityBoost,
     GpuPriority,
@@ -245,14 +244,14 @@ pub(crate) fn open_process_for_termination(
     )
 }
 
-pub(crate) fn open_process_for_suspension(
+pub(crate) fn open_process_for_job_assignment(
     target: &ProcessControlTarget,
     allow_cross_session_process_control: bool,
 ) -> Result<(ProcessIdentity, WinHandle), ProcessControlError> {
     open_process_with_access(
         target,
         allow_cross_session_process_control,
-        ProcessAccess::Suspension,
+        ProcessAccess::JobAssignment,
         ProcessActionAccess::AssignToJob,
     )
 }
@@ -389,7 +388,6 @@ mod tests {
         assert!(ControlOwner::IoPriority.is_automatic());
         assert!(ControlOwner::ProcessPriority.is_automatic());
         assert!(ControlOwner::BackgroundEfficiency.is_automatic());
-        assert!(ControlOwner::CoreLimiter.is_automatic());
         assert!(ControlOwner::CpuSetsSoft.is_automatic());
         assert!(ControlOwner::ProcessorAffinityHard.is_automatic());
         assert!(ControlOwner::CpuSchedulerFocusPriority.is_automatic());

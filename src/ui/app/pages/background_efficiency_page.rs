@@ -37,7 +37,7 @@ impl WinderustApp {
             cx,
         );
         let enabled = self.settings.background_efficiency.enabled;
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_group_with_help(
                 SettingGroupTarget::BackgroundEfficiencyForegroundDetection,
                 (
@@ -166,7 +166,7 @@ impl WinderustApp {
             t!("background_efficiency.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::BackgroundEfficiency, cx)
+        page_body_shell()
             .child(self.render_background_efficiency_enable_card(enabled, help, window, cx))
             .child(disabled_feature_body(
                 "efficiency-exclusions-body",

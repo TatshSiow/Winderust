@@ -14,7 +14,7 @@ pub(crate) enum ProcessAccess {
     SafetyOnly,
     WorkingSetTrim,
     Termination,
-    Suspension,
+    JobAssignment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +53,7 @@ fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
     const SAFETY_ONLY: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION];
     const WORKING_SET_TRIM: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA];
     const TERMINATION: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE];
-    const SUSPENSION: &[u32] = &[
+    const JOB_ASSIGNMENT: &[u32] = &[
         PROCESS_QUERY_LIMITED_INFORMATION
             | PROCESS_SET_QUOTA
             | PROCESS_TERMINATE
@@ -66,7 +66,7 @@ fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
         ProcessAccess::SafetyOnly => SAFETY_ONLY,
         ProcessAccess::WorkingSetTrim => WORKING_SET_TRIM,
         ProcessAccess::Termination => TERMINATION,
-        ProcessAccess::Suspension => SUSPENSION,
+        ProcessAccess::JobAssignment => JOB_ASSIGNMENT,
     }
 }
 
@@ -95,14 +95,14 @@ mod tests {
     }
 
     #[test]
-    fn suspension_prefers_synchronize_but_retains_the_existing_fallback() {
-        assert_eq!(desired_access_masks(ProcessAccess::Suspension).len(), 2);
+    fn job_assignment_prefers_synchronize_but_retains_the_existing_fallback() {
+        assert_eq!(desired_access_masks(ProcessAccess::JobAssignment).len(), 2);
         assert_ne!(
-            desired_access_masks(ProcessAccess::Suspension)[0] & PROCESS_SYNCHRONIZE,
+            desired_access_masks(ProcessAccess::JobAssignment)[0] & PROCESS_SYNCHRONIZE,
             0
         );
         assert_eq!(
-            desired_access_masks(ProcessAccess::Suspension)[1] & PROCESS_SYNCHRONIZE,
+            desired_access_masks(ProcessAccess::JobAssignment)[1] & PROCESS_SYNCHRONIZE,
             0
         );
     }

@@ -2,6 +2,15 @@ use super::*;
 use crate::action_log::{ActionLogFeature, ActionLogResult};
 use crate::runtime::observations::CycleObservations;
 
+fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
+    AppSuspensionSnapshot {
+        status_unknown: true,
+        status: AppSuspensionStatus::Error(error.clone()),
+        last_error: Some(error),
+        ..Default::default()
+    }
+}
+
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine.processor_power_policy_enabled
 }
@@ -62,17 +71,17 @@ pub(super) struct RuntimeCore {
     adaptive_io_usage: IoUsageSnapshot,
     next_adaptive_io_refresh: Option<Instant>,
     adaptive_foreground_process_id: Option<u32>,
-    idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     background_efficiency_manager: BackgroundEfficiencyManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
-    pub(super) app_suspension_controller: SuspensionController,
+    pub(super) app_suspension_controller: Arc<Mutex<SuspensionController>>,
     last_app_suspension_shell_user_intent: Option<Instant>,
     cpu_sets_soft_manager: CpuAllocationManager,
     processor_affinity_hard_manager: CpuAllocationManager,
     cpu_allocation_coordinator: CpuAllocationCoordinator,
-    core_limiter_manager: CoreLimiterManager,
+    cpu_limiter_controller: Option<CpuLimiterController>,
+    cpu_limiter_manager: CpuLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
     cpu_scheduler_manager: CpuSchedulerManager,
@@ -107,6 +116,21 @@ pub(super) struct ProcessControlCommandStatuses {
 }
 
 impl RuntimeCore {
+    fn with_app_suspension<R>(
+        &mut self,
+        apply: impl FnOnce(&mut AppSuspensionManager, &mut SuspensionController, &mut ActionLog) -> R,
+    ) -> Result<R, String> {
+        let suspension = Arc::clone(&self.app_suspension_controller);
+        let mut controller = suspension
+            .lock()
+            .map_err(|_| "Shared suspension state is unavailable.".to_owned())?;
+        Ok(apply(
+            &mut self.app_suspension_manager,
+            &mut controller,
+            &mut self.action_log,
+        ))
+    }
+
     pub(super) fn shutdown(&mut self) -> Result<(), String> {
         if self.shutdown_started {
             return Ok(());
@@ -133,10 +157,15 @@ impl RuntimeCore {
         self.run_by_running_app_update(&settings, &mut observations);
         collect_restore_error(
             &mut errors,
-            "Core Limiter",
-            self.run_core_limiter_update(&settings, &mut observations)
+            "CPU Limiter",
+            self.run_cpu_limiter_update(&settings, &mut observations)
                 .last_error,
         );
+        if let Some(mut controller) = self.cpu_limiter_controller.take() {
+            if let Err(error) = controller.shutdown() {
+                errors.push(format!("CPU Limiter restoration failed: {error}"));
+            }
+        }
         collect_restore_error(
             &mut errors,
             "Processor Affinity (Hard)",
@@ -155,11 +184,20 @@ impl RuntimeCore {
             self.run_app_suspension_update(&settings, &[], &mut observations)
                 .last_error,
         );
-        if let Err(error) = self
-            .app_suspension_manager
-            .shutdown(&mut self.app_suspension_controller, &mut self.action_log)
-        {
-            errors.push(format!("App Suspension restoration failed: {error}"));
+        let suspension = Arc::clone(&self.app_suspension_controller);
+        match suspension.lock() {
+            Ok(mut controller) => {
+                if let Err(error) = self
+                    .app_suspension_manager
+                    .shutdown(&mut controller, &mut self.action_log)
+                {
+                    errors.push(format!("App Suspension restoration failed: {error}"));
+                }
+                if let Err(error) = controller.shutdown() {
+                    errors.push(format!("Suspension restoration failed: {error}"));
+                }
+            }
+            Err(_) => errors.push("Suspension restoration state is unavailable.".to_owned()),
         }
         collect_restore_error(
             &mut errors,
@@ -302,7 +340,7 @@ impl RuntimeCore {
         now: Instant,
     ) -> crate::activity::ActivitySnapshot {
         let idle_timeout = Duration::from_secs(settings.by_activity.idle_timeout_seconds);
-        let snapshot = self.idle_detector.snapshot(idle_timeout);
+        let snapshot = activity_snapshot(idle_timeout);
         let controller_idle_for = settings
             .by_activity
             .input_detection
@@ -338,16 +376,19 @@ impl RuntimeCore {
         observations: &mut CycleObservations,
     ) -> AppSuspensionSnapshot {
         let foreground_process_id = observations.foreground_process_id();
-        self.app_suspension_manager.update(
-            &mut self.app_suspension_controller,
-            &settings.app_suspension,
-            settings.general.enabled,
-            settings.general.allow_cross_session_process_control,
-            foreground_process_id,
-            manual_freeze_processes,
-            observations,
-            &mut self.action_log,
-        )
+        self.with_app_suspension(|manager, controller, action_log| {
+            manager.update(
+                controller,
+                &settings.app_suspension,
+                settings.general.enabled,
+                settings.general.allow_cross_session_process_control,
+                foreground_process_id,
+                manual_freeze_processes,
+                observations,
+                action_log,
+            )
+        })
+        .unwrap_or_else(app_suspension_lock_failure)
     }
 
     pub(super) fn run_app_suspension_foreground_release(
@@ -357,30 +398,33 @@ impl RuntimeCore {
         let now = Instant::now();
         if shell_window_mouse_pressed() && self.app_suspension_shell_user_intent_due(now) {
             self.last_app_suspension_shell_user_intent = Some(now);
-            if let Some(status) = self
-                .app_suspension_manager
-                .release_all_suspended_processes_for_user_intent(
-                    &mut self.app_suspension_controller,
-                    &mut self.action_log,
-                )
-            {
+            let status = self
+                .with_app_suspension(|manager, controller, action_log| {
+                    manager.release_all_suspended_processes_for_user_intent(controller, action_log)
+                })
+                .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)));
+            if let Some(status) = status {
                 return Some(status);
             }
         }
 
         let foreground_process_id = observations.foreground_process_id();
         let foreground_process = observations.foreground_process();
-        if let Some(status) = foreground_process_id.and_then(|process_id| {
-            self.app_suspension_manager.release_interactive_process(
-                &mut self.app_suspension_controller,
-                process_id,
-                foreground_process
-                    .as_ref()
-                    .filter(|process| process.id == process_id)
-                    .map(|process| process.executable_path.as_path()),
-                &mut self.action_log,
-            )
-        }) {
+        let status = foreground_process_id.and_then(|process_id| {
+            self.with_app_suspension(|manager, controller, action_log| {
+                manager.release_interactive_process(
+                    controller,
+                    process_id,
+                    foreground_process
+                        .as_ref()
+                        .filter(|process| process.id == process_id)
+                        .map(|process| process.executable_path.as_path()),
+                    action_log,
+                )
+            })
+            .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
+        });
+        if let Some(status) = status {
             return Some(status);
         }
 
@@ -389,27 +433,32 @@ impl RuntimeCore {
             return None;
         }
         let cursor_process = cursor_process();
-        self.app_suspension_manager.release_interactive_process(
-            &mut self.app_suspension_controller,
-            cursor_process_id,
-            cursor_process
-                .as_ref()
-                .filter(|process| process.id == cursor_process_id)
-                .map(|process| process.executable_path.as_path()),
-            &mut self.action_log,
-        )
+        self.with_app_suspension(|manager, controller, action_log| {
+            manager.release_interactive_process(
+                controller,
+                cursor_process_id,
+                cursor_process
+                    .as_ref()
+                    .filter(|process| process.id == cursor_process_id)
+                    .map(|process| process.executable_path.as_path()),
+                action_log,
+            )
+        })
+        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_app_switch_release(
         &mut self,
         observations: &mut CycleObservations,
     ) -> Option<AppSuspensionSnapshot> {
-        self.app_suspension_manager
-            .release_window_owner_processes_for_user_intent(
-                &mut self.app_suspension_controller,
+        self.with_app_suspension(|manager, controller, action_log| {
+            manager.release_window_owner_processes_for_user_intent(
+                controller,
                 observations.top_level_window_process_ids().as_ref(),
-                &mut self.action_log,
+                action_log,
             )
+        })
+        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_shell_click_release(
@@ -419,11 +468,10 @@ impl RuntimeCore {
             return None;
         }
 
-        self.app_suspension_manager
-            .release_all_suspended_processes_for_user_intent(
-                &mut self.app_suspension_controller,
-                &mut self.action_log,
-            )
+        self.with_app_suspension(|manager, controller, action_log| {
+            manager.release_all_suspended_processes_for_user_intent(controller, action_log)
+        })
+        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {
@@ -477,15 +525,43 @@ impl RuntimeCore {
         )
     }
 
-    pub(super) fn run_core_limiter_update(
+    pub(super) fn run_cpu_limiter_update(
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> CoreLimiterSnapshot {
+    ) -> CpuLimiterSnapshot {
+        if self.cpu_limiter_controller.is_none()
+            && (!settings.general.enabled || !settings.cpu_limiter.enabled)
+        {
+            return CpuLimiterSnapshot {
+                enabled: settings.general.enabled && settings.cpu_limiter.enabled,
+                message: if settings.general.enabled {
+                    "CPU Limiter disabled."
+                } else {
+                    "Automation disabled."
+                }
+                .to_owned(),
+                ..Default::default()
+            };
+        }
         let foreground_process_id = observations.foreground_process_id();
-        self.core_limiter_manager.update(
-            &mut self.cpu_allocation_coordinator,
-            &settings.core_limiter,
+        let controller = match self.cpu_limiter_controller.as_mut() {
+            Some(controller) => controller,
+            None => match CpuLimiterController::new(Arc::clone(&self.app_suspension_controller)) {
+                Ok(controller) => self.cpu_limiter_controller.insert(controller),
+                Err(error) => {
+                    return CpuLimiterSnapshot {
+                        enabled: settings.general.enabled && settings.cpu_limiter.enabled,
+                        message: "CPU Limiter timing worker is unavailable.".to_owned(),
+                        last_error: Some(error),
+                        ..Default::default()
+                    };
+                }
+            },
+        };
+        self.cpu_limiter_manager.update(
+            controller,
+            &settings.cpu_limiter,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
@@ -899,20 +975,28 @@ impl RuntimeCore {
                     suspend,
                     result,
                 } => {
-                    let results = targets
-                        .into_iter()
-                        .map(|target| {
-                            let target = target.map_err(|error| error.to_string())?;
-                            self.app_suspension_manager.apply_manual_process_action(
-                                &mut self.app_suspension_controller,
-                                &target,
-                                suspend,
-                                settings.general.allow_cross_session_process_control,
-                                &mut self.action_log,
-                            )
-                        })
-                        .collect();
-                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                    match self.with_app_suspension(|manager, controller, action_log| {
+                        targets
+                            .into_iter()
+                            .map(|target| {
+                                let target = target.map_err(|error| error.to_string())?;
+                                manager.apply_manual_process_action(
+                                    controller,
+                                    &target,
+                                    suspend,
+                                    settings.general.allow_cross_session_process_control,
+                                    action_log,
+                                )
+                            })
+                            .collect()
+                    }) {
+                        Ok(results) => {
+                            let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                        }
+                        Err(error) => {
+                            let _ = result.try_send(Err(RuntimeCommandError::CommandFailed(error)));
+                        }
+                    }
                 }
                 ProcessControlCommand::AppSuspensionPathAction {
                     executable_path,
@@ -935,7 +1019,7 @@ impl RuntimeCore {
                                         || status.unsupported
                                         || status.status_unknown
                                     {
-                                        status.message.clone()
+                                        status.status.to_string()
                                     } else {
                                         error
                                     },
@@ -944,12 +1028,14 @@ impl RuntimeCore {
                         (status, reply)
                     } else {
                         let status = self
-                            .app_suspension_manager
-                            .release_suspended_path_for_user_intent(
-                                &mut self.app_suspension_controller,
-                                Path::new(&executable_path),
-                                &mut self.action_log,
-                            );
+                            .with_app_suspension(|manager, controller, action_log| {
+                                manager.release_suspended_path_for_user_intent(
+                                    controller,
+                                    Path::new(&executable_path),
+                                    action_log,
+                                )
+                            })
+                            .unwrap_or_else(app_suspension_lock_failure);
                         (status.clone(), Ok(status))
                     };
                     let _ = result.try_send(reply);
@@ -973,6 +1059,7 @@ impl RuntimeCore {
     }
 
     pub(super) fn has_managed_process_control_state(&self) -> bool {
+        let app_suspension_active = self.app_suspension_active();
         self.power_plan_controller.adaptive_active()
             || self.cpu_allocation_coordinator.has_managed_state()
             || self.cpu_allocation_coordinator.has_pending_reconciliation()
@@ -983,8 +1070,19 @@ impl RuntimeCore {
             || self.memory_priority_controller.has_managed_state()
             || self.priority_efficiency_controller.has_managed_state()
             || self
-                .app_suspension_manager
-                .has_suspended_processes(&self.app_suspension_controller)
+                .cpu_limiter_controller
+                .as_ref()
+                .is_some_and(CpuLimiterController::has_managed_state)
+            || app_suspension_active
+    }
+
+    pub(super) fn app_suspension_active(&self) -> bool {
+        self.app_suspension_controller
+            .lock()
+            .map_or(true, |controller| {
+                self.app_suspension_manager
+                    .has_suspended_processes(&controller)
+            })
     }
 
     pub(super) fn adaptive_power_plan_active(&self) -> bool {

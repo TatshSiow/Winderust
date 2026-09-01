@@ -127,12 +127,14 @@ Prefer visible state, compact controls, and predictable rows over large illustra
   Background, and Actions table pattern as CPU allocation. Each policy column selects Default,
   Enabled, or Disabled; Default inherits the matching page-wide Efficiency Mode value.
 
-### Priority Control and Core Limiter
+### Priority Control and CPU Limiter
 
 - Priority Control custom rules use the same three policy columns and independently select the
   priority for Focus, Visible Window, and Background.
-- Core Limiter uses the same three policy columns with Default, Enabled, and Disabled. Threshold,
-  sustain, cooldown, and processor-limit controls remain in the expandable rule details.
+- CPU Limiter uses the same three policy columns with Follow Default, Custom, and Unlimited. Focus,
+  Visible Window, and Background have editable 1% to 100% page defaults. A rule's expandable
+  details show a 1% to 100% Allowed CPU Time slider only for Custom tiers, and an inactive rule
+  retains its configured values while those sliders are disabled. A 100% target is Unlimited.
 
 ## Localization
 

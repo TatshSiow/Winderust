@@ -299,6 +299,56 @@ impl WinderustApp {
 
     #[expect(
         clippy::too_many_arguments,
+        reason = "keeps six typed default selectors on one rendering path"
+    )]
+    pub(in crate::ui::app) fn render_priority_default_dropdown<T>(
+        &self,
+        id: &'static str,
+        target: PriorityDefaultTarget,
+        selected: T,
+        enabled: bool,
+        values: &[T],
+        label: impl Fn(T) -> String + Copy + 'static,
+        set: impl Fn(&mut Self, PriorityDefaultTarget, T) + Copy + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement
+    where
+        T: PriorityDropdownValue + PartialEq + std::fmt::Debug + 'static,
+    {
+        self.render_dropdown_select(
+            id,
+            label(selected),
+            enabled,
+            DropdownSelectWidth::Standard,
+            values.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for value in values.iter().copied() {
+                    options = options.child(
+                        priority_dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{value:?}")),
+                            label(value),
+                            value,
+                            selected == value,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            set(app, target, value);
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "keeps six custom-rule dropdowns on one rendering path"
     )]
     fn render_priority_rule_dropdown<T>(
@@ -314,7 +364,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement
     where
-        T: Copy + PartialEq + std::fmt::Debug + 'static,
+        T: PriorityDropdownValue + PartialEq + std::fmt::Debug + 'static,
     {
         let side = tier.key();
         self.render_dropdown_select(
@@ -329,9 +379,10 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for value in values.iter().copied() {
                     options = options.child(
-                        dropdown_option_row(
+                        priority_dropdown_option_row(
                             SharedString::from(format!("{id_prefix}-{side}-{index}-{value:?}")),
                             label(value),
+                            value,
                             selected == value,
                             cx,
                         )
@@ -401,44 +452,26 @@ impl WinderustApp {
             } else {
                 &ProcessIoPrioritySetting::ALL
             };
-        let dropdown = self.render_dropdown_select(
+        self.render_priority_default_dropdown(
             id,
-            process_io_priority_setting_label(selected_priority),
+            target,
+            selected_priority,
             enabled,
-            DropdownSelectWidth::Standard,
-            priorities.len(),
+            priorities,
+            process_io_priority_setting_label,
+            |app, target, priority| match target {
+                PriorityDefaultTarget::Background => {
+                    app.settings.io_priority.background_priority = priority;
+                }
+                PriorityDefaultTarget::VisibleWindow => {
+                    app.settings.io_priority.visible_window_priority = priority;
+                }
+                PriorityDefaultTarget::Foreground => {
+                    app.settings.io_priority.foreground_priority = priority;
+                }
+            },
             window,
             cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for priority in priorities.iter().copied() {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("{id}-option-{priority:?}")),
-                            process_io_priority_setting_label(priority),
-                            selected_priority == priority,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            match target {
-                                PriorityDefaultTarget::Background => {
-                                    app.settings.io_priority.background_priority = priority;
-                                }
-                                PriorityDefaultTarget::VisibleWindow => {
-                                    app.settings.io_priority.visible_window_priority = priority;
-                                }
-                                PriorityDefaultTarget::Foreground => {
-                                    app.settings.io_priority.foreground_priority = priority;
-                                }
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
-        dropdown
+        )
     }
 }

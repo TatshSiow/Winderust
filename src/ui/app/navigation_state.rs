@@ -9,11 +9,7 @@ impl WinderustApp {
             return;
         }
 
-        clear_page_hovered();
-        self.sync_power_source_editor();
-        self.process_list.details = None;
-        self.schedule_process_refresh_for_current_page();
-        cx.notify();
+        self.finish_navigation(cx);
     }
 
     pub(in crate::ui::app) fn navigate_back(&mut self, cx: &mut Context<Self>) {
@@ -24,11 +20,7 @@ impl WinderustApp {
             return;
         }
 
-        clear_page_hovered();
-        self.sync_power_source_editor();
-        self.process_list.details = None;
-        self.schedule_process_refresh_for_current_page();
-        cx.notify();
+        self.finish_navigation(cx);
     }
 
     pub(in crate::ui::app) fn navigate_forward(&mut self, cx: &mut Context<Self>) {
@@ -39,6 +31,10 @@ impl WinderustApp {
             return;
         }
 
+        self.finish_navigation(cx);
+    }
+
+    fn finish_navigation(&mut self, cx: &mut Context<Self>) {
         clear_page_hovered();
         self.sync_power_source_editor();
         self.process_list.details = None;
@@ -167,9 +163,5 @@ impl WinderustApp {
             Page::ActionLog => Some(action_log_page_help()),
             _ => None,
         }
-    }
-
-    pub(in crate::ui::app) fn page_shell(&self, _page: Page, _cx: &mut Context<Self>) -> gpui::Div {
-        page_body_shell()
     }
 }

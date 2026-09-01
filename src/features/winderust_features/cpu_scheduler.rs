@@ -1723,7 +1723,7 @@ fn cached_executable_path(
 }
 
 fn cpu_scheduler_priority_value(priority: ProcessPrioritySetting) -> Option<PriorityClassValue> {
-    PriorityClassValue::from_setting(priority.safe_for_automatic_control())
+    PriorityClassValue::from_setting(priority)
 }
 
 fn cpu_scheduler_priority_target_key(process_id: u32, target: &PriorityTarget) -> ProcessTargetKey {

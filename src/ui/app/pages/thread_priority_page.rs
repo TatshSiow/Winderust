@@ -63,7 +63,7 @@ impl WinderustApp {
             window,
             cx,
         );
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_group_with_help(
                 SettingGroupTarget::ThreadPriorityForegroundDetection,
                 (
@@ -227,7 +227,7 @@ impl WinderustApp {
             )
             .child(self.render_thread_priority_exclusions(window, cx));
 
-        self.page_shell(Page::ThreadPriority, cx)
+        page_body_shell()
             .child(master_card)
             .child(disabled_feature_body(
                 "thread-priority-body",
@@ -272,43 +272,26 @@ impl WinderustApp {
             } else {
                 &ProcessThreadPrioritySetting::ALL
             };
-        self.render_dropdown_select(
+        self.render_priority_default_dropdown(
             id,
-            process_thread_priority_setting_label(selected_priority),
+            target,
+            selected_priority,
             enabled,
-            DropdownSelectWidth::Standard,
-            priorities.len(),
+            priorities,
+            process_thread_priority_setting_label,
+            |app, target, priority| match target {
+                PriorityDefaultTarget::Background => {
+                    app.settings.thread_priority.background_priority = priority;
+                }
+                PriorityDefaultTarget::VisibleWindow => {
+                    app.settings.thread_priority.visible_window_priority = priority;
+                }
+                PriorityDefaultTarget::Foreground => {
+                    app.settings.thread_priority.foreground_priority = priority;
+                }
+            },
             window,
             cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for priority in priorities.iter().copied() {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("{id}-option-{priority:?}")),
-                            process_thread_priority_setting_label(priority),
-                            selected_priority == priority,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            match target {
-                                PriorityDefaultTarget::Background => {
-                                    app.settings.thread_priority.background_priority = priority;
-                                }
-                                PriorityDefaultTarget::VisibleWindow => {
-                                    app.settings.thread_priority.visible_window_priority = priority;
-                                }
-                                PriorityDefaultTarget::Foreground => {
-                                    app.settings.thread_priority.foreground_priority = priority;
-                                }
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
         )
     }
 }

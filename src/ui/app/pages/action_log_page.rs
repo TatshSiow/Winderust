@@ -65,7 +65,7 @@ impl WinderustApp {
             );
         let page_controls = action_log_page_controls(visible_count, current_page, page_count, cx);
 
-        self.page_shell(Page::ActionLog, cx)
+        page_body_shell()
             .child(self.render_action_log_feature_filter(window, cx))
             .child(self.render_action_log_result_filter(window, cx))
             .child(action_log_command_row(
@@ -448,7 +448,7 @@ pub(in crate::ui::app) fn action_log_feature_label(feature: ActionLogFeature) ->
         ActionLogFeature::CpuSetsSoft => t!("nav.cpu_sets_soft").to_string(),
         ActionLogFeature::ProcessorAffinityHard => t!("nav.processor_affinity_hard").to_string(),
         ActionLogFeature::BackgroundEfficiency => t!("nav.background_efficiency").to_string(),
-        ActionLogFeature::CoreLimiter => t!("nav.core_limiter").to_string(),
+        ActionLogFeature::CpuLimiter => t!("nav.cpu_limiter").to_string(),
         ActionLogFeature::ByForeground => t!("nav.by_foreground").to_string(),
         ActionLogFeature::ByRunningApp => t!("nav.by_running_app").to_string(),
         ActionLogFeature::ByCpuLoad => t!("nav.by_cpu_load").to_string(),
@@ -556,7 +556,7 @@ mod tests {
             ActionLogEntry {
                 sequence: 1,
                 timestamp_epoch_ms: 1_700_000_000_000,
-                feature: ActionLogFeature::CoreLimiter,
+                feature: ActionLogFeature::CpuLimiter,
                 process_id: Some(42),
                 process_name: "worker.exe".to_owned(),
                 result: ActionLogResult::Failed,
@@ -576,7 +576,7 @@ mod tests {
         let filtered_entries = action_log_filtered_entries(
             &entries,
             ActionLogResultFilter::Failed,
-            ActionLogFeatureFilter::Feature(ActionLogFeature::CoreLimiter),
+            ActionLogFeatureFilter::Feature(ActionLogFeature::CpuLimiter),
         );
 
         assert_eq!(filtered_entries.len(), 1);
@@ -634,7 +634,7 @@ impl ActionLogFeatureFilter {
         Self::Feature(ActionLogFeature::CpuSetsSoft),
         Self::Feature(ActionLogFeature::ProcessorAffinityHard),
         Self::Feature(ActionLogFeature::BackgroundEfficiency),
-        Self::Feature(ActionLogFeature::CoreLimiter),
+        Self::Feature(ActionLogFeature::CpuLimiter),
         Self::Feature(ActionLogFeature::ByForeground),
         Self::Feature(ActionLogFeature::ByRunningApp),
         Self::Feature(ActionLogFeature::ByCpuLoad),

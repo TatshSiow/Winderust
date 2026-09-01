@@ -25,7 +25,7 @@ pub enum ActionLogFeature {
     CpuSetsSoft,
     ProcessorAffinityHard,
     BackgroundEfficiency,
-    CoreLimiter,
+    CpuLimiter,
     ByForeground,
     ByRunningApp,
     ByCpuLoad,
@@ -199,21 +199,21 @@ mod tests {
         let mut log = ActionLog::new(2);
 
         log.record(
-            ActionLogFeature::CoreLimiter,
+            ActionLogFeature::CpuLimiter,
             Some(1),
             "a.exe",
             ActionLogResult::Applied,
             "first",
         );
         log.record(
-            ActionLogFeature::CoreLimiter,
+            ActionLogFeature::CpuLimiter,
             Some(2),
             "b.exe",
             ActionLogResult::Applied,
             "second",
         );
         log.record(
-            ActionLogFeature::CoreLimiter,
+            ActionLogFeature::CpuLimiter,
             Some(3),
             "c.exe",
             ActionLogResult::Applied,
@@ -231,7 +231,7 @@ mod tests {
     fn action_log_clear_removes_entries_without_resetting_sequence() {
         let mut log = ActionLog::new(8);
         log.record(
-            ActionLogFeature::CoreLimiter,
+            ActionLogFeature::CpuLimiter,
             Some(1),
             "a.exe",
             ActionLogResult::Applied,
@@ -239,7 +239,7 @@ mod tests {
         );
         log.clear();
         log.record(
-            ActionLogFeature::CoreLimiter,
+            ActionLogFeature::CpuLimiter,
             Some(2),
             "b.exe",
             ActionLogResult::Applied,

@@ -6,7 +6,7 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::Win32PrioritySeparation, cx)
+        page_body_shell()
             .child(self.render_win32_priority_separation_card(window, cx))
             .into_any_element()
     }

@@ -16,7 +16,7 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
 - Background Efficiency, implemented with Windows EcoQoS at the operating-system
   boundary.
-- CPU Control through Core Limiter, CPU Sets (Soft), and Processor Affinity (Hard).
+- CPU Control through CPU Limiter, CPU Sets (Soft), and Processor Affinity (Hard).
 - App Suspension for explicit opt-in apps.
 - Priority Control through Process Priority, Thread Priority, Dynamic Priority
   Boost, I/O Priority, GPU Priority, and Memory Priority.
@@ -32,7 +32,7 @@ Covered enough for day-to-day responsiveness:
 - ProBalance-like restraint.
 - Foreground exclusions.
 - Per-process policy rules.
-- Core Limiter.
+- Wall-clock CPU Limiter duty cycling.
 - Priority and per-app CPU allocation controls.
 - Action history.
 - Process table/policy surface.

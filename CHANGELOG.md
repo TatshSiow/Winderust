@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## 0.8.0-alpha - 2026-09-01
+
+### Added
+
+- Gate and flag risky values.
+
+### Changed
+
+- Share state and cotrols consolidation.
+- Core Limiter Changed to CPU Limiter. (CPU Usage supression)
+  - This changes previous core limiter to only utilize CPU Affinity, which is more like a duplicated Hard Affinity Control, this differs and does more than that.
+
+### Fixed
+
+- Align priority options with control pages.
+
+
 ## 0.7.0-alpha - 2026-08-23
 
 ### Added

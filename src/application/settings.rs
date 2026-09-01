@@ -59,7 +59,7 @@ pub struct AutoExclusionPatch {
     pub app_suspension: Vec<String>,
     pub cpu_sets_soft: Vec<String>,
     pub processor_affinity_hard: Vec<String>,
-    pub core_limiter: Vec<String>,
+    pub cpu_limiter: Vec<String>,
     pub cpu_scheduler: Vec<String>,
     pub io_priority: Vec<String>,
     pub process_priority: Vec<String>,
@@ -77,7 +77,7 @@ impl Default for AutoExclusionPatch {
             app_suspension: Vec::new(),
             cpu_sets_soft: Vec::new(),
             processor_affinity_hard: Vec::new(),
-            core_limiter: Vec::new(),
+            cpu_limiter: Vec::new(),
             cpu_scheduler: Vec::new(),
             io_priority: Vec::new(),
             process_priority: Vec::new(),
@@ -563,10 +563,10 @@ fn apply_auto_exclusion_patch_to_profile(
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
-        &mut settings.core_limiter.rules,
-        &patch.core_limiter,
+        &mut settings.cpu_limiter.rules,
+        &patch.cpu_limiter,
         false,
-        core_limiter_rule,
+        cpu_limiter_rule,
         |rule| &rule.executable_path,
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
@@ -693,17 +693,16 @@ fn cpu_allocation_rule(path: &str) -> crate::config::CpuAllocationRule {
     }
 }
 
-fn core_limiter_rule(path: &str) -> crate::config::CoreLimiterRule {
-    crate::config::CoreLimiterRule {
+fn cpu_limiter_rule(path: &str) -> crate::config::CpuLimiterRule {
+    crate::config::CpuLimiterRule {
         enabled: false,
         executable_path: path.to_owned(),
         focus_mode: crate::config::ProcessRuleMode::Default,
         visible_window_mode: crate::config::ProcessRuleMode::Default,
         background_mode: crate::config::ProcessRuleMode::Default,
-        threshold_percent: 75,
-        sustain_seconds: 5,
-        cooldown_seconds: 10,
-        max_logical_processors: 1,
+        focus_allowed_cpu_time_percent: 50,
+        visible_window_allowed_cpu_time_percent: 50,
+        background_allowed_cpu_time_percent: 50,
     }
 }
 

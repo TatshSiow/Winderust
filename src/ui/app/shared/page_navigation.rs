@@ -341,14 +341,14 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             t!("processor_power.saver_help").to_string(),
             "core parking processor power boost min max ac dc battery plugged performance saver balanced".to_string(),
         ],
-        Page::CoreLimiter => vec![
-            t!("core_limiter.intro_1").to_string(),
-            t!("core_limiter.intro_2").to_string(),
-            t!("core_limiter.intro_3").to_string(),
-            t!("common.protect_foreground_app_help").to_string(),
-            t!("common.protect_visible_window_apps_help").to_string(),
-            t!("core_limiter.rules_help").to_string(),
-            "cpu cap limit core affinity threshold sustain cooldown background process".to_string(),
+        Page::CpuLimiter => vec![
+            t!("cpu_limiter.intro_1").to_string(),
+            t!("cpu_limiter.intro_2").to_string(),
+            t!("cpu_limiter.intro_3").to_string(),
+            t!("cpu_limiter.intro_4").to_string(),
+            t!("cpu_limiter.intro_5").to_string(),
+            t!("cpu_limiter.rules_help").to_string(),
+            "cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group".to_string(),
         ],
         Page::ProcessPriority => vec![
             t!("process_priority.intro_1").to_string(),
@@ -494,7 +494,7 @@ pub(in crate::ui::app) fn page_body_shell() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
-pub(in crate::ui::app) fn search_results_page_header(_cx: &mut Context<WinderustApp>) -> gpui::Div {
+pub(in crate::ui::app) fn search_results_page_header() -> gpui::Div {
     h_flex()
         .w_full()
         .min_h(px(PAGE_HEADER_HEIGHT))

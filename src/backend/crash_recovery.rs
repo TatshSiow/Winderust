@@ -17,20 +17,23 @@ use windows_sys::{
         D3DKMT_SCHEDULINGPRIORITYCLASS,
     },
     Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
+        Foundation::{
+            ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, STILL_ACTIVE,
+        },
         System::{
             JobObjects::{OpenJobObjectW, SetInformationJobObject},
             SystemServices::JOB_OBJECT_SET_ATTRIBUTES,
             Threading::{
-                GetPriorityClass, GetProcessAffinityMask, GetProcessDefaultCpuSets, GetProcessId,
-                GetProcessInformation, GetProcessPriorityBoost, GetProcessTimes, GetThreadId,
-                GetThreadPriority, GetThreadTimes, OpenProcess, OpenThread, ProcessMemoryPriority,
+                GetExitCodeProcess, GetPriorityClass, GetProcessAffinityMask,
+                GetProcessDefaultCpuSets, GetProcessId, GetProcessInformation,
+                GetProcessPriorityBoost, GetProcessTimes, GetThreadId, GetThreadPriority,
+                GetThreadTimes, OpenProcess, OpenThread, ProcessMemoryPriority,
                 ProcessPowerThrottling, QueryFullProcessImageNameW, SetPriorityClass,
                 SetProcessAffinityMask, SetProcessDefaultCpuSets, SetProcessInformation,
                 SetProcessPriorityBoost, SetThreadPriority, MEMORY_PRIORITY_INFORMATION,
                 PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_STATE,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-                THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
+                PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_SET_INFORMATION, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
             },
         },
     },
@@ -38,8 +41,9 @@ use windows_sys::{
 
 use crate::{
     foreground::same_executable_path,
-    platform::windows::suspension::{
-        JobObjectFreezeInformation, JOB_OBJECT_FREEZE_INFORMATION_CLASS,
+    platform::windows::{
+        suspension::{JobObjectFreezeInformation, JOB_OBJECT_FREEZE_INFORMATION_CLASS},
+        thread_suspension::{self, CapturedThread, ThreadSuspensionError},
     },
     power::powercfg::{active_plan, restore_stale_adaptive_plans, set_active},
     win_util::{last_error, WinHandle},
@@ -84,6 +88,12 @@ enum RecoveryCommand {
         value: ProcessValue,
     },
     ForgetThreadPriority {
+        process_id: u32,
+        process_creation_time: u64,
+        thread_id: u32,
+        thread_creation_time: u64,
+    },
+    ForgetThreadSuspension {
         process_id: u32,
         process_creation_time: u64,
         thread_id: u32,
@@ -155,6 +165,13 @@ enum RecoveryEntry {
         thread_creation_time: u64,
         original: i32,
         expected: i32,
+    },
+    ThreadSuspension {
+        process: ProcessIdentity,
+        thread_id: u32,
+        thread_creation_time: u64,
+        original_suspend_count: u16,
+        expected_suspend_count: u16,
     },
     PowerPlan {
         original_guid: String,
@@ -233,8 +250,26 @@ impl RecoveryEntry {
                 *thread_id,
                 *thread_creation_time,
             ),
+            Self::ThreadSuspension {
+                process,
+                thread_id,
+                thread_creation_time,
+                ..
+            } => thread_suspension_recovery_key(
+                process.id,
+                process.creation_time,
+                *thread_id,
+                *thread_creation_time,
+            ),
             Self::PowerPlan { .. } => "power_plan".to_owned(),
             Self::SuspendedJob { name, .. } => format!("job:{name}"),
+        }
+    }
+
+    fn job_name_and_access(&self) -> Option<(&str, u32)> {
+        match self {
+            Self::SuspendedJob { name, .. } => Some((name, JOB_OBJECT_SET_ATTRIBUTES)),
+            _ => None,
         }
     }
 }
@@ -250,6 +285,17 @@ fn thread_recovery_key(
     thread_creation_time: u64,
 ) -> String {
     format!("thread:{process_id}:{process_creation_time}:{thread_id}:{thread_creation_time}")
+}
+
+fn thread_suspension_recovery_key(
+    process_id: u32,
+    process_creation_time: u64,
+    thread_id: u32,
+    thread_creation_time: u64,
+) -> String {
+    format!(
+        "thread_suspension:{process_id}:{process_creation_time}:{thread_id}:{thread_creation_time}"
+    )
 }
 
 pub(crate) fn run_watchdog_if_requested() -> bool {
@@ -307,13 +353,13 @@ fn apply_watchdog_command_with_open_job(
     entries: &mut Vec<RecoveryEntry>,
     pending: &mut Vec<(u64, RecoveryEntry)>,
     jobs: &mut HashMap<String, WinHandle>,
-    open_suspension_job: impl FnOnce(&str) -> Result<WinHandle, String>,
+    open_retained_job: impl FnOnce(&str, u32) -> Result<WinHandle, String>,
 ) -> Result<(), String> {
     match command {
         RecoveryCommand::Begin { id, entry } => {
-            if let RecoveryEntry::SuspendedJob { name, .. } = &entry {
+            if let Some((name, desired_access)) = entry.job_name_and_access() {
                 if !jobs.contains_key(name) {
-                    jobs.insert(name.clone(), open_suspension_job(name)?);
+                    jobs.insert(name.to_owned(), open_retained_job(name, desired_access)?);
                 }
             }
             pending.push((id, entry));
@@ -327,12 +373,12 @@ fn apply_watchdog_command_with_open_job(
         RecoveryCommand::Cancel { id } => {
             if let Some(index) = pending.iter().position(|(candidate, _)| *candidate == id) {
                 let (_, entry) = pending.remove(index);
-                if let RecoveryEntry::SuspendedJob { name, .. } = entry {
+                if let Some((name, _)) = entry.job_name_and_access() {
                     let key = format!("job:{name}");
                     if !entries.iter().any(|entry| entry.key() == key)
                         && !pending.iter().any(|(_, entry)| entry.key() == key)
                     {
-                        jobs.remove(&name);
+                        jobs.remove(name);
                     }
                 }
             }
@@ -353,6 +399,21 @@ fn apply_watchdog_command_with_open_job(
             thread_creation_time,
         } => {
             let key = thread_recovery_key(
+                process_id,
+                process_creation_time,
+                thread_id,
+                thread_creation_time,
+            );
+            entries.retain(|entry| entry.key() != key);
+            pending.retain(|(_, entry)| entry.key() != key);
+        }
+        RecoveryCommand::ForgetThreadSuspension {
+            process_id,
+            process_creation_time,
+            thread_id,
+            thread_creation_time,
+        } => {
+            let key = thread_suspension_recovery_key(
                 process_id,
                 process_creation_time,
                 thread_id,
@@ -501,6 +562,23 @@ pub(crate) fn record_thread_priority_change(
     })
 }
 
+pub(crate) fn record_thread_suspension(
+    process_handle: HANDLE,
+    thread_handle: HANDLE,
+    original_suspend_count: u16,
+) -> Result<RecoveryIntent, String> {
+    let expected_suspend_count = original_suspend_count
+        .checked_add(1)
+        .ok_or_else(|| "Thread suspend count cannot exceed 65535.".to_owned())?;
+    record_entry(RecoveryEntry::ThreadSuspension {
+        process: process_identity(process_handle)?,
+        thread_id: thread_id(thread_handle)?,
+        thread_creation_time: thread_creation_time(thread_handle)?,
+        original_suspend_count,
+        expected_suspend_count,
+    })
+}
+
 pub(crate) fn record_power_plan_change(
     original: &str,
     expected: &str,
@@ -515,11 +593,15 @@ pub(crate) fn record_power_plan_change(
 }
 
 pub(crate) fn suspension_job_name(process_id: u32, creation_time: u64) -> String {
+    job_name("Suspend", process_id, creation_time)
+}
+
+fn job_name(mechanism: &str, process_id: u32, creation_time: u64) -> String {
     let executable_hash = std::env::current_exe()
         .ok()
         .map(|path| fnv1a64(path.as_os_str().encode_wide()))
         .unwrap_or(0x5f3f_2a4e_13a5_59f0);
-    format!("Local\\Winderust.Suspend.{executable_hash:016x}.{process_id}.{creation_time}")
+    format!("Local\\Winderust.{mechanism}.{executable_hash:016x}.{process_id}.{creation_time}")
 }
 
 pub(crate) fn record_suspended_job(
@@ -533,6 +615,10 @@ pub(crate) fn record_suspended_job(
 }
 
 pub(crate) fn forget_suspended_job(name: &str) -> Result<(), String> {
+    forget_job(name)
+}
+
+fn forget_job(name: &str) -> Result<(), String> {
     let mut runtime = RUNTIME
         .lock()
         .map_err(|_| "Crash recovery state is poisoned.".to_owned())?;
@@ -648,6 +734,41 @@ pub(crate) fn forget_thread_priority_change(
     Ok(())
 }
 
+pub(crate) fn forget_thread_suspension(
+    process_id: u32,
+    process_creation_time: u64,
+    thread_id: u32,
+    thread_creation_time: u64,
+) -> Result<(), String> {
+    let mut runtime = RUNTIME
+        .lock()
+        .map_err(|_| "Crash recovery state is poisoned.".to_owned())?;
+    let Some(runtime) = runtime.as_mut() else {
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        return Err("The external recovery watchdog is unavailable.".to_owned());
+    };
+    send_command(
+        &mut runtime.stdin,
+        &mut runtime.stdout,
+        &RecoveryCommand::ForgetThreadSuspension {
+            process_id,
+            process_creation_time,
+            thread_id,
+            thread_creation_time,
+        },
+    )?;
+    let key = thread_suspension_recovery_key(
+        process_id,
+        process_creation_time,
+        thread_id,
+        thread_creation_time,
+    );
+    runtime.entries.retain(|entry| entry.key() != key);
+    Ok(())
+}
+
 fn forget_process_change(
     process_id: u32,
     creation_time: u64,
@@ -740,6 +861,9 @@ fn compact_or_push(entries: &mut Vec<RecoveryEntry>, entry: RecoveryEntry) {
                 *prior = *expected;
                 baseline == prior
             }
+            (RecoveryEntry::ThreadSuspension { .. }, RecoveryEntry::ThreadSuspension { .. }) => {
+                return
+            }
             (
                 RecoveryEntry::PowerPlan {
                     original_guid: baseline,
@@ -802,6 +926,19 @@ fn recover_entry(
             thread_creation_time,
             ..
         } => recover_thread_key(key, process, *thread_id, *thread_creation_time, entries),
+        RecoveryEntry::ThreadSuspension {
+            process,
+            thread_id,
+            thread_creation_time,
+            original_suspend_count,
+            expected_suspend_count,
+        } => recover_thread_suspension(
+            process,
+            *thread_id,
+            *thread_creation_time,
+            *original_suspend_count,
+            *expected_suspend_count,
+        ),
         RecoveryEntry::PowerPlan { .. } => recover_power_plan_key(key, entries),
         RecoveryEntry::SuspendedJob { name, .. } => thaw_job(name),
     }
@@ -919,6 +1056,75 @@ fn recover_thread_key(
         }
     }
     Ok(())
+}
+
+fn should_resume_thread_suspension(original: u16, expected: u16, current: u16) -> bool {
+    original.checked_add(1) == Some(expected) && current == expected
+}
+
+fn recover_thread_suspension(
+    process: &ProcessIdentity,
+    thread_id: u32,
+    thread_creation_time: u64,
+    original_suspend_count: u16,
+    expected_suspend_count: u16,
+) -> Result<(), String> {
+    let Some(process_handle) =
+        open_matching_process_with_access(process, PROCESS_QUERY_INFORMATION)?
+    else {
+        return Ok(());
+    };
+    let Some(thread) = recoverable_thread_suspension_result(
+        thread_suspension::open_exact_thread(
+            process.id,
+            CapturedThread {
+                id: thread_id,
+                creation_time: thread_creation_time,
+                suspend_count: expected_suspend_count,
+            },
+        ),
+        thread_id,
+    )?
+    else {
+        return Ok(());
+    };
+    let Some(current_suspend_count) = recoverable_thread_suspension_result(
+        thread_suspension::exact_suspend_count(
+            process_handle.raw(),
+            thread_id,
+            thread_creation_time,
+        ),
+        thread_id,
+    )?
+    else {
+        return Ok(());
+    };
+    if should_resume_thread_suspension(
+        original_suspend_count,
+        expected_suspend_count,
+        current_suspend_count,
+    ) {
+        recoverable_thread_suspension_result(thread_suspension::resume_once(&thread), thread_id)?;
+    }
+    Ok(())
+}
+
+fn recoverable_thread_suspension_result<T>(
+    result: Result<T, ThreadSuspensionError>,
+    thread_id: u32,
+) -> Result<Option<T>, String> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(
+            ThreadSuspensionError::ProcessExited
+            | ThreadSuspensionError::ThreadExited { .. }
+            | ThreadSuspensionError::IdentityChanged { .. }
+            | ThreadSuspensionError::SuspendCountConflict { .. },
+        ) => Ok(None),
+        Err(error) => Err(format!(
+            "Thread suspension recovery for thread {thread_id} failed: {error:?}."
+        )),
+    }
 }
 
 fn recover_power_plan_key(key: &str, entries: &[RecoveryEntry]) -> Result<(), String> {
@@ -1147,6 +1353,18 @@ fn open_matching_process_with_access(
         };
     }
     let handle = WinHandle::new(handle);
+    let mut exit_code = 0;
+    // SAFETY: handle is live and opened with process query access; exit_code is writable.
+    if unsafe { GetExitCodeProcess(handle.raw(), &mut exit_code) } == 0 {
+        return Err(format!(
+            "GetExitCodeProcess({}) failed with error {}.",
+            identity.id,
+            last_error()
+        ));
+    }
+    if exit_code != STILL_ACTIVE as u32 {
+        return Ok(None);
+    }
     if process_creation_time(handle.raw())? != identity.creation_time
         || !same_executable_path(
             Path::new(&process_executable_path(handle.raw())?),
@@ -1250,7 +1468,7 @@ fn query_cpu_sets(handle: HANDLE) -> Result<Vec<u32>, String> {
 }
 
 fn thaw_job(name: &str) -> Result<(), String> {
-    let handle = open_job(name)?;
+    let handle = open_job(name, JOB_OBJECT_SET_ATTRIBUTES)?;
     // The recovery helper opened and retained this exact named Job Object before acknowledging
     // Begin. Its root process may have exited while inherited children remain frozen, so root
     // identity is not a prerequisite for thawing the helper-owned job.
@@ -1269,13 +1487,13 @@ fn thaw_job(name: &str) -> Result<(), String> {
         .ok_or_else(|| format!("Thawing suspended job failed with error {}.", last_error()))
 }
 
-fn open_job(name: &str) -> Result<WinHandle, String> {
+fn open_job(name: &str, desired_access: u32) -> Result<WinHandle, String> {
     let wide = name
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
     // SAFETY: wide is terminated UTF-16 and the returned handle is owned here.
-    let handle = unsafe { OpenJobObjectW(JOB_OBJECT_SET_ATTRIBUTES, 0, wide.as_ptr()) };
+    let handle = unsafe { OpenJobObjectW(desired_access, 0, wide.as_ptr()) };
     if handle.is_null() {
         return Err(format!(
             "OpenJobObjectW failed with error {}.",
@@ -1374,6 +1592,7 @@ unsafe extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::windows::thread_suspension;
     use std::{
         io::Cursor,
         process::{Child, Command, Stdio},
@@ -1394,8 +1613,8 @@ mod tests {
             Threading::{
                 CreateEventW, CreateProcessW, ResumeThread, WaitForSingleObject,
                 BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, IDLE_PRIORITY_CLASS,
-                PROCESS_INFORMATION, STARTUPINFOW, THREAD_PRIORITY_BELOW_NORMAL,
-                THREAD_PRIORITY_LOWEST,
+                PROCESS_INFORMATION, PROCESS_QUERY_INFORMATION, STARTUPINFOW,
+                THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_LOWEST,
             },
         },
     };
@@ -1452,7 +1671,9 @@ mod tests {
             // SAFETY: child.id identifies the disposable process created by this test.
             let handle = unsafe {
                 OpenProcess(
-                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
+                    PROCESS_QUERY_INFORMATION
+                        | PROCESS_QUERY_LIMITED_INFORMATION
+                        | PROCESS_SET_INFORMATION,
                     0,
                     self.child.id(),
                 )
@@ -1546,6 +1767,16 @@ mod tests {
             creation_time: 11,
             executable_path: "C:\\app.exe".to_owned(),
         }
+    }
+
+    fn captured_test_thread(
+        process: &WinHandle,
+    ) -> Result<thread_suspension::CapturedThread, String> {
+        thread_suspension::capture_threads(process.raw())
+            .map_err(|error| format!("{error:?}"))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "No thread was captured for the disposable test process.".to_owned())
     }
 
     #[test]
@@ -1819,6 +2050,62 @@ mod tests {
     }
 
     #[test]
+    fn thread_suspension_resume_gate_requires_exactly_one_owned_count() {
+        assert!(should_resume_thread_suspension(4, 5, 5));
+        assert!(!should_resume_thread_suspension(4, 5, 4));
+        assert!(!should_resume_thread_suspension(4, 5, 6));
+        assert!(!should_resume_thread_suspension(4, 6, 6));
+        assert!(!should_resume_thread_suspension(u16::MAX, 0, 0));
+    }
+
+    #[test]
+    fn thread_suspension_begin_is_pending_before_mutation_commit() {
+        let entry = RecoveryEntry::ThreadSuspension {
+            process: identity(),
+            thread_id: 13,
+            thread_creation_time: 17,
+            original_suspend_count: 0,
+            expected_suspend_count: 1,
+        };
+        let mut entries = Vec::new();
+        let mut pending = Vec::new();
+        let mut jobs = HashMap::new();
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Begin {
+                id: 1,
+                entry: entry.clone(),
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_, _| Err("thread suspension must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(pending, vec![(1, entry.clone())]);
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::Commit { id: 1 },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_, _| Err("commit must not open jobs".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(entries, vec![entry]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn record_thread_suspension_rejects_suspend_count_overflow_before_handle_queries() {
+        match record_thread_suspension(std::ptr::null_mut(), std::ptr::null_mut(), u16::MAX) {
+            Ok(_) => panic!("overflow must be rejected before either handle is queried"),
+            Err(error) => assert_eq!(error, "Thread suspend count cannot exceed 65535."),
+        }
+    }
+
+    #[test]
     fn watchdog_commands_cover_begin_cancel_commit_replacement_and_clean_release() {
         let entry = RecoveryEntry::Process {
             identity: identity(),
@@ -1837,7 +2124,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("process entries must not open jobs".to_owned()),
+            |_, _| Err("process entries must not open jobs".to_owned()),
         )
         .unwrap();
         assert_eq!(pending, vec![(1, entry.clone())]);
@@ -1846,7 +2133,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("cancel must not open jobs".to_owned()),
+            |_, _| Err("cancel must not open jobs".to_owned()),
         )
         .unwrap();
         assert!(pending.is_empty());
@@ -1860,7 +2147,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("process entries must not open jobs".to_owned()),
+            |_, _| Err("process entries must not open jobs".to_owned()),
         )
         .unwrap();
         apply_watchdog_command_with_open_job(
@@ -1868,7 +2155,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("commit must not open jobs".to_owned()),
+            |_, _| Err("commit must not open jobs".to_owned()),
         )
         .unwrap();
         assert_eq!(entries.len(), 1);
@@ -1886,7 +2173,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("process entries must not open jobs".to_owned()),
+            |_, _| Err("process entries must not open jobs".to_owned()),
         )
         .unwrap();
         apply_watchdog_command_with_open_job(
@@ -1894,7 +2181,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("commit must not open jobs".to_owned()),
+            |_, _| Err("commit must not open jobs".to_owned()),
         )
         .unwrap();
         assert!(entries.is_empty());
@@ -1919,7 +2206,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("job open failed".to_owned()),
+            |_, _| Err("job open failed".to_owned()),
         )
         .unwrap_err();
         assert_eq!(error, "job open failed");
@@ -1934,7 +2221,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| {
+            |_, _| {
                 // SAFETY: null security attributes/name are allowed; the returned owned event
                 // handle is used only as a deterministic stand-in for the retained Job handle.
                 let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
@@ -1951,7 +2238,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("commit must not open jobs".to_owned()),
+            |_, _| Err("commit must not open jobs".to_owned()),
         )
         .unwrap();
         assert_eq!(entries.len(), 1);
@@ -1962,7 +2249,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("forget must not open jobs".to_owned()),
+            |_, _| Err("forget must not open jobs".to_owned()),
         )
         .unwrap();
         assert!(entries.is_empty());
@@ -2002,7 +2289,7 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("forget process must not open jobs".to_owned()),
+            |_, _| Err("forget process must not open jobs".to_owned()),
         )
         .unwrap();
 
@@ -2048,12 +2335,58 @@ mod tests {
             &mut entries,
             &mut pending,
             &mut jobs,
-            |_| Err("forget thread priority must not open jobs".to_owned()),
+            |_, _| Err("forget thread priority must not open jobs".to_owned()),
         )
         .unwrap();
 
         assert_eq!(entries, vec![replacement_thread]);
         assert_eq!(pending, vec![(8, other_thread)]);
+    }
+
+    #[test]
+    fn forget_thread_suspension_preserves_reused_thread_and_thread_priority() {
+        let process = identity();
+        let target = RecoveryEntry::ThreadSuspension {
+            process: process.clone(),
+            thread_id: 13,
+            thread_creation_time: 17,
+            original_suspend_count: 0,
+            expected_suspend_count: 1,
+        };
+        let reused = RecoveryEntry::ThreadSuspension {
+            process: process.clone(),
+            thread_id: 13,
+            thread_creation_time: 18,
+            original_suspend_count: 0,
+            expected_suspend_count: 1,
+        };
+        let priority = RecoveryEntry::ThreadPriority {
+            process: process.clone(),
+            thread_id: 13,
+            thread_creation_time: 17,
+            original: 0,
+            expected: 1,
+        };
+        let mut entries = vec![target.clone(), reused.clone(), priority.clone()];
+        let mut pending = vec![(7, target), (8, reused.clone()), (9, priority.clone())];
+        let mut jobs = HashMap::new();
+
+        apply_watchdog_command_with_open_job(
+            RecoveryCommand::ForgetThreadSuspension {
+                process_id: process.id,
+                process_creation_time: process.creation_time,
+                thread_id: 13,
+                thread_creation_time: 17,
+            },
+            &mut entries,
+            &mut pending,
+            &mut jobs,
+            |_, _| Err("forget thread suspension must not open jobs".to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(entries, vec![reused.clone(), priority.clone()]);
+        assert_eq!(pending, vec![(8, reused), (9, priority)]);
     }
 
     #[test]
@@ -2493,6 +2826,131 @@ mod tests {
         // SAFETY: thread remains live and is still owned by the disposable process.
         assert_eq!(unsafe { GetThreadPriority(thread.raw()) }, original);
         Ok(())
+    }
+
+    #[test]
+    fn thread_suspension_recovery_resumes_exact_owned_count_once() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let captured = captured_test_thread(&process)?;
+        let thread = thread_suspension::open_exact_thread(child.child.id(), captured)
+            .map_err(|error| format!("{error:?}"))?;
+        let original = captured.suspend_count;
+        let expected = original
+            .checked_add(1)
+            .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?;
+        assert_eq!(
+            thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?,
+            u32::from(original)
+        );
+        let entry = RecoveryEntry::ThreadSuspension {
+            process: process_identity(process.raw())?,
+            thread_id: captured.id,
+            thread_creation_time: captured.creation_time,
+            original_suspend_count: original,
+            expected_suspend_count: expected,
+        };
+
+        recover_journal(&[entry])?;
+
+        assert_eq!(
+            thread_suspension::exact_suspend_count(
+                process.raw(),
+                captured.id,
+                captured.creation_time,
+            )
+            .map_err(|error| format!("{error:?}"))?,
+            original
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn thread_suspension_recovery_leaves_identity_mismatch_unchanged() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let captured = captured_test_thread(&process)?;
+        let thread = thread_suspension::open_exact_thread(child.child.id(), captured)
+            .map_err(|error| format!("{error:?}"))?;
+        let original = captured.suspend_count;
+        let expected = original
+            .checked_add(1)
+            .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?;
+        thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?;
+
+        recover_journal(&[RecoveryEntry::ThreadSuspension {
+            process: process_identity(process.raw())?,
+            thread_id: captured.id,
+            thread_creation_time: captured.creation_time.wrapping_add(1),
+            original_suspend_count: original,
+            expected_suspend_count: expected,
+        }])?;
+        assert_eq!(
+            thread_suspension::exact_suspend_count(
+                process.raw(),
+                captured.id,
+                captured.creation_time,
+            )
+            .map_err(|error| format!("{error:?}"))?,
+            expected
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn thread_suspension_recovery_leaves_conflicting_count_unchanged() -> Result<(), String> {
+        let child = DisposableChild::spawn()?;
+        let process = child.process_handle()?;
+        let captured = captured_test_thread(&process)?;
+        let thread = thread_suspension::open_exact_thread(child.child.id(), captured)
+            .map_err(|error| format!("{error:?}"))?;
+        let original = captured.suspend_count;
+        let expected = original
+            .checked_add(1)
+            .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?;
+        let conflicting = original
+            .checked_add(2)
+            .ok_or_else(|| "Disposable thread suspend count cannot be raised twice.".to_owned())?;
+        thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?;
+        thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?;
+        recover_journal(&[RecoveryEntry::ThreadSuspension {
+            process: process_identity(process.raw())?,
+            thread_id: captured.id,
+            thread_creation_time: captured.creation_time,
+            original_suspend_count: original,
+            expected_suspend_count: expected,
+        }])?;
+        assert_eq!(
+            thread_suspension::exact_suspend_count(
+                process.raw(),
+                captured.id,
+                captured.creation_time,
+            )
+            .map_err(|error| format!("{error:?}"))?,
+            conflicting
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn thread_suspension_recovery_ignores_an_exited_process() -> Result<(), String> {
+        let entry = {
+            let child = DisposableChild::spawn()?;
+            let process = child.process_handle()?;
+            let captured = captured_test_thread(&process)?;
+            let original = captured.suspend_count;
+            RecoveryEntry::ThreadSuspension {
+                process: process_identity(process.raw())?,
+                thread_id: captured.id,
+                thread_creation_time: captured.creation_time,
+                original_suspend_count: original,
+                expected_suspend_count: original
+                    .checked_add(1)
+                    .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?,
+            }
+        };
+
+        recover_journal(&[entry])
     }
 
     #[test]

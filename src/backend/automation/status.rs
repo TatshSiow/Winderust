@@ -149,7 +149,7 @@ pub(super) fn merge_auto_exclusion_patch(
         &incoming.processor_affinity_hard,
         &mut target.processor_affinity_hard,
     );
-    changed |= append_unique_executable_paths(&incoming.core_limiter, &mut target.core_limiter);
+    changed |= append_unique_executable_paths(&incoming.cpu_limiter, &mut target.cpu_limiter);
     changed |= append_unique_executable_paths(&incoming.cpu_scheduler, &mut target.cpu_scheduler);
     changed |= append_unique_executable_paths(&incoming.io_priority, &mut target.io_priority);
     changed |=
@@ -167,17 +167,17 @@ pub(super) fn merge_auto_exclusion_patch(
     changed
 }
 
-pub(super) fn update_core_limiter_status(
+pub(super) fn update_cpu_limiter_status(
     shared: &SharedAutomationState,
-    status: CoreLimiterSnapshot,
+    status: CpuLimiterSnapshot,
 ) {
     update_status_with_auto_exclusions(
         shared,
         status,
         |status| &status.auto_excluded_processes,
-        |pending, path_list| append_unique_executable_paths(path_list, &mut pending.core_limiter),
-        |feature_status| &feature_status.core_limiter,
-        |feature_status| &mut feature_status.core_limiter,
+        |pending, path_list| append_unique_executable_paths(path_list, &mut pending.cpu_limiter),
+        |feature_status| &feature_status.cpu_limiter,
+        |feature_status| &mut feature_status.cpu_limiter,
     );
 }
 

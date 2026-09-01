@@ -1,8 +1,8 @@
 use super::*;
 use crate::config::{CpuSchedulerSettings, ProcessPrioritySetting};
 use windows_sys::Win32::System::Threading::{
-    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
-    NORMAL_PRIORITY_CLASS,
+    ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
+    IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS,
 };
 
 #[test]
@@ -42,7 +42,7 @@ fn repeated_failures_suppress_future_cpu_scheduler_attempts_once() {
 }
 
 #[test]
-fn priority_mapping_uses_safe_classes() {
+fn priority_mapping_matches_configured_classes() {
     assert_eq!(
         cpu_scheduler_priority_value(ProcessPrioritySetting::Normal)
             .unwrap()
@@ -72,12 +72,16 @@ fn priority_mapping_uses_safe_classes() {
         None
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::High),
-        None
+        cpu_scheduler_priority_value(ProcessPrioritySetting::High)
+            .unwrap()
+            .raw(),
+        HIGH_PRIORITY_CLASS
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::Realtime),
-        None
+        cpu_scheduler_priority_value(ProcessPrioritySetting::Realtime)
+            .unwrap()
+            .raw(),
+        REALTIME_PRIORITY_CLASS
     );
 }
 

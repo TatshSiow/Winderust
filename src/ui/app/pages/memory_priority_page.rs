@@ -63,7 +63,7 @@ impl WinderustApp {
             window,
             cx,
         );
-        let body = feature_body(enabled)
+        let body = feature_body()
             .child(setting_group_with_help(
                 SettingGroupTarget::MemoryPriorityForegroundDetection,
                 (
@@ -227,7 +227,7 @@ impl WinderustApp {
             )
             .child(self.render_memory_priority_exclusions(window, cx));
 
-        self.page_shell(Page::MemoryPriority, cx)
+        page_body_shell()
             .child(master_card)
             .child(disabled_feature_body(
                 "memory-priority-body",
@@ -266,44 +266,26 @@ impl WinderustApp {
             PriorityDefaultTarget::VisibleWindow => "memory-priority-visible-window-default",
             PriorityDefaultTarget::Foreground => "memory-priority-foreground-default",
         };
-        let dropdown = self.render_dropdown_select(
+        self.render_priority_default_dropdown(
             id,
-            process_memory_priority_setting_label(selected_priority),
+            target,
+            selected_priority,
             enabled,
-            DropdownSelectWidth::Standard,
-            ProcessMemoryPrioritySetting::ALL.len(),
+            &ProcessMemoryPrioritySetting::ALL,
+            process_memory_priority_setting_label,
+            |app, target, priority| match target {
+                PriorityDefaultTarget::Background => {
+                    app.settings.memory_priority.background_priority = priority;
+                }
+                PriorityDefaultTarget::VisibleWindow => {
+                    app.settings.memory_priority.visible_window_priority = priority;
+                }
+                PriorityDefaultTarget::Foreground => {
+                    app.settings.memory_priority.foreground_priority = priority;
+                }
+            },
             window,
             cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessMemoryPrioritySetting::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("{id}-option-{priority:?}")),
-                            process_memory_priority_setting_label(priority),
-                            selected_priority == priority,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            match target {
-                                PriorityDefaultTarget::Background => {
-                                    app.settings.memory_priority.background_priority = priority;
-                                }
-                                PriorityDefaultTarget::VisibleWindow => {
-                                    app.settings.memory_priority.visible_window_priority = priority;
-                                }
-                                PriorityDefaultTarget::Foreground => {
-                                    app.settings.memory_priority.foreground_priority = priority;
-                                }
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
-        dropdown
+        )
     }
 }

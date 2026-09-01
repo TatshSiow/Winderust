@@ -99,8 +99,8 @@ mod tests {
         BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
         ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule,
         ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings,
-        CoreLimiterRule, CoreLimiterSettings, CpuAllocationMethod, CpuAllocationPreset,
-        CpuAllocationRule, CpuAllocationSettings, CpuSchedulerSettings, CpuUsageComparison,
+        CpuAllocationMethod, CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings,
+        CpuLimiterRule, CpuLimiterSettings, CpuSchedulerSettings, CpuUsageComparison,
         DynamicPriorityBoostSettings, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
         IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
         PowerPlanSettings, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
@@ -126,6 +126,52 @@ mod tests {
             ProcessRuleMode::Disabled
         );
         assert_eq!(rule.background_efficiency_mode, ProcessRuleMode::Disabled);
+    }
+
+    #[test]
+    fn cpu_limiter_schema_defaults_rules_to_the_page_policy() {
+        let defaults = toml::to_string_pretty(&Settings::default())
+            .expect("default settings should serialize");
+        assert!(defaults.contains("focus_allowed_cpu_time_percent = 100"));
+        let raw = defaults.replace(
+            "background_allowed_cpu_time_percent = 50\nrules = []",
+            "background_allowed_cpu_time_percent = 50",
+        );
+        let raw = format!("{raw}\n[[cpu_limiter.rules]]\nexecutable_path = \"encoder.exe\"\n");
+
+        let parsed: Settings = toml::from_str(&raw).expect("CPU Limiter settings should parse");
+        let round_trip = toml::to_string_pretty(&parsed).expect("settings should serialize");
+
+        assert!(round_trip.contains("[[cpu_limiter.rules]]"));
+        assert!(round_trip.contains("focus_allowed_cpu_time_percent = 50"));
+        assert!(round_trip.contains("visible_window_allowed_cpu_time_percent = 50"));
+        assert!(round_trip.contains("background_allowed_cpu_time_percent = 50"));
+        assert!(!round_trip
+            .lines()
+            .any(|line| line.trim_start().starts_with("allowed_cpu_time_percent =")));
+        assert!(round_trip.contains("focus_mode = \"default\""));
+        assert!(round_trip.contains("visible_window_mode = \"default\""));
+        assert!(round_trip.contains("background_mode = \"default\""));
+    }
+
+    #[test]
+    fn cpu_limiter_tier_percentages_round_trip_at_boundaries() {
+        let rule = CpuLimiterRule {
+            enabled: true,
+            executable_path: r"C:\Apps\encoder.exe".to_owned(),
+            focus_mode: ProcessRuleMode::Enabled,
+            visible_window_mode: ProcessRuleMode::Enabled,
+            background_mode: ProcessRuleMode::Enabled,
+            focus_allowed_cpu_time_percent: 1,
+            visible_window_allowed_cpu_time_percent: 50,
+            background_allowed_cpu_time_percent: 100,
+        };
+
+        let serialized = toml::to_string_pretty(&rule).expect("CPU Limiter rule should serialize");
+        let parsed: CpuLimiterRule =
+            toml::from_str(&serialized).expect("CPU Limiter rule should parse");
+
+        assert_eq!(parsed, rule);
     }
 
     #[test]
@@ -374,20 +420,20 @@ mod tests {
                     crate::power::plan::ProcessorBoostMode::Aggressive,
                 ),
             }],
-            core_limiter: CoreLimiterSettings {
+            cpu_limiter: CpuLimiterSettings {
                 enabled: true,
-                protect_foreground_app: true,
-                protect_visible_window_apps: false,
-                rules: vec![CoreLimiterRule {
+                focus_allowed_cpu_time_percent: 100,
+                visible_window_allowed_cpu_time_percent: 50,
+                background_allowed_cpu_time_percent: 50,
+                rules: vec![CpuLimiterRule {
                     enabled: true,
                     executable_path: "encoder.exe".to_owned(),
-                    focus_mode: ProcessRuleMode::Default,
-                    visible_window_mode: ProcessRuleMode::Default,
-                    background_mode: ProcessRuleMode::Default,
-                    threshold_percent: 80,
-                    sustain_seconds: 5,
-                    cooldown_seconds: 15,
-                    max_logical_processors: 2,
+                    focus_mode: ProcessRuleMode::Disabled,
+                    visible_window_mode: ProcessRuleMode::Disabled,
+                    background_mode: ProcessRuleMode::Enabled,
+                    focus_allowed_cpu_time_percent: 35,
+                    visible_window_allowed_cpu_time_percent: 35,
+                    background_allowed_cpu_time_percent: 35,
                 }],
             },
             by_running_app: ByRunningAppSettings {

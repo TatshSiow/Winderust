@@ -118,7 +118,7 @@ pub(in crate::ui::app) fn process_rule_table_headers() -> Vec<AnyElement> {
     ]
 }
 
-pub(in crate::ui::app) fn feature_body(_enabled: bool) -> gpui::Div {
+pub(in crate::ui::app) fn feature_body() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2().relative()
 }
 
