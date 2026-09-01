@@ -1643,7 +1643,7 @@ mod tests {
                 .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
             let executable = Path::new(&system_root).join("System32").join("ping.exe");
             let child = Command::new(executable)
-                .args(["127.0.0.1", "-n", "120", "-w", "1000"])
+                .args(["127.0.0.1", "-t"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
