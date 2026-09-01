@@ -1,6 +1,6 @@
 [package]
 name = "winderust"
-version = "0.7.0-alpha"
+version = "0.8.0-alpha"
 edition = "2021"
 authors = ["Tatsh Siow"]
 description = "Windows Performance & Power Manager"
