@@ -1,8 +1,6 @@
 use std::{cell::RefCell, path::PathBuf, time::Duration};
 
-use iced::widget::{
-    button, checkbox, column, container, mouse_area, row, scrollable, text, text_input, Space,
-};
+use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Font, Subscription, Task, Theme};
 use rust_i18n::t;
 
@@ -125,12 +123,12 @@ pub(crate) fn run(
     .window(iced::window::Settings {
         size: iced::Size::new(1120.0, 760.0),
         min_size: Some(iced::Size::new(900.0, 620.0)),
-        decorations: false,
+        decorations: true,
         exit_on_close_request: false,
         ..Default::default()
     })
     .settings(iced::Settings {
-        default_font: Font::with_name("Bahnschrift"),
+        default_font: Font::with_name("Segoe UI"),
         default_text_size: 13.into(),
         ..Default::default()
     })
@@ -215,10 +213,6 @@ enum Message {
     ToggleNavigation,
     ToggleSection(Page),
     ToggleStatus,
-    Drag,
-    Minimize,
-    Maximize,
-    Resize(iced::window::Direction),
     Preferences(settings_pages::Message),
     Status(status_rail::Message),
     Home(home::Message),
@@ -282,26 +276,6 @@ impl WinderustApp {
                 }
             }
             Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
-            Message::Drag => {
-                if let Some(window) = self.window {
-                    return iced::window::drag(window);
-                }
-            }
-            Message::Minimize => {
-                if let Some(window) = self.window {
-                    return iced::window::minimize(window, true);
-                }
-            }
-            Message::Maximize => {
-                if let Some(window) = self.window {
-                    return iced::window::toggle_maximize(window);
-                }
-            }
-            Message::Resize(direction) => {
-                if let Some(window) = self.window {
-                    return iced::window::drag_resize(window, direction);
-                }
-            }
             Message::Status(status_rail::Message::ActionLog) => {
                 return self.update(Message::Page(Page::ActionLog))
             }
@@ -1090,10 +1064,10 @@ impl WinderustApp {
             .into();
         }
         let collapsed = self.settings.general.navigation_collapsed;
-        let mut navigation = column![].spacing(8);
+        let mut navigation = column![].spacing(4).padding([12, 8]);
         if collapsed {
             navigation = navigation.push(
-                button(text(t!("home.search_placeholder").to_string()).size(10))
+                button(navigation::glyph("icons/search.svg"))
                     .on_press(Message::ToggleNavigation)
                     .style(button::text),
             );
@@ -1128,37 +1102,44 @@ impl WinderustApp {
                 .spacing(8)
                 .align_y(iced::Center);
             if !collapsed {
-                label = label.push(text(section.landing_page.label()));
+                label = label.push(text(section.landing_page.label()).size(12).width(Fill));
                 if self.settings.general.show_enabled_feature_counts_in_sidebar {
                     if let Some(count) = navigation::section_enabled_feature_count(
                         &self.settings,
                         section.landing_page,
                     ) {
-                        label = label.push(text(count.to_string()));
+                        label = label.push(
+                            container(text(count.to_string()).size(11))
+                                .padding([2, 6])
+                                .style(iced::widget::container::bordered_box),
+                        );
                     }
                 }
             }
             let mut section_row = row![button(label)
+                .padding([9, 10])
                 .width(Fill)
                 .on_press(Message::Page(section.landing_page))
                 .style(if self.page == section.landing_page {
-                    button::primary
+                    iced::widget::button::primary
                 } else {
-                    button::text
+                    iced::widget::button::text
                 })];
             if !collapsed && section.pages.iter().any(|p| *p != section.landing_page) {
                 section_row = section_row.push(
-                    button(if self.collapsed_sections.contains(&section.landing_page) {
-                        ">"
-                    } else {
-                        "v"
-                    })
+                    button(navigation::glyph(
+                        if self.collapsed_sections.contains(&section.landing_page) {
+                            "icons/chevron-right.svg"
+                        } else {
+                            "icons/chevron-down.svg"
+                        },
+                    ))
                     .on_press(Message::ToggleSection(section.landing_page))
                     .style(button::text),
                 );
             }
             navigation = navigation.push(section_row);
-            let mut children = column![].spacing(4);
+            let mut children = column![].spacing(2).padding([0, 10]);
             for page in section
                 .pages
                 .iter()
@@ -1166,16 +1147,17 @@ impl WinderustApp {
             {
                 children = children.push(
                     button(
-                        row![navigation::icon(*page), text(page.label())]
+                        row![navigation::icon(*page), text(page.label()).size(12)]
                             .spacing(8)
                             .align_y(iced::Center),
                     )
                     .width(Fill)
                     .on_press(Message::Page(*page))
+                    .padding([8, 10])
                     .style(if self.page == *page {
-                        button::primary
+                        iced::widget::button::primary
                     } else {
-                        button::text
+                        iced::widget::button::text
                     }),
                 );
             }
@@ -1185,24 +1167,37 @@ impl WinderustApp {
                 self.motion_enabled,
             ));
         }
-        navigation = navigation.push(iced::widget::rule::horizontal(1)).push(
-            button(
-                text(
-                    if collapsed {
-                        t!("nav.expand_navigation")
+        let navigation_toggle = button(navigation::glyph(if collapsed {
+            "icons/panel-left-open.svg"
+        } else {
+            "icons/panel-left-close.svg"
+        }))
+        .padding(10)
+        .on_press(Message::ToggleNavigation)
+        .style(button::text);
+        navigation =
+            navigation
+                .push(iced::widget::rule::horizontal(1))
+                .push(iced::widget::tooltip(
+                    navigation_toggle,
+                    text(if collapsed {
+                        t!("nav.expand_navigation").to_string()
                     } else {
-                        t!("nav.collapse_navigation")
-                    }
-                    .to_string(),
-                )
-                .size(if collapsed { 10 } else { 13 }),
-            )
-            .on_press(Message::ToggleNavigation)
-            .style(button::text),
-        );
-        let mut body = column![text(self.page.label()).size(25)]
-            .spacing(18)
-            .height(Fill);
+                        t!("nav.collapse_navigation").to_string()
+                    }),
+                    iced::widget::tooltip::Position::Right,
+                ));
+        let mut body = column![
+            row![
+                navigation::icon(self.page),
+                text(self.page.label()).size(23)
+            ]
+            .spacing(10)
+            .align_y(iced::Center),
+            iced::widget::rule::horizontal(1)
+        ]
+        .spacing(16)
+        .height(Fill);
         if self.page.supports_power_source_profiles() {
             body = body.push(
                 row![
@@ -1211,14 +1206,14 @@ impl WinderustApp {
                         .style(if self.power_source == PowerSourceProfile::PluggedIn {
                             button::primary
                         } else {
-                            button::secondary
+                            iced::widget::button::secondary
                         }),
                     button(text(t!("power_source.on_battery").to_string()))
                         .on_press(Message::PowerSource(PowerSourceProfile::OnBattery))
                         .style(if self.power_source == PowerSourceProfile::OnBattery {
                             button::primary
                         } else {
-                            button::secondary
+                            iced::widget::button::secondary
                         }),
                 ]
                 .spacing(8),
@@ -1237,15 +1232,22 @@ impl WinderustApp {
         .flatten()
         {
             let rail = column![
-                button(text(
-                    if self.status_collapsed {
-                        t!("nav.expand_side_panel")
+                iced::widget::tooltip(
+                    button(navigation::glyph(if self.status_collapsed {
+                        "icons/panel-right-open.svg"
                     } else {
-                        t!("nav.collapse_side_panel")
-                    }
-                    .to_string()
-                ))
-                .on_press(Message::ToggleStatus),
+                        "icons/panel-right-close.svg"
+                    }))
+                    .padding(8)
+                    .style(button::text)
+                    .on_press(Message::ToggleStatus),
+                    text(if self.status_collapsed {
+                        t!("nav.expand_side_panel").to_string()
+                    } else {
+                        t!("nav.collapse_side_panel").to_string()
+                    }),
+                    iced::widget::tooltip::Position::Left
+                ),
                 motion::reveal(
                     status.map(Message::Status),
                     !self.status_collapsed,
@@ -1260,8 +1262,8 @@ impl WinderustApp {
                         rail,
                         !self.status_collapsed,
                         self.motion_enabled,
-                        240.0,
-                        100.0
+                        216.0,
+                        40.0
                     )
                 ]
                 .spacing(16)
@@ -1280,61 +1282,27 @@ impl WinderustApp {
             body = body.push(
                 row![
                     button(text(t!("common.save").to_string())).on_press(Message::Save),
-                    button(text(t!("common.cancel").to_string())).on_press(Message::Cancel),
+                    button(text(t!("common.cancel").to_string()))
+                        .on_press(Message::Cancel)
+                        .style(iced::widget::button::secondary),
                 ]
                 .spacing(8),
             );
         }
-        let titlebar = row![
-            mouse_area(
-                container(
-                    row![
-                        text("Winderust").size(17),
-                        text(t!("app.description").to_string()).size(12)
-                    ]
-                    .spacing(12)
-                )
-                .width(Fill)
-                .padding(10)
-            )
-            .on_press(Message::Drag)
-            .on_double_click(Message::Maximize),
-            button("_").on_press(Message::Minimize).style(button::text),
-            button("[]").on_press(Message::Maximize).style(button::text),
-            button("X").on_press(Message::Close).style(button::danger)
+        row![
+            motion::horizontal_reveal(
+                container(scrollable(navigation).spacing(10))
+                    .height(Fill)
+                    .style(container::bordered_box),
+                !collapsed,
+                self.motion_enabled,
+                244.0,
+                72.0
+            ),
+            container(body).padding([20, 24]).width(Fill).height(Fill)
         ]
-        .align_y(iced::Center);
-        let content = column![
-            titlebar,
-            row![
-                motion::horizontal_reveal(
-                    scrollable(navigation),
-                    !collapsed,
-                    self.motion_enabled,
-                    220.0,
-                    72.0
-                ),
-                container(body).padding(16).width(Fill).height(Fill)
-            ]
-            .spacing(8)
-            .height(Fill)
-        ]
-        .height(Fill);
-        let edge = |direction| {
-            mouse_area(Space::new().width(Fill).height(4)).on_press(Message::Resize(direction))
-        };
-        column![
-            edge(iced::window::Direction::North),
-            row![
-                mouse_area(Space::new().width(4).height(Fill))
-                    .on_press(Message::Resize(iced::window::Direction::West)),
-                content,
-                mouse_area(Space::new().width(4).height(Fill))
-                    .on_press(Message::Resize(iced::window::Direction::East))
-            ]
-            .height(Fill),
-            edge(iced::window::Direction::South)
-        ]
+        .spacing(8)
+        .height(Fill)
         .into()
     }
 
@@ -1585,6 +1553,9 @@ impl WinderustApp {
                 let mut card = column![
                     row![navigation::icon(*page), text(page.label()).size(17)].spacing(8),
                     text(navigation::description(*page))
+                        .size(13)
+                        .width(Fill)
+                        .style(text::secondary)
                 ]
                 .spacing(8);
                 if self.settings.general.show_feature_status_on_cards {
@@ -1603,12 +1574,12 @@ impl WinderustApp {
                     button(card)
                         .width(Fill)
                         .padding(16)
-                        .style(button::secondary)
+                        .style(iced::widget::button::secondary)
                         .on_press(Message::Page(*page)),
                 );
             }
         }
-        pages.into()
+        scrollable(pages).spacing(10).height(Fill).into()
     }
 }
 

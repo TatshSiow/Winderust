@@ -274,7 +274,10 @@ impl Editor {
     ) -> Element<'a, Message> {
         let s = self.draft.as_ref().unwrap_or(live);
         let editable = self.draft.is_none() || !self.read_only;
-        let mut body = column![text(t!("adaptive_engine.intro_1").to_string())].spacing(12);
+        let mut body = column![text(t!("adaptive_engine.intro_1").to_string())
+            .width(Fill)
+            .style(text::secondary)]
+        .spacing(12);
         macro_rules! toggle {($key:expr,$($field:ident).+) => {body=body.push(checkbox(s.$($field).+).label(t!($key).to_string()).on_toggle_maybe(editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v))));};}
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{let key=stringify!($($field).+);let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());body=body.push(row![text(t!($key).to_string()).width(Fill),text_input("",&value).on_input_maybe(editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key))).width(100)].spacing(8));}};}
 
@@ -916,17 +919,31 @@ impl Editor {
         }
         let rail = column![
             row![
-                button(text(t!("common.status").to_string())).on_press(Message::RailTab(false)),
+                button(text(t!("common.status").to_string()))
+                    .on_press(Message::RailTab(false))
+                    .style(if self.presets_tab {
+                        iced::widget::button::secondary
+                    } else {
+                        iced::widget::button::primary
+                    }),
                 button(text(t!("adaptive_engine.presets").to_string()))
                     .on_press(Message::RailTab(true))
+                    .style(if self.presets_tab {
+                        iced::widget::button::primary
+                    } else {
+                        iced::widget::button::secondary
+                    })
             ]
             .spacing(8),
             rail
         ]
         .spacing(12);
-        row![scrollable(body).width(Fill), scrollable(rail).width(280)]
-            .spacing(16)
-            .into()
+        row![
+            scrollable(body).spacing(10).width(Fill),
+            scrollable(rail).spacing(10).width(216)
+        ]
+        .spacing(16)
+        .into()
     }
 }
 #[derive(Debug, Clone, PartialEq)]

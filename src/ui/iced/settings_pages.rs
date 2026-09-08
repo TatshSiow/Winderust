@@ -207,7 +207,9 @@ impl Editor {
                     s.general.allow_cross_session_process_control,
                     Flag::CrossSession
                 ),
-                text(t!("settings.allow_cross_session_process_control_help").to_string()),
+                text(t!("settings.allow_cross_session_process_control_help").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
                 flag(
                     "settings.pause_dashboard_metrics",
                     s.advanced.pause_dashboard_metrics,
@@ -218,7 +220,9 @@ impl Editor {
                     s.advanced.pause_process_population,
                     Flag::PauseProcesses
                 ),
-                text(t!("settings.pause_process_population_help").to_string()),
+                text(t!("settings.pause_process_population_help").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
                 widgets::number(
                     t!("settings.failure_suppression_threshold").to_string(),
                     u32::from(s.advanced.execution_failure_suppression_threshold),
@@ -386,13 +390,17 @@ impl Editor {
                     s.advanced.expose_all_priority_values,
                     Flag::AdvancedValues
                 ),
-                text(t!("settings.expose_all_priority_values_help").to_string()),
+                text(t!("settings.expose_all_priority_values_help").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
                 flag(
                     "settings.show_advanced_controls",
                     s.advanced.show_advanced_controls,
                     Flag::AdvancedControls
                 ),
                 text(t!("settings.show_advanced_controls_help").to_string())
+                    .width(Fill)
+                    .style(text::secondary)
             ]
             .spacing(14),
             Page::About => {
@@ -479,7 +487,7 @@ impl Editor {
             }
             _ => column![],
         };
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 fn color_button(color: u32) -> iced::widget::Button<'static, Message> {
@@ -542,20 +550,13 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
     } else {
         Theme::Dark.palette()
     };
-    let accent = if s.accent.source == AccentColorSource::Custom {
-        s.accent.custom_color
+    // Preserve the appearance preference; Iced derives all widget colors and states.
+    if let Some(accent) = if s.accent.source == AccentColorSource::Custom {
+        Some(s.accent.custom_color)
     } else {
-        windows_accent().unwrap_or(0xa7e957)
-    };
-    palette.primary = rgb(accent);
-    palette.background = rgb(if light { 0xf4f4f5 } else { 0x101112 });
-    palette.text = rgb(if light { 0x171a1d } else { 0xf4f4f5 });
-    palette.success = rgb(if light { 0x366b22 } else { 0x9ee069 });
-    palette.danger = rgb(if light { 0x9b2f1f } else { 0xff8a73 });
-    if s.accent.source == AccentColorSource::Custom {
-        palette.background.r = palette.background.r * 0.96 + palette.primary.r * 0.04;
-        palette.background.g = palette.background.g * 0.96 + palette.primary.g * 0.04;
-        palette.background.b = palette.background.b * 0.96 + palette.primary.b * 0.04;
+        windows_accent()
+    } {
+        palette.primary = rgb(accent);
     }
     Theme::custom("Winderust", palette)
 }

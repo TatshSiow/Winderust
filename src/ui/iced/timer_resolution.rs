@@ -179,7 +179,7 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 fn parse_resolution(value: &str, min: u32, max: u32) -> Option<u32> {

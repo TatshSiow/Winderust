@@ -169,7 +169,7 @@ impl Editor {
                 }
                 rules_body = rules_body.push(iced::widget::keyed_column(cards).spacing(8));
                 body = body.push(super::motion::reveal(rules_body, !self.collapsed, motion_enabled));
-                scrollable(body).height(Fill).into()
+                scrollable(body).spacing(10).height(Fill).into()
             }};
         }
         match kind {

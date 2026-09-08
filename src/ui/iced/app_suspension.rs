@@ -184,6 +184,8 @@ impl Editor {
                 .label(t!("app_suspension.enable").to_string())
                 .on_toggle(Message::Enabled),
             text(t!("app_suspension.intro_1").to_string())
+                .width(Fill)
+                .style(text::secondary)
         ]
         .spacing(12);
         body = body.push(delay_row(
@@ -254,7 +256,11 @@ impl Editor {
             );
         }
         body = body
-            .push(text(t!("app_suspension.suspendable_help").to_string()))
+            .push(
+                text(t!("app_suspension.suspendable_help").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
+            )
             .push(
                 row![
                     text_input(&t!("process_list.executable_path"), &self.path)
@@ -394,7 +400,7 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 fn delay_row(field: Delay, label: &str, value: u64, enabled: bool) -> Element<'static, Message> {

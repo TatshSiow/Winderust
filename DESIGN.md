@@ -2,12 +2,12 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-08-13
+- Last refreshed: 2026-09-08
 - Primary product surfaces: Windows desktop app shell, process controls, automation settings, status dashboard, and Action Log.
 - Evidence reviewed: `.agents/memory/15-design-spec.md`, `.agents/memory/20-project-scope.md`,
   `src/application/`, `src/runtime/`, `src/control/`, `src/platform/windows/`,
   `src/backend/automation.rs`, `src/backend/automation/runner.rs`,
-  `src/backend/crash_recovery.rs`, `src/ui/app.rs`, `src/ui/app/`, `locales/`, and the current
+  `src/backend/crash_recovery.rs`, `src/ui/iced/app.rs`, `src/ui/iced/`, `locales/`, and the current
   feature-policy modules.
 
 ## Brand
@@ -34,7 +34,7 @@
 ## Design principles
 - One owner per mechanism: A page and its settings own one Windows mechanism.
 - CPU allocation uses one runtime coordinator for CPU Sets and affinity. Its order is CPU Sets
-  (Soft) > Processor Affinity (Hard) > Core Limiter > Adaptive Engine / CPU Scheduler.
+  (Soft) > Processor Affinity (Hard) > Adaptive Engine / CPU Scheduler.
 - Feature modules own discovery and policy state; only the coordinator owns Windows baselines,
   mutations, compensation, arbitration, and restoration. Releasing one producer queues the exact
   process key; the runtime re-resolves it once after every CPU producer has processed that pass.
@@ -48,13 +48,13 @@
 - Spacing/layout rhythm: Dense, stable rows using existing constants and setting groups.
 - Shape/radius/elevation: Existing Winderust surface and control radii; no new visual layer.
 - Motion: Existing bounded hover, expand/collapse, modal, and navigation motion respecting Animation Mode.
-- Imagery/iconography: Existing Lucide navigation/action icons through `NavIcon`.
+- Imagery/iconography: Bundled Lucide SVG navigation/action icons.
 
 ## Components
 - Existing components to reuse: Page shell, feature toggle, process picker, rule cards, core grid, dropdowns, status rows, indicators, and removal confirmation.
 - New/changed components: Mechanism-specific CPU Sets (Soft) and Processor Affinity (Hard) rule pages using existing components.
 - Variants and states: Enabled, disabled, ready, applied, protected, inaccessible, empty, and failed.
-- Token/component ownership: Existing GPUI/gpui-component helpers and Winderust theme tokens.
+- Token/component ownership: Iced built-in widget styles and palette generation; settings_pages.rs only adapts the existing system/custom accent preference.
 
 ## Accessibility
 - Target standard: Preserve existing keyboard, focus, contrast, and reduced-motion behavior.
@@ -89,7 +89,7 @@
 - Microcopy rules: State scope and consequence; label Processor Affinity (Hard) as strict and CPU Sets (Soft) as recommended.
 
 ## Implementation constraints
-- Framework/styling system: Rust, GPUI, and gpui-component with existing helpers.
+- Framework/styling system: Rust and Iced 0.14 with the Tiny Skia software renderer.
 - Design-token constraints: Reuse current theme, spacing, radius, and motion tokens.
 - Performance constraints: Avoid duplicate process scans and overlapping managers.
 - Compatibility constraints: Public pre-release; do not add legacy settings aliases or migrations. Preserve process identity validation and restoration. CPU selection currently covers the first processor group and discloses that limit on multi-group systems.
@@ -106,3 +106,16 @@
 - Classify each Windows write as temporary, process-lifetime, persistent, or irreversible before
   routing it. Preserve exact-identity validation, access barriers, verification, compensation,
   and conservative restoration.
+
+## Iced presentation
+- Use the native Windows title bar, resize borders, and window buttons through Iced decorations. Keep close requests routed through existing unsaved-change and tray handling.
+- Status/error text and chart series use Iced semantic styles and theme palette colors.
+- Prefer Iced's built-in Light/Dark palettes, widget styles, borders, and interaction states. Do not maintain a separate Winderust style collection.
+- The existing Windows/custom accent preference changes only the primary palette color; Iced generates the remaining widget colors.
+- Use built-in primary buttons for selected navigation/tabs and primary commands, secondary buttons for secondary commands, text buttons for quiet actions, and bordered_box for setting surfaces.
+- Keep application-specific layout: grouped navigation, readable page headings, compact dashboard charts, constrained form rows, status rails, and scrollbar spacing.
+- Retain bundled icons, charts, and bounded motion where standard widgets do not cover existing functionality.
+- Add custom styling only for a concrete requirement unsupported by Iced's built-ins.
+
+## Open questions
+- None blocking implementation. Density preferences can be adjusted after reviewing native screenshots.

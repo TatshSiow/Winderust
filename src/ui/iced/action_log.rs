@@ -103,12 +103,10 @@ impl Editor {
             .skip(start)
             .take(ACTION_LOG_PAGE_SIZE)
         {
-            let result_color = match entry.result {
-                ActionLogResult::Applied | ActionLogResult::Restored => {
-                    iced::Color::from_rgb8(40, 150, 100)
-                }
-                ActionLogResult::Skipped => iced::Color::from_rgb8(180, 120, 30),
-                ActionLogResult::Failed => iced::Color::from_rgb8(210, 60, 50),
+            let result_style: fn(&iced::Theme) -> iced::widget::text::Style = match entry.result {
+                ActionLogResult::Applied | ActionLogResult::Restored => text::success,
+                ActionLogResult::Skipped => text::warning,
+                ActionLogResult::Failed => text::danger,
             };
             body = body.push(
                 container(
@@ -117,7 +115,7 @@ impl Editor {
                             text(format!("#{}", entry.sequence)).width(56),
                             text(action_log_time_label(entry.timestamp_epoch_ms)).width(80),
                             text(action_log_feature_label(entry.feature)).width(Fill),
-                            text(action_log_result_text(entry.result)).color(result_color)
+                            text(action_log_result_text(entry.result)).style(result_style)
                         ]
                         .spacing(8),
                         text(action_log_process_label(entry)),
@@ -127,10 +125,10 @@ impl Editor {
                 )
                 .padding(10)
                 .width(Fill)
-                .style(container::rounded_box),
+                .style(iced::widget::container::bordered_box),
             );
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {

@@ -489,7 +489,11 @@ impl Editor {
                 )))
             };
             if let PresetTarget::Custom(index) = p.target {
-                form = form.push(text(t!("processor_power.preset_name_help").to_string()));
+                form = form.push(
+                    text(t!("processor_power.preset_name_help").to_string())
+                        .width(Fill)
+                        .style(text::secondary),
+                );
                 if !p.name.trim().is_empty() && !valid_name(presets, index, &p.name) {
                     form = form.push(text(
                         t!("processor_power.duplicate_preset_name").to_string(),
@@ -504,8 +508,8 @@ impl Editor {
             body = body.push(form);
         }
         row![
-            scrollable(body).height(Fill).width(Fill),
-            scrollable(rail).height(Fill).width(270)
+            scrollable(body).spacing(10).height(Fill).width(Fill),
+            scrollable(rail).spacing(10).height(Fill).width(270)
         ]
         .spacing(16)
         .into()

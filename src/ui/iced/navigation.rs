@@ -5,15 +5,17 @@ use rust_i18n::t;
 use std::collections::HashSet;
 
 pub(super) fn icon<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
-    iced::widget::svg(
-        crate::ui::assets::iced_icon(icon_path(page)).expect("Every navigation icon is bundled"),
-    )
-    .width(18)
-    .height(18)
-    .style(|theme: &Theme, _| iced::widget::svg::Style {
-        color: Some(theme.palette().text),
-    })
-    .into()
+    glyph(icon_path(page))
+}
+
+pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message> {
+    iced::widget::svg(crate::ui::assets::iced_icon(path).expect("Every UI icon is bundled"))
+        .width(18)
+        .height(18)
+        .style(|theme: &Theme, _| iced::widget::svg::Style {
+            color: Some(theme.palette().text),
+        })
+        .into()
 }
 pub(super) fn icon_path(page: Page) -> &'static str {
     match page {

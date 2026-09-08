@@ -215,7 +215,7 @@ impl Editor {
                 .spacing(8),
             )
             .push(text(&self.status));
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]

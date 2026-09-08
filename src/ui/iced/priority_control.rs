@@ -559,12 +559,20 @@ impl Editor {
             checkbox(enabled)
                 .label(localized(key, "enable"))
                 .on_toggle(Message::Enabled),
-            text(localized(key, "intro_1")),
+            text(localized(key, "intro_1"))
+                .width(Fill)
+                .style(text::secondary),
             text(localized(key, "intro_2"))
+                .width(Fill)
+                .style(text::secondary)
         ]
         .spacing(12);
         if kind == Kind::Gpu {
-            body = body.push(text(localized(key, "intro_3")));
+            body = body.push(
+                text(localized(key, "intro_3"))
+                    .width(Fill)
+                    .style(text::secondary),
+            );
         }
         for tier in Tier::ALL {
             let detection = kind.detection(settings, tier);
@@ -624,7 +632,7 @@ impl Editor {
                 )
                 .padding(12)
                 .width(Fill)
-                .style(container::rounded_box),
+                .style(iced::widget::container::bordered_box),
             );
         }
         body = body
@@ -707,7 +715,7 @@ impl Editor {
                     container(card)
                         .padding(12)
                         .width(Fill)
-                        .style(container::rounded_box),
+                        .style(iced::widget::container::bordered_box),
                     index == usize::MAX,
                     motion_enabled,
                     Message::Removed(rule.executable_path.clone()),
@@ -718,7 +726,7 @@ impl Editor {
         if kind.rules(settings).is_empty() {
             body = body.push(text(localized(key, "no_exclusions")));
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 pub(super) fn process_priority_setting_label(priority: ProcessPrioritySetting) -> String {

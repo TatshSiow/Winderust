@@ -683,7 +683,8 @@ impl ProcessList {
             text_input(&t!("process_list.search_placeholder"), &self.search)
                 .on_input(Message::Search),
             button(text(t!("settings.refresh").to_string()))
-                .on_press_maybe((!self.refreshing).then_some(Message::Refresh)),
+                .on_press_maybe((!self.refreshing).then_some(Message::Refresh))
+                .style(iced::widget::button::secondary),
             checkbox(self.hide_inaccessible)
                 .label(t!("process_list.hide_inaccessible_processes").to_string())
                 .on_toggle(Message::HideInaccessible),
@@ -710,6 +711,7 @@ impl ProcessList {
         body = body.push(responsive(move |size| {
             let mut header = row![button(text(Sort::Name.label()))
                 .on_press(Message::Sort(Sort::Name))
+                .style(iced::widget::button::secondary)
                 .width(230)]
             .spacing(8);
             for col in Sort::ALL.into_iter().skip(1) {
@@ -717,6 +719,7 @@ impl ProcessList {
                     header = header.push(
                         button(text(col.label()))
                             .on_press(Message::Sort(col))
+                            .style(iced::widget::button::secondary)
                             .width(column_width(col)),
                     );
                 }
@@ -755,7 +758,8 @@ impl ProcessList {
                         } else {
                             "+"
                         }))
-                        .on_press(Message::Expand(entry.key.clone(), motion)),
+                        .on_press(Message::Expand(entry.key.clone(), motion))
+                        .style(button::text),
                     );
                 } else {
                     name = name.push(Space::new().width(if entry.nested { 25 } else { 4 }));

@@ -101,6 +101,8 @@ impl Editor {
                 .label(t!("memory_trim.enable").to_string())
                 .on_toggle(Message::Enabled),
             text(t!("memory_trim.intro_1").to_string())
+                .width(Fill)
+                .style(text::secondary)
         ]
         .spacing(12);
         for (label, value, change) in [
@@ -131,7 +133,11 @@ impl Editor {
             );
         }
         body = body
-            .push(text(t!("memory_trim.category_safety_help").to_string()))
+            .push(
+                text(t!("memory_trim.category_safety_help").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
+            )
             .push(
                 row![
                     text_input(&t!("process_list.executable_path"), &self.path)
@@ -201,7 +207,7 @@ impl Editor {
             button(text(t!("memory_trim.trim_now").to_string()))
                 .on_press_maybe(settings.enabled.then_some(Message::TrimNow)),
         );
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 #[cfg(test)]

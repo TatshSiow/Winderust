@@ -10,8 +10,8 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## App Shell
 
-- Keep the app shell as custom title bar, left navigation, and right work area.
-- The title bar is compact: app icon/name, short description, native-feeling window controls.
+- Use the native Windows title bar and resize borders through Iced window decorations, with left navigation and a right work area.
+- Windows owns the title bar and window buttons. Keep native close requests routed through the existing tray, unsaved-change, and shutdown handling.
 - The sidebar is grouped by product area through `Page::sections()`. It is
   searchable when expanded and keeps a search action in its remembered compact
   icon rail; the quiet navigation-styled toggle stays below a divider in normal
@@ -44,6 +44,8 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Use icon buttons for compact repeated actions; text buttons are fine for clear primary commands such as save/import/export.
 
 ## Visual Language
+
+- Prefer Iced built-in themes and widget styles. Do not maintain custom surface/button style helpers; add custom styling only for a concrete unsupported requirement. Preserve the existing accent preference through the primary palette color.
 
 - Base surfaces are neutral and restrained. Accent color marks primary action, active navigation, selection, and important status.
 - Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers.

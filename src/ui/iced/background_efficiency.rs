@@ -123,9 +123,15 @@ impl Editor {
             checkbox(enabled)
                 .label(t!("background_efficiency.enable").to_string())
                 .on_toggle(Message::Enabled),
-            text(t!("background_efficiency.intro_1").to_string()),
-            text(t!("background_efficiency.intro_2").to_string()),
+            text(t!("background_efficiency.intro_1").to_string())
+                .width(Fill)
+                .style(text::secondary),
+            text(t!("background_efficiency.intro_2").to_string())
+                .width(Fill)
+                .style(text::secondary),
             text(t!("background_efficiency.intro_3").to_string())
+                .width(Fill)
+                .style(text::secondary)
         ]
         .spacing(12);
         let aggressiveness: Element<'_, Message> = if enabled {
@@ -209,7 +215,7 @@ impl Editor {
                 )
                 .padding(12)
                 .width(Fill)
-                .style(container::rounded_box),
+                .style(iced::widget::container::bordered_box),
             );
         }
         body = body
@@ -292,7 +298,7 @@ impl Editor {
                     container(card)
                         .padding(12)
                         .width(Fill)
-                        .style(container::rounded_box),
+                        .style(iced::widget::container::bordered_box),
                     index == usize::MAX,
                     motion_enabled,
                     Message::Removed(rule.executable_path.clone()),
@@ -305,7 +311,7 @@ impl Editor {
                 t!("background_efficiency.no_custom_rules").to_string(),
             ));
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 fn can_add(settings: &BackgroundEfficiencySettings, path: &str) -> bool {

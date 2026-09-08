@@ -210,7 +210,9 @@ impl Editor {
                     .to_string()
                 )
                 .on_toggle(Message::Enabled),
-            text(t!("cpu_allocation.rules_help").to_string()),
+            text(t!("cpu_allocation.rules_help").to_string())
+                .width(Fill)
+                .style(text::secondary),
             row![
                 text_input("C:\\App\\app.exe", &self.path)
                     .on_input(Message::Path)
@@ -333,17 +335,31 @@ impl Editor {
         }
         let rail = column![
             row![
-                button(text(t!("common.status").to_string())).on_press(Message::RailTab(false)),
+                button(text(t!("common.status").to_string()))
+                    .on_press(Message::RailTab(false))
+                    .style(if self.presets_tab {
+                        iced::widget::button::secondary
+                    } else {
+                        iced::widget::button::primary
+                    }),
                 button(text(t!("cpu_allocation.presets").to_string()))
                     .on_press(Message::RailTab(true))
+                    .style(if self.presets_tab {
+                        iced::widget::button::primary
+                    } else {
+                        iced::widget::button::secondary
+                    })
             ]
             .spacing(8),
             rail
         ]
         .spacing(12);
-        row![scrollable(body).width(Fill), scrollable(rail).width(280)]
-            .spacing(16)
-            .into()
+        row![
+            scrollable(body).spacing(10).width(Fill),
+            scrollable(rail).spacing(10).width(216)
+        ]
+        .spacing(16)
+        .into()
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {

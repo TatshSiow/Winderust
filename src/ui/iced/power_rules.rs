@@ -483,7 +483,7 @@ impl Editor {
             ));
         }
         body = body.push(iced::widget::keyed_column(cards).spacing(12));
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
     fn input(&self, id: u64, field: Field, current: String) -> String {
         self.inputs.get(&(id, field)).cloned().unwrap_or(current)

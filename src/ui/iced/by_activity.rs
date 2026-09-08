@@ -104,19 +104,27 @@ pub(super) fn view<'a>(
             checkbox(activity.enabled)
                 .label(t!("by_activity.enable").to_string())
                 .on_toggle(Message::Enabled),
-            text(t!("by_activity.intro_1").to_string()),
-            text(t!("common.power_plan_priority").to_string()),
-            text(t!("common.power_plan_pause_priority").to_string()),
+            text(t!("by_activity.intro_1").to_string())
+                .width(Fill)
+                .style(text::secondary),
+            text(t!("common.power_plan_priority").to_string())
+                .width(Fill)
+                .style(text::secondary),
+            text(t!("common.power_plan_pause_priority").to_string())
+                .width(Fill)
+                .style(text::secondary),
             row![
-                text(t!("by_activity.idle_plan").to_string()).width(240),
+                text(t!("by_activity.idle_plan").to_string()).width(iced::Length::FillPortion(1)),
                 plan_picker(&activity.power_plans.power_save_guid, Message::IdlePlan)
             ]
-            .spacing(12),
+            .spacing(12)
+            .align_y(iced::Center),
             row![
-                text(t!("by_activity.active_plan").to_string()).width(240),
+                text(t!("by_activity.active_plan").to_string()).width(iced::Length::FillPortion(1)),
                 plan_picker(&activity.power_plans.performance_guid, Message::ActivePlan)
             ]
-            .spacing(12),
+            .spacing(12)
+            .align_y(iced::Center),
             checkbox(activity.input_detection.keyboard)
                 .label(t!("by_activity.keyboard_input").to_string())
                 .on_toggle_maybe(activity.enabled.then_some(Message::Keyboard)),
@@ -127,7 +135,8 @@ pub(super) fn view<'a>(
                 .label(t!("by_activity.controller_input").to_string())
                 .on_toggle_maybe(activity.enabled.then_some(Message::Controller)),
             row![
-                text(t!("by_activity.idle_timeout").to_string()).width(180),
+                text(t!("by_activity.idle_timeout").to_string())
+                    .width(iced::Length::FillPortion(2)),
                 slider(1..=3600, activity.idle_timeout_seconds as u32, |v| {
                     Message::IdleTimeout(v.to_string())
                 }),
@@ -139,11 +148,13 @@ pub(super) fn view<'a>(
                         .unwrap_or_else(|| activity.idle_timeout_seconds.to_string())
                 )
                 .on_input(Message::IdleTimeout)
-                .width(130)
+                .width(80)
             ]
-            .spacing(12),
+            .spacing(12)
+            .align_y(iced::Center),
             row![
-                text(t!("by_activity.check_interval").to_string()).width(180),
+                text(t!("by_activity.check_interval").to_string())
+                    .width(iced::Length::FillPortion(2)),
                 slider(
                     CHECK_INTERVAL_MIN_MS as u32..=CHECK_INTERVAL_MAX_MS as u32,
                     settings.general.check_interval_ms as u32,
@@ -158,9 +169,10 @@ pub(super) fn view<'a>(
                         .unwrap_or_else(|| settings.general.check_interval_ms.to_string())
                 )
                 .on_input(Message::CheckInterval)
-                .width(130)
+                .width(80)
             ]
-            .spacing(12),
+            .spacing(12)
+            .align_y(iced::Center),
         ]
         .spacing(16),
     )

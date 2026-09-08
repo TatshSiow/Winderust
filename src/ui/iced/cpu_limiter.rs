@@ -222,15 +222,28 @@ impl CpuLimiter {
             .on_toggle(Message::Enabled)]
         .spacing(16);
         body = body
-            .push(text(t!("cpu_limiter.intro_1").to_string()))
-            .push(text(t!("cpu_limiter.intro_2").to_string()))
-            .push(text(t!("cpu_limiter.intro_3").to_string()))
+            .push(
+                text(t!("cpu_limiter.intro_1").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
+            )
+            .push(
+                text(t!("cpu_limiter.intro_2").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
+            )
+            .push(
+                text(t!("cpu_limiter.intro_3").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
+            )
             .push(text(t!("cpu_limiter.intro_4").to_string()))
             .push(text(t!("cpu_limiter.intro_5").to_string()));
         if self.has_invalid_inputs() {
             body = body.push(
                 text(t!("cpu_limiter.intro_2").to_string())
-                    .color(iced::Color::from_rgb8(210, 60, 50)),
+                    .width(Fill)
+                    .style(text::danger),
             );
         }
         body = body.push(
@@ -262,7 +275,11 @@ impl CpuLimiter {
             motion_enabled,
         ));
         body = body
-            .push(text(t!("cpu_limiter.rules_help").to_string()))
+            .push(
+                text(t!("cpu_limiter.rules_help").to_string())
+                    .width(Fill)
+                    .style(text::secondary),
+            )
             .push(
                 row![
                     text_input(&t!("process_list.executable_path"), &self.path)
@@ -372,7 +389,7 @@ impl CpuLimiter {
         if settings.rules.is_empty() && self.deleting.is_none() {
             body = body.push(text(t!("cpu_limiter.no_rules").to_string()));
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
 }
 

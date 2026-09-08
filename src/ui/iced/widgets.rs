@@ -40,12 +40,14 @@ pub(super) fn number<M: Clone + 'static>(
 ) -> Element<'static, M> {
     let input_action = action.clone();
     row![
-        text(label).width(220),
-        slider(range, value, move |value| action(value.to_string())),
+        text(label).width(iced::Length::FillPortion(2)),
+        slider(range, value, move |value| action(value.to_string()))
+            .width(iced::Length::FillPortion(3)),
         text_input("", &value.to_string())
             .on_input(input_action)
             .width(80)
     ]
-    .spacing(10)
+    .spacing(12)
+    .align_y(iced::Center)
     .into()
 }

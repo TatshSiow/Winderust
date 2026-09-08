@@ -87,7 +87,12 @@ pub(super) fn view<'a>(
     };
     let mut body = column![
         text(t!("common.status").to_string()).size(18),
-        metric("common.status", t!(state_label).to_string())
+        text(t!(state_label).to_string())
+            .size(13)
+            .style(match summary.state {
+                FeatureRunState::Running => text::success,
+                FeatureRunState::NotRunning | FeatureRunState::Unknown => text::secondary,
+            })
     ]
     .spacing(12);
     if power_feature.is_some() {
@@ -207,7 +212,11 @@ pub(super) fn view<'a>(
             button(text(t!("admin_rights.relaunch").to_string())).on_press(Message::RelaunchAdmin),
         );
     }
-    body = body.push(button(text(Page::ActionLog.label())).on_press(Message::ActionLog));
+    body = body.push(
+        button(text(Page::ActionLog.label()))
+            .on_press(Message::ActionLog)
+            .style(iced::widget::button::secondary),
+    );
     Some(
         scrollable(container(body.width(Fill)).width(Fill).padding([0, 12]))
             .width(Fill)
@@ -243,7 +252,7 @@ fn section<'a>(title: &str, body: iced::widget::Column<'a, Message>) -> Element<
     container(column![text(t!(title).to_string()).size(14), body].spacing(8))
         .width(Fill)
         .padding(10)
-        .style(container::rounded_box)
+        .style(iced::widget::container::bordered_box)
         .into()
 }
 fn log(

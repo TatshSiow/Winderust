@@ -8,7 +8,7 @@ use crate::config::Settings;
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::ui::Page;
 use iced::widget::{button, canvas, column, container, row, scrollable, text, text_input};
-use iced::{mouse, Color, Element, Fill, Point, Rectangle, Renderer, Theme};
+use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
 use std::collections::VecDeque;
 
@@ -134,7 +134,7 @@ impl Model {
                         .width(Fill),
                 );
             }
-            return scrollable(body).height(Fill).into();
+            return scrollable(body).spacing(10).height(Fill).into();
         }
         let cpu = self.chart(ChartKind::Cpu);
         let memory = self.chart(ChartKind::Memory);
@@ -184,19 +184,21 @@ impl Model {
         body = body
             .push(
                 container(enabled)
-                    .padding(12)
+                    .padding(16)
                     .width(Fill)
-                    .style(container::rounded_box),
+                    .style(iced::widget::container::bordered_box),
             )
             .push(text(t!("home.main_sections").to_string()).size(18));
         for section in dashboard_sections_in_nav_order(settings.advanced.show_advanced_controls) {
             body = body.push(
                 button(text(section.landing_page.label()))
+                    .style(iced::widget::button::secondary)
+                    .padding([10, 14])
                     .on_press(Message::Navigate(section.landing_page))
                     .width(Fill),
             );
         }
-        scrollable(body).height(Fill).into()
+        scrollable(body).spacing(10).height(Fill).into()
     }
     fn chart_card(&self, kind: ChartKind, chart: Chart) -> Element<'static, Message> {
         let sample = self.latest;
@@ -238,23 +240,27 @@ impl Model {
         };
         container(
             column![
-                row![text(title.to_string()).size(18).width(Fill), text(total)].spacing(8),
+                row![
+                    text(title.to_string()).size(18).width(Fill),
+                    text(total).size(20)
+                ]
+                .spacing(8),
                 row![
                     text(format!("{first}: {first_value}"))
-                        .color(Color::from_rgb8(50, 145, 220))
+                        .style(text::primary)
                         .width(Fill),
                     text(format!("{second}: {second_value}"))
-                        .color(Color::from_rgb8(175, 120, 215))
+                        .style(text::success)
                         .width(Fill)
                 ]
                 .spacing(8),
-                canvas(chart).width(Fill).height(125)
+                canvas(chart).width(Fill).height(82)
             ]
             .spacing(8),
         )
-        .padding(12)
+        .padding(16)
         .width(Fill)
-        .style(container::rounded_box)
+        .style(iced::widget::container::bordered_box)
         .into()
     }
     fn chart(&self, kind: ChartKind) -> Chart {
@@ -413,9 +419,9 @@ impl canvas::Program<Message> for Chart {
                 canvas::Stroke::default()
                     .with_width(1.8)
                     .with_color(if series == 0 {
-                        Color::from_rgb8(50, 145, 220)
+                        theme.palette().primary
                     } else {
-                        Color::from_rgb8(175, 120, 215)
+                        theme.palette().success
                     }),
             );
         }
