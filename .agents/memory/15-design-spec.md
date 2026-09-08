@@ -1,6 +1,6 @@
 # Winderust Design Spec
 
-This file describes the current app design direction. Use it when changing GPUI UI code, adding pages, or cleaning UI helpers.
+This file describes the current app design direction. Use it when changing Iced UI code, adding pages, or cleaning UI helpers.
 
 ## Product Feel
 
@@ -22,24 +22,22 @@ Prefer visible state, compact controls, and predictable rows over large illustra
   metrics, focus, and rounded surface never swap or reflow during the motion.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
-  dispatch stays in `WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs`.
+  dispatch stays in `WinderustApp::page_view` in `src/ui/iced/app.rs`.
 
 ## Layout Rules
 
-- Use `h_flex()` and `v_flex()` consistently with `min_w(px(0.0))` / `min_h(px(0.0))` on flexible children.
-- Rows should have stable heights. Existing defaults are `CARD_ROW_HEIGHT`, `PROCESS_LIST_ROW_HEIGHT`, and `PROCESS_LIST_HEADER_HEIGHT`.
+- Use Iced rows and columns with explicit `Fill`, `Shrink`, and constrained widths for flexible children.
+- Rows and table headers should have stable heights across state changes.
 - Use fixed or computed widths for tables and policy columns. Do not let dynamic labels resize the process list.
-- Use `truncate()` for long process names, labels, and status values inside constrained rows.
+- Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
-- Keep cards at the existing `BRAND_RADIUS_SURFACE` / `BRAND_RADIUS_CONTROL` scale. Do not introduce large rounded marketing panels.
+- Keep surface and control corner radii small and consistent. Do not introduce large rounded marketing panels.
 
 ## Components
 
-- Reuse local helpers before adding new wrappers:
-  - `setting_group`, `setting_group_with_help`, and `setting_group_action_row` for settings.
-  - `control_button`, `primary_control_button`, and `remove_control_button` for actions.
-  - `dropdown_select_control` and existing dropdown helpers for option sets.
-  - `switch_toggle_action`, `checkbox`, inputs, sliders, and steppers for their natural control types.
+- Reuse `src/ui/iced/widgets.rs` for shared numeric and power-plan controls, and
+  `motion.rs` for collapsible groups and removal transitions. Use Iced buttons,
+  checkboxes, pick lists, text inputs, and sliders for their natural control types.
 - Use switches or checkboxes for binary state.
 - Use sliders, steppers, or numeric inputs for numeric settings.
 - Use dropdowns for bounded option sets.
@@ -48,23 +46,24 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 ## Visual Language
 
 - Base surfaces are neutral and restrained. Accent color marks primary action, active navigation, selection, and important status.
-- Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through `cx.theme()` and existing color helpers.
+- Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers.
 - Do not add purple/blue gradients, decorative blobs, glow backgrounds, or one-note palettes.
 - Status colors should stay semantic: success for active/applied, warning for caution, danger for destructive or failed actions.
 - Text hierarchy is compact: small labels, body rows, muted helper text. Avoid hero-scale text inside panels.
 
 ## Icons
 
-- Use `Icon::new(NavIcon::...)` for Lucide icons already registered through `src/ui/assets.rs`.
-- If adding a Lucide icon, update both `NavIcon` and `src/ui/assets.rs`.
-- Do not remove `icondata_core`, `icondata_lu`, or Lucide asset generation unless every `NavIcon` and generated SVG use is traced first.
+- Reuse bundled Lucide SVGs through `src/ui/assets.rs`; page icons are mapped in
+  `src/ui/iced/navigation.rs`.
+- Trace all asset consumers before changing Lucide generation or dependencies.
 - Keep action icons at existing sizes, usually 12-18 px depending on row density.
 
 ## Motion
 
 - Preserve motion unless the user explicitly asks to remove it.
-- Respect `AnimationMode`: system/on/off flows through `ui_animations_enabled()`.
-- Use existing motion helpers such as `with_optional_motion`, `begin_expandable_motion`, `begin_control_motion`, hover layers, and collapsible chevrons.
+- Respect `AnimationMode`: system/on/off flows through `settings_pages::animations()`.
+- Use `motion::reveal` and `motion::removal` with stable keyed rows and the shared animation preference.
+  Confirmed deletion must update settings immediately; animation may retain only a transient visual copy.
 - Motion should clarify state changes: selected navigation, hover, dropdowns, popovers, switches, collapsible groups, and process groups.
 - Right-side status and preset rails slide at the window edge using the shared control-motion timing, collapse to the same 64 px action-row pattern as navigation, and retain their content only until an exit transition completes.
 - Keep animation IDs stable and bounded. Do not create unbounded global motion state keyed by volatile data.

@@ -8,13 +8,12 @@
 
 ## Repo Shape
 
-- Rust/GPUI Windows desktop app for power/process automation.
-- GPUI composition and construction: `src/ui/app.rs`; operational `WinderustApp` method groups:
-  `src/ui/app/*.rs`. Plain UI state transitions live in `shell_model.rs`, `dashboard_model.rs`,
-  `process_models.rs`, and `update_model.rs`; they do not belong in `RuntimeCore`.
-- Page and shell renderers: `src/ui/app/pages/`; reusable UI helpers: `src/ui/app/shared/`.
+- Rust/Iced Windows desktop app for power/process automation, using the tiny-skia software renderer.
+- Composition, messages, subscriptions, native-window lifecycle, and page dispatch: `src/ui/iced/app.rs`.
+- Page editors and views: `src/ui/iced/`; shared controls and motion: `widgets.rs` and `motion.rs`.
+  UI drafts and read models remain outside `RuntimeCore`.
 - Background worker and status fan-out: `src/backend/automation.rs`.
-- Process add/check helpers: `src/ui/app/shared/process_policies.rs` (`can_add_*`,
+- Process add/check helpers: `src/ui/process_rules.rs` (`can_add_*`,
   `new_*_rule`, and `new_process_exclusion_rule`).
 - Prefer existing helpers over new abstractions.
 
@@ -34,7 +33,7 @@
   are explicit persistent operations, not temporary managed state or crash-recovery owners.
 - Runtime feature status is one semantically stable `Arc<RuntimeFeatureStatus>` segment. Process
   catalog/list, dashboard history, update state, and shell navigation remain plain UI read models.
-  Process queries, icons, monitors, GPUI deadlines, tray, dialogs, focus, and motion remain at the
+  Process queries, icons, monitors, Iced subscriptions, tray, dialogs, focus, and motion remain at the
   `WinderustApp` composition boundary.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.

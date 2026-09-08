@@ -520,6 +520,7 @@ processor_power:
   applied_custom: "Applied custom processor tuning to %{plan}."
 
 by_activity:
+  invalid_timing: "Enter an idle timeout from 1 to 3600 seconds and a check interval from 250 to 60000 milliseconds."
   intro_1: "By Activity switches power plans from keyboard, mouse, and controller activity."
   intro_2: "Idle and active plans are selected below; input detection controls when the app changes state."
   enable: "Enable By Activity"
@@ -970,6 +971,7 @@ processor_affinity_hard:
   warning: "Hard affinity can reduce performance or responsiveness. On multi-group systems it applies only to the process primary group."
 
 cpu_allocation:
+  e_cores_no_smt: "E-cores no SMT"
   focus: "Focus"
   p_core: "P-core"
   e_core: "E-core"

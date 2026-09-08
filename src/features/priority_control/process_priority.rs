@@ -1,10 +1,12 @@
+#[cfg(test)]
+use crate::config::ProcessPrioritySetting;
 use std::{collections::BTreeSet, path::PathBuf};
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{ProcessPrioritySetting, ProcessPrioritySettings},
+    config::ProcessPrioritySettings,
     control::{
         priority_efficiency::{
             PriorityClassClaim, PriorityClassPreservation, PriorityClassValue,
@@ -485,6 +487,7 @@ fn priority_preservation(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn can_apply_once(priority: ProcessPrioritySetting) -> bool {
     matches!(
         priority,

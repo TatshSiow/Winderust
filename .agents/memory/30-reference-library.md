@@ -22,7 +22,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Power Plan Control and Advanced Power Plan Tuning | `src/rules/decision_engine.rs`, `src/control/power_plan.rs`, `src/application/advanced_power_plan_tuning.rs`, `src/power/powercfg.rs`, and `src/platform/windows/power_plan.rs` | Power policy, automatic lifecycle/recovery, typed persistent tuning, domain façade, and the sole native power-scheme boundary |
 | Automation event wake handling | `src/backend/automation.rs`, `src/activity/input_hook.rs`, and `src/backend/windows_events.rs` | Runtime-owned low-level input hooks, foreground/window WinEvent hooks, power, suspend/resume, and session notifications |
 | Winderust self-power | `src/backend/self_power.rs` and `src/platform/windows/self_power.rs` | Strict baseline/composition lifecycle plus the sole raw current-process priority and Power Throttling adapter |
-| System tray lifecycle | `src/backend/tray.rs`, `src/ui/app/tray_state.rs`, and `vendor/gpui/src/platform/windows/platform.rs` | Notification-area icon, window-procedure subclassing, popup menu, restore/quit messages, bounded install failure, and hidden-window vsync suppression |
+| System tray lifecycle | `src/backend/tray.rs`, `src/ui/iced/app.rs` | Notification-area icon, window-procedure subclassing, popup menu, restore/quit messages, and bounded install failure |
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, retained App Suspension and CPU Limiter freeze jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/cpu_scheduler.rs`, `cpu_scheduler/policy.rs`, `cpu_scheduler/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
@@ -34,7 +34,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Shared process-control acquisition | `src/control/process.rs` and `src/platform/windows/process.rs` | Typed exact identity/safety validation plus the sole operation-specific `OpenProcess` adapter for control commands |
 | App Suspension | `src/features/advanced_controls/app_suspension.rs`, `src/control/suspension.rs`, `src/platform/windows/job.rs`, `src/platform/windows/suspension.rs`, and `app_suspension/wake_activity.rs` | Policy, shared App Suspension / CPU Limiter lifecycle controller, named Job Object primitives, compatibility-sensitive freeze information class, and audio/network wake detection |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs`, `src/control/timer_resolution.rs`, and `src/platform/windows/timer_resolution.rs` | Foreground-rule policy, process-lifetime ownership, and the sole raw WinMM adapter |
-| Win32 Priority Separation | `src/application/win32_priority_separation.rs`, `src/backend/win_registry.rs`, and `src/ui/app/pages/win32_priority_separation_page.rs` | Typed persistent backup/apply/restore service, narrow registry adapter, and UI presentation for the `Win32PrioritySeparation` value |
+| Win32 Priority Separation | `src/application/win32_priority_separation.rs`, `src/backend/win_registry.rs`, and `src/ui/iced/win32_priority_separation.rs` | Typed persistent backup/apply/restore service, narrow registry adapter, and UI presentation for the `Win32PrioritySeparation` value |
 
 ## Power Plan Switching
 
@@ -106,9 +106,16 @@ User-facing behavior:
 
 ## System Tray Lifecycle
 
-`src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live GPUI window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`. `src/ui/app/tray_state.rs` latches a failed install for the current Hide to tray / Start minimized configuration, preventing the visible UI tick from retrying `Shell_NotifyIconW` every second; changing that configuration permits one new attempt and the original failure remains visible when Start minimized falls back to ordinary minimization.
+The standalone Iced validation prototype uses `benchmark/gui-prototypes/src/iced_tray.rs`.
+It installs [SetWindowSubclass](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-setwindowsubclass)
+on Iced's window thread, forwards unhandled messages with `DefSubclassProc`, and removes
+the subclass and notification icon on `WM_NCDESTROY`. Tray notifications wake an Iced
+subscription, which restores visibility through Iced's window API without polling.
+This prototype does not implement Explorer-restart recovery or change the production tray.
 
-The crates.io `gpui 0.2.2` source is patched locally under `vendor/gpui`. Its Windows `VSyncProvider` otherwise calls `DwmFlush` and invalidates every GPUI HWND at display cadence even when all windows are hidden. The patch checks `IsWindowVisible` first and, while every HWND is hidden, skips compositor/device/redraw work and polls visibility at 250 ms. This bounds tray restore detection without retaining a 60 Hz background wake source.
+`src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live Iced window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`. `src/ui/iced/app.rs` latches a failed install for the current Hide to tray / Start minimized configuration, preventing the visible UI tick from retrying `Shell_NotifyIconW` every second; changing that configuration permits one new attempt and the original failure remains visible when Start minimized falls back to ordinary minimization.
+
+Historical GPUI comparison reference (not used by the production Iced UI): the crates.io `gpui 0.2.2` source is patched locally under `vendor/gpui`. Its Windows `VSyncProvider` otherwise calls `DwmFlush` and invalidates every GPUI HWND at display cadence even when all windows are hidden. The patch checks `IsWindowVisible` first and, while every HWND is hidden, skips compositor/device/redraw work and polls visibility at 250 ms. This bounds tray restore detection without retaining a 60 Hz background wake source.
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -120,6 +127,17 @@ The crates.io `gpui 0.2.2` source is patched locally under `vendor/gpui`. Its Wi
 | `DwmFlush` | GPUI uses this to synchronize visible rendering with DWM; Winderust's local patch does not call it while all GPUI windows are hidden. | https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmflush |
 | `RedrawWindow` | GPUI invalidates visible HWNDs after each vsync; hidden-only iterations are suppressed by the local patch. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-redrawwindow |
 
+## External Web Links
+
+`src/backend/win_util.rs::open_url` opens About and update links through `ShellExecuteW`.
+It accepts HTTPS URLs only, rejects credentials and control/whitespace characters, passes
+no shell command or parameters, and reports return codes at or below 32 as failures.
+`src/ui/iced/app.rs` handles the result as a UI message. This is separate from administrator relaunch.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `ShellExecuteW` | Opens a validated HTTPS link with the registered Windows handler. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew |
+
 ## Administrator Relaunch And Single-Instance Handoff
 
 `src/main.rs` acquires the path-scoped single-instance mutex before its administrator check. A fresh
@@ -128,7 +146,7 @@ exits while the elevated replacement waits for its mutex ownership to end. `Shel
 the private elevated-relaunch argument, `SEE_MASK_NOASYNC` completes process creation before the
 standard process exits, and `SEE_MASK_NOCLOSEPROCESS` confirms that Windows returned a live
 replacement-process handle. If an instance already owns the mutex, an ordinary duplicate instead
-signals the path-scoped auto-reset event that restores the existing GPUI window through
+signals the path-scoped auto-reset event that restores the existing Iced window through
 `src/backend/tray.rs`; it does not open another UAC prompt or elevated waiter. The primary waits on
 that event from a blocked listener thread, so the handoff adds no polling wake source.
 
@@ -305,7 +323,7 @@ Winderust can apply separate AC and battery processor-power percentages and proc
 
 Implementation paths:
 
-- `src/ui/app/pages/advanced_power_plan_tuning_page.rs`: plan selection,
+- `src/ui/iced/advanced_power_plan_tuning.rs`: plan selection,
   presets, separate A/C and battery controls, and apply/reset UI.
 - `src/application/advanced_power_plan_tuning.rs`: typed persistent read,
   staged apply, and mandatory post-attempt readback service.
@@ -636,8 +654,7 @@ WinMM here because this feature is explicit timer-resolution control.
 Implementation entry points:
 
 - `src/application/win32_priority_separation.rs`
-- `src/ui/app/pages/win32_priority_separation_page.rs`
-- `src/ui/app/shared/appearance.rs`
+- `src/ui/iced/win32_priority_separation.rs`
 - `src/backend/win_registry.rs`
 
 Winderust reads and writes the machine-wide `Win32PrioritySeparation` DWORD
@@ -652,7 +669,7 @@ type errors.
 | API / Contract | Used for | Reference |
 | --- | --- | --- |
 | Windows Registry functions | Defines registry key/value access, access rights, and Win32 error handling. The Rust `winreg` wrapper is isolated in `src/backend/win_registry.rs`; persistent transaction ordering is in `src/application/win32_priority_separation.rs`. | https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry-functions |
-| `Win32PrioritySeparation` value and bit layout | Decodes quantum duration, quantum behavior, and foreground boost for the Advanced page. | No stable public Microsoft API reference; project contract is in `src/ui/app/shared/appearance.rs` and its tests. |
+| `Win32PrioritySeparation` value and bit layout | Decodes quantum duration, quantum behavior, and foreground boost for the Advanced page. | No stable public Microsoft API reference; project contract is in `src/ui/iced/win32_priority_separation.rs` and its tests. |
 
 Treat the value layout as compatibility-sensitive. Keep reading, backup,
 writing, bit decoding, and tests aligned, and fail visibly if the machine value

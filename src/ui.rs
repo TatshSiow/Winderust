@@ -1,7 +1,9 @@
 use rust_i18n::t;
 
+#[path = "ui/iced/app.rs"]
 pub(crate) mod app;
 pub(crate) mod assets;
+pub(crate) mod process_rules;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {

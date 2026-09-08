@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use gpui::{Image, ImageFormat};
+use iced::widget::image::Handle as Image;
 use windows_sys::Win32::{
     Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
@@ -35,8 +35,7 @@ pub fn load_process_icon(path: &Path) -> Option<Arc<Image>> {
         return None;
     }
 
-    let image =
-        hicon_to_bmp(icon).map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Bmp, bytes)));
+    let image = hicon_to_bmp(icon).map(|bytes| Arc::new(Image::from_bytes(bytes)));
 
     // SAFETY: icon was returned by ExtractIconExW and is destroyed exactly once after rendering.
     unsafe {

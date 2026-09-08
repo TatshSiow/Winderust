@@ -1,34 +1,6 @@
-use std::{borrow::Cow, collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, sync::LazyLock};
 
-use gpui::{AssetSource, Result, SharedString};
 use icondata_core::IconData;
-
-pub struct Assets;
-
-impl AssetSource for Assets {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if path == "image/icon-design.png" {
-            return Ok(Some(Cow::Borrowed(include_bytes!(
-                "../../image/icon-design.png"
-            ))));
-        }
-
-        Ok(ICON_ASSET_BYTES
-            .get(path)
-            .map(|asset| Cow::Borrowed(asset.as_slice())))
-    }
-
-    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        if path == "icons" {
-            Ok(ICON_ASSETS
-                .iter()
-                .map(|(path, _)| SharedString::from(*path))
-                .collect())
-        } else {
-            Ok(Vec::new())
-        }
-    }
-}
 
 const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/app-window.svg", icondata_lu::LuAppWindow),
@@ -122,6 +94,17 @@ fn push_attr(svg: &mut String, name: &str, value: Option<&str>) {
         svg.push('"');
     }
 }
+pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
+    static HANDLES: LazyLock<HashMap<&'static str, iced::widget::svg::Handle>> =
+        LazyLock::new(|| {
+            ICON_ASSET_BYTES
+                .iter()
+                .map(|(path, bytes)| (*path, iced::widget::svg::Handle::from_memory(bytes.clone())))
+                .collect()
+        });
+    HANDLES.get(path).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

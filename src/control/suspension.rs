@@ -115,6 +115,7 @@ pub(crate) fn is_builtin_excluded(process_name: &str) -> bool {
         || contains_process_name(APP_SUSPENSION_ONLY_BUILT_IN_EXCLUSIONS, process_name)
 }
 
+#[cfg(test)]
 pub(crate) fn process_is_suspendable(target: &ProcessActionTarget) -> bool {
     !is_builtin_excluded(&target.name)
         && target.session_id.is_some_and(|session_id| session_id != 0)

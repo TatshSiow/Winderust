@@ -5,7 +5,7 @@ This is the working guide for code changes. Product scope and future goals live 
 ## Project Basics
 
 - Windows-only Rust desktop app.
-- UI stack: GPUI plus `gpui-component`.
+- UI stack: Iced 0.14 with the tiny-skia software renderer and rust-i18n locales.
 - Settings format: TOML through `serde` and `toml`.
 - Localization: `rust-i18n` with files in `locales/`.
 - Windows integration: direct Win32 APIs through `windows` and `windows-sys`.
@@ -37,7 +37,7 @@ If `target\release\winderust.exe` is locked because the app is running:
 ## Routine Chores
 
 For dependency PRs, review each update independently. Check the changed files,
-release notes, and whether the version is already required by the GPUI revisions
+release notes, and whether the version is already required by the UI dependencies
 pinned in `Cargo.toml`; do not merge a major-version bump merely because
 Dependabot opened it. Run the default checks above, confirm CI passes, then merge
 or close the PR. Keep unrelated dependency updates in separate commits so a bad
@@ -133,16 +133,14 @@ and the corrected commit must be the tagged source.
 
 ## Source Map
 
-- `src/main.rs`: app entry, single-instance guard, GPUI startup.
-- `src/ui/app.rs`: the single GPUI `WinderustApp` composition root, construction, rendering,
-  teardown, and app-level tests. Operational method groups live in `src/ui/app/*.rs`. Plain
-  transition/read models are `shell_model.rs`, `dashboard_model.rs`, `process_models.rs`, and
-  `update_model.rs`; sampling, queries, icons, GPUI timers, tray, dialogs, focus, and motion remain
-  at the composition root rather than moving into `RuntimeCore`.
-- `src/ui/app/pages/`: page and shell renderers. `src/ui/app/shared/`: reusable UI components, state helpers, formatting, policies, and shared feature logic. Page dispatch is
-  in `app_shell.rs`; process add/check and rule-construction helpers are in
-  `process_policies.rs`. Process List table grouping, sorting, and layout live in
-  `pages/process_list_page/table_model.rs`; edit actions live in `editing.rs`.
+- `src/main.rs`: app entry, single-instance guard, and Iced startup.
+- `src/ui/iced/app.rs`: `WinderustApp` composition, message dispatch, subscriptions,
+  native window/tray lifecycle, settings publication, and teardown. Runtime work remains
+  in typed commands and services; UI drafts do not belong in `RuntimeCore`.
+- `src/ui/iced/`: page editors and views; `widgets.rs` and `motion.rs` supply shared controls
+  and transitions, `status_rail.rs` presents runtime status, and `navigation.rs` maps pages
+  to bundled icons. `process_list.rs` owns table sorting, grouping, and pending actions.
+- `src/ui/process_rules.rs`: shared process eligibility and rule-construction helpers.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
@@ -242,14 +240,14 @@ Pages are grouped in `src/ui.rs`:
 - Advanced: App Suspension, Timer Resolution, Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
-`WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs` together.
+`WinderustApp::page_view` in `src/ui/iced/app.rs` together.
 
 ## Settings
 
 - Runtime settings live in `Settings`.
 - Use `#[serde(default)]` only when a current setting is intentionally optional; do not add pre-release migration aliases.
 - If a setting is edited through the UI, update the relevant page module and
-  input synchronization in `src/ui/app.rs`.
+  editor reset and message handling in `src/ui/iced/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
 
 ### Power Plan Ownership
@@ -311,12 +309,12 @@ Process-control features must keep these defaults:
 ## UI Rules
 
 - Keep controls compact and operational.
-- Use existing GPUI/gpui-component helpers before adding new UI primitives.
+- Use existing Iced widgets and local `widgets.rs` / `motion.rs` helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
-- Keep `src/ui/app.rs` for shared app state, construction, rendering, and teardown; keep operational method groups in `src/ui/app/*.rs`. Put a
-  complete page in `src/ui/app/pages/` and repeated helper families in `src/ui/app/shared/`;
-  do not start a framework rewrite.
+- Keep `src/ui/iced/app.rs` for composition, messages, native integration, and teardown.
+  Put complete page editors and views in sibling modules and reuse `widgets.rs` and
+  `motion.rs` for shared behavior. Do not introduce another UI framework.
 - Multiple focused `impl WinderustApp` blocks are acceptable for the private UI
   module. Keep glob imports contained there; use explicit imports when a module
   gains independent ownership or its dependencies become unclear, not as
@@ -356,8 +354,7 @@ Process-control features must keep these defaults:
   `src/platform/windows/suspension.rs`; native limiter timing in
   `src/platform/windows/cpu_limiter.rs`.
 - Win32 Priority Separation: page logic in
-  `src/ui/app/pages/win32_priority_separation_page.rs`, bit/value helpers in
-  `src/ui/app/shared/appearance.rs`, and registry access in
+  `src/ui/iced/win32_priority_separation.rs`, including its bit/value helpers, and registry access in
   `src/backend/win_registry.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.

@@ -2020,6 +2020,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
     suspension_control::is_builtin_excluded(process_name)
 }
 
+#[cfg(test)]
 pub fn process_is_suspendable(target: &ProcessActionTarget) -> bool {
     suspension_control::process_is_suspendable(target)
 }

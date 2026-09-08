@@ -8,12 +8,15 @@ license = "GPL-3.0-only"
 publish = false
 build = "build.rs"
 
+[features]
+render-smoke = []
+
 [dependencies]
 atomic-write-file = "0.3.0"
 chrono = "0.4.44"
 csv = "1.4.0"
-gpui = "0.2.2"
-gpui-component = "0.5.1"
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "tokio", "advanced-shaping", "image-without-codecs", "svg", "canvas", "advanced"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 icondata_core = "0.1.0"
 icondata_lu = "0.1.0"
 raw-window-handle = "0.6.2"
@@ -62,9 +65,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.56.0"
-
-[patch.crates-io]
-gpui = { path = "vendor/gpui" }
 
 [profile.release]
 lto = "thin"

@@ -8,6 +8,9 @@
 
 Windows Performance & Power Manager. A system engine to improve your Windows experience.
 
+The Windows desktop UI uses Iced with software rendering. Settings remain portable
+beside the executable, with English and Traditional Chinese locales.
+
 ![Winderust Home dashboard](screenshots/Home.png)
 
 ## Download

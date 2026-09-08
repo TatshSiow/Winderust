@@ -8,6 +8,8 @@ use std::{
     sync::Arc,
     time::Instant,
 };
+#[cfg(test)]
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     cpu::ProcessCpuSample,
@@ -32,13 +34,13 @@ use windows_sys::Win32::{
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::GetSystemWindowsDirectoryW,
         Threading::{
-            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
-            IsProcessCritical, OpenProcess, OpenProcessToken, ProcessPowerThrottling,
-            ProcessProtectionLevelInfo, QueryFullProcessImageNameW, IDLE_PRIORITY_CLASS,
-            PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-            PROCESS_PROTECTION_LEVEL_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROTECTION_LEVEL_NONE,
+            GetPriorityClass, GetProcessInformation, GetProcessTimes, IsProcessCritical,
+            OpenProcess, OpenProcessToken, ProcessPowerThrottling, ProcessProtectionLevelInfo,
+            QueryFullProcessImageNameW, IDLE_PRIORITY_CLASS, PROCESS_NAME_WIN32,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE, PROCESS_PROTECTION_LEVEL_INFORMATION,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
+            PROCESS_TERMINATE, PROTECTION_LEVEL_NONE,
         },
         WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION,
     },
@@ -243,9 +245,13 @@ impl ProcessActionAccess {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessActionTargetError {
     ProtectedProcess,
+    #[cfg(test)]
     CurrentSessionUnavailable,
+    #[cfg(test)]
     DifferentSession,
+    #[cfg(test)]
     ProcessChanged,
+    #[cfg(test)]
     ProcessUnavailable(u32),
     IdentityUnavailable,
 }
@@ -254,15 +260,19 @@ impl fmt::Display for ProcessActionTargetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ProtectedProcess => formatter.write_str("Winderust cannot modify this process."),
+            #[cfg(test)]
             Self::CurrentSessionUnavailable => {
                 formatter.write_str("Could not determine the current Windows session.")
             }
+            #[cfg(test)]
             Self::DifferentSession => {
                 formatter.write_str("Processes in another Windows session cannot be modified.")
             }
+            #[cfg(test)]
             Self::ProcessChanged => {
                 formatter.write_str("The selected process instance has changed.")
             }
+            #[cfg(test)]
             Self::ProcessUnavailable(error) => write!(
                 formatter,
                 "The selected process is no longer available (Win32 error {error})."
@@ -276,6 +286,7 @@ impl fmt::Display for ProcessActionTargetError {
 
 impl std::error::Error for ProcessActionTargetError {}
 
+#[cfg(test)]
 pub fn capture_process_action_target(
     process_id: u32,
     expected_executable_path: &Path,
@@ -289,13 +300,7 @@ pub fn capture_process_action_target(
     )
 }
 
-pub fn capture_process_action_target_for_owned_release(
-    process_id: u32,
-    expected_executable_path: &Path,
-) -> Result<ProcessActionTarget, ProcessActionTargetError> {
-    capture_process_action_target_inner(process_id, expected_executable_path, true, false)
-}
-
+#[cfg(test)]
 fn capture_process_action_target_inner(
     process_id: u32,
     expected_executable_path: &Path,
@@ -478,6 +483,7 @@ fn process_tree_ids_postorder(
     Ok(ordered)
 }
 
+#[cfg(test)]
 pub(crate) fn ensure_process_action_target_access(
     target: &ProcessActionTarget,
     access: ProcessActionAccess,

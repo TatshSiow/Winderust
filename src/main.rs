@@ -36,16 +36,16 @@ use features::{
     },
     winderust_features::{background_efficiency, cpu_scheduler, memory_trim},
 };
-use ui::{app, assets};
+use ui::app;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() {
-    use gpui::{
-        px, size, App, AppContext, Application, Bounds, WindowBounds, WindowDecorations,
-        WindowOptions,
-    };
-
+    #[cfg(feature = "render-smoke")]
+    if std::env::args().any(|argument| argument == "--render-smoke") {
+        ui::app::smoke::render_all_pages();
+        return;
+    }
     if crash_recovery::run_watchdog_if_requested() {
         return;
     }
@@ -84,42 +84,10 @@ fn main() {
     let runtime_settings = settings.runtime_settings_snapshot();
     let runtime_handle = automation::RuntimeHandle::start(&runtime_settings);
 
-    Application::new()
-        .with_assets(assets::Assets)
-        .run(move |cx: &mut App| {
-            gpui_component::init(cx);
+    if let Err(error) = app::run(settings, settings_load_error, runtime_handle, restore_event) {
+        eprintln!("{error}");
+    }
 
-            let bounds = Bounds::centered(None, size(px(1120.0), px(760.0)), cx);
-            cx.open_window(
-                WindowOptions {
-                    titlebar: None,
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(900.0), px(620.0))),
-                    app_id: Some("Winderust".to_owned()),
-                    window_decorations: Some(WindowDecorations::Client),
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    window.set_window_title("Winderust");
-                    if let (Some(event), Some(hwnd)) =
-                        (restore_event, tray::hwnd_from_window(window))
-                    {
-                        event.listen(hwnd);
-                    }
-                    let view = cx.new(|cx| {
-                        app::WinderustApp::new(
-                            window,
-                            cx,
-                            settings,
-                            settings_load_error,
-                            runtime_handle,
-                        )
-                    });
-                    cx.new(|cx| gpui_component::Root::new(view, window, cx))
-                },
-            )
-            .expect("failed to open Winderust window");
-        });
     if let Err(error) = recovery_client.finish() {
         eprintln!("{error}");
     }
@@ -353,7 +321,7 @@ mod tests {
         let stale_plan_recovery = main_body
             .find("restore_stale_adaptive_plans")
             .expect("stale adaptive-plan recovery");
-        let application = main_body.find("Application::new").expect("GPUI startup");
+        let application = main_body.find("app::run(settings").expect("Iced startup");
         let runtime = main_body
             .find("RuntimeHandle::start")
             .expect("runtime startup");

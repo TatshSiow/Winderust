@@ -8,7 +8,6 @@ use std::{
     },
 };
 
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rust_i18n::t;
 use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM},
@@ -116,14 +115,6 @@ impl Drop for TrayIcon {
         if let Err(error) = restore_window_proc(self.hwnd, self.original_wndproc) {
             eprintln!("{error}");
         }
-    }
-}
-
-pub fn hwnd_from_window(window: &gpui::Window) -> Option<HWND> {
-    let handle = HasWindowHandle::window_handle(window).ok()?.as_raw();
-    match handle {
-        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
-        _ => None,
     }
 }
 

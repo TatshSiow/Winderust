@@ -237,10 +237,6 @@ pub enum AccentColorSource {
     Custom,
 }
 
-impl AccentColorSource {
-    pub const ALL: [Self; 2] = [Self::Windows, Self::Custom];
-}
-
 fn default_custom_accent_color() -> u32 {
     0x4cc2ff
 }
@@ -513,13 +509,6 @@ impl BackgroundProcessorSelection {
         Self::PerformanceCoresNoSmt,
         Self::Custom,
     ];
-
-    pub const fn is_least_used(self) -> bool {
-        matches!(
-            self,
-            Self::LeastUsed | Self::LeastUsedPerformanceCores | Self::LeastUsedEfficiencyCores
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1167,16 +1156,7 @@ pub enum ProcessIoPrioritySetting {
 
 impl ProcessIoPrioritySetting {
     pub const ALL: [Self; 4] = [Self::Default, Self::VeryLow, Self::Low, Self::Normal];
-    pub const CUSTOM_RULE_ALL: [Self; 4] = [Self::Default, Self::VeryLow, Self::Low, Self::Normal];
     pub const ADVANCED_ALL: [Self; 6] = [
-        Self::Default,
-        Self::VeryLow,
-        Self::Low,
-        Self::Normal,
-        Self::High,
-        Self::Critical,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 6] = [
         Self::Default,
         Self::VeryLow,
         Self::Low,
@@ -1249,23 +1229,7 @@ impl ProcessGpuPrioritySetting {
         Self::Normal,
         Self::AboveNormal,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 5] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-    ];
     pub const ADVANCED_ALL: [Self; 7] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::High,
-        Self::Realtime,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
         Self::Default,
         Self::Idle,
         Self::BelowNormal,
@@ -1319,6 +1283,7 @@ pub enum ProcessMemoryPriority {
     Normal,
 }
 
+#[cfg(test)]
 impl ProcessMemoryPriority {
     pub const ALL: [Self; 5] = [
         Self::VeryLow,
@@ -1343,14 +1308,6 @@ pub enum ProcessMemoryPrioritySetting {
 
 impl ProcessMemoryPrioritySetting {
     pub const ALL: [Self; 6] = [
-        Self::Default,
-        Self::VeryLow,
-        Self::Low,
-        Self::Medium,
-        Self::BelowNormal,
-        Self::Normal,
-    ];
-    pub const CUSTOM_RULE_ALL: [Self; 6] = [
         Self::Default,
         Self::VeryLow,
         Self::Low,
@@ -1420,26 +1377,7 @@ impl ProcessThreadPrioritySetting {
         Self::AboveNormal,
         Self::Highest,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 7] = [
-        Self::Default,
-        Self::Idle,
-        Self::Lowest,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::Highest,
-    ];
     pub const ADVANCED_ALL: [Self; 8] = [
-        Self::Default,
-        Self::Idle,
-        Self::Lowest,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::Highest,
-        Self::TimeCritical,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 8] = [
         Self::Default,
         Self::Idle,
         Self::Lowest,
@@ -1466,24 +1404,8 @@ impl ProcessPrioritySetting {
         Self::Normal,
         Self::AboveNormal,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 5] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-    ];
 
     pub const ADVANCED_ALL: [Self; 7] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::High,
-        Self::Realtime,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
         Self::Default,
         Self::Idle,
         Self::BelowNormal,
@@ -1512,7 +1434,6 @@ pub enum ProcessDynamicPriorityBoostSetting {
 
 impl ProcessDynamicPriorityBoostSetting {
     pub const ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
-    pub const CUSTOM_RULE_ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
 
     pub const fn disabled_flag(self) -> Option<bool> {
         match self {
@@ -2151,18 +2072,6 @@ impl IoPrioritySettings {
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            process_exclusion_rule_matches(rule, process_name)
-                && rule.io_foreground_priority.unwrap_or_default()
-                    == ProcessIoPrioritySetting::Default
-                && rule.io_visible_window_priority.unwrap_or_default()
-                    == ProcessIoPrioritySetting::Default
-                && rule.io_background_priority.unwrap_or_default()
-                    == ProcessIoPrioritySetting::Default
-        })
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2239,18 +2148,6 @@ impl GpuPrioritySettings {
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            process_exclusion_rule_matches(rule, process_name)
-                && rule.gpu_foreground_priority.unwrap_or_default()
-                    == ProcessGpuPrioritySetting::Default
-                && rule.gpu_visible_window_priority.unwrap_or_default()
-                    == ProcessGpuPrioritySetting::Default
-                && rule.gpu_background_priority.unwrap_or_default()
-                    == ProcessGpuPrioritySetting::Default
-        })
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2268,18 +2165,6 @@ impl MemoryPrioritySettings {
         self.exclusions
             .iter()
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            process_exclusion_rule_matches(rule, process_name)
-                && rule.memory_foreground_priority.unwrap_or_default()
-                    == ProcessMemoryPrioritySetting::Default
-                && rule.memory_visible_window_priority.unwrap_or_default()
-                    == ProcessMemoryPrioritySetting::Default
-                && rule.memory_background_priority.unwrap_or_default()
-                    == ProcessMemoryPrioritySetting::Default
-        })
     }
 
     pub fn override_for(
@@ -2433,12 +2318,6 @@ impl CpuSchedulerSettings {
         }
     }
 
-    pub fn contains_custom_rule(&self, process_name: &str) -> bool {
-        self.custom_rules
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
         self.custom_rules.iter().any(|rule| {
             rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
@@ -2459,12 +2338,6 @@ impl InputDetectionSettings {
 
     pub const fn keyboard_or_mouse_enabled(&self) -> bool {
         self.keyboard || self.mouse
-    }
-
-    pub fn ensure_any_enabled(&mut self) {
-        if !self.any_enabled() {
-            self.keyboard = true;
-        }
     }
 }
 
@@ -2603,9 +2476,30 @@ mod tests {
         settings.gpu_priority.exclusions.push(rule.clone());
         settings.memory_priority.exclusions.push(rule);
 
-        assert!(!settings.io_priority.exclusion_enabled_for(path));
-        assert!(!settings.gpu_priority.exclusion_enabled_for(path));
-        assert!(!settings.memory_priority.exclusion_enabled_for(path));
+        assert_eq!(
+            settings.io_priority.override_for(path, false, true),
+            Some(Some(ProcessIoPrioritySetting::Low))
+        );
+        assert_eq!(
+            settings.io_priority.override_for(path, true, false),
+            Some(None)
+        );
+        assert_eq!(
+            settings.gpu_priority.override_for(path, false, true),
+            Some(Some(ProcessGpuPrioritySetting::BelowNormal))
+        );
+        assert_eq!(
+            settings.gpu_priority.override_for(path, true, false),
+            Some(None)
+        );
+        assert_eq!(
+            settings.memory_priority.override_for(path, false, true),
+            Some(Some(ProcessMemoryPrioritySetting::Low))
+        );
+        assert_eq!(
+            settings.memory_priority.override_for(path, true, false),
+            Some(None)
+        );
     }
 
     #[test]
