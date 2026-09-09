@@ -11,7 +11,33 @@ use iced::{Element, Fill};
 use rust_i18n::t;
 #[path = "adaptive_presets.rs"]
 mod presets;
+#[cfg(feature = "render-smoke")]
+pub(super) use presets::BuiltInAdaptiveEnginePreset;
 use presets::*;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum TuningTab {
+    #[default]
+    CpuBehaviour,
+    ProcessorPower,
+    PriorityControl,
+    CustomRules,
+}
+impl TuningTab {
+    const ALL: [Self; 4] = [
+        Self::CpuBehaviour,
+        Self::ProcessorPower,
+        Self::PriorityControl,
+        Self::CustomRules,
+    ];
+    fn key(self) -> &'static str {
+        match self {
+            Self::CpuBehaviour => "adaptive_engine.cpu_behaviour",
+            Self::ProcessorPower => "adaptive_engine.processor_power",
+            Self::PriorityControl => "adaptive_engine.priority_control",
+            Self::CustomRules => "cpu_scheduler.custom_rules",
+        }
+    }
+}
 #[derive(Default)]
 pub(super) struct Editor {
     name: String,
@@ -19,6 +45,9 @@ pub(super) struct Editor {
     editing: Option<usize>,
     read_only: bool,
     presets_tab: bool,
+    tuning_tabs: [TuningTab; 2],
+    collapsed: [[bool; 2]; 2],
+    advanced_expanded: bool,
     path: String,
     error: String,
     removing: Option<usize>,
@@ -30,6 +59,9 @@ pub(super) struct Editor {
 pub(super) enum Message {
     Toggle(fn(&mut Settings, bool), bool),
     RailTab(bool),
+    TuningTab(TuningTab),
+    Collapse(usize),
+    ToggleAdvanced,
     Status(super::status_rail::Message),
     Number(
         fn(&mut Settings, u64),
@@ -76,6 +108,19 @@ impl Editor {
             self.invalid_numbers.clear();
         }
         match m {
+            Message::TuningTab(tab) => {
+                if self.draft.is_none() || tab != TuningTab::CustomRules {
+                    self.tuning_tabs[usize::from(self.draft.is_some())] = tab;
+                }
+            }
+            Message::ToggleAdvanced => self.advanced_expanded = !self.advanced_expanded,
+            Message::Collapse(index) => {
+                if let Some(value) =
+                    self.collapsed[usize::from(self.draft.is_some())].get_mut(index)
+                {
+                    *value = !*value;
+                }
+            }
             Message::RailTab(value) => self.presets_tab = value,
             Message::Status(_) => {}
             Message::BuiltIn(p) => {
@@ -268,536 +313,996 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         live: &'a Settings,
-        status: &'a RuntimeStatusSnapshot,
+        _status: &'a RuntimeStatusSnapshot,
         candidates: &'a [String],
         motion: bool,
     ) -> Element<'a, Message> {
         let s = self.draft.as_ref().unwrap_or(live);
         let editable = self.draft.is_none() || !self.read_only;
-        let mut body = column![text(t!("adaptive_engine.intro_1").to_string())
-            .width(Fill)
-            .style(text::secondary)]
-        .spacing(12);
-        macro_rules! toggle {($key:expr,$($field:ident).+) => {body=body.push(checkbox(s.$($field).+).label(t!($key).to_string()).on_toggle_maybe(editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v))));};}
-        macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{let key=stringify!($($field).+);let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());body=body.push(row![text(t!($key).to_string()).width(Fill),text_input("",&value).on_input_maybe(editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key))).width(100)].spacing(8));}};}
-
-        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).into()}else{text($label(selected)).into()};body=body.push(row![text(t!($key).to_string()).width(Fill),control].spacing(8));}};}
-
+        let mut body = column![].spacing(12);
+        macro_rules! toggle {($key:expr,$($field:ident).+) => {row![
+            setting_label($key).width(Fill),
+            text(t!(if s.$($field).+ {"common.on"} else {"common.off"}).to_string()),
+            iced::widget::toggler(s.$($field).+).size(20).on_toggle_maybe(editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v)))
+        ].spacing(8).height(34).align_y(iced::Center)};}
+        macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
+            let key=stringify!($($field).+);
+            let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
+            let current=s.$($field).+ as u64;
+            let change=|n:u64| Message::Number(|s,n|s.$($field).+ = n as _,n.to_string(),$min,$max,key,$key);
+            let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if $max==100 {"%"} else {""};
+            row![setting_label($key).width(Fill),
+                button(text("-")).style(iced::widget::button::secondary).width(32).on_press_maybe((editable && current>$min).then(||change(current.saturating_sub(1).max($min)))),
+                text_input("",&value).align_x(iced::alignment::Horizontal::Center).on_input_maybe(editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key))).width(80),
+                text(unit).width(22),
+                button(text("+")).style(iced::widget::button::secondary).width(32).on_press_maybe((editable && current<$max).then(||change(current.saturating_add(1).min($max))))
+            ].spacing(8).height(46).align_y(iced::Center)
+        }};}
+        macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).width(Fill).into()}else{text($label(selected)).into()};control}};}
+        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(8).height(46).align_y(iced::Center)};}
         if self.draft.is_none() {
-            toggle!("adaptive_engine.enable", adaptive_engine.enabled);
-        }
-        toggle!(
-            "adaptive_engine.processor_power_policy",
-            adaptive_engine.processor_power_policy_enabled
-        );
-        number!(
-            "processor_power.core_parking_min",
-            0,
-            100,
-            adaptive_engine.base_processor_policy.core_parking_min
-        );
-        number!(
-            "processor_power.processor_min",
-            0,
-            100,
-            adaptive_engine.base_processor_policy.performance_min
-        );
-        number!(
-            "processor_power.processor_max",
-            0,
-            100,
-            adaptive_engine.base_processor_policy.performance_max
-        );
-        number!(
-            "processor_power.boost_policy",
-            0,
-            100,
-            adaptive_engine.base_processor_policy.boost_policy
-        );
-        choice!(
-            s,
-            "processor_power.boost_mode",
-            ProcessorBoostMode,
-            &ProcessorBoostMode::ALL,
-            boost_label,
-            adaptive_engine.base_processor_policy.boost_mode
-        );
-        body = body.push(text(
-            t!("adaptive_engine.background_pressure_profile").to_string(),
-        ));
-        number!(
-            "adaptive_engine.ac_boost_policy",
-            0,
-            100,
-            adaptive_engine.background_pressure_profile.ac_policy
-        );
-        choice!(
-            s,
-            "adaptive_engine.ac_boost_mode",
-            ProcessorBoostMode,
-            &ProcessorBoostMode::ALL,
-            boost_label,
-            adaptive_engine.background_pressure_profile.ac_mode
-        );
-        number!(
-            "adaptive_engine.battery_boost_policy",
-            0,
-            100,
-            adaptive_engine.background_pressure_profile.battery_policy
-        );
-        choice!(
-            s,
-            "adaptive_engine.battery_boost_mode",
-            ProcessorBoostMode,
-            &ProcessorBoostMode::ALL,
-            boost_label,
-            adaptive_engine.background_pressure_profile.battery_mode
-        );
-        body = body.push(text(
-            t!("adaptive_engine.focus_and_launch_profile").to_string(),
-        ));
-        number!(
-            "adaptive_engine.ac_boost_policy",
-            0,
-            100,
-            adaptive_engine.focus_and_launch_profile.ac_policy
-        );
-        choice!(
-            s,
-            "adaptive_engine.ac_boost_mode",
-            ProcessorBoostMode,
-            &ProcessorBoostMode::ALL,
-            boost_label,
-            adaptive_engine.focus_and_launch_profile.ac_mode
-        );
-        number!(
-            "adaptive_engine.battery_boost_policy",
-            0,
-            100,
-            adaptive_engine.focus_and_launch_profile.battery_policy
-        );
-        choice!(
-            s,
-            "adaptive_engine.battery_boost_mode",
-            ProcessorBoostMode,
-            &ProcessorBoostMode::ALL,
-            boost_label,
-            adaptive_engine.focus_and_launch_profile.battery_mode
-        );
-        toggle!(
-            "adaptive_engine.cpu_pressure",
-            cpu_scheduler.cpu_pressure_restraint_enabled
-        );
-        toggle!(
-            "cpu_scheduler.limit_background_processors",
-            cpu_scheduler.limit_background_processors_enabled
-        );
-        toggle!(
-            "cpu_scheduler.dynamic_resource_zones",
-            cpu_scheduler.dynamic_resource_zones_enabled
-        );
-        toggle!(
-            "nav.process_priority",
-            cpu_scheduler.process_priority_enabled
-        );
-        toggle!(
-            "nav.background_efficiency",
-            cpu_scheduler.background_efficiency_enabled
-        );
-        toggle!(
-            "background_efficiency.foreground_detection",
-            cpu_scheduler.focus_process_background_efficiency_override_enabled
-        );
-        toggle!(
-            "common.visible_window_detection",
-            cpu_scheduler.visible_window_background_efficiency_override_enabled
-        );
-        toggle!(
-            "cpu_allocation.focus",
-            cpu_scheduler.focus_process_background_efficiency_mode
-        );
-        toggle!(
-            "common.visible_window",
-            cpu_scheduler.visible_window_background_efficiency_mode
-        );
-        toggle!(
-            "common.background_process",
-            cpu_scheduler.background_efficiency_mode
-        );
-        toggle!("nav.memory_priority", cpu_scheduler.memory_priority_enabled);
-        choice!(
-            s,
-            "cpu_scheduler.cpu_allocation_method",
-            CpuAllocationMethod,
-            &CpuAllocationMethod::ALL,
-            allocation_label,
-            cpu_scheduler.cpu_allocation_method
-        );
-        choice!(
-            s,
-            "cpu_scheduler.processor_selection",
-            BackgroundProcessorSelection,
-            &BackgroundProcessorSelection::ALL,
-            background_processor_selection_label,
-            cpu_scheduler.background_processor_selection
-        );
-        number!(
-            "cpu_scheduler.processor_limit",
-            1,
-            100,
-            cpu_scheduler.processor_limit_percent
-        );
-        number!(
-            "cpu_scheduler.foreground_or_system_cpu_threshold",
-            1,
-            100,
-            cpu_scheduler.foreground_or_system_cpu_threshold_percent
-        );
-        number!(
-            "cpu_scheduler.background_app_cpu_threshold",
-            1,
-            100,
-            cpu_scheduler.background_app_cpu_threshold_percent
-        );
-        number!(
-            "cpu_scheduler.cpu_recovery_threshold",
-            1,
-            100,
-            cpu_scheduler.cpu_recovery_threshold_percent
-        );
-        number!(
-            "cpu_scheduler.reaction_time",
-            250,
-            5000,
-            cpu_scheduler.reaction_time_ms
-        );
-        number!(
-            "cpu_scheduler.cpu_restraint_time",
-            1,
-            3600,
-            cpu_scheduler.cpu_restraint_time_seconds
-        );
-        number!(
-            "cpu_scheduler.cpu_recovery_time",
-            1,
-            3600,
-            cpu_scheduler.cpu_recovery_time_seconds
-        );
-        number!(
-            "cpu_scheduler.maximum_restrained_apps",
-            1,
-            64,
-            cpu_scheduler.maximum_restrained_apps
-        );
-        if s.cpu_scheduler.background_processor_selection == BackgroundProcessorSelection::Custom {
-            let mask = s
-                .cpu_scheduler
-                .specific_processors
+            body = body.push(super::widgets::settings_card(toggle!(
+                "adaptive_engine.enable",
+                adaptive_engine.enabled
+            )));
+            let mut options: Vec<_> = BuiltInAdaptiveEnginePreset::ALL
+                .into_iter()
+                .enumerate()
+                .map(|(i, p)| Choice(i, built_in_adaptive_engine_preset_label(p)))
+                .collect();
+            options.extend(
+                live.adaptive_engine_presets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| Choice(i + 4, p.name.clone())),
+            );
+            let current = capture_adaptive_engine_preset(live, String::new());
+            let selected = options
                 .iter()
-                .filter(|i| **i < 64)
-                .fold(0u64, |m, i| m | (1u64 << i));
-            body = body.push(super::cpu_allocation::mask_selector(
-                mask,
-                &crate::cpu_allocation::logical_processors(),
-                &s.cpu_allocation_presets,
-                Message::Mask,
+                .find(|choice| {
+                    let mut candidate = live.clone();
+                    if choice.0 < 4 {
+                        apply_built_in_adaptive_engine_preset(
+                            &mut candidate,
+                            BuiltInAdaptiveEnginePreset::ALL[choice.0],
+                        );
+                    } else {
+                        apply_adaptive_engine_preset(
+                            &mut candidate,
+                            &live.adaptive_engine_presets[choice.0 - 4],
+                        );
+                    }
+                    capture_adaptive_engine_preset(&candidate, String::new()) == current
+                })
+                .cloned();
+            body = body.push(super::widgets::settings_card(
+                row![
+                    setting_label("adaptive_engine.preset").width(Fill),
+                    pick_list(options, selected, |choice| if choice.0 < 4 {
+                        Message::BuiltIn(BuiltInAdaptiveEnginePreset::ALL[choice.0])
+                    } else {
+                        Message::Apply(choice.0 - 4)
+                    })
+                    .width(280)
+                    .placeholder(t!("common.custom").to_string())
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
             ));
         }
-        choice!(
-            s,
-            "cpu_allocation.focus",
-            ProcessPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessPrioritySetting::ALL
-            },
-            process_priority_setting_label,
-            cpu_scheduler.focus_process_priority
+        let tab = self.tuning_tabs[usize::from(self.draft.is_some())];
+        let mut tabs = row![].spacing(4);
+        for next in TuningTab::ALL
+            .into_iter()
+            .filter(|tab| self.draft.is_none() || *tab != TuningTab::CustomRules)
+        {
+            tabs = tabs.push(
+                button(
+                    iced::widget::container(text(t!(next.key()).to_string()))
+                        .center_x(Fill)
+                        .center_y(Fill),
+                )
+                .style(if next == tab {
+                    super::widgets::selected
+                } else {
+                    super::widgets::quiet
+                })
+                .width(Fill)
+                .height(36)
+                .on_press(Message::TuningTab(next)),
+            );
+        }
+        body = body.push(
+            iced::widget::container(tabs)
+                .padding(4)
+                .width(Fill)
+                .style(super::widgets::surface),
         );
-        choice!(
-            s,
-            "common.visible_window",
-            ProcessPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessPrioritySetting::ALL
-            },
-            process_priority_setting_label,
-            cpu_scheduler.visible_window_priority
-        );
-        choice!(
-            s,
-            "common.background_process",
-            ProcessPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessPrioritySetting::ALL
-            },
-            process_priority_setting_label,
-            cpu_scheduler.background_priority
-        );
-        choice!(
-            s,
-            "cpu_allocation.focus",
-            ProcessMemoryPrioritySetting,
-            &ProcessMemoryPrioritySetting::ALL,
-            process_memory_priority_setting_label,
-            cpu_scheduler.focus_process_memory_priority
-        );
-        choice!(
-            s,
-            "common.visible_window",
-            ProcessMemoryPrioritySetting,
-            &ProcessMemoryPrioritySetting::ALL,
-            process_memory_priority_setting_label,
-            cpu_scheduler.visible_window_memory_priority
-        );
-        choice!(
-            s,
-            "common.background_process",
-            ProcessMemoryPrioritySetting,
-            &ProcessMemoryPrioritySetting::ALL,
-            process_memory_priority_setting_label,
-            cpu_scheduler.background_memory_priority
-        );
-        body = body.push(text(t!("nav.io_priority").to_string()));
-        toggle!("io_priority.enable", cpu_scheduler.io_priority.enabled);
-        toggle!(
-            "io_priority.foreground_detection",
-            cpu_scheduler.io_priority.foreground_detection_enabled
-        );
-        toggle!(
-            "common.visible_window_detection",
-            cpu_scheduler.io_priority.visible_window_detection_enabled
-        );
-        choice!(
-            s,
-            "cpu_allocation.focus",
-            ProcessIoPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessIoPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessIoPrioritySetting::ALL
-            },
-            process_io_priority_setting_label,
-            cpu_scheduler.io_priority.foreground_priority
-        );
-        toggle!(
-            "common.preserve_foreground_priority",
-            cpu_scheduler.io_priority.preserve_foreground_priority
-        );
-        choice!(
-            s,
-            "common.visible_window",
-            ProcessIoPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessIoPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessIoPrioritySetting::ALL
-            },
-            process_io_priority_setting_label,
-            cpu_scheduler.io_priority.visible_window_priority
-        );
-        toggle!(
-            "common.preserve_visible_window_priority",
-            cpu_scheduler.io_priority.preserve_visible_window_priority
-        );
-        choice!(
-            s,
-            "common.background_process",
-            ProcessIoPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessIoPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessIoPrioritySetting::ALL
-            },
-            process_io_priority_setting_label,
-            cpu_scheduler.io_priority.background_priority
-        );
-        toggle!(
-            "common.preserve_background_priority",
-            cpu_scheduler.io_priority.preserve_background_priority
-        );
-        body = body.push(text(t!("nav.thread_priority").to_string()));
-        toggle!(
-            "thread_priority.enable",
-            cpu_scheduler.thread_priority.enabled
-        );
-        toggle!(
-            "thread_priority.foreground_detection",
-            cpu_scheduler.thread_priority.foreground_detection_enabled
-        );
-        toggle!(
-            "common.visible_window_detection",
-            cpu_scheduler
-                .thread_priority
-                .visible_window_detection_enabled
-        );
-        choice!(
-            s,
-            "cpu_allocation.focus",
-            ProcessThreadPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessThreadPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessThreadPrioritySetting::ALL
-            },
-            process_thread_priority_setting_label,
-            cpu_scheduler.thread_priority.foreground_priority
-        );
-        toggle!(
-            "common.preserve_foreground_priority",
-            cpu_scheduler.thread_priority.preserve_foreground_priority
-        );
-        choice!(
-            s,
-            "common.visible_window",
-            ProcessThreadPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessThreadPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessThreadPrioritySetting::ALL
-            },
-            process_thread_priority_setting_label,
-            cpu_scheduler.thread_priority.visible_window_priority
-        );
-        toggle!(
-            "common.preserve_visible_window_priority",
-            cpu_scheduler
-                .thread_priority
-                .preserve_visible_window_priority
-        );
-        choice!(
-            s,
-            "common.background_process",
-            ProcessThreadPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessThreadPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessThreadPrioritySetting::ALL
-            },
-            process_thread_priority_setting_label,
-            cpu_scheduler.thread_priority.background_priority
-        );
-        toggle!(
-            "common.preserve_background_priority",
-            cpu_scheduler.thread_priority.preserve_background_priority
-        );
-        body = body.push(text(t!("nav.dynamic_priority_boost").to_string()));
-        toggle!(
-            "dynamic_priority_boost.enable",
-            cpu_scheduler.dynamic_priority_boost.enabled
-        );
-        toggle!(
-            "dynamic_priority_boost.foreground_detection",
-            cpu_scheduler
-                .dynamic_priority_boost
-                .foreground_detection_enabled
-        );
-        toggle!(
-            "common.visible_window_detection",
-            cpu_scheduler
-                .dynamic_priority_boost
-                .visible_window_detection_enabled
-        );
-        choice!(
-            s,
-            "cpu_allocation.focus",
-            ProcessDynamicPriorityBoostSetting,
-            &ProcessDynamicPriorityBoostSetting::ALL,
-            process_dynamic_priority_boost_setting_label,
-            cpu_scheduler.dynamic_priority_boost.foreground_boost
-        );
-        choice!(
-            s,
-            "common.visible_window",
-            ProcessDynamicPriorityBoostSetting,
-            &ProcessDynamicPriorityBoostSetting::ALL,
-            process_dynamic_priority_boost_setting_label,
-            cpu_scheduler.dynamic_priority_boost.visible_window_boost
-        );
-        choice!(
-            s,
-            "common.background_process",
-            ProcessDynamicPriorityBoostSetting,
-            &ProcessDynamicPriorityBoostSetting::ALL,
-            process_dynamic_priority_boost_setting_label,
-            cpu_scheduler.dynamic_priority_boost.background_boost
-        );
-        body = body.push(text(t!("nav.gpu_priority").to_string()));
-        toggle!("gpu_priority.enable", cpu_scheduler.gpu_priority.enabled);
-        toggle!(
-            "gpu_priority.foreground_detection",
-            cpu_scheduler.gpu_priority.foreground_detection_enabled
-        );
-        toggle!(
-            "common.visible_window_detection",
-            cpu_scheduler.gpu_priority.visible_window_detection_enabled
-        );
-        choice!(
-            s,
-            "cpu_allocation.focus",
-            ProcessGpuPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessGpuPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessGpuPrioritySetting::ALL
-            },
-            process_gpu_priority_setting_label,
-            cpu_scheduler.gpu_priority.foreground_priority
-        );
-        toggle!(
-            "common.preserve_foreground_priority",
-            cpu_scheduler.gpu_priority.preserve_foreground_priority
-        );
-        choice!(
-            s,
-            "common.visible_window",
-            ProcessGpuPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessGpuPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessGpuPrioritySetting::ALL
-            },
-            process_gpu_priority_setting_label,
-            cpu_scheduler.gpu_priority.visible_window_priority
-        );
-        toggle!(
-            "common.preserve_visible_window_priority",
-            cpu_scheduler.gpu_priority.preserve_visible_window_priority
-        );
-        choice!(
-            s,
-            "common.background_process",
-            ProcessGpuPrioritySetting,
-            if s.advanced.expose_all_priority_values {
-                &ProcessGpuPrioritySetting::ADVANCED_ALL
-            } else {
-                &ProcessGpuPrioritySetting::ALL
-            },
-            process_gpu_priority_setting_label,
-            cpu_scheduler.gpu_priority.background_priority
-        );
-        toggle!(
-            "common.preserve_background_priority",
-            cpu_scheduler.gpu_priority.preserve_background_priority
-        );
+        match tab {
+            TuningTab::CpuBehaviour => {
+                let pressure = column![
+                    number!(
+                        "cpu_scheduler.maximum_restrained_apps",
+                        1,
+                        64,
+                        cpu_scheduler.maximum_restrained_apps
+                    ),
+                    number!(
+                        "cpu_scheduler.reaction_time",
+                        250,
+                        5000,
+                        cpu_scheduler.reaction_time_ms
+                    ),
+                    number!(
+                        "cpu_scheduler.foreground_or_system_cpu_threshold",
+                        1,
+                        100,
+                        cpu_scheduler.foreground_or_system_cpu_threshold_percent
+                    ),
+                    number!(
+                        "cpu_scheduler.cpu_restraint_time",
+                        1,
+                        3600,
+                        cpu_scheduler.cpu_restraint_time_seconds
+                    ),
+                    number!(
+                        "cpu_scheduler.cpu_recovery_threshold",
+                        1,
+                        100,
+                        cpu_scheduler.cpu_recovery_threshold_percent
+                    ),
+                    number!(
+                        "cpu_scheduler.cpu_recovery_time",
+                        1,
+                        3600,
+                        cpu_scheduler.cpu_recovery_time_seconds
+                    )
+                ]
+                .spacing(12);
+                let action: Element<'_, Message> = if self.draft.is_none() {
+                    iced::widget::toggler(s.cpu_scheduler.cpu_pressure_restraint_enabled)
+                        .size(20)
+                        .label(
+                            t!(if s.cpu_scheduler.cpu_pressure_restraint_enabled {
+                                "common.on"
+                            } else {
+                                "common.off"
+                            })
+                            .to_string(),
+                        )
+                        .on_toggle(|v| {
+                            Message::Toggle(
+                                |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
+                                v,
+                            )
+                        })
+                        .into()
+                } else {
+                    iced::widget::Space::new().into()
+                };
+                body = body.push(super::widgets::setting_group(
+                    "adaptive_engine.cpu_pressure".to_string(),
+                    !self.collapsed[usize::from(self.draft.is_some())][0],
+                    Message::Collapse(0),
+                    action,
+                    pressure,
+                    motion,
+                ));
+                let mut allocation = column![
+                    number!(
+                        "cpu_scheduler.background_app_cpu_threshold",
+                        1,
+                        100,
+                        cpu_scheduler.background_app_cpu_threshold_percent
+                    ),
+                    choice!(
+                        s,
+                        "cpu_scheduler.processor_selection",
+                        BackgroundProcessorSelection,
+                        &BackgroundProcessorSelection::ALL,
+                        background_processor_selection_label,
+                        cpu_scheduler.background_processor_selection
+                    ),
+                    toggle!(
+                        "cpu_scheduler.dynamic_resource_zones",
+                        cpu_scheduler.dynamic_resource_zones_enabled
+                    )
+                ]
+                .spacing(12);
+                if !s.cpu_scheduler.dynamic_resource_zones_enabled {
+                    allocation = allocation.push(choice!(
+                        s,
+                        "cpu_scheduler.cpu_allocation_method",
+                        CpuAllocationMethod,
+                        &CpuAllocationMethod::ALL,
+                        allocation_label,
+                        cpu_scheduler.cpu_allocation_method
+                    ));
+                }
+                if matches!(
+                    s.cpu_scheduler.background_processor_selection,
+                    BackgroundProcessorSelection::LeastUsed
+                        | BackgroundProcessorSelection::LeastUsedPerformanceCores
+                        | BackgroundProcessorSelection::LeastUsedEfficiencyCores
+                ) {
+                    allocation = allocation.push(number!(
+                        if s.cpu_scheduler.dynamic_resource_zones_enabled {
+                            "cpu_scheduler.foreground_zone_share"
+                        } else {
+                            "cpu_scheduler.processor_limit"
+                        },
+                        1,
+                        100,
+                        cpu_scheduler.processor_limit_percent
+                    ));
+                }
+                if s.cpu_scheduler.background_processor_selection
+                    == BackgroundProcessorSelection::Custom
+                    && editable
+                {
+                    let mask = s
+                        .cpu_scheduler
+                        .specific_processors
+                        .iter()
+                        .filter(|i| **i < 64)
+                        .fold(0u64, |m, i| m | (1u64 << i));
+                    allocation = allocation.push(super::cpu_allocation::mask_selector(
+                        mask,
+                        &crate::cpu_allocation::logical_processors(),
+                        &s.cpu_allocation_presets,
+                        Message::Mask,
+                    ));
+                }
+                if s.cpu_scheduler.background_processor_selection
+                    == BackgroundProcessorSelection::Custom
+                    && !editable
+                {
+                    allocation = allocation.push(text(format!(
+                        "{}: {:?}",
+                        t!("cpu_scheduler.specific_processors"),
+                        s.cpu_scheduler.specific_processors
+                    )));
+                }
+                body = body.push(super::widgets::setting_group(
+                    "cpu_scheduler.limit_background_processors".to_string(),
+                    !self.collapsed[usize::from(self.draft.is_some())][1],
+                    Message::Collapse(1),
+                    iced::widget::toggler(s.cpu_scheduler.limit_background_processors_enabled)
+                        .size(20)
+                        .label(
+                            t!(if s.cpu_scheduler.limit_background_processors_enabled {
+                                "common.on"
+                            } else {
+                                "common.off"
+                            })
+                            .to_string(),
+                        )
+                        .on_toggle_maybe(editable.then_some(|v| {
+                            Message::Toggle(
+                                |s, v| s.cpu_scheduler.limit_background_processors_enabled = v,
+                                v,
+                            )
+                        })),
+                    allocation,
+                    motion,
+                ));
+            }
+            TuningTab::ProcessorPower => {
+                body = body.push(super::widgets::settings_card(toggle!(
+                    "adaptive_engine.processor_power_policy",
+                    adaptive_engine.processor_power_policy_enabled
+                )));
+                body = body
+                    .push(text(t!("adaptive_engine.base_processor_policy").to_string()).size(16));
+                body = body.push(super::widgets::settings_card(number!(
+                    "processor_power.core_parking_min",
+                    0,
+                    100,
+                    adaptive_engine.base_processor_policy.core_parking_min
+                )));
+                body = body.push(super::widgets::settings_card(number!(
+                    "processor_power.processor_min",
+                    0,
+                    100,
+                    adaptive_engine.base_processor_policy.performance_min
+                )));
+                body = body.push(super::widgets::settings_card(number!(
+                    "processor_power.processor_max",
+                    0,
+                    100,
+                    adaptive_engine.base_processor_policy.performance_max
+                )));
+                body = body.push(super::widgets::settings_card(number!(
+                    "processor_power.boost_policy",
+                    0,
+                    100,
+                    adaptive_engine.base_processor_policy.boost_policy
+                )));
+                body = body.push(super::widgets::settings_card(choice!(
+                    s,
+                    "processor_power.boost_mode",
+                    ProcessorBoostMode,
+                    &ProcessorBoostMode::ALL,
+                    boost_label,
+                    adaptive_engine.base_processor_policy.boost_mode
+                )));
 
-        if self.draft.is_none() {
+                body = body.push(
+                    text(t!("adaptive_engine.background_pressure_profile").to_string()).size(16),
+                );
+                body = body.push(super::widgets::settings_card(number!(
+                    "adaptive_engine.ac_boost_policy",
+                    0,
+                    100,
+                    adaptive_engine.background_pressure_profile.ac_policy
+                )));
+                body = body.push(super::widgets::settings_card(choice!(
+                    s,
+                    "adaptive_engine.ac_boost_mode",
+                    ProcessorBoostMode,
+                    &ProcessorBoostMode::ALL,
+                    boost_label,
+                    adaptive_engine.background_pressure_profile.ac_mode
+                )));
+                body = body.push(super::widgets::settings_card(number!(
+                    "adaptive_engine.battery_boost_policy",
+                    0,
+                    100,
+                    adaptive_engine.background_pressure_profile.battery_policy
+                )));
+                body = body.push(super::widgets::settings_card(choice!(
+                    s,
+                    "adaptive_engine.battery_boost_mode",
+                    ProcessorBoostMode,
+                    &ProcessorBoostMode::ALL,
+                    boost_label,
+                    adaptive_engine.background_pressure_profile.battery_mode
+                )));
+
+                body = body.push(
+                    text(t!("adaptive_engine.focus_and_launch_profile").to_string()).size(16),
+                );
+                body = body.push(super::widgets::settings_card(number!(
+                    "adaptive_engine.ac_boost_policy",
+                    0,
+                    100,
+                    adaptive_engine.focus_and_launch_profile.ac_policy
+                )));
+                body = body.push(super::widgets::settings_card(choice!(
+                    s,
+                    "adaptive_engine.ac_boost_mode",
+                    ProcessorBoostMode,
+                    &ProcessorBoostMode::ALL,
+                    boost_label,
+                    adaptive_engine.focus_and_launch_profile.ac_mode
+                )));
+                body = body.push(super::widgets::settings_card(number!(
+                    "adaptive_engine.battery_boost_policy",
+                    0,
+                    100,
+                    adaptive_engine.focus_and_launch_profile.battery_policy
+                )));
+                body = body.push(super::widgets::settings_card(choice!(
+                    s,
+                    "adaptive_engine.battery_boost_mode",
+                    ProcessorBoostMode,
+                    &ProcessorBoostMode::ALL,
+                    boost_label,
+                    adaptive_engine.focus_and_launch_profile.battery_mode
+                )));
+            }
+            TuningTab::PriorityControl => {
+                let mut table = column![row![
+                    text(t!("common.control").to_string()).width(280),
+                    text(t!("common.focus_process").to_string())
+                        .width(iced::Length::FillPortion(1)),
+                    text(t!("common.visible_window").to_string())
+                        .width(iced::Length::FillPortion(1)),
+                    text(t!("common.background_process").to_string())
+                        .width(iced::Length::FillPortion(1))
+                ]
+                .spacing(12)]
+                .spacing(8);
+                table = table.push(super::widgets::settings_card(
+                    row![
+                        row![
+                            super::widgets::switch(
+                                s.cpu_scheduler.process_priority_enabled,
+                                editable.then_some(|v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.process_priority_enabled = v,
+                                    v
+                                ))
+                            ),
+                            text(t!("nav.process_priority").to_string())
+                        ]
+                        .align_y(iced::Center)
+                        .height(34)
+                        .spacing(8)
+                        .width(280),
+                        column![selector!(
+                            s,
+                            "cpu_allocation.focus",
+                            ProcessPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessPrioritySetting::ALL
+                            },
+                            process_priority_setting_label,
+                            cpu_scheduler.focus_process_priority
+                        )]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![selector!(
+                            s,
+                            "common.visible_window",
+                            ProcessPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessPrioritySetting::ALL
+                            },
+                            process_priority_setting_label,
+                            cpu_scheduler.visible_window_priority
+                        )]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![selector!(
+                            s,
+                            "common.background_process",
+                            ProcessPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessPrioritySetting::ALL
+                            },
+                            process_priority_setting_label,
+                            cpu_scheduler.background_priority
+                        )]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1))
+                    ]
+                    .spacing(12),
+                ));
+                table = table.push(super::widgets::settings_card(
+                    row![
+                        row![
+                            super::widgets::switch(
+                                s.cpu_scheduler.background_efficiency_enabled,
+                                editable.then_some(|v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.background_efficiency_enabled = v,
+                                    v
+                                ))
+                            ),
+                            text(t!("nav.background_efficiency").to_string())
+                        ]
+                        .align_y(iced::Center)
+                        .height(34)
+                        .spacing(8)
+                        .width(280),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            pick_list(
+                                [
+                                    Choice(false, t!("common.disabled").to_string()),
+                                    Choice(true, t!("common.enabled").to_string())
+                                ],
+                                Some(Choice(
+                                    s.cpu_scheduler.focus_process_background_efficiency_mode,
+                                    t!(
+                                        if s.cpu_scheduler.focus_process_background_efficiency_mode
+                                        {
+                                            "common.enabled"
+                                        } else {
+                                            "common.disabled"
+                                        }
+                                    )
+                                    .to_string()
+                                )),
+                                |v| Message::Toggle(
+                                    |s, v| s
+                                        .cpu_scheduler
+                                        .focus_process_background_efficiency_mode = v,
+                                    v.0
+                                )
+                            )
+                            .width(Fill)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            pick_list(
+                                [
+                                    Choice(false, t!("common.disabled").to_string()),
+                                    Choice(true, t!("common.enabled").to_string())
+                                ],
+                                Some(Choice(
+                                    s.cpu_scheduler.visible_window_background_efficiency_mode,
+                                    t!(
+                                        if s.cpu_scheduler.visible_window_background_efficiency_mode
+                                        {
+                                            "common.enabled"
+                                        } else {
+                                            "common.disabled"
+                                        }
+                                    )
+                                    .to_string()
+                                )),
+                                |v| Message::Toggle(
+                                    |s, v| s
+                                        .cpu_scheduler
+                                        .visible_window_background_efficiency_mode = v,
+                                    v.0
+                                )
+                            )
+                            .width(Fill)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![pick_list(
+                            [
+                                Choice(false, t!("common.disabled").to_string()),
+                                Choice(true, t!("common.enabled").to_string())
+                            ],
+                            Some(Choice(
+                                s.cpu_scheduler.background_efficiency_mode,
+                                t!(if s.cpu_scheduler.background_efficiency_mode {
+                                    "common.enabled"
+                                } else {
+                                    "common.disabled"
+                                })
+                                .to_string()
+                            )),
+                            |v| Message::Toggle(
+                                |s, v| s.cpu_scheduler.background_efficiency_mode = v,
+                                v.0
+                            )
+                        )
+                        .width(Fill)]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1))
+                    ]
+                    .spacing(12),
+                ));
+                table = table.push(super::widgets::settings_card(
+                    row![
+                        row![
+                            super::widgets::switch(
+                                s.cpu_scheduler.thread_priority.enabled,
+                                editable.then_some(|v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.thread_priority.enabled = v,
+                                    v
+                                ))
+                            ),
+                            text(t!("nav.thread_priority").to_string())
+                        ]
+                        .align_y(iced::Center)
+                        .height(34)
+                        .spacing(8)
+                        .width(280),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "cpu_allocation.focus",
+                                ProcessThreadPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessThreadPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessThreadPrioritySetting::ALL
+                                },
+                                process_thread_priority_setting_label,
+                                cpu_scheduler.thread_priority.foreground_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "common.visible_window",
+                                ProcessThreadPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessThreadPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessThreadPrioritySetting::ALL
+                                },
+                                process_thread_priority_setting_label,
+                                cpu_scheduler.thread_priority.visible_window_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            selector!(
+                                s,
+                                "common.background_process",
+                                ProcessThreadPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessThreadPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessThreadPrioritySetting::ALL
+                                },
+                                process_thread_priority_setting_label,
+                                cpu_scheduler.thread_priority.background_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1))
+                    ]
+                    .spacing(12),
+                ));
+                table = table.push(super::widgets::settings_card(
+                    row![
+                        row![
+                            super::widgets::switch(
+                                s.cpu_scheduler.dynamic_priority_boost.enabled,
+                                editable.then_some(|v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.dynamic_priority_boost.enabled = v,
+                                    v
+                                ))
+                            ),
+                            text(t!("nav.dynamic_priority_boost").to_string())
+                        ]
+                        .align_y(iced::Center)
+                        .height(34)
+                        .spacing(8)
+                        .width(280),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "cpu_allocation.focus",
+                                ProcessDynamicPriorityBoostSetting,
+                                &ProcessDynamicPriorityBoostSetting::ALL,
+                                process_dynamic_priority_boost_setting_label,
+                                cpu_scheduler.dynamic_priority_boost.foreground_boost
+                            )
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "common.visible_window",
+                                ProcessDynamicPriorityBoostSetting,
+                                &ProcessDynamicPriorityBoostSetting::ALL,
+                                process_dynamic_priority_boost_setting_label,
+                                cpu_scheduler.dynamic_priority_boost.visible_window_boost
+                            )
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![selector!(
+                            s,
+                            "common.background_process",
+                            ProcessDynamicPriorityBoostSetting,
+                            &ProcessDynamicPriorityBoostSetting::ALL,
+                            process_dynamic_priority_boost_setting_label,
+                            cpu_scheduler.dynamic_priority_boost.background_boost
+                        )]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1))
+                    ]
+                    .spacing(12),
+                ));
+                table = table.push(super::widgets::settings_card(
+                    row![
+                        row![
+                            super::widgets::switch(
+                                s.cpu_scheduler.io_priority.enabled,
+                                editable.then_some(|v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.io_priority.enabled = v,
+                                    v
+                                ))
+                            ),
+                            text(t!("nav.io_priority").to_string())
+                        ]
+                        .align_y(iced::Center)
+                        .height(34)
+                        .spacing(8)
+                        .width(280),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "cpu_allocation.focus",
+                                ProcessIoPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessIoPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessIoPrioritySetting::ALL
+                                },
+                                process_io_priority_setting_label,
+                                cpu_scheduler.io_priority.foreground_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "common.visible_window",
+                                ProcessIoPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessIoPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessIoPrioritySetting::ALL
+                                },
+                                process_io_priority_setting_label,
+                                cpu_scheduler.io_priority.visible_window_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            selector!(
+                                s,
+                                "common.background_process",
+                                ProcessIoPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessIoPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessIoPrioritySetting::ALL
+                                },
+                                process_io_priority_setting_label,
+                                cpu_scheduler.io_priority.background_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1))
+                    ]
+                    .spacing(12),
+                ));
+                table = table.push(super::widgets::settings_card(
+                    row![
+                        row![
+                            super::widgets::switch(
+                                s.cpu_scheduler.gpu_priority.enabled,
+                                editable.then_some(|v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.gpu_priority.enabled = v,
+                                    v
+                                ))
+                            ),
+                            text(t!("nav.gpu_priority").to_string())
+                        ]
+                        .align_y(iced::Center)
+                        .height(34)
+                        .spacing(8)
+                        .width(280),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "cpu_allocation.focus",
+                                ProcessGpuPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessGpuPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessGpuPrioritySetting::ALL
+                                },
+                                process_gpu_priority_setting_label,
+                                cpu_scheduler.gpu_priority.foreground_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            iced::widget::Space::new().height(0),
+                            selector!(
+                                s,
+                                "common.visible_window",
+                                ProcessGpuPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessGpuPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessGpuPrioritySetting::ALL
+                                },
+                                process_gpu_priority_setting_label,
+                                cpu_scheduler.gpu_priority.visible_window_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![
+                            selector!(
+                                s,
+                                "common.background_process",
+                                ProcessGpuPrioritySetting,
+                                if s.advanced.expose_all_priority_values {
+                                    &ProcessGpuPrioritySetting::ADVANCED_ALL
+                                } else {
+                                    &ProcessGpuPrioritySetting::ALL
+                                },
+                                process_gpu_priority_setting_label,
+                                cpu_scheduler.gpu_priority.background_priority
+                            ),
+                            iced::widget::Space::new().height(0)
+                        ]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1))
+                    ]
+                    .spacing(12),
+                ));
+                table = table.push(super::widgets::settings_card(
+                    row![
+                        row![
+                            super::widgets::switch(
+                                s.cpu_scheduler.memory_priority_enabled,
+                                editable.then_some(|v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.memory_priority_enabled = v,
+                                    v
+                                ))
+                            ),
+                            text(t!("nav.memory_priority").to_string())
+                        ]
+                        .align_y(iced::Center)
+                        .height(34)
+                        .spacing(8)
+                        .width(280),
+                        column![selector!(
+                            s,
+                            "cpu_allocation.focus",
+                            ProcessMemoryPrioritySetting,
+                            &ProcessMemoryPrioritySetting::ALL,
+                            process_memory_priority_setting_label,
+                            cpu_scheduler.focus_process_memory_priority
+                        )]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![selector!(
+                            s,
+                            "common.visible_window",
+                            ProcessMemoryPrioritySetting,
+                            &ProcessMemoryPrioritySetting::ALL,
+                            process_memory_priority_setting_label,
+                            cpu_scheduler.visible_window_memory_priority
+                        )]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1)),
+                        column![selector!(
+                            s,
+                            "common.background_process",
+                            ProcessMemoryPrioritySetting,
+                            &ProcessMemoryPrioritySetting::ALL,
+                            process_memory_priority_setting_label,
+                            cpu_scheduler.background_memory_priority
+                        )]
+                        .spacing(8)
+                        .width(iced::Length::FillPortion(1))
+                    ]
+                    .spacing(12),
+                ));
+                body = body.push(iced::widget::scrollable(table.width(960)).direction(
+                    iced::widget::scrollable::Direction::Horizontal(
+                        iced::widget::scrollable::Scrollbar::new(),
+                    ),
+                ));
+                body = body.push(super::widgets::setting_group(
+                    "settings.advanced".to_string(),
+                    self.advanced_expanded,
+                    Message::ToggleAdvanced,
+                    iced::widget::Space::new(),
+                    column![
+                        toggle!(
+                            "background_efficiency.foreground_detection",
+                            cpu_scheduler.focus_process_background_efficiency_override_enabled
+                        ),
+                        iced::widget::Space::new().height(0),
+                        toggle!(
+                            "common.visible_window_detection",
+                            cpu_scheduler.visible_window_background_efficiency_override_enabled
+                        ),
+                        iced::widget::Space::new().height(0),
+                        iced::widget::Space::new().height(0),
+                        toggle!(
+                            "thread_priority.foreground_detection",
+                            cpu_scheduler.thread_priority.foreground_detection_enabled
+                        ),
+                        toggle!(
+                            "common.preserve_foreground_priority",
+                            cpu_scheduler.thread_priority.preserve_foreground_priority
+                        ),
+                        toggle!(
+                            "common.visible_window_detection",
+                            cpu_scheduler
+                                .thread_priority
+                                .visible_window_detection_enabled
+                        ),
+                        toggle!(
+                            "common.preserve_visible_window_priority",
+                            cpu_scheduler
+                                .thread_priority
+                                .preserve_visible_window_priority
+                        ),
+                        toggle!(
+                            "common.preserve_background_priority",
+                            cpu_scheduler.thread_priority.preserve_background_priority
+                        ),
+                        toggle!(
+                            "dynamic_priority_boost.foreground_detection",
+                            cpu_scheduler
+                                .dynamic_priority_boost
+                                .foreground_detection_enabled
+                        ),
+                        toggle!(
+                            "common.visible_window_detection",
+                            cpu_scheduler
+                                .dynamic_priority_boost
+                                .visible_window_detection_enabled
+                        ),
+                        toggle!(
+                            "io_priority.foreground_detection",
+                            cpu_scheduler.io_priority.foreground_detection_enabled
+                        ),
+                        toggle!(
+                            "common.preserve_foreground_priority",
+                            cpu_scheduler.io_priority.preserve_foreground_priority
+                        ),
+                        toggle!(
+                            "common.visible_window_detection",
+                            cpu_scheduler.io_priority.visible_window_detection_enabled
+                        ),
+                        toggle!(
+                            "common.preserve_visible_window_priority",
+                            cpu_scheduler.io_priority.preserve_visible_window_priority
+                        ),
+                        toggle!(
+                            "common.preserve_background_priority",
+                            cpu_scheduler.io_priority.preserve_background_priority
+                        ),
+                        toggle!(
+                            "gpu_priority.foreground_detection",
+                            cpu_scheduler.gpu_priority.foreground_detection_enabled
+                        ),
+                        toggle!(
+                            "common.preserve_foreground_priority",
+                            cpu_scheduler.gpu_priority.preserve_foreground_priority
+                        ),
+                        toggle!(
+                            "common.visible_window_detection",
+                            cpu_scheduler.gpu_priority.visible_window_detection_enabled
+                        ),
+                        toggle!(
+                            "common.preserve_visible_window_priority",
+                            cpu_scheduler.gpu_priority.preserve_visible_window_priority
+                        ),
+                        toggle!(
+                            "common.preserve_background_priority",
+                            cpu_scheduler.gpu_priority.preserve_background_priority
+                        )
+                    ]
+                    .spacing(12),
+                    motion,
+                ));
+            }
+            TuningTab::CustomRules => {}
+        }
+        if self.draft.is_none() && tab == TuningTab::CustomRules {
             body = body
                 .push(text(t!("cpu_scheduler.custom_rules").to_string()))
-                .push(
+                .push(super::widgets::settings_card(
                     row![
                         text_input("C:\\App\\app.exe", &self.path).on_input(Message::Path),
                         button(text(t!("common.browse_executable").to_string()))
                             .on_press(Message::Browse),
                         button(text(t!("common.add").to_string())).on_press(Message::AddExclusion)
                     ]
-                    .spacing(8),
-                );
+                    .spacing(8)
+                    .align_y(iced::Center),
+                ));
             for candidate in candidates
                 .iter()
                 .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()))
@@ -817,14 +1322,17 @@ impl Editor {
                 rules.push((
                     super::motion::key(&r.executable_path),
                     super::motion::removal(
-                        row![
-                            checkbox(r.enabled)
-                                .label(r.executable_path.clone())
-                                .on_toggle(move |v| Message::ExclusionEnabled(i, v)),
-                            button(text(t!("common.remove").to_string()))
-                                .on_press(Message::RemoveExclusion(i))
-                        ]
-                        .spacing(8),
+                        super::widgets::settings_card(
+                            row![
+                                checkbox(r.enabled)
+                                    .label(r.executable_path.clone())
+                                    .on_toggle(move |v| Message::ExclusionEnabled(i, v)),
+                                button(text(t!("common.remove").to_string()))
+                                    .on_press(Message::RemoveExclusion(i))
+                            ]
+                            .spacing(8)
+                            .align_y(iced::Center),
+                        ),
                         self.deleting
                             .as_ref()
                             .is_some_and(|old| old.executable_path == r.executable_path),
@@ -835,8 +1343,8 @@ impl Editor {
             }
             body = body.push(iced::widget::keyed_column(rules).spacing(8));
         }
-        if self.removing.is_some() {
-            body = body.push(
+        if self.draft.is_none() && tab == TuningTab::CustomRules && self.removing.is_some() {
+            body = body.push(super::widgets::settings_card(
                 row![
                     text(t!("common.remove").to_string()),
                     button(text(t!("common.remove").to_string()))
@@ -844,28 +1352,46 @@ impl Editor {
                     button(text(t!("common.cancel").to_string()))
                         .on_press(Message::CancelRemoveExclusion)
                 ]
-                .spacing(8),
-            );
+                .spacing(8)
+                .align_y(iced::Center),
+            ));
         }
         if let Some(error) = self.validation_error() {
             body = body.push(text(error));
         }
-        let mut rail = column![text(t!("adaptive_engine.presets").to_string())].spacing(8);
+        scrollable(body).spacing(10).width(Fill).height(Fill).into()
+    }
+    pub(super) fn side_panel<'a>(
+        &'a self,
+        live: &'a Settings,
+        status: &'a RuntimeStatusSnapshot,
+    ) -> Element<'a, Message> {
+        let mut rail = column![text(t!("adaptive_engine.built_in_presets").to_string())].spacing(8);
         for p in BuiltInAdaptiveEnginePreset::ALL {
             rail = rail.push(
                 row![
                     button(text(built_in_adaptive_engine_preset_label(p)))
+                        .width(Fill)
+                        .style(super::widgets::quiet)
                         .on_press(Message::BuiltIn(p)),
-                    button(text(t!("adaptive_engine.view_preset").to_string()))
+                    button(super::navigation::glyph("icons/info.svg"))
+                        .style(super::widgets::quiet)
                         .on_press(Message::ViewBuiltIn(p))
                 ]
                 .spacing(4),
             );
         }
+        rail = rail.push(text(t!("adaptive_engine.custom_presets").to_string()));
+        if live.adaptive_engine_presets.is_empty() {
+            rail = rail.push(text(t!("adaptive_engine.no_custom_presets").to_string()));
+        }
         for (i, p) in live.adaptive_engine_presets.iter().enumerate() {
             rail = rail.push(
                 row![
-                    button(text(p.name.clone())).on_press(Message::Apply(i)),
+                    button(text(p.name.clone()))
+                        .width(Fill)
+                        .style(super::widgets::quiet)
+                        .on_press(Message::Apply(i)),
                     button(text(t!("adaptive_engine.edit_preset").to_string()))
                         .on_press(Message::Edit(i))
                 ]
@@ -920,31 +1446,52 @@ impl Editor {
         let rail = column![
             row![
                 button(text(t!("common.status").to_string()))
+                    .width(Fill)
                     .on_press(Message::RailTab(false))
                     .style(if self.presets_tab {
-                        iced::widget::button::secondary
+                        super::widgets::quiet
                     } else {
-                        iced::widget::button::primary
+                        super::widgets::selected
                     }),
                 button(text(t!("adaptive_engine.presets").to_string()))
+                    .width(Fill)
                     .on_press(Message::RailTab(true))
                     .style(if self.presets_tab {
-                        iced::widget::button::primary
+                        super::widgets::selected
                     } else {
-                        iced::widget::button::secondary
+                        super::widgets::quiet
                     })
             ]
             .spacing(8),
             rail
         ]
         .spacing(12);
-        row![
-            scrollable(body).spacing(10).width(Fill),
-            scrollable(rail).spacing(10).width(216)
-        ]
-        .spacing(16)
-        .into()
+        scrollable(rail).spacing(10).width(Fill).height(Fill).into()
     }
+}
+fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
+    let help_key = match key {
+        "adaptive_engine.enable" => "adaptive_engine.intro_1".to_string(),
+        "processor_power.core_parking_min" => "adaptive_engine.core_parking_min_help".to_string(),
+        "processor_power.processor_min" => "adaptive_engine.processor_min_help".to_string(),
+        "processor_power.processor_max" => "adaptive_engine.processor_max_help".to_string(),
+        "processor_power.boost_policy" => "adaptive_engine.base_boost_policy_help".to_string(),
+        _ => format!("{key}_help"),
+    };
+    let mut label = row![super::widgets::heading(t!(key).to_string(), 14)]
+        .spacing(8)
+        .align_y(iced::Center);
+    let help = t!(&help_key).to_string();
+    if help != help_key {
+        label = label.push(iced::widget::tooltip(
+            super::navigation::glyph("icons/info.svg"),
+            iced::widget::container(text(help).width(320))
+                .padding(10)
+                .style(super::widgets::surface),
+            iced::widget::tooltip::Position::Top,
+        ));
+    }
+    label
 }
 #[derive(Debug, Clone, PartialEq)]
 struct Choice<T>(T, String);
@@ -983,6 +1530,33 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tuning_navigation_keeps_live_and_preset_state_separate() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        let before = settings.clone();
+        editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
+        editor.update(&mut settings, Message::Collapse(0));
+        assert_eq!(settings, before);
+        editor.update(
+            &mut settings,
+            Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Balanced),
+        );
+        assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
+        assert_eq!(editor.collapsed[1], [false; 2]);
+        editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
+        assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
+        editor.update(
+            &mut settings,
+            Message::TuningTab(TuningTab::PriorityControl),
+        );
+        editor.update(&mut settings, Message::Collapse(1));
+        editor.update(&mut settings, Message::Cancel);
+        assert_eq!(editor.tuning_tabs[0], TuningTab::CustomRules);
+        assert_eq!(editor.collapsed[0], [true, false]);
+        assert_eq!(settings, before);
+    }
+
     #[test]
     fn independent_cpu_gates_and_preset_isolation() {
         let mut settings = Settings::default();

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, path::PathBuf, time::Duration};
 
-use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Font, Subscription, Task, Theme};
 use rust_i18n::t;
 
@@ -65,6 +65,8 @@ pub(crate) fn run(
                         .map(|section| section.landing_page)
                         .collect(),
                     status_collapsed: false,
+                    compact_panel_open: false,
+                    description_expanded: false,
                     preferences: settings_pages::Editor::default(),
                     home: home::Model::default(),
                     action_log: action_log::Editor::default(),
@@ -129,7 +131,7 @@ pub(crate) fn run(
     })
     .settings(iced::Settings {
         default_font: Font::with_name("Segoe UI"),
-        default_text_size: 13.into(),
+        default_text_size: 14.into(),
         ..Default::default()
     })
     .theme(|app: &WinderustApp| app.appearance.clone())
@@ -158,6 +160,8 @@ struct WinderustApp {
     navigation_search: String,
     collapsed_sections: std::collections::HashSet<Page>,
     status_collapsed: bool,
+    compact_panel_open: bool,
+    description_expanded: bool,
     preferences: settings_pages::Editor,
     home: home::Model,
     action_log: action_log::Editor,
@@ -212,7 +216,9 @@ enum Message {
     NavigationSearch(String),
     ToggleNavigation,
     ToggleSection(Page),
+    ToggleDescription,
     ToggleStatus,
+    ToggleCompactPanel,
     Preferences(settings_pages::Message),
     Status(status_rail::Message),
     Home(home::Message),
@@ -270,11 +276,16 @@ impl WinderustApp {
                     Err(error) => self.message = error.to_string(),
                 }
             }
+            Message::ToggleDescription => self.description_expanded = !self.description_expanded,
             Message::ToggleSection(page) => {
+                if self.page != page {
+                    return self.update(Message::Page(page));
+                }
                 if !self.collapsed_sections.remove(&page) {
                     self.collapsed_sections.insert(page);
                 }
             }
+            Message::ToggleCompactPanel => self.compact_panel_open = !self.compact_panel_open,
             Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
             Message::Status(status_rail::Message::ActionLog) => {
                 return self.update(Message::Page(Page::ActionLog))
@@ -292,7 +303,6 @@ impl WinderustApp {
             Message::Home(home::Message::Navigate(page)) => {
                 return self.update(Message::Page(page))
             }
-            Message::Home(message) => self.home.update(message),
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {
@@ -644,6 +654,7 @@ impl WinderustApp {
                 return update;
             }
             Message::Page(page) => {
+                self.description_expanded = false;
                 self.page = page;
                 self.collapsed_sections.remove(&page.section_landing_page());
                 if page == Page::Win32PrioritySeparation {
@@ -1025,6 +1036,10 @@ impl WinderustApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        iced::widget::responsive(|size| self.view_at_width(size.width)).into()
+    }
+
+    fn view_at_width(&self, width: f32) -> Element<'_, Message> {
         if self.preferences.show_update && !self.closing {
             return container(
                 column![
@@ -1064,12 +1079,12 @@ impl WinderustApp {
             .into();
         }
         let collapsed = self.settings.general.navigation_collapsed;
-        let mut navigation = column![].spacing(4).padding([12, 8]);
+        let mut navigation = column![].spacing(2).padding([8, 6]).width(Fill);
         if collapsed {
             navigation = navigation.push(
                 button(navigation::glyph("icons/search.svg"))
                     .on_press(Message::ToggleNavigation)
-                    .style(button::text),
+                    .style(widgets::quiet),
             );
         } else {
             navigation = navigation.push(
@@ -1081,6 +1096,7 @@ impl WinderustApp {
             &self.navigation_search,
             self.settings.advanced.show_advanced_controls,
         );
+        let mut utilities = column![].spacing(4).padding([8, 6]);
         for section in Page::sections() {
             if section.landing_page == Page::AdvancedControls
                 && !self.settings.advanced.show_advanced_controls
@@ -1098,11 +1114,22 @@ impl WinderustApp {
             if !matches(section.landing_page) && !section.pages.iter().copied().any(matches) {
                 continue;
             }
-            let mut label = row![navigation::icon(section.landing_page)]
-                .spacing(8)
-                .align_y(iced::Center);
+            let mut section_content = column![].spacing(2);
+            let mut label = row![
+                container(iced::widget::Space::new())
+                    .width(3)
+                    .height(20)
+                    .style(move |theme: &Theme| container::Style {
+                        background: (self.page == section.landing_page)
+                            .then_some(theme.palette().primary.into()),
+                        ..Default::default()
+                    }),
+                navigation::icon(section.landing_page)
+            ]
+            .spacing(8)
+            .align_y(iced::Center);
             if !collapsed {
-                label = label.push(text(section.landing_page.label()).size(12).width(Fill));
+                label = label.push(navigation::label(section.landing_page));
                 if self.settings.general.show_enabled_feature_counts_in_sidebar {
                     if let Some(count) = navigation::section_enabled_feature_count(
                         &self.settings,
@@ -1111,34 +1138,40 @@ impl WinderustApp {
                         label = label.push(
                             container(text(count.to_string()).size(11))
                                 .padding([2, 6])
-                                .style(iced::widget::container::bordered_box),
+                                .style(container::transparent),
                         );
                     }
                 }
             }
-            let mut section_row = row![button(label)
-                .padding([9, 10])
-                .width(Fill)
-                .on_press(Message::Page(section.landing_page))
-                .style(if self.page == section.landing_page {
-                    iced::widget::button::primary
-                } else {
-                    iced::widget::button::text
-                })];
-            if !collapsed && section.pages.iter().any(|p| *p != section.landing_page) {
-                section_row = section_row.push(
-                    button(navigation::glyph(
-                        if self.collapsed_sections.contains(&section.landing_page) {
-                            "icons/chevron-right.svg"
-                        } else {
-                            "icons/chevron-down.svg"
-                        },
-                    ))
-                    .on_press(Message::ToggleSection(section.landing_page))
-                    .style(button::text),
-                );
+            let expandable = !collapsed && section.pages.iter().any(|p| *p != section.landing_page);
+            if expandable {
+                label = label.push(navigation::glyph(
+                    if self.collapsed_sections.contains(&section.landing_page) {
+                        "icons/chevron-right.svg"
+                    } else {
+                        "icons/chevron-down.svg"
+                    },
+                ));
             }
-            navigation = navigation.push(section_row);
+            section_content = section_content.push(
+                button(label)
+                    .padding([10, 12])
+                    .width(if collapsed {
+                        iced::Length::Fixed(56.0)
+                    } else {
+                        Fill
+                    })
+                    .on_press(if expandable {
+                        Message::ToggleSection(section.landing_page)
+                    } else {
+                        Message::Page(section.landing_page)
+                    })
+                    .style(if self.page == section.landing_page {
+                        widgets::selected
+                    } else {
+                        widgets::quiet
+                    }),
+            );
             let mut children = column![].spacing(2).padding([0, 10]);
             for page in section
                 .pages
@@ -1147,76 +1180,144 @@ impl WinderustApp {
             {
                 children = children.push(
                     button(
-                        row![navigation::icon(*page), text(page.label()).size(12)]
+                        row![navigation::icon(*page), navigation::label(*page)]
                             .spacing(8)
                             .align_y(iced::Center),
                     )
                     .width(Fill)
                     .on_press(Message::Page(*page))
-                    .padding([8, 10])
+                    .padding([8, 12])
                     .style(if self.page == *page {
-                        iced::widget::button::primary
+                        widgets::selected
                     } else {
-                        iced::widget::button::text
+                        widgets::quiet
                     }),
                 );
             }
-            navigation = navigation.push(motion::reveal(
+            section_content = section_content.push(motion::reveal(
                 children,
                 !collapsed && !self.collapsed_sections.contains(&section.landing_page),
                 self.motion_enabled,
             ));
+            if matches!(
+                section.landing_page,
+                Page::ActionLog | Page::SettingsHome | Page::About
+            ) {
+                utilities = utilities.push(section_content);
+            } else {
+                navigation = navigation.push(section_content);
+            }
         }
-        let navigation_toggle = button(navigation::glyph(if collapsed {
+        let mut toggle_content = row![navigation::glyph(if collapsed {
             "icons/panel-left-open.svg"
         } else {
             "icons/panel-left-close.svg"
-        }))
-        .padding(10)
-        .on_press(Message::ToggleNavigation)
-        .style(button::text);
-        navigation =
-            navigation
-                .push(iced::widget::rule::horizontal(1))
-                .push(iced::widget::tooltip(
-                    navigation_toggle,
-                    text(if collapsed {
-                        t!("nav.expand_navigation").to_string()
-                    } else {
-                        t!("nav.collapse_navigation").to_string()
-                    }),
-                    iced::widget::tooltip::Position::Right,
-                ));
-        let mut body = column![
-            row![
-                navigation::icon(self.page),
-                text(self.page.label()).size(23)
-            ]
-            .spacing(10)
-            .align_y(iced::Center),
-            iced::widget::rule::horizontal(1)
-        ]
-        .spacing(16)
-        .height(Fill);
+        })]
+        .spacing(12)
+        .align_y(iced::Center);
+        if !collapsed {
+            toggle_content =
+                toggle_content.push(text(t!("nav.collapse_navigation").to_string()).size(13));
+        }
+        let navigation_toggle = button(toggle_content)
+            .width(Fill)
+            .padding(10)
+            .on_press(Message::ToggleNavigation)
+            .style(widgets::quiet);
+        utilities = utilities
+            .push(iced::widget::rule::horizontal(1))
+            .push(iced::widget::tooltip(
+                navigation_toggle,
+                text(if collapsed {
+                    t!("nav.expand_navigation").to_string()
+                } else {
+                    t!("nav.collapse_navigation").to_string()
+                }),
+                iced::widget::tooltip::Position::Right,
+            ));
+        let mut header = row![].spacing(10).align_y(iced::Center);
+        if self.page != Page::Home {
+            header = header
+                .push(
+                    button(widgets::heading(Page::Home.label(), 26))
+                        .style(widgets::quiet)
+                        .on_press(Message::Page(Page::Home)),
+                )
+                .push(navigation::glyph("icons/chevron-right.svg"));
+        }
+        let parent = self.page.section_landing_page();
+        if parent != self.page && parent != Page::Home {
+            header = header
+                .push(
+                    button(widgets::heading(parent.label(), 26))
+                        .style(widgets::quiet)
+                        .on_press(Message::Page(parent)),
+                )
+                .push(navigation::glyph("icons/chevron-right.svg"));
+        }
+        header = header.push(widgets::heading(self.page.label(), 28));
+        if width >= 1400.0 {
+            header = header.push(iced::widget::Space::new().width(Fill));
+        }
         if self.page.supports_power_source_profiles() {
-            body = body.push(
+            header = header.push(
                 row![
-                    button(text(t!("power_source.plugged_in").to_string()))
+                    button(text(t!("power_source.plugged_in").to_string()).size(12))
                         .on_press(Message::PowerSource(PowerSourceProfile::PluggedIn))
                         .style(if self.power_source == PowerSourceProfile::PluggedIn {
-                            button::primary
+                            widgets::selected
                         } else {
-                            iced::widget::button::secondary
+                            widgets::quiet
                         }),
-                    button(text(t!("power_source.on_battery").to_string()))
+                    button(text(t!("power_source.on_battery").to_string()).size(12))
                         .on_press(Message::PowerSource(PowerSourceProfile::OnBattery))
                         .style(if self.power_source == PowerSourceProfile::OnBattery {
-                            button::primary
+                            widgets::selected
                         } else {
-                            iced::widget::button::secondary
+                            widgets::quiet
                         }),
                 ]
-                .spacing(8),
+                .spacing(4),
+            );
+        }
+        let description = navigation::page_help(self.page);
+        if !description.is_empty() {
+            header = header.push(
+                button(
+                    row![
+                        navigation::glyph("icons/info.svg"),
+                        text(t!("common.how_it_works").to_string()).size(13)
+                    ]
+                    .spacing(6)
+                    .align_y(iced::Center),
+                )
+                .style(if self.description_expanded {
+                    widgets::selected
+                } else {
+                    widgets::quiet
+                })
+                .on_press(Message::ToggleDescription),
+            );
+        }
+        let header: Element<'_, Message> = if width >= 1400.0 {
+            header.into()
+        } else {
+            header.wrap().into()
+        };
+        let mut body = column![container(header).padding([8, 0]).width(Fill)]
+            .spacing(12)
+            .height(Fill);
+        if self.description_expanded && !description.is_empty() {
+            body = body.push(
+                container(
+                    scrollable(text(description).width(Fill))
+                        .spacing(10)
+                        .height(iced::Length::Shrink),
+                )
+                .max_height(160)
+                .padding(12)
+                .width(Fill)
+                .style(widgets::surface),
             );
         }
         let content = motion::page_transition(
@@ -1224,94 +1325,169 @@ impl WinderustApp {
             self.page_view(),
             self.motion_enabled,
         );
-        body = if let Some(status) = (!matches!(
-            self.page,
-            Page::CpuSetsSoft | Page::ProcessorAffinityHard | Page::AdaptiveEngine
-        ))
-        .then(|| status_rail::view(self.page, &self.settings, &self.status, &self.power_plans))
-        .flatten()
-        {
-            let rail = column![
-                iced::widget::tooltip(
-                    button(navigation::glyph(if self.status_collapsed {
-                        "icons/panel-right-open.svg"
-                    } else {
-                        "icons/panel-right-close.svg"
-                    }))
-                    .padding(8)
-                    .style(button::text)
-                    .on_press(Message::ToggleStatus),
-                    text(if self.status_collapsed {
-                        t!("nav.expand_side_panel").to_string()
-                    } else {
-                        t!("nav.collapse_side_panel").to_string()
-                    }),
-                    iced::widget::tooltip::Position::Left
-                ),
-                motion::reveal(
-                    status.map(Message::Status),
-                    !self.status_collapsed,
-                    self.motion_enabled
-                )
-            ]
-            .spacing(8);
-            body.push(
-                row![
-                    container(content).width(Fill),
-                    motion::horizontal_reveal(
-                        rail,
-                        !self.status_collapsed,
-                        self.motion_enabled,
-                        216.0,
-                        40.0
-                    )
-                ]
-                .spacing(16)
-                .height(Fill),
+        let mut side_panel = if self.page == Page::AdaptiveEngine {
+            Some(
+                self.adaptive
+                    .side_panel(&self.settings, &self.status)
+                    .map(Message::Adaptive),
             )
+        } else if self.page == Page::AdvancedPowerPlanTuning {
+            Some(
+                self.power_tuning
+                    .side_panel(
+                        &self.settings.advanced_power_plan_tuning_presets,
+                        self.motion_enabled,
+                    )
+                    .map(Message::PowerTuning),
+            )
+        } else if !matches!(self.page, Page::CpuSetsSoft | Page::ProcessorAffinityHard) {
+            status_rail::view(self.page, &self.settings, &self.status, &self.power_plans)
+                .map(|panel| panel.map(Message::Status))
         } else {
-            body.push(content)
+            None
         };
+        body = body.push(content);
         if let Some(error) = &self.status.worker_error {
             body = body.push(text(error));
         }
         if !self.message.is_empty() {
             body = body.push(text(&self.message));
         }
-        if self.pending_changes() {
+        if side_panel.is_some() && width < 1400.0 {
             body = body.push(
-                row![
-                    button(text(t!("common.save").to_string())).on_press(Message::Save),
-                    button(text(t!("common.cancel").to_string()))
-                        .on_press(Message::Cancel)
-                        .style(iced::widget::button::secondary),
-                ]
-                .spacing(8),
+                button(
+                    row![
+                        text(t!("common.status").to_string()),
+                        text(t!("adaptive_engine.presets").to_string()),
+                        navigation::glyph(if self.compact_panel_open {
+                            "icons/chevron-down.svg"
+                        } else {
+                            "icons/chevron-right.svg"
+                        })
+                    ]
+                    .spacing(12)
+                    .align_y(iced::Center),
+                )
+                .style(widgets::quiet)
+                .on_press(Message::ToggleCompactPanel),
             );
+            if self.compact_panel_open {
+                if let Some(panel) = side_panel.take() {
+                    body = body.push(container(panel).height(220));
+                }
+            }
         }
-        row![
+        let layout = row![
             motion::horizontal_reveal(
-                container(scrollable(navigation).spacing(10))
-                    .height(Fill)
-                    .style(container::bordered_box),
+                container(
+                    column![scrollable(navigation).spacing(8).height(Fill), utilities].height(Fill)
+                )
+                .width(Fill)
+                .height(Fill)
+                .style(|theme: &Theme| container::Style {
+                    background: Some(
+                        if theme.extended_palette().is_dark {
+                            iced::Color::from_rgb8(11, 13, 15)
+                        } else {
+                            iced::Color::from_rgb8(234, 236, 239)
+                        }
+                        .into()
+                    ),
+                    ..Default::default()
+                }),
                 !collapsed,
                 self.motion_enabled,
-                244.0,
+                264.0,
                 72.0
             ),
-            container(body).padding([20, 24]).width(Fill).height(Fill)
+            container(container(body).max_width(1040).width(Fill).height(Fill))
+                .padding([24, 20])
+                .center_x(Fill)
+                .height(Fill)
         ]
         .spacing(8)
-        .height(Fill)
-        .into()
+        .height(Fill);
+        let layout: Element<'_, Message> =
+            if let Some(panel) = side_panel.filter(|_| width >= 1400.0) {
+                layout
+                    .push(motion::horizontal_reveal(
+                        column![
+                            container(motion::reveal(
+                                panel,
+                                !self.status_collapsed,
+                                self.motion_enabled
+                            ))
+                            .height(Fill),
+                            button(
+                                row![
+                                    navigation::glyph(if self.status_collapsed {
+                                        "icons/panel-right-open.svg"
+                                    } else {
+                                        "icons/panel-right-close.svg"
+                                    }),
+                                    text(if self.status_collapsed {
+                                        String::new()
+                                    } else {
+                                        t!("nav.collapse_side_panel").to_string()
+                                    })
+                                ]
+                                .spacing(8)
+                                .align_y(iced::Center)
+                            )
+                            .style(widgets::quiet)
+                            .on_press(Message::ToggleStatus)
+                        ]
+                        .spacing(12)
+                        .padding(12)
+                        .height(Fill),
+                        !self.status_collapsed,
+                        self.motion_enabled,
+                        320.0,
+                        48.0,
+                    ))
+                    .into()
+            } else {
+                layout.into()
+            };
+        if self.pending_changes() {
+            iced::widget::stack![
+                layout,
+                container(
+                    widgets::settings_card(
+                        column![
+                            widgets::heading(t!("unsaved.title").to_string(), 14),
+                            text(t!("unsaved.message").to_string()),
+                            row![
+                                button(text(t!("common.discard").to_string()))
+                                    .style(widgets::quiet)
+                                    .on_press(Message::Cancel),
+                                button(text(t!("common.save").to_string())).on_press(Message::Save)
+                            ]
+                            .spacing(8)
+                        ]
+                        .spacing(12)
+                    )
+                    .width(360)
+                )
+                .padding(16)
+                .width(Fill)
+                .height(Fill)
+                .align_x(iced::Right)
+                .align_y(iced::Bottom)
+            ]
+            .into()
+        } else {
+            layout
+        }
     }
 
     fn page_view(&self) -> Element<'_, Message> {
         let general = &self.settings.general;
         let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
-            checkbox(value)
-                .label(t!(label).to_string())
-                .on_toggle(action)
+            widgets::settings_card(widgets::setting_row(
+                label,
+                widgets::switch(value, Some(action)),
+            ))
         };
         match self.page {
             Page::AppSuspension => self
@@ -1547,34 +1723,51 @@ impl WinderustApp {
     }
 
     fn child_pages(&self) -> Element<'_, Message> {
-        let mut pages = column![].spacing(12);
+        let mut pages = column![].spacing(8);
+        if self.page == Page::PowerPlanControl {
+            pages = pages.push(widgets::heading(
+                t!("power_plan_control.automation").to_string(),
+                14,
+            ));
+        }
         if let Some(children) = self.page.child_pages() {
             for page in children.iter().filter(|page| **page != self.page) {
-                let mut card = column![
-                    row![navigation::icon(*page), text(page.label()).size(17)].spacing(8),
-                    text(navigation::description(*page))
-                        .size(13)
-                        .width(Fill)
-                        .style(text::secondary)
+                if self.page == Page::PowerPlanControl && *page == Page::AdvancedPowerPlanTuning {
+                    pages = pages.push(widgets::heading(t!("settings.advanced").to_string(), 14));
+                }
+                let mut heading = row![
+                    navigation::icon(*page),
+                    widgets::heading(page.label(), 14).width(Fill)
                 ]
-                .spacing(8);
+                .spacing(10)
+                .align_y(iced::Center);
                 if self.settings.general.show_feature_status_on_cards {
                     if let Some(enabled) = navigation::feature_page_enabled(&self.settings, *page) {
-                        card = card.push(text(
-                            if enabled {
-                                t!("common.on")
+                        heading = heading.push(
+                            text(
+                                if enabled {
+                                    t!("common.enabled")
+                                } else {
+                                    t!("common.disabled")
+                                }
+                                .to_string(),
+                            )
+                            .size(12)
+                            .style(if enabled {
+                                text::success
                             } else {
-                                t!("common.off")
-                            }
-                            .to_string(),
-                        ));
+                                text::secondary
+                            }),
+                        );
                     }
                 }
+                heading = heading.push(navigation::glyph("icons/chevron-right.svg"));
                 pages = pages.push(
-                    button(card)
+                    button(heading.height(Fill))
                         .width(Fill)
-                        .padding(16)
-                        .style(iced::widget::button::secondary)
+                        .padding([16, 20])
+                        .height(58)
+                        .style(widgets::card)
                         .on_press(Message::Page(*page)),
                 );
             }

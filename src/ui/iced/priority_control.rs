@@ -555,38 +555,23 @@ impl Editor {
         let key = kind.key();
         let enabled = kind.enabled(settings);
         let choices = kind.choices(settings.advanced.expose_all_priority_values);
-        let mut body = column![
-            checkbox(enabled)
-                .label(localized(key, "enable"))
-                .on_toggle(Message::Enabled),
-            text(localized(key, "intro_1"))
-                .width(Fill)
-                .style(text::secondary),
-            text(localized(key, "intro_2"))
-                .width(Fill)
-                .style(text::secondary)
-        ]
-        .spacing(12);
-        if kind == Kind::Gpu {
-            body = body.push(
-                text(localized(key, "intro_3"))
-                    .width(Fill)
-                    .style(text::secondary),
-            );
-        }
-        for tier in Tier::ALL {
+        let mut body = column![].spacing(12);
+        for tier in [Tier::Background, Tier::Focus, Tier::VisibleWindow] {
             let detection = kind.detection(settings, tier);
             let mut group = column![].spacing(8);
-            if tier != Tier::Background {
-                let label = if tier == Tier::Focus {
-                    localized(key, "foreground_detection")
-                } else {
-                    t!("common.visible_window_detection").to_string()
-                };
-                group = group.push(checkbox(detection).label(label).on_toggle_maybe(
+            let label = match tier {
+                Tier::Background => format!("{key}.enable"),
+                Tier::Focus => format!("{key}.foreground_detection"),
+                Tier::VisibleWindow => "common.visible_window_detection".to_string(),
+            };
+            let action: Element<'_, Message> = if tier == Tier::Background {
+                super::widgets::switch(enabled, Some(Message::Enabled))
+            } else {
+                super::widgets::switch(
+                    detection,
                     enabled.then_some(move |value| Message::Detection(tier, value)),
-                ));
-            }
+                )
+            };
             let control: Element<'_, Message> = if enabled && detection {
                 pick_list(
                     choices.clone(),
@@ -597,7 +582,10 @@ impl Editor {
             } else {
                 text(kind.value(settings, tier).to_string()).into()
             };
-            group = group.push(control);
+            group = group.push(super::widgets::setting_row(
+                "common.default",
+                iced::widget::container(control).width(240),
+            ));
             if let Some(preserve) = kind.preserve(settings, tier) {
                 let label = match tier {
                     Tier::Focus => t!("common.preserve_foreground_priority"),
@@ -608,37 +596,19 @@ impl Editor {
                     (enabled && detection).then_some(move |value| Message::Preserve(tier, value)),
                 ));
             }
-            body = body.push(
-                container(
-                    column![
-                        button(text(format!(
-                            "{} {}",
-                            if self.collapsed[kind as usize][tier as usize] {
-                                ">"
-                            } else {
-                                "v"
-                            },
-                            tier.label()
-                        )))
-                        .on_press(Message::Collapse(tier))
-                        .style(button::text),
-                        super::motion::reveal(
-                            group,
-                            !self.collapsed[kind as usize][tier as usize],
-                            motion_enabled
-                        )
-                    ]
-                    .spacing(8),
-                )
-                .padding(12)
-                .width(Fill)
-                .style(iced::widget::container::bordered_box),
-            );
+            body = body.push(super::widgets::setting_group(
+                label,
+                !self.collapsed[kind as usize][tier as usize],
+                Message::Collapse(tier),
+                action,
+                group,
+                motion_enabled,
+            ));
         }
         body = body
             .push(text(localized(key, "exclusions")).size(16))
             .push(text(localized(key, "exclusions_help")));
-        body = body.push(
+        body = body.push(super::widgets::settings_card(
             row![
                 text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
                 button(text(t!("common.browse_executable").to_string()))
@@ -647,8 +617,9 @@ impl Editor {
                     (enabled && kind.can_add(settings, &self.path)).then_some(Message::Add)
                 )
             ]
-            .spacing(8),
-        );
+            .spacing(8)
+            .align_y(iced::Center),
+        ));
         let filter = self.path.to_lowercase();
         let candidates: Vec<_> = candidates
             .iter()
@@ -715,7 +686,7 @@ impl Editor {
                     container(card)
                         .padding(12)
                         .width(Fill)
-                        .style(iced::widget::container::bordered_box),
+                        .style(super::widgets::surface),
                     index == usize::MAX,
                     motion_enabled,
                     Message::Removed(rule.executable_path.clone()),

@@ -1,4 +1,4 @@
-use super::navigation::{dashboard_search_pages, dashboard_sections_in_nav_order};
+use super::navigation::dashboard_sections_in_nav_order;
 use crate::automation::RuntimeFeatureStatus;
 use crate::backend::dashboard_metrics::{
     sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot, NetworkUsageMonitor,
@@ -7,7 +7,7 @@ use crate::backend::dashboard_metrics::{
 use crate::config::Settings;
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::ui::Page;
-use iced::widget::{button, canvas, column, container, row, scrollable, text, text_input};
+use iced::widget::{button, canvas, column, container, responsive, row, scrollable, text};
 use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
 use std::collections::VecDeque;
@@ -83,20 +83,12 @@ pub(super) struct Model {
     memory: VecDeque<MemoryUsageSnapshot>,
     io: VecDeque<IoUsageSnapshot>,
     network: VecDeque<NetworkUsageSnapshot>,
-    search: String,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
-    Search(String),
     Navigate(Page),
 }
 impl Model {
-    pub(super) fn update(&mut self, message: Message) {
-        match message {
-            Message::Search(search) => self.search = search,
-            Message::Navigate(_) => self.search.clear(),
-        }
-    }
     pub(super) fn record(&mut self, sample: Sample) {
         self.latest = sample;
         if sample.cpu.percent.is_some() {
@@ -117,88 +109,123 @@ impl Model {
         settings: &'a Settings,
         status: &'a RuntimeFeatureStatus,
     ) -> Element<'a, Message> {
-        let mut body = column![
-            text_input(&t!("home.search_placeholder"), &self.search).on_input(Message::Search)
-        ]
-        .spacing(12);
-        if !self.search.trim().is_empty() {
-            let pages =
-                dashboard_search_pages(&self.search, settings.advanced.show_advanced_controls);
-            if pages.is_empty() {
-                body = body.push(text(t!("home.no_matching_functions").to_string()));
-            }
-            for page in pages {
-                body = body.push(
-                    button(text(page.label()))
-                        .on_press(Message::Navigate(page))
-                        .width(Fill),
-                );
-            }
-            return scrollable(body).spacing(10).height(Fill).into();
-        }
-        let cpu = self.chart(ChartKind::Cpu);
-        let memory = self.chart(ChartKind::Memory);
-        let io = self.chart(ChartKind::Io);
-        let network = self.chart(ChartKind::Network);
-        body = body
-            .push(
-                row![
-                    self.chart_card(ChartKind::Cpu, cpu),
-                    self.chart_card(ChartKind::Memory, memory)
-                ]
-                .spacing(12),
-            )
-            .push(
-                row![
-                    self.chart_card(ChartKind::Io, io),
-                    self.chart_card(ChartKind::Network, network)
-                ]
-                .spacing(12),
-            );
-        let mut enabled = column![
-            text(t!("home.enabled_features").to_string()).size(18),
-            text(
-                if settings.general.enabled {
-                    t!("home.master_switch_enabled")
-                } else {
-                    t!("home.master_switch_disabled")
+        responsive(move |size| {
+            let wide = size.width >= 760.0;
+            let mut body =
+                column![super::widgets::heading(t!("home.home").to_string(), 14)].spacing(8);
+            let mut enabled = column![row![
+                super::widgets::heading(t!("home.enabled_features").to_string(), 14).width(Fill),
+                text(
+                    if settings.general.enabled {
+                        t!("home.master_switch_enabled")
+                    } else {
+                        t!("home.master_switch_disabled")
+                    }
+                    .to_string()
+                )
+                .size(12)
+                .style(text::success)
+            ]
+            .spacing(8)]
+            .spacing(12);
+            let mut count = 0;
+            for (page, active, detail) in enabled_features(settings, status, &self.latest) {
+                if active {
+                    count += 1;
+                    enabled = enabled.push(
+                        button(
+                            row![
+                                super::navigation::icon(page),
+                                text(page.label()).width(Fill),
+                                text(detail)
+                            ]
+                            .spacing(8)
+                            .align_y(iced::Center),
+                        )
+                        .width(Fill)
+                        .padding(8)
+                        .style(super::widgets::quiet)
+                        .on_press(Message::Navigate(page)),
+                    );
                 }
-                .to_string()
-            )
-        ]
-        .spacing(8);
-        let mut count = 0;
-        for (page, active, detail) in enabled_features(settings, status, &self.latest) {
-            if active {
-                count += 1;
-                enabled = enabled.push(
-                    button(row![text(page.label()).width(Fill), text(detail)].spacing(8))
-                        .on_press(Message::Navigate(page))
-                        .width(Fill),
-                );
             }
-        }
-        if count == 0 {
-            enabled = enabled.push(text(t!("home.no_enabled_features").to_string()));
-        }
-        body = body
-            .push(
-                container(enabled)
-                    .padding(16)
-                    .width(Fill)
-                    .style(iced::widget::container::bordered_box),
-            )
-            .push(text(t!("home.main_sections").to_string()).size(18));
-        for section in dashboard_sections_in_nav_order(settings.advanced.show_advanced_controls) {
-            body = body.push(
-                button(text(section.landing_page.label()))
-                    .style(iced::widget::button::secondary)
-                    .padding([10, 14])
-                    .on_press(Message::Navigate(section.landing_page))
-                    .width(Fill),
-            );
-        }
-        scrollable(body).spacing(10).height(Fill).into()
+            if count == 0 {
+                enabled = enabled
+                    .push(text(t!("home.no_enabled_features").to_string()).style(text::secondary));
+            }
+            let enabled = container(enabled)
+                .padding(14)
+                .height(196)
+                .width(Fill)
+                .style(super::widgets::surface);
+            if wide {
+                body = body
+                    .push(
+                        row![
+                            self.chart_card(ChartKind::Cpu, self.chart(ChartKind::Cpu)),
+                            self.chart_card(ChartKind::Memory, self.chart(ChartKind::Memory)),
+                            self.chart_card(ChartKind::Io, self.chart(ChartKind::Io))
+                        ]
+                        .spacing(8),
+                    )
+                    .push(
+                        row![
+                            self.chart_card(ChartKind::Network, self.chart(ChartKind::Network)),
+                            enabled
+                        ]
+                        .spacing(8),
+                    );
+            } else {
+                body = body
+                    .push(
+                        row![
+                            self.chart_card(ChartKind::Cpu, self.chart(ChartKind::Cpu)),
+                            self.chart_card(ChartKind::Memory, self.chart(ChartKind::Memory))
+                        ]
+                        .spacing(8),
+                    )
+                    .push(
+                        row![
+                            self.chart_card(ChartKind::Io, self.chart(ChartKind::Io)),
+                            self.chart_card(ChartKind::Network, self.chart(ChartKind::Network))
+                        ]
+                        .spacing(8),
+                    )
+                    .push(enabled);
+            }
+            body = body.push(super::widgets::heading(
+                t!("home.main_sections").to_string(),
+                14,
+            ));
+            let sections =
+                dashboard_sections_in_nav_order(settings.advanced.show_advanced_controls);
+            for group in sections.chunks(if wide { 3 } else { 2 }) {
+                let mut shortcuts = row![].spacing(8);
+                for section in group {
+                    shortcuts = shortcuts.push(
+                        button(
+                            row![
+                                super::navigation::icon(section.landing_page),
+                                super::widgets::heading(section.landing_page.label(), 14)
+                                    .width(Fill),
+                                super::navigation::glyph("icons/chevron-right.svg")
+                            ]
+                            .spacing(16)
+                            .height(Fill)
+                            .align_y(iced::Center),
+                        )
+                        .height(58)
+                        .padding([12, 20])
+                        .width(Fill)
+                        .style(super::widgets::card)
+                        .on_press(Message::Navigate(section.landing_page)),
+                    );
+                }
+                body = body.push(shortcuts);
+            }
+            scrollable(body).spacing(10).height(Fill).into()
+        })
+        .into()
     }
     fn chart_card(&self, kind: ChartKind, chart: Chart) -> Element<'static, Message> {
         let sample = self.latest;
@@ -241,8 +268,8 @@ impl Model {
         container(
             column![
                 row![
-                    text(title.to_string()).size(18).width(Fill),
-                    text(total).size(20)
+                    super::widgets::heading(title.to_string(), 14).width(Fill),
+                    super::widgets::heading(total, 14)
                 ]
                 .spacing(8),
                 row![
@@ -250,17 +277,18 @@ impl Model {
                         .style(text::primary)
                         .width(Fill),
                     text(format!("{second}: {second_value}"))
-                        .style(text::success)
+                        .style(text::primary)
                         .width(Fill)
                 ]
                 .spacing(8),
-                canvas(chart).width(Fill).height(82)
+                canvas(chart).width(Fill).height(110)
             ]
             .spacing(8),
         )
-        .padding(16)
+        .padding(14)
+        .height(196)
         .width(Fill)
-        .style(iced::widget::container::bordered_box)
+        .style(super::widgets::surface)
         .into()
     }
     fn chart(&self, kind: ChartKind) -> Chart {
@@ -421,7 +449,10 @@ impl canvas::Program<Message> for Chart {
                     .with_color(if series == 0 {
                         theme.palette().primary
                     } else {
-                        theme.palette().success
+                        iced::Color {
+                            a: 0.55,
+                            ..theme.palette().primary
+                        }
                     }),
             );
         }

@@ -1,8 +1,6 @@
 use super::widgets::{self, Choice};
 use crate::{config::*, ui::Page};
-use iced::widget::{
-    button, checkbox, column, pick_list, row, scrollable, slider, text, text_input,
-};
+use iced::widget::{button, column, pick_list, row, scrollable, slider, text, text_input};
 use iced::{Color, Element, Fill, Theme};
 use rust_i18n::t;
 
@@ -10,6 +8,7 @@ use rust_i18n::t;
 pub(super) struct Editor {
     color: Option<String>,
     accent_collapsed: bool,
+    custom_color_open: bool,
     pub(super) checking: bool,
     notify_on_update: bool,
     pub(super) latest: Option<String>,
@@ -42,6 +41,7 @@ pub(super) enum Message {
     AccentHex(String),
     ColorChannel(u32, u8),
     ToggleAccent,
+    ToggleCustomColor,
     Accent(u32),
     SaveColor,
     RemoveColor(usize),
@@ -106,6 +106,7 @@ impl Editor {
                 s.general.accent.source = value;
                 self.accent_collapsed = value == AccentColorSource::Windows;
             }
+            Message::ToggleCustomColor => self.custom_color_open = !self.custom_color_open,
             Message::ToggleAccent => self.accent_collapsed = !self.accent_collapsed,
             Message::ColorChannel(shift, value) => {
                 if [0, 8, 16].contains(&shift) {
@@ -183,9 +184,10 @@ impl Editor {
     }
     pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
         let flag = |key: &str, value, flag| {
-            checkbox(value)
-                .label(t!(key).to_string())
-                .on_toggle(move |value| Message::Flag(flag, value))
+            widgets::settings_card(widgets::setting_row(
+                key,
+                widgets::switch(value, Some(move |value| Message::Flag(flag, value))),
+            ))
         };
         let body = match page {
             Page::WinderustBehaviour => column![
@@ -229,25 +231,34 @@ impl Editor {
                     1..=100,
                     Message::FailureThreshold
                 ),
-                text(t!("settings.action_log_mode").to_string()),
-                pick_list(
-                    ActionLogMode::ALL
-                        .into_iter()
-                        .map(|value| Choice(value, log_label(value)))
-                        .collect::<Vec<_>>(),
-                    Some(Choice(
-                        s.advanced.action_log_mode,
-                        log_label(s.advanced.action_log_mode)
-                    )),
-                    |value| Message::LogMode(value.0)
+                super::widgets::settings_card(
+                    row![
+                        text(t!("settings.action_log_mode").to_string()).width(Fill),
+                        pick_list(
+                            ActionLogMode::ALL
+                                .into_iter()
+                                .map(|value| Choice(value, log_label(value)))
+                                .collect::<Vec<_>>(),
+                            Some(Choice(
+                                s.advanced.action_log_mode,
+                                log_label(s.advanced.action_log_mode)
+                            )),
+                            |value| Message::LogMode(value.0)
+                        )
+                    ]
+                    .spacing(12)
+                    .align_y(iced::Center)
                 ),
-                row![
-                    button(text(t!("settings.export_settings").to_string()))
-                        .on_press(Message::Export),
-                    button(text(t!("settings.import_settings").to_string()))
-                        .on_press(Message::Import)
-                ]
-                .spacing(8),
+                super::widgets::settings_card(
+                    row![
+                        button(text(t!("settings.export_settings").to_string()))
+                            .on_press(Message::Export),
+                        button(text(t!("settings.import_settings").to_string()))
+                            .on_press(Message::Import)
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Center)
+                ),
             ]
             .spacing(14),
             Page::LanguageAndAppearance => {
@@ -274,102 +285,129 @@ impl Editor {
                 ))
                 .spacing(6);
                 let mut custom = column![
+                    text(t!("accent.custom").to_string()),
+                    button(super::navigation::glyph("icons/settings.svg"))
+                        .style(widgets::quiet)
+                        .on_press(Message::ToggleCustomColor),
                     text(t!("accent.color_palette").to_string()),
                     colors,
-                    text(t!("accent.custom").to_string()),
                     saved
                 ]
                 .spacing(10);
-                for (label, shift) in [("R", 16), ("G", 8), ("B", 0)] {
-                    let value = ((s.general.accent.custom_color >> shift) & 255) as u8;
+                if self.custom_color_open {
+                    for (label, shift) in [("R", 16), ("G", 8), ("B", 0)] {
+                        let value = ((s.general.accent.custom_color >> shift) & 255) as u8;
+                        custom = custom.push(
+                            row![
+                                text(label).width(20),
+                                slider(0..=255, value, move |value| Message::ColorChannel(
+                                    shift, value
+                                )),
+                                text(value.to_string()).width(32)
+                            ]
+                            .spacing(8),
+                        );
+                    }
                     custom = custom.push(
                         row![
-                            text(label).width(20),
-                            slider(0..=255, value, move |value| Message::ColorChannel(
-                                shift, value
-                            )),
-                            text(value.to_string()).width(32)
+                            text_input(
+                                "#RRGGBB",
+                                &self.color.clone().unwrap_or_else(|| format!(
+                                    "#{:06X}",
+                                    s.general.accent.custom_color
+                                ))
+                            )
+                            .on_input(Message::AccentHex)
+                            .width(130),
+                            button(text(t!("common.save").to_string())).on_press_maybe(
+                                self.color
+                                    .as_deref()
+                                    .is_none_or(|v| parse_color(v).is_some())
+                                    .then_some(Message::SaveColor)
+                            )
                         ]
                         .spacing(8),
                     );
                 }
-                custom = custom.push(
-                    row![
-                        text_input(
-                            "#RRGGBB",
-                            &self.color.clone().unwrap_or_else(|| format!(
-                                "#{:06X}",
-                                s.general.accent.custom_color
-                            ))
-                        )
-                        .on_input(Message::AccentHex)
-                        .width(130),
-                        button(text(t!("common.save").to_string())).on_press_maybe(
-                            self.color
-                                .as_deref()
-                                .is_none_or(|v| parse_color(v).is_some())
-                                .then_some(Message::SaveColor)
-                        )
-                    ]
-                    .spacing(8),
-                );
                 column![
-                    text(t!("common.language").to_string()),
-                    pick_list(
-                        AppLanguage::ALL
-                            .into_iter()
-                            .map(|v| Choice(v, v.native_label().to_owned()))
-                            .collect::<Vec<_>>(),
-                        Some(Choice(
-                            s.general.language,
-                            s.general.language.native_label().to_owned()
-                        )),
-                        |v| Message::Language(v.0)
+                    super::widgets::settings_card(
+                        row![
+                            text(t!("common.language").to_string()).width(Fill),
+                            pick_list(
+                                AppLanguage::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, v.native_label().to_owned()))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.language,
+                                    s.general.language.native_label().to_owned()
+                                )),
+                                |v| Message::Language(v.0)
+                            )
+                        ]
+                        .spacing(12)
+                        .align_y(iced::Center)
                     ),
-                    text(t!("common.theme").to_string()),
-                    pick_list(
-                        AppThemeMode::ALL
-                            .into_iter()
-                            .map(|v| Choice(v, theme_label(v)))
-                            .collect::<Vec<_>>(),
-                        Some(Choice(
-                            s.general.theme_mode,
-                            theme_label(s.general.theme_mode)
-                        )),
-                        |v| Message::Theme(v.0)
-                    ),
-                    text(t!("common.animation").to_string()),
-                    pick_list(
-                        AnimationMode::ALL
-                            .into_iter()
-                            .map(|v| Choice(v, animation_label(v)))
-                            .collect::<Vec<_>>(),
-                        Some(Choice(
-                            s.general.animation_mode,
-                            animation_label(s.general.animation_mode)
-                        )),
-                        |v| Message::Animation(v.0)
-                    ),
-                    button(text(t!("accent.source").to_string())).on_press(Message::ToggleAccent),
-                    pick_list(
-                        vec![
-                            Choice(AccentColorSource::Windows, t!("accent.windows").to_string()),
-                            Choice(AccentColorSource::Custom, t!("accent.custom").to_string())
-                        ],
-                        Some(Choice(
-                            s.general.accent.source,
-                            if s.general.accent.source == AccentColorSource::Windows {
-                                t!("accent.windows").to_string()
-                            } else {
-                                t!("accent.custom").to_string()
-                            }
-                        )),
-                        |v| Message::AccentSource(v.0)
-                    ),
-                    super::motion::reveal(
-                        custom,
+                    super::widgets::setting_group(
+                        "accent.source".to_string(),
                         !self.accent_collapsed,
+                        Message::ToggleAccent,
+                        pick_list(
+                            vec![
+                                Choice(
+                                    AccentColorSource::Windows,
+                                    t!("accent.windows").to_string()
+                                ),
+                                Choice(AccentColorSource::Custom, t!("accent.custom").to_string())
+                            ],
+                            Some(Choice(
+                                s.general.accent.source,
+                                if s.general.accent.source == AccentColorSource::Windows {
+                                    t!("accent.windows").to_string()
+                                } else {
+                                    t!("accent.custom").to_string()
+                                }
+                            )),
+                            |v| Message::AccentSource(v.0)
+                        ),
+                        custom,
                         animations(s.general.animation_mode)
+                    ),
+                    super::widgets::settings_card(
+                        row![
+                            text(t!("common.theme").to_string()).width(Fill),
+                            pick_list(
+                                AppThemeMode::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, theme_label(v)))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.theme_mode,
+                                    theme_label(s.general.theme_mode)
+                                )),
+                                |v| Message::Theme(v.0)
+                            )
+                        ]
+                        .spacing(12)
+                        .align_y(iced::Center)
+                    ),
+                    super::widgets::settings_card(
+                        row![
+                            text(t!("common.animation").to_string()).width(Fill),
+                            pick_list(
+                                AnimationMode::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, animation_label(v)))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.animation_mode,
+                                    animation_label(s.general.animation_mode)
+                                )),
+                                |v| Message::Animation(v.0)
+                            )
+                        ]
+                        .spacing(12)
+                        .align_y(iced::Center)
                     ),
                     flag(
                         "settings.show_enabled_feature_counts_in_sidebar",
@@ -421,49 +459,75 @@ impl Editor {
                         button(text(t!(key).to_string())).on_press(Message::Open(url.into())),
                     );
                 }
-                let mut body = column![
-                    iced::widget::image(logo()).width(64).height(64),
-                    text(t!("app.name").to_string()).size(24),
-                    text(t!("app.description").to_string()),
-                    text(format!(
-                        "{} Wanderlust {} Windows Derust",
-                        t!("about.inspired_by"),
-                        t!("about.inspiration_joiner")
-                    )),
-                    text("Copyright (C) 2026 Tatsh Siow · GPL-3.0-only"),
-                    links,
-                    text(t!("about.updates").to_string()),
-                    text(t!("about.update_channel").to_string()),
-                    pick_list(
-                        UpdateChannel::ALL
-                            .into_iter()
-                            .map(|v| Choice(v, channel_label(v)))
-                            .collect::<Vec<_>>(),
-                        Some(Choice(
-                            s.general.update_channel,
-                            channel_label(s.general.update_channel)
+                let identity = widgets::settings_card(
+                    column![
+                        row![
+                            iced::widget::image(logo()).width(52).height(52),
+                            column![
+                                widgets::heading(t!("app.name").to_string(), 14),
+                                text(t!("app.description").to_string())
+                            ]
+                            .spacing(8)
+                        ]
+                        .spacing(16)
+                        .align_y(iced::Center),
+                        text(format!(
+                            "{} Wanderlust {} Windows Derust",
+                            t!("about.inspired_by"),
+                            t!("about.inspiration_joiner")
                         )),
-                        |v| Message::Channel(v.0)
-                    ),
-                    button(text(t!("about.check_for_updates").to_string()))
-                        .on_press_maybe((!self.checking).then_some(Message::Check)),
-                    text(format!(
-                        "{}: {}",
-                        t!("about.current_version"),
-                        env!("CARGO_PKG_VERSION")
-                    )),
-                    text(format!(
-                        "{}: {}",
-                        t!("about.latest_version"),
-                        self.latest.as_deref().unwrap_or("—")
-                    )),
-                    flag(
-                        "about.automatic_check_for_updates_on_startup",
-                        s.general.check_for_updates,
-                        Flag::UpdateCheck
-                    )
+                        text("Copyright (C) 2026 Tatsh Siow / GPL-3.0-only"),
+                        links
+                    ]
+                    .spacing(16),
+                );
+                let updates = widgets::settings_card(
+                    column![
+                        widgets::setting_row(
+                            "about.update_channel",
+                            row![
+                                pick_list(
+                                    UpdateChannel::ALL
+                                        .into_iter()
+                                        .map(|v| Choice(v, channel_label(v)))
+                                        .collect::<Vec<_>>(),
+                                    Some(Choice(
+                                        s.general.update_channel,
+                                        channel_label(s.general.update_channel)
+                                    )),
+                                    |v| Message::Channel(v.0)
+                                )
+                                .width(240),
+                                button(text(t!("about.check_for_updates").to_string()))
+                                    .on_press_maybe((!self.checking).then_some(Message::Check))
+                            ]
+                            .spacing(12)
+                        ),
+                        widgets::setting_row(
+                            "about.latest_version",
+                            text(self.latest.as_deref().unwrap_or("-"))
+                        ),
+                        widgets::setting_row(
+                            "about.current_version",
+                            text(env!("CARGO_PKG_VERSION"))
+                        ),
+                        widgets::setting_row(
+                            "about.automatic_check_for_updates_on_startup",
+                            widgets::switch(
+                                s.general.check_for_updates,
+                                Some(|v| Message::Flag(Flag::UpdateCheck, v))
+                            )
+                        )
+                    ]
+                    .spacing(8),
+                );
+                let mut body = column![
+                    widgets::heading(t!("nav.about").to_string(), 14),
+                    identity,
+                    widgets::heading(t!("about.updates").to_string(), 14),
+                    updates
                 ]
-                .spacing(14);
+                .spacing(12);
                 if self.latest.is_some() {
                     body = body.push(text(
                         t!(if self.download.is_some() {
@@ -491,9 +555,15 @@ impl Editor {
     }
 }
 fn color_button(color: u32) -> iced::widget::Button<'static, Message> {
-    button(text("●").color(rgb(color)).size(24))
+    button(iced::widget::Space::new())
+        .width(42)
+        .height(42)
         .on_press(Message::Accent(color))
-        .style(button::text)
+        .style(move |theme, status| {
+            let mut style = widgets::quiet(theme, status);
+            style.background = Some(rgb(color).into());
+            style
+        })
 }
 pub(super) fn rgb(color: u32) -> Color {
     Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8)
@@ -545,10 +615,13 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
                 != 0
         }
     };
-    let mut palette = if light {
-        Theme::Light.palette()
-    } else {
-        Theme::Dark.palette()
+    let mut palette = iced::theme::Palette {
+        background: rgb(if light { 0xf3f4f5 } else { 0x0f1011 }),
+        text: rgb(if light { 0x202327 } else { 0xf0f0f2 }),
+        primary: rgb(0x35bfff),
+        success: rgb(if light { 0x477d23 } else { 0xa4db61 }),
+        warning: rgb(0xe8b45b),
+        danger: rgb(0xe56d76),
     };
     // Preserve the appearance preference; Iced derives all widget colors and states.
     if let Some(accent) = if s.accent.source == AccentColorSource::Custom {

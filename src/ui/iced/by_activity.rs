@@ -1,6 +1,5 @@
-use iced::widget::{checkbox, column, row, scrollable, slider, text, text_input};
+use iced::widget::{column, row, scrollable, slider};
 use iced::{Element, Fill};
-use rust_i18n::t;
 
 use crate::config::{Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS};
 use crate::power::PowerPlan;
@@ -99,83 +98,102 @@ pub(super) fn view<'a>(
     let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
         super::widgets::plan(guid.clone(), plans, action)
     };
+    let flag = |key: &str, value, action: fn(bool) -> Message, enabled: bool| {
+        super::widgets::settings_card(super::widgets::setting_row(
+            key,
+            super::widgets::switch(value, enabled.then_some(action)),
+        ))
+    };
+    let number = |key: &str,
+                  value: String,
+                  range: std::ops::RangeInclusive<u64>,
+                  step: u64,
+                  unit: &str,
+                  action: fn(String) -> Message| {
+        super::widgets::settings_card(super::widgets::setting_row(
+            key,
+            row![
+                slider(
+                    *range.start() as u32..=*range.end() as u32,
+                    value.parse::<u32>().unwrap_or(*range.start() as u32),
+                    move |v| action(v.to_string())
+                )
+                .step(step as u32)
+                .width(180),
+                super::widgets::stepper(&value, range, step, unit, Some(action))
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        ))
+    };
     scrollable(
         column![
-            checkbox(activity.enabled)
-                .label(t!("by_activity.enable").to_string())
-                .on_toggle(Message::Enabled),
-            text(t!("by_activity.intro_1").to_string())
-                .width(Fill)
-                .style(text::secondary),
-            text(t!("common.power_plan_priority").to_string())
-                .width(Fill)
-                .style(text::secondary),
-            text(t!("common.power_plan_pause_priority").to_string())
-                .width(Fill)
-                .style(text::secondary),
-            row![
-                text(t!("by_activity.idle_plan").to_string()).width(iced::Length::FillPortion(1)),
-                plan_picker(&activity.power_plans.power_save_guid, Message::IdlePlan)
-            ]
-            .spacing(12)
-            .align_y(iced::Center),
-            row![
-                text(t!("by_activity.active_plan").to_string()).width(iced::Length::FillPortion(1)),
-                plan_picker(&activity.power_plans.performance_guid, Message::ActivePlan)
-            ]
-            .spacing(12)
-            .align_y(iced::Center),
-            checkbox(activity.input_detection.keyboard)
-                .label(t!("by_activity.keyboard_input").to_string())
-                .on_toggle_maybe(activity.enabled.then_some(Message::Keyboard)),
-            checkbox(activity.input_detection.mouse)
-                .label(t!("by_activity.mouse_input").to_string())
-                .on_toggle_maybe(activity.enabled.then_some(Message::Mouse)),
-            checkbox(activity.input_detection.controller)
-                .label(t!("by_activity.controller_input").to_string())
-                .on_toggle_maybe(activity.enabled.then_some(Message::Controller)),
-            row![
-                text(t!("by_activity.idle_timeout").to_string())
-                    .width(iced::Length::FillPortion(2)),
-                slider(1..=3600, activity.idle_timeout_seconds as u32, |v| {
-                    Message::IdleTimeout(v.to_string())
-                }),
-                text_input(
-                    "1–3600 s",
-                    &inputs
-                        .idle
-                        .clone()
-                        .unwrap_or_else(|| activity.idle_timeout_seconds.to_string())
-                )
-                .on_input(Message::IdleTimeout)
-                .width(80)
-            ]
-            .spacing(12)
-            .align_y(iced::Center),
-            row![
-                text(t!("by_activity.check_interval").to_string())
-                    .width(iced::Length::FillPortion(2)),
-                slider(
-                    CHECK_INTERVAL_MIN_MS as u32..=CHECK_INTERVAL_MAX_MS as u32,
-                    settings.general.check_interval_ms as u32,
-                    |v| Message::CheckInterval(v.to_string())
-                )
-                .step(250u32),
-                text_input(
-                    "250–60000 ms",
-                    &inputs
-                        .interval
-                        .clone()
-                        .unwrap_or_else(|| settings.general.check_interval_ms.to_string())
-                )
-                .on_input(Message::CheckInterval)
-                .width(80)
-            ]
-            .spacing(12)
-            .align_y(iced::Center),
+            flag(
+                "by_activity.enable",
+                activity.enabled,
+                Message::Enabled,
+                true
+            ),
+            super::widgets::settings_card(super::widgets::setting_row(
+                "by_activity.idle_plan",
+                iced::widget::container(plan_picker(
+                    &activity.power_plans.power_save_guid,
+                    Message::IdlePlan
+                ))
+                .width(240)
+            )),
+            super::widgets::settings_card(super::widgets::setting_row(
+                "by_activity.active_plan",
+                iced::widget::container(plan_picker(
+                    &activity.power_plans.performance_guid,
+                    Message::ActivePlan
+                ))
+                .width(240)
+            )),
+            flag(
+                "by_activity.keyboard_input",
+                activity.input_detection.keyboard,
+                Message::Keyboard,
+                activity.enabled
+            ),
+            flag(
+                "by_activity.mouse_input",
+                activity.input_detection.mouse,
+                Message::Mouse,
+                activity.enabled
+            ),
+            flag(
+                "by_activity.controller_input",
+                activity.input_detection.controller,
+                Message::Controller,
+                activity.enabled
+            ),
+            number(
+                "by_activity.idle_timeout",
+                inputs
+                    .idle
+                    .clone()
+                    .unwrap_or_else(|| activity.idle_timeout_seconds.to_string()),
+                1..=3600,
+                1,
+                "s",
+                Message::IdleTimeout
+            ),
+            number(
+                "by_activity.check_interval",
+                inputs
+                    .interval
+                    .clone()
+                    .unwrap_or_else(|| settings.general.check_interval_ms.to_string()),
+                CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS,
+                250,
+                "ms",
+                Message::CheckInterval
+            )
         ]
-        .spacing(16),
+        .spacing(8),
     )
+    .spacing(10)
     .height(Fill)
     .into()
 }

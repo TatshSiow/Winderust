@@ -215,7 +215,7 @@ pub(super) fn view<'a>(
     body = body.push(
         button(text(Page::ActionLog.label()))
             .on_press(Message::ActionLog)
-            .style(iced::widget::button::secondary),
+            .style(super::widgets::quiet),
     );
     Some(
         scrollable(container(body.width(Fill)).width(Fill).padding([0, 12]))
@@ -249,11 +249,10 @@ fn metric(label: &str, value: String) -> Element<'static, Message> {
     .into()
 }
 fn section<'a>(title: &str, body: iced::widget::Column<'a, Message>) -> Element<'a, Message> {
-    container(column![text(t!(title).to_string()).size(14), body].spacing(8))
-        .width(Fill)
-        .padding(10)
-        .style(iced::widget::container::bordered_box)
-        .into()
+    super::widgets::settings_card(
+        column![super::widgets::heading(t!(title).to_string(), 13), body].spacing(12),
+    )
+    .into()
 }
 fn log(
     label: &str,

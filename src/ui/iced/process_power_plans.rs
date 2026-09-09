@@ -21,7 +21,6 @@ pub(super) enum Message {
     Remove(usize),
     ConfirmRemove,
     Removed(String),
-    Collapse,
     CancelRemove,
 }
 
@@ -30,7 +29,6 @@ pub(super) struct Editor {
     path: String,
     removing: Option<String>,
     deleting: Option<DeletedRule>,
-    collapsed: bool,
 }
 
 enum DeletedRule {
@@ -63,7 +61,6 @@ impl Editor {
                     Message::Enabled(value) => settings.enabled = value,
                     Message::Path(path) => self.path = path,
                     Message::Browse => {}
-                    Message::Collapse => self.collapsed = !self.collapsed,
                     Message::Add => {
                         if settings.enabled && $can_add(settings, &self.path) {
                             settings.rules.push($new_rule(
@@ -130,14 +127,12 @@ impl Editor {
         motion_enabled: bool,
     ) -> Element<'a, Message> {
         macro_rules! render_rules {
-            ($field:ident, $can_add:ident, $enable:literal, $intro:literal, $variant:ident) => {{
+            ($field:ident, $can_add:ident, $enable:literal, $variant:ident) => {{
                 let settings = &settings.$field;
                 let mut body = column![
-                    checkbox(settings.enabled).label(t!($enable).to_string()).on_toggle(Message::Enabled),
-                    text(t!($intro).to_string()),
+ super::widgets::settings_card(super::widgets::setting_row($enable,super::widgets::switch(settings.enabled,Some(Message::Enabled)))),
                     text(t!("common.power_plan_priority").to_string()),
                     text(t!("common.power_plan_pause_priority").to_string()),
-                    button(text(format!("{} {}", if self.collapsed { ">" } else { "v" }, t!("common.custom")))).on_press(Message::Collapse).style(button::text),
                 ].spacing(12);
                 let mut rules_body = column![
                     row![text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
@@ -165,10 +160,10 @@ impl Editor {
                     if self.removing.as_deref() == Some(rule.executable_path.as_str()) {
                         card = card.push(row![button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove), button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)].spacing(8));
                     }
-                    cards.push((super::motion::key(&rule.executable_path), super::motion::removal(iced::widget::container(card).padding(12).width(Fill).style(iced::widget::container::rounded_box), index == usize::MAX, motion_enabled, Message::Removed(rule.executable_path.clone()))));
+                    cards.push((super::motion::key(&rule.executable_path), super::motion::removal(super::widgets::settings_card(card), index == usize::MAX, motion_enabled, Message::Removed(rule.executable_path.clone()))));
                 }
                 rules_body = rules_body.push(iced::widget::keyed_column(cards).spacing(8));
-                body = body.push(super::motion::reveal(rules_body, !self.collapsed, motion_enabled));
+                body = body.push(text(t!("common.rules").to_string()).size(16)).push(rules_body);
                 scrollable(body).spacing(10).height(Fill).into()
             }};
         }
@@ -177,14 +172,12 @@ impl Editor {
                 by_foreground,
                 can_add_foreground_process,
                 "by_foreground.enable",
-                "by_foreground.intro_1",
                 Foreground
             ),
             Kind::RunningApp => render_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
                 "by_running_app.enable",
-                "by_running_app.intro_1",
                 RunningApp
             ),
         }

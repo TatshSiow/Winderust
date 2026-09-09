@@ -11,9 +11,12 @@ build = "build.rs"
 [features]
 render-smoke = []
 
+[patch.crates-io]
+iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
+
 [dependencies]
 atomic-write-file = "0.3.0"
-chrono = "0.4.44"
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 csv = "1.4.0"
 iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "tokio", "advanced-shaping", "image-without-codecs", "svg", "canvas", "advanced"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }

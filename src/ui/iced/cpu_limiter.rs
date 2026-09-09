@@ -217,28 +217,8 @@ impl CpuLimiter {
         candidates: &[String],
         motion_enabled: bool,
     ) -> Element<'a, Message> {
-        let mut body = column![checkbox(settings.enabled)
-            .label(t!("cpu_limiter.enable").to_string())
-            .on_toggle(Message::Enabled)]
-        .spacing(16);
-        body = body
-            .push(
-                text(t!("cpu_limiter.intro_1").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
-            )
-            .push(
-                text(t!("cpu_limiter.intro_2").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
-            )
-            .push(
-                text(t!("cpu_limiter.intro_3").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
-            )
-            .push(text(t!("cpu_limiter.intro_4").to_string()))
-            .push(text(t!("cpu_limiter.intro_5").to_string()));
+        let mut body = column![].spacing(16);
+        body = body.push(text(t!("cpu_limiter.intro_4").to_string()).style(text::warning));
         if self.has_invalid_inputs() {
             body = body.push(
                 text(t!("cpu_limiter.intro_2").to_string())
@@ -246,15 +226,6 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        body = body.push(
-            button(text(format!(
-                "{} {}",
-                if self.collapsed { ">" } else { "v" },
-                t!("common.default")
-            )))
-            .on_press(Message::Collapse)
-            .style(button::text),
-        );
         let mut defaults = column![].spacing(12);
         for (tier, value) in Tier::ALL.into_iter().zip([
             settings.focus_allowed_cpu_time_percent,
@@ -269,9 +240,12 @@ impl CpuLimiter {
                 .spacing(6),
             );
         }
-        body = body.push(super::motion::reveal(
-            defaults,
+        body = body.push(super::widgets::setting_group(
+            "cpu_limiter.enable".to_string(),
             !self.collapsed,
+            Message::Collapse,
+            super::widgets::switch(settings.enabled, Some(Message::Enabled)),
+            defaults,
             motion_enabled,
         ));
         body = body
@@ -280,7 +254,7 @@ impl CpuLimiter {
                     .width(Fill)
                     .style(text::secondary),
             )
-            .push(
+            .push(super::widgets::settings_card(
                 row![
                     text_input(&t!("process_list.executable_path"), &self.path)
                         .on_input(Message::Path),
@@ -291,8 +265,9 @@ impl CpuLimiter {
                             .then_some(Message::Add)
                     ),
                 ]
-                .spacing(8),
-            );
+                .spacing(8)
+                .align_y(iced::Center),
+            ));
         let filter = self.path.to_lowercase();
         let candidates: Vec<_> = candidates
             .iter()
@@ -375,10 +350,7 @@ impl CpuLimiter {
             cards.push((
                 super::motion::key(&rule.executable_path),
                 super::motion::removal(
-                    iced::widget::container(card)
-                        .padding(12)
-                        .width(Fill)
-                        .style(iced::widget::container::rounded_box),
+                    super::widgets::settings_card(card),
                     index == usize::MAX,
                     motion_enabled,
                     Message::Removed(rule.executable_path.clone()),

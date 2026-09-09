@@ -179,21 +179,17 @@ impl Editor {
         candidates: &[String],
         motion_enabled: bool,
     ) -> Element<'a, Message> {
-        let mut body = column![
-            checkbox(s.enabled)
-                .label(t!("app_suspension.enable").to_string())
-                .on_toggle(Message::Enabled),
-            text(t!("app_suspension.intro_1").to_string())
-                .width(Fill)
-                .style(text::secondary)
-        ]
+        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+            "app_suspension.enable",
+            super::widgets::switch(s.enabled, Some(Message::Enabled))
+        )),]
         .spacing(12);
-        body = body.push(delay_row(
+        body = body.push(super::widgets::settings_card(delay_row(
             Delay::Background,
             "app_suspension.background_delay",
             s.background_delay_seconds,
             s.enabled,
-        ));
+        )));
         for (i, key, enabled, toggle, rows) in [
             (
                 0,
@@ -241,19 +237,14 @@ impl Editor {
                     |(field, label, value)| delay_row(field, label, value, s.enabled && enabled),
                 ))
                 .spacing(8);
-            body = body.push(
-                column![
-                    row![
-                        button(text(t!(key).to_string())).on_press(Message::Group(i)),
-                        checkbox(enabled)
-                            .label(t!("common.enabled").to_string())
-                            .on_toggle_maybe(s.enabled.then_some(toggle))
-                    ]
-                    .spacing(8),
-                    super::motion::reveal(controls, !self.collapsed[i], motion_enabled)
-                ]
-                .spacing(8),
-            );
+            body = body.push(super::widgets::setting_group(
+                key.to_string(),
+                !self.collapsed[i],
+                Message::Group(i),
+                super::widgets::switch(enabled, s.enabled.then_some(toggle)),
+                controls,
+                motion_enabled,
+            ));
         }
         body = body
             .push(
@@ -261,7 +252,7 @@ impl Editor {
                     .width(Fill)
                     .style(text::secondary),
             )
-            .push(
+            .push(super::widgets::settings_card(
                 row![
                     text_input(&t!("process_list.executable_path"), &self.path)
                         .on_input(Message::Path),
@@ -271,8 +262,9 @@ impl Editor {
                         (s.enabled && self.can_add(s, unavailable)).then_some(Message::Add)
                     )
                 ]
-                .spacing(8),
-            );
+                .spacing(8)
+                .align_y(iced::Center),
+            ));
         if s.enabled && !candidates.is_empty() {
             let query = self.path.to_lowercase();
             let mut choices = column![].spacing(3);
@@ -304,39 +296,22 @@ impl Editor {
             let blocked = unavailable
                 .iter()
                 .any(|p| process_setting_matches(p, &r.executable_path));
-            let mut card = column![
-                row![
-                    checkbox(r.enabled)
-                        .label(r.executable_path.clone())
-                        .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleEnabled(i, v))),
-                    text(indicator(status, &r.executable_path, blocked)),
-                    button(text(
-                        t!(if frozen {
-                            "app_suspension.thaw"
-                        } else {
-                            "app_suspension.freeze"
-                        })
-                        .to_string()
-                    ))
-                    .on_press_maybe(
-                        (frozen || (status.enabled && r.enabled && !blocked))
-                            .then_some(Message::Toggle(i))
-                    ),
-                    button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
-                ]
-                .spacing(8),
-                row![
-                    checkbox(r.audio_wake_enabled)
-                        .label(t!("app_suspension.audio").to_string())
-                        .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleAudio(i, v))),
-                    checkbox(r.network_wake_enabled)
-                        .label(t!("app_suspension.network").to_string())
-                        .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleNetwork(i, v)))
-                ]
-                .spacing(12)
+            let mut card = row![
+                checkbox(r.enabled)
+                    .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleEnabled(i, v)))
+                    .width(32),
+                text(indicator(status, &r.executable_path, blocked)).width(110),
+                text(r.executable_path.clone()).width(280),
+                checkbox(r.audio_wake_enabled)
+                    .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleAudio(i, v)))
+                    .width(40),
+                checkbox(r.network_wake_enabled)
+                    .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleNetwork(i, v)))
+                    .width(40),
             ]
-            .spacing(8);
-            for (upload, bytes, unit, label) in [
+            .spacing(12)
+            .align_y(iced::Center);
+            for (upload, bytes, unit, _label) in [
                 (
                     false,
                     r.network_download_threshold_bytes,
@@ -353,7 +328,6 @@ impl Editor {
                 let value = unit.threshold_value_from_bytes(bytes).to_string();
                 card = card.push(
                     row![
-                        text(t!(label).to_string()).width(150),
                         text_input("", &value)
                             .on_input_maybe(
                                 (s.enabled
@@ -362,7 +336,7 @@ impl Editor {
                                     && r.network_wake_enabled)
                                     .then_some(move |v| Message::Threshold(i, upload, v))
                             )
-                            .width(140),
+                            .width(65),
                         pick_list(
                             NetworkThresholdUnit::ALL.map(Unit),
                             Some(Unit(unit)),
@@ -372,10 +346,30 @@ impl Editor {
                     .spacing(8),
                 );
             }
+            card = card
+                .push(
+                    button(text(
+                        t!(if frozen {
+                            "app_suspension.thaw"
+                        } else {
+                            "app_suspension.freeze"
+                        })
+                        .to_string(),
+                    ))
+                    .on_press_maybe(
+                        (frozen || (status.enabled && r.enabled && !blocked))
+                            .then_some(Message::Toggle(i)),
+                    ),
+                )
+                .push(
+                    button(text(t!("common.remove").to_string()))
+                        .style(super::widgets::quiet)
+                        .on_press(Message::Remove(i)),
+                );
             cards.push((
                 super::motion::key(&r.executable_path),
                 super::motion::removal(
-                    card,
+                    super::widgets::settings_card(card),
                     self.removed
                         .as_ref()
                         .is_some_and(|(_, removed)| removed.executable_path == r.executable_path),
@@ -384,18 +378,40 @@ impl Editor {
                 ),
             ));
         }
-        body = body.push(iced::widget::keyed_column(cards).spacing(8));
+        body = body.push(
+            scrollable(
+                column![
+                    row![
+                        text(t!("common.active").to_string()).width(32),
+                        text(t!("common.status").to_string()).width(110),
+                        text(t!("process_list.executable_path").to_string()).width(280),
+                        text(t!("app_suspension.audio").to_string()).width(40),
+                        text(t!("app_suspension.network").to_string()).width(40),
+                        text(t!("app_suspension.download").to_string()).width(170),
+                        text(t!("app_suspension.upload").to_string()).width(170)
+                    ]
+                    .spacing(12),
+                    iced::widget::keyed_column(cards).spacing(1)
+                ]
+                .spacing(8)
+                .width(1240),
+            )
+            .direction(iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::new(),
+            )),
+        );
         if s.suspendable_apps.is_empty() {
             body = body.push(text(t!("app_suspension.no_suspendable").to_string()));
         }
         if self.removing.is_some() {
-            body = body.push(
+            body = body.push(super::widgets::settings_card(
                 row![
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8),
-            );
+                .spacing(8)
+                .align_y(iced::Center),
+            ));
         }
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
@@ -404,14 +420,20 @@ impl Editor {
     }
 }
 fn delay_row(field: Delay, label: &str, value: u64, enabled: bool) -> Element<'static, Message> {
-    row![
-        text(t!(label).to_string()).width(Fill),
-        text_input("", &value.to_string())
-            .on_input_maybe(enabled.then_some(move |v| Message::Delay(field, v)))
-            .width(130),
-        text("sec")
-    ]
-    .spacing(8)
+    let max = match field {
+        Delay::Background | Delay::ThawInterval => 86400,
+        _ => 3600,
+    };
+    super::widgets::setting_row(
+        label,
+        super::widgets::stepper(
+            &value.to_string(),
+            1..=max,
+            1,
+            "s",
+            enabled.then_some(move |v| Message::Delay(field, v)),
+        ),
+    )
     .into()
 }
 

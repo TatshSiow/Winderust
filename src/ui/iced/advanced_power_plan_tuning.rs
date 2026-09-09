@@ -301,8 +301,14 @@ impl Editor {
             .find(|p| Some(&p.0) == self.target.as_ref())
             .cloned();
         let mut body = column![
-            text(t!("processor_power.target_plan").to_string()),
-            pick_list(choices, selected, |p| Message::Plan(p.0)),
+            super::widgets::settings_card(
+                row![
+                    text(t!("processor_power.target_plan").to_string()).width(Fill),
+                    pick_list(choices, selected, |p| Message::Plan(p.0))
+                ]
+                .spacing(12)
+                .align_y(iced::Center)
+            ),
             text(
                 t!(
                     "processor_power.effective_power_mode",
@@ -357,46 +363,53 @@ impl Editor {
                     .rev()
                     .find(|p| p.1 == values.normalized())
                     .cloned();
-                let group = column![
-                    button(text(t!(title).to_string()).size(18)).on_press(Message::Group(source)),
-                    pick_list(options, selected, move |p| Message::Load(source, p.1))
-                        .placeholder(t!("common.custom").to_string())
-                ]
-                .spacing(8);
+                let action = pick_list(options, selected, move |p| Message::Load(source, p.1))
+                    .placeholder(t!("common.custom").to_string())
+                    .width(280);
                 let mut controls = column![].spacing(8);
                 for (field, label, value) in fields(values) {
                     controls = controls.push(
                         row![
-                            text(t!(label).to_string()).width(180),
-                            slider(0..=100, value, move |v| Message::Value(source, field, v)),
-                            text_input("", &value.to_string())
-                                .on_input(move |v| Message::ValueText(source, field, v))
-                                .width(65),
-                            text("%")
+                            text(t!(label).to_string()).width(Fill),
+                            slider(0..=100, value, move |v| Message::Value(source, field, v))
+                                .width(180),
+                            super::widgets::stepper(
+                                &value.to_string(),
+                                0..=100,
+                                1,
+                                "%",
+                                Some(move |v| Message::ValueText(source, field, v))
+                            )
                         ]
-                        .spacing(8),
+                        .spacing(8)
+                        .height(46)
+                        .align_y(iced::Center),
                     );
                 }
                 controls = controls.push(
                     row![
-                        text(t!("processor_power.boost_mode").to_string()).width(180),
+                        text(t!("processor_power.boost_mode").to_string()).width(Fill),
                         pick_list(
                             ProcessorBoostMode::ALL.map(BoostChoice),
                             Some(BoostChoice(values.boost_mode)),
                             move |v| Message::Boost(source, v.0)
                         )
+                        .width(280)
                     ]
                     .spacing(8),
                 );
-                body = body.push(group.push(super::motion::reveal(
-                    controls,
+                body = body.push(super::widgets::setting_group(
+                    title.to_string(),
                     !self.collapsed[source as usize],
+                    Message::Group(source),
+                    action,
+                    controls,
                     motion_enabled,
-                )));
+                ));
             }
         }
         body = body
-            .push(
+            .push(super::widgets::settings_card(
                 row![
                     button(text(t!("processor_power.refresh_values").to_string()))
                         .on_press_maybe(self.target.as_ref().map(|_| Message::Refresh)),
@@ -404,59 +417,10 @@ impl Editor {
                         (self.values.is_some() && self.dirty).then_some(Message::Apply)
                     )
                 ]
-                .spacing(8),
-            )
+                .spacing(8)
+                .align_y(iced::Center),
+            ))
             .push(text(&self.status));
-        let mut rail = column![
-            text(t!("processor_power.presets").to_string()).size(18),
-            text(t!("processor_power.built_in_presets").to_string())
-        ]
-        .spacing(8);
-        for p in BUILT_INS {
-            rail = rail.push(
-                button(text(preset_label(p)))
-                    .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p))),
-            );
-        }
-        rail = rail.push(text(t!("processor_power.custom_presets").to_string()));
-        let mut preset_rows = Vec::new();
-        let mut presets_with_removal = presets.iter().enumerate().collect::<Vec<_>>();
-        if let Some((i, preset)) = &self.removed {
-            presets_with_removal.insert((*i).min(presets_with_removal.len()), (*i, preset));
-        }
-        for (i, p) in presets_with_removal {
-            let card = row![
-                button(text(p.name.clone()))
-                    .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
-                button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
-            ]
-            .spacing(8);
-            preset_rows.push((
-                super::motion::key(&p.name),
-                super::motion::removal(
-                    card,
-                    self.removed
-                        .as_ref()
-                        .is_some_and(|(_, removed)| removed.name == p.name),
-                    motion_enabled,
-                    Message::Removed(p.name.clone()),
-                ),
-            ));
-        }
-        rail = rail.push(iced::widget::keyed_column(preset_rows).spacing(8));
-        rail = rail.push(
-            button(text(t!("processor_power.add_preset").to_string()))
-                .on_press(Message::OpenPreset(PresetTarget::Custom(None))),
-        );
-        if self.removing.is_some() {
-            rail = rail.push(
-                row![
-                    button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
-                    button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
-                ]
-                .spacing(8),
-            );
-        }
         if let Some(p) = &self.preset {
             let editable = matches!(p.target, PresetTarget::Custom(_));
             let mut form = column![text_input(&t!("processor_power.preset_name"), &p.name)
@@ -507,12 +471,66 @@ impl Editor {
                 .push(button(text(t!("common.cancel").to_string())).on_press(Message::ClosePreset));
             body = body.push(form);
         }
-        row![
-            scrollable(body).spacing(10).height(Fill).width(Fill),
-            scrollable(rail).spacing(10).height(Fill).width(270)
+        scrollable(body).spacing(10).height(Fill).width(Fill).into()
+    }
+    pub(super) fn side_panel<'a>(
+        &'a self,
+        presets: &'a [AdvancedPowerPlanTuningPreset],
+        motion_enabled: bool,
+    ) -> Element<'a, Message> {
+        let mut rail = column![
+            text(t!("processor_power.presets").to_string()).size(18),
+            text(t!("processor_power.built_in_presets").to_string())
         ]
-        .spacing(16)
-        .into()
+        .spacing(8);
+        for p in BUILT_INS {
+            rail = rail.push(
+                button(text(preset_label(p)))
+                    .width(Fill)
+                    .style(super::widgets::quiet)
+                    .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p))),
+            );
+        }
+        rail = rail.push(text(t!("processor_power.custom_presets").to_string()));
+        let mut preset_rows = Vec::new();
+        let mut presets_with_removal = presets.iter().enumerate().collect::<Vec<_>>();
+        if let Some((i, preset)) = &self.removed {
+            presets_with_removal.insert((*i).min(presets_with_removal.len()), (*i, preset));
+        }
+        for (i, p) in presets_with_removal {
+            let card = row![
+                button(text(p.name.clone()))
+                    .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
+                button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
+            ]
+            .spacing(8);
+            preset_rows.push((
+                super::motion::key(&p.name),
+                super::motion::removal(
+                    super::widgets::settings_card(card),
+                    self.removed
+                        .as_ref()
+                        .is_some_and(|(_, removed)| removed.name == p.name),
+                    motion_enabled,
+                    Message::Removed(p.name.clone()),
+                ),
+            ));
+        }
+        rail = rail.push(iced::widget::keyed_column(preset_rows).spacing(8));
+        rail = rail.push(
+            button(text(t!("processor_power.add_preset").to_string()))
+                .on_press(Message::OpenPreset(PresetTarget::Custom(None))),
+        );
+        if self.removing.is_some() {
+            rail = rail.push(
+                row![
+                    button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
+                    button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
+                ]
+                .spacing(8),
+            );
+        }
+        scrollable(rail).spacing(10).height(Fill).width(Fill).into()
     }
 }
 const BUILT_INS: [ProcessorPowerPreset; 3] = [

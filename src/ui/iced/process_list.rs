@@ -18,7 +18,9 @@ use std::{
 };
 #[path = "process_details.rs"]
 mod details;
-const ROW_HEIGHT: f32 = 34.0;
+#[path = "process_viewport.rs"]
+mod viewport;
+const ROW_HEIGHT: f32 = 52.0;
 #[derive(Debug, Clone)]
 pub(super) struct Population {
     processes: Vec<ProcessInfo>,
@@ -90,7 +92,8 @@ pub(super) enum Message {
     Frame(std::time::Instant),
     Sort(Sort),
     Column(Sort, bool),
-    Select(Selection),
+    ToggleColumns,
+    Select(usize, u64),
     Current(Result<(Selection, Vec<Value>, Option<bool>), String>),
     CloseSelection,
     Action(Action),
@@ -116,11 +119,13 @@ impl GroupTransition {
 pub(super) struct ProcessList {
     processes: Vec<ProcessInfo>,
     rows: Vec<Entry>,
+    offsets: Vec<f32>,
+    rows_revision: u64,
     samples: BTreeMap<u32, ProcessResourceSample>,
     cpu: HashMap<u32, f32>,
     icons: HashMap<PathBuf, Option<Arc<image::Handle>>>,
     search: String,
-    offset: f32,
+    offset: std::cell::Cell<f32>,
     refreshing: bool,
     error: Option<String>,
     hide_inaccessible: bool,
@@ -130,6 +135,7 @@ pub(super) struct ProcessList {
     sort: Sort,
     descending: bool,
     columns: [bool; 6],
+    show_columns: bool,
     selected: Option<Selection>,
     current: Vec<Value>,
     efficiency: Option<bool>,
@@ -140,11 +146,13 @@ impl Default for ProcessList {
         Self {
             processes: Vec::new(),
             rows: Vec::new(),
+            offsets: vec![0.0],
+            rows_revision: 0,
             samples: BTreeMap::new(),
             cpu: HashMap::new(),
             icons: HashMap::new(),
             search: String::new(),
-            offset: 0.0,
+            offset: std::cell::Cell::new(0.0),
             refreshing: false,
             error: None,
             hide_inaccessible: true,
@@ -154,6 +162,7 @@ impl Default for ProcessList {
             sort: Sort::Name,
             descending: false,
             columns: [true; 6],
+            show_columns: false,
             selected: None,
             current: Vec::new(),
             efficiency: None,
@@ -169,17 +178,18 @@ impl ProcessList {
         self.clear();
     }
     pub(super) fn clear(&mut self) {
+        self.rows_revision = self.rows_revision.wrapping_add(1);
         self.processes.clear();
         self.rows.clear();
+        self.offsets = vec![0.0];
         self.samples.clear();
         self.cpu.clear();
         self.icons.clear();
         self.expanded.clear();
         self.transitions.clear();
-        self.transitions.clear();
         self.selected = None;
         self.stopping = None;
-        self.offset = 0.0;
+        self.offset.set(0.0);
     }
     pub(super) fn update(
         &mut self,
@@ -257,14 +267,14 @@ impl ProcessList {
             }
             Message::Search(v) => {
                 self.search = v;
-                self.offset = 0.0;
+                self.offset.set(0.0);
                 self.rebuild();
                 return iced::widget::operation::scroll_to(
                     "process-list",
                     scrollable::AbsoluteOffset::<f32>::default(),
                 );
             }
-            Message::Scrolled(v) => self.offset = v,
+            Message::Scrolled(v) => self.offset.set(v),
             Message::HideInaccessible(v) => {
                 self.hide_inaccessible = v;
                 self.rebuild();
@@ -302,6 +312,8 @@ impl ProcessList {
                     .retain(|_, t| now.saturating_duration_since(t.started).as_millis() < 180);
                 if before != self.transitions.len() {
                     self.rebuild();
+                } else {
+                    self.offsets = self.row_offsets(now);
                 }
             }
             Message::Sort(sort) => {
@@ -313,8 +325,30 @@ impl ProcessList {
                 }
                 self.rebuild();
             }
+            Message::ToggleColumns => self.show_columns = !self.show_columns,
             Message::Column(column, v) => self.columns[column as usize] = v,
-            Message::Select(selection) => {
+            Message::Select(index, revision) => {
+                let Some(entry) = self
+                    .rows
+                    .get(index)
+                    .filter(|_| revision == self.rows_revision)
+                else {
+                    return Task::none();
+                };
+                let p = &self.processes[entry.indices[0]];
+                let selection = Selection {
+                    processes: entry
+                        .indices
+                        .iter()
+                        .map(|i| self.processes[*i].clone())
+                        .collect(),
+                    path: p
+                        .image_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    name: p.name.clone(),
+                };
                 self.current.clear();
                 self.efficiency = None;
                 self.selected = Some(selection.clone());
@@ -560,6 +594,7 @@ impl ProcessList {
         offsets
     }
     fn rebuild(&mut self) {
+        self.rows_revision = self.rows_revision.wrapping_add(1);
         let search = self.search.to_lowercase();
         let mut groups = BTreeMap::<String, Vec<usize>>::new();
         for (i, p) in self.processes.iter().enumerate() {
@@ -637,6 +672,7 @@ impl ProcessList {
             self.rows.push(group);
             self.rows.extend(children);
         }
+        self.offsets = self.row_offsets(std::time::Instant::now());
     }
     fn cpu_total(&self, e: &Entry) -> f32 {
         e.indices
@@ -681,10 +717,11 @@ impl ProcessList {
     ) -> Element<'a, Message> {
         let mut controls = row![
             text_input(&t!("process_list.search_placeholder"), &self.search)
-                .on_input(Message::Search),
+                .on_input(Message::Search)
+                .width(280),
             button(text(t!("settings.refresh").to_string()))
                 .on_press_maybe((!self.refreshing).then_some(Message::Refresh))
-                .style(iced::widget::button::secondary),
+                .style(super::widgets::quiet),
             checkbox(self.hide_inaccessible)
                 .label(t!("process_list.hide_inaccessible_processes").to_string())
                 .on_toggle(Message::HideInaccessible),
@@ -704,32 +741,50 @@ impl ProcessList {
                     .on_toggle(move |v| Message::Column(col, v)),
             );
         }
-        let mut body = column![controls, columns].spacing(8).height(Fill);
+        controls = controls.push(
+            button(super::navigation::glyph("icons/settings.svg"))
+                .style(super::widgets::quiet)
+                .on_press(Message::ToggleColumns),
+        );
+        let mut body = column![controls.wrap()].spacing(8).height(Fill);
+        if self.show_columns {
+            body = body.push(columns);
+        }
         if let Some(e) = &self.error {
             body = body.push(text(e));
         }
         body = body.push(responsive(move |size| {
+            let name_width = (size.width
+                - Sort::ALL
+                    .into_iter()
+                    .skip(1)
+                    .filter(|col| self.columns[*col as usize])
+                    .map(|col| column_width(col) + 8.0)
+                    .sum::<f32>()
+                - 24.0)
+                .max(230.0);
             let mut header = row![button(text(Sort::Name.label()))
                 .on_press(Message::Sort(Sort::Name))
-                .style(iced::widget::button::secondary)
-                .width(230)]
+                .style(super::widgets::quiet)
+                .width(name_width)]
             .spacing(8);
             for col in Sort::ALL.into_iter().skip(1) {
                 if self.columns[col as usize] {
                     header = header.push(
                         button(text(col.label()))
                             .on_press(Message::Sort(col))
-                            .style(iced::widget::button::secondary)
+                            .style(super::widgets::quiet)
                             .width(column_width(col)),
                     );
                 }
             }
-            let offsets = self.row_offsets(std::time::Instant::now());
-            let range = visible_range_offsets(&offsets, self.offset - ROW_HEIGHT, size.height);
+            let offsets = &self.offsets;
+            let range = visible_range_offsets(offsets, self.offset.get() - 32.0, size.height);
             let mut rows = column![
-                container(header).height(ROW_HEIGHT),
+                container(header).height(32).style(super::widgets::surface),
                 Space::new().height(offsets[range.start])
             ];
+            let mut visible_rows = Vec::with_capacity(range.len());
             for row_index in range.clone() {
                 let height = offsets[row_index + 1] - offsets[row_index];
                 if height <= 0.0 {
@@ -737,32 +792,22 @@ impl ProcessList {
                 }
                 let entry = &self.rows[row_index];
                 let p = &self.processes[entry.indices[0]];
-                let selection = Selection {
-                    processes: entry
-                        .indices
-                        .iter()
-                        .map(|i| self.processes[*i].clone())
-                        .collect(),
-                    path: p
-                        .image_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    name: p.name.clone(),
-                };
-                let mut name = row![].spacing(4);
+                let mut name = row![].spacing(8).align_y(iced::Center);
                 if entry.indices.len() > 1 {
                     name = name.push(
-                        button(text(if self.expanded.contains(&entry.key) {
-                            "-"
-                        } else {
-                            "+"
-                        }))
-                        .on_press(Message::Expand(entry.key.clone(), motion))
-                        .style(button::text),
+                        container(super::navigation::glyph(
+                            if self.expanded.contains(&entry.key) {
+                                "icons/chevron-down.svg"
+                            } else {
+                                "icons/chevron-right.svg"
+                            },
+                        ))
+                        .width(20)
+                        .height(20)
+                        .center_y(20),
                     );
                 } else {
-                    name = name.push(Space::new().width(if entry.nested { 25 } else { 4 }));
+                    name = name.push(Space::new().width(if entry.nested { 40 } else { 20 }));
                 }
                 if let Some(icon) = p
                     .image_path
@@ -771,9 +816,29 @@ impl ProcessList {
                     .and_then(Option::as_ref)
                 {
                     name = name.push(image((**icon).clone()).width(20).height(20));
+                } else {
+                    name = name.push(
+                        container(super::navigation::glyph("icons/app-window.svg"))
+                            .width(20)
+                            .height(20)
+                            .center_x(20)
+                            .center_y(20),
+                    );
                 }
                 name = name.push(text(p.name.clone()).wrapping(iced::widget::text::Wrapping::None));
-                let mut cells = row![container(name).width(230).clip(true)].spacing(8);
+                let name: Element<'_, Message> = if entry.indices.len() > 1 {
+                    button(name)
+                        .padding(0)
+                        .width(Fill)
+                        .style(super::widgets::quiet)
+                        .on_press(Message::Expand(entry.key.clone(), motion))
+                        .into()
+                } else {
+                    name.into()
+                };
+                let mut cells = row![container(name).width(name_width).clip(true)]
+                    .spacing(8)
+                    .align_y(iced::Center);
                 for col in Sort::ALL.into_iter().skip(1) {
                     if !self.columns[col as usize] {
                         continue;
@@ -841,30 +906,59 @@ impl ProcessList {
                         }
                     };
                     cells = cells.push(
-                        container(text(value).wrapping(iced::widget::text::Wrapping::None))
-                            .width(column_width(col))
-                            .clip(true),
+                        container(
+                            text(value)
+                                .wrapping(iced::widget::text::Wrapping::None)
+                                .style(if col == Sort::Status {
+                                    text::primary
+                                } else {
+                                    text::default
+                                }),
+                        )
+                        .width(column_width(col))
+                        .clip(true),
                     );
                 }
-                rows = rows.push(
-                    mouse_area(container(cells).height(height).clip(true))
-                        .on_press(Message::Select(selection.clone()))
-                        .on_right_press(Message::Select(selection)),
-                );
+                visible_rows.push((
+                    (p.id, p.creation_time, entry.nested),
+                    mouse_area(
+                        container(column![
+                            container(cells).padding([12, 8]).height(ROW_HEIGHT - 1.0),
+                            iced::widget::rule::horizontal(1)
+                        ])
+                        .height(height)
+                        .clip(true),
+                    )
+                    .on_press(Message::Select(row_index, self.rows_revision))
+                    .on_right_press(Message::Select(row_index, self.rows_revision))
+                    .into(),
+                ));
             }
+            rows = rows.push(iced::widget::keyed_column(visible_rows).width(Fill));
             rows = rows.push(
                 Space::new()
                     .height(offsets.last().copied().unwrap_or_default() - offsets[range.end]),
             );
-            scrollable(rows)
+            let table = scrollable(container(rows).width(Fill))
                 .id("process-list")
                 .height(Fill)
                 .direction(scrollable::Direction::Both {
                     vertical: scrollable::Scrollbar::default(),
                     horizontal: scrollable::Scrollbar::default(),
                 })
-                .on_scroll(|v| Message::Scrolled(v.absolute_offset().y))
-                .into()
+                .on_scroll(|v| Message::Scrolled(v.absolute_offset().y));
+            viewport::buffered(
+                container(table)
+                    .width(Fill)
+                    .height(Fill)
+                    .style(super::widgets::surface)
+                    .into(),
+                &self.offset,
+                offsets[range.start] + 32.0,
+                offsets[range.end] + 32.0,
+                range.start == 0,
+                range.end == self.rows.len(),
+            )
         }));
         if let Some(selection) = &self.selected {
             let mut pane = column![
@@ -1065,10 +1159,10 @@ fn visible_range_offsets(offsets: &[f32], offset: f32, height: f32) -> Range<usi
         .partition_point(|p| *p <= offset)
         .saturating_sub(1)
         .min(count)
-        .saturating_sub(2);
+        .saturating_sub(8);
     let end = offsets
         .partition_point(|p| *p < offset + height.max(0.0))
-        .saturating_add(3)
+        .saturating_add(9)
         .min(count);
     start..end.max(start)
 }
@@ -1121,8 +1215,8 @@ mod tests {
     #[test]
     fn virtualized_rows_bound_large_lists_and_stale_offsets() {
         assert_eq!(visible_range(0, 1000.0, 600.0), 0..0);
-        assert!(visible_range(10_000, 120_000.0, 600.0).len() <= 25);
-        assert_eq!(visible_range(3, 120_000.0, 600.0), 1..3);
+        assert!(visible_range(10_000, 120_000.0, 600.0).len() <= 42);
+        assert_eq!(visible_range(3, 120_000.0, 600.0), 0..3);
     }
     #[test]
     fn grouping_uses_exact_path_and_expands_members() {
@@ -1135,12 +1229,18 @@ mod tests {
             ..ProcessList::default()
         };
         list.rebuild();
+        assert_eq!(list.offsets, vec![0.0, ROW_HEIGHT, 2.0 * ROW_HEIGHT]);
+        let revision = list.rows_revision;
         assert_eq!(list.rows.len(), 2);
         assert_eq!(list.rows[0].indices.len(), 2);
         list.expanded.insert(list.rows[0].key.clone());
         list.rebuild();
         assert_eq!(list.rows.len(), 4);
         assert!(list.rows[1].nested);
+        assert_ne!(list.rows_revision, revision);
+        assert_eq!(list.offsets.last(), Some(&(4.0 * ROW_HEIGHT)));
+        list.clear();
+        assert_eq!(list.offsets, vec![0.0]);
     }
     #[test]
     fn group_motion_keeps_virtual_rows_bounded_and_retains_collapsing_members() {
@@ -1166,7 +1266,7 @@ mod tests {
         let offsets = list.row_offsets(started + std::time::Duration::from_millis(90));
         assert_eq!(offsets.last().copied(), Some(501.0 * ROW_HEIGHT));
         let visible = visible_range_offsets(&offsets, 0.0, 600.0);
-        assert!(visible.len() <= 25);
+        assert!(visible.len() <= 42);
         list.transitions.clear();
         list.rebuild();
         assert_eq!(list.rows.len(), 1);

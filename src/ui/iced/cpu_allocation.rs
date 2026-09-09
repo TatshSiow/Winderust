@@ -201,28 +201,34 @@ impl Editor {
         let processors = cpu_allocation::logical_processors();
         let feature = settings(s, k);
         let mut body = column![
-            checkbox(feature.enabled)
-                .label(
-                    t!(match k {
-                        Kind::Soft => "cpu_sets_soft.enable",
-                        Kind::Hard => "processor_affinity_hard.enable",
-                    })
-                    .to_string()
-                )
-                .on_toggle(Message::Enabled),
+            super::widgets::settings_card(
+                checkbox(feature.enabled)
+                    .label(
+                        t!(match k {
+                            Kind::Soft => "cpu_sets_soft.enable",
+                            Kind::Hard => "processor_affinity_hard.enable",
+                        })
+                        .to_string()
+                    )
+                    .on_toggle(Message::Enabled)
+            ),
             text(t!("cpu_allocation.rules_help").to_string())
                 .width(Fill)
                 .style(text::secondary),
-            row![
-                text_input("C:\\App\\app.exe", &self.path)
-                    .on_input(Message::Path)
-                    .width(Fill),
-                button(text(t!("common.browse_executable").to_string())).on_press(Message::Browse),
-                button(text(t!("common.add").to_string())).on_press_maybe(
-                    (feature.enabled && can_add(s, &self.path)).then_some(Message::Add)
-                )
-            ]
-            .spacing(8)
+            super::widgets::settings_card(
+                row![
+                    text_input("C:\\App\\app.exe", &self.path)
+                        .on_input(Message::Path)
+                        .width(Fill),
+                    button(text(t!("common.browse_executable").to_string()))
+                        .on_press(Message::Browse),
+                    button(text(t!("common.add").to_string())).on_press_maybe(
+                        (feature.enabled && can_add(s, &self.path)).then_some(Message::Add)
+                    )
+                ]
+                .spacing(8)
+                .align_y(iced::Center)
+            )
         ]
         .spacing(12);
         for candidate in candidates
@@ -259,7 +265,7 @@ impl Editor {
             rules.push((
                 super::motion::key(&r.executable_path),
                 super::motion::removal(
-                    rule,
+                    super::widgets::settings_card(rule),
                     self.deleting
                         .as_ref()
                         .is_some_and(|old| old.executable_path == r.executable_path),
@@ -270,14 +276,15 @@ impl Editor {
         }
         body = body.push(iced::widget::keyed_column(rules).spacing(12));
         if self.removing.is_some() {
-            body = body.push(
+            body = body.push(super::widgets::settings_card(
                 row![
                     text(t!("common.remove").to_string()),
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8),
-            );
+                .spacing(8)
+                .align_y(iced::Center),
+            ));
         }
         let mut rail = column![
             text(t!("cpu_allocation.presets").to_string()),
@@ -338,16 +345,16 @@ impl Editor {
                 button(text(t!("common.status").to_string()))
                     .on_press(Message::RailTab(false))
                     .style(if self.presets_tab {
-                        iced::widget::button::secondary
+                        super::widgets::quiet
                     } else {
-                        iced::widget::button::primary
+                        super::widgets::selected
                     }),
                 button(text(t!("cpu_allocation.presets").to_string()))
                     .on_press(Message::RailTab(true))
                     .style(if self.presets_tab {
-                        iced::widget::button::primary
+                        super::widgets::selected
                     } else {
-                        iced::widget::button::secondary
+                        super::widgets::quiet
                     })
             ]
             .spacing(8),

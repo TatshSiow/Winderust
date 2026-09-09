@@ -54,30 +54,37 @@ impl Editor {
         let start = page * ACTION_LOG_PAGE_SIZE;
         let end = (start + ACTION_LOG_PAGE_SIZE).min(count);
         let mut body = column![
-            row![
-                text(t!("action_log.feature_filter").to_string()).width(160),
-                pick_list(
-                    ActionLogFeatureFilter::ALL,
-                    Some(self.feature),
-                    Message::Feature
-                )
-            ]
-            .spacing(8),
-            row![
-                text(t!("action_log.result_filter").to_string()).width(160),
-                pick_list(
-                    ActionLogResultFilter::ALL,
-                    Some(self.result),
-                    Message::Result
-                )
-            ]
-            .spacing(8),
+            super::widgets::settings_card(
+                row![
+                    text(t!("action_log.feature_filter").to_string()).width(Fill),
+                    pick_list(
+                        ActionLogFeatureFilter::ALL,
+                        Some(self.feature),
+                        Message::Feature
+                    )
+                ]
+                .spacing(8)
+                .align_y(iced::Center)
+            ),
+            super::widgets::settings_card(
+                row![
+                    text(t!("action_log.result_filter").to_string()).width(Fill),
+                    pick_list(
+                        ActionLogResultFilter::ALL,
+                        Some(self.result),
+                        Message::Result
+                    )
+                ]
+                .spacing(8)
+                .align_y(iced::Center)
+            ),
             row![
                 button(text(t!("action_log.clear").to_string())).on_press_maybe(
                     (!entries.is_empty() || has_summaries).then_some(Message::Clear)
                 ),
                 button(text(t!("action_log.export_csv").to_string()))
                     .on_press_maybe((!entries.is_empty()).then_some(Message::Export)),
+                iced::widget::Space::new().width(Fill),
                 button(text(t!("action_log.previous").to_string()))
                     .on_press_maybe((page > 0).then_some(Message::Page(page.saturating_sub(1)))),
                 button(text(t!("action_log.next").to_string()))
@@ -98,6 +105,17 @@ impl Editor {
                 .to_string(),
             ));
         }
+        let mut entries_table = column![row![
+            text("#").width(48),
+            text(t!("action_log.time").to_string()).width(80),
+            text(t!("action_log.feature").to_string()).width(140),
+            text(t!("action_log.result").to_string()).width(90),
+            text(t!("action_log.process").to_string()).width(160),
+            text(t!("action_log.reason").to_string()).width(Fill)
+        ]
+        .spacing(8)
+        .padding(12)]
+        .spacing(0);
         for entry in entries_filtered
             .iter()
             .skip(start)
@@ -108,26 +126,57 @@ impl Editor {
                 ActionLogResult::Skipped => text::warning,
                 ActionLogResult::Failed => text::danger,
             };
-            body = body.push(
+            entries_table = entries_table.push(
                 container(
-                    column![
-                        row![
-                            text(format!("#{}", entry.sequence)).width(56),
-                            text(action_log_time_label(entry.timestamp_epoch_ms)).width(80),
-                            text(action_log_feature_label(entry.feature)).width(Fill),
-                            text(action_log_result_text(entry.result)).style(result_style)
-                        ]
-                        .spacing(8),
-                        text(action_log_process_label(entry)),
-                        text(entry.reason.clone())
+                    row![
+                        text(format!("#{}", entry.sequence)).size(12).width(48),
+                        text(action_log_time_label(entry.timestamp_epoch_ms))
+                            .size(12)
+                            .width(80),
+                        text(action_log_feature_label(entry.feature))
+                            .size(12)
+                            .width(140),
+                        text(action_log_result_text(entry.result))
+                            .size(12)
+                            .style(result_style)
+                            .width(90),
+                        container(
+                            text(action_log_process_label(entry))
+                                .size(12)
+                                .wrapping(text::Wrapping::None)
+                        )
+                        .width(160)
+                        .clip(true),
+                        iced::widget::tooltip(
+                            container(
+                                text(entry.reason.clone())
+                                    .size(12)
+                                    .wrapping(text::Wrapping::None)
+                            )
+                            .width(Fill)
+                            .clip(true),
+                            text(entry.reason.clone()),
+                            iced::widget::tooltip::Position::Top
+                        )
                     ]
-                    .spacing(6),
+                    .spacing(8)
+                    .align_y(iced::Center),
                 )
-                .padding(10)
-                .width(Fill)
-                .style(iced::widget::container::bordered_box),
+                .padding(12)
+                .width(Fill),
             );
+            entries_table = entries_table.push(iced::widget::rule::horizontal(1));
         }
+        body = body.push(
+            scrollable(
+                container(entries_table)
+                    .width(960)
+                    .style(super::widgets::surface),
+            )
+            .direction(iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::default(),
+            )),
+        );
         scrollable(body).spacing(10).height(Fill).into()
     }
 }

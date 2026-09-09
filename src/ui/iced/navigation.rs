@@ -4,8 +4,63 @@ use iced::{Element, Theme};
 use rust_i18n::t;
 use std::collections::HashSet;
 
+pub(super) fn label<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
+    use iced::widget::{container, text, tooltip};
+    tooltip(
+        container(text(page.label()).size(13).wrapping(text::Wrapping::None))
+            .width(iced::Fill)
+            .height(18)
+            .clip(true),
+        text(page.label()),
+        tooltip::Position::Right,
+    )
+    .style(container::bordered_box)
+    .into()
+}
+
+pub(super) fn page_help(page: Page) -> String {
+    let (prefix, paragraphs) = match page {
+        Page::AdaptiveEngine => ("adaptive_engine", 3),
+        Page::BackgroundEfficiency => ("background_efficiency", 3),
+        Page::MemoryTrim => ("memory_trim", 3),
+        Page::AppSuspension => ("app_suspension", 3),
+        Page::CpuLimiter => ("cpu_limiter", 5),
+        Page::ByActivity => ("by_activity", 2),
+        Page::ByCpuLoad => ("by_cpu_load", 2),
+        Page::ByForeground => ("by_foreground", 2),
+        Page::ByRunningApp => ("by_running_app", 3),
+        Page::ByTime => ("by_time", 2),
+        Page::ProcessPriority => ("process_priority", 2),
+        Page::ThreadPriority => ("thread_priority", 2),
+        Page::DynamicPriorityBoost => ("dynamic_priority_boost", 2),
+        Page::IoPriority => ("io_priority", 2),
+        Page::GpuPriority => ("gpu_priority", 3),
+        Page::MemoryPriority => ("memory_priority", 2),
+        Page::CpuSetsSoft => ("cpu_sets_soft", 2),
+        Page::ProcessorAffinityHard => ("processor_affinity_hard", 2),
+        Page::TimerResolution => ("timer_resolution", 2),
+        Page::WinderustBehaviour => ("settings", 2),
+        _ => return String::new(),
+    };
+    (1..=paragraphs)
+        .map(|index| {
+            let key = format!("{prefix}.intro_{index}");
+            t!(&key).to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 pub(super) fn icon<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
-    glyph(icon_path(page))
+    iced::widget::svg(
+        crate::ui::assets::iced_icon(icon_path(page)).expect("Every UI icon is bundled"),
+    )
+    .width(18)
+    .height(18)
+    .style(|theme: &Theme, _| iced::widget::svg::Style {
+        color: Some(theme.palette().primary),
+    })
+    .into()
 }
 
 pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message> {
@@ -355,47 +410,6 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
     matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
 }
 
-pub(super) fn description(page: Page) -> String {
-    let key = match page {
-        Page::Home => "home.intro_1",
-        Page::ByActivity => "by_activity.intro_1",
-        Page::ByCpuLoad => "by_cpu_load.intro_1",
-        Page::ByForeground => "by_foreground.intro_1",
-        Page::ByRunningApp => "by_running_app.intro_1",
-        Page::ByTime => "by_time.intro_1",
-        Page::AdvancedPowerPlanTuning => "processor_power.help",
-        Page::AdaptiveEngine => "adaptive_engine.intro_1",
-        Page::BackgroundEfficiency => "background_efficiency.intro_1",
-        Page::MemoryTrim => "memory_trim.intro_1",
-        Page::CpuLimiter => "cpu_limiter.intro_1",
-        Page::CpuSetsSoft => "cpu_sets_soft.intro_1",
-        Page::ProcessorAffinityHard => "processor_affinity_hard.intro_1",
-        Page::ProcessPriority => "process_priority.intro_1",
-        Page::ThreadPriority => "thread_priority.intro_1",
-        Page::DynamicPriorityBoost => "dynamic_priority_boost.intro_1",
-        Page::IoPriority => "io_priority.intro_1",
-        Page::GpuPriority => "gpu_priority.intro_1",
-        Page::MemoryPriority => "memory_priority.intro_1",
-        Page::AppSuspension => "app_suspension.intro_1",
-        Page::TimerResolution => "timer_resolution.intro_1",
-        Page::ActionLog => "action_log.intro_1",
-        Page::About => "about.intro_1",
-        _ => {
-            return page
-                .child_pages()
-                .map(|pages| {
-                    pages
-                        .iter()
-                        .filter(|child| **child != page)
-                        .map(|child| child.label())
-                        .collect::<Vec<_>>()
-                        .join(" / ")
-                })
-                .unwrap_or_default()
-        }
-    };
-    t!(key).to_string()
-}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -265,19 +265,15 @@ impl Editor {
         plans: &[PowerPlan],
         motion_enabled: bool,
     ) -> Element<'a, Message> {
-        let (enabled, label, intro) = match kind {
-            Kind::Time => (s.by_time.enabled, "by_time.enable", "by_time.intro_2"),
-            Kind::CpuLoad => (
-                s.by_cpu_load.enabled,
-                "by_cpu_load.enable",
-                "by_cpu_load.intro_2",
-            ),
+        let (enabled, label) = match kind {
+            Kind::Time => (s.by_time.enabled, "by_time.enable"),
+            Kind::CpuLoad => (s.by_cpu_load.enabled, "by_cpu_load.enable"),
         };
         let mut body = column![
-            checkbox(enabled)
-                .label(t!(label).to_string())
-                .on_toggle(Message::Enabled),
-            text(t!(intro).to_string()),
+            super::widgets::settings_card(super::widgets::setting_row(
+                label,
+                super::widgets::switch(enabled, Some(Message::Enabled))
+            )),
             text(t!("common.power_plan_priority").to_string()),
             text(t!("common.power_plan_pause_priority").to_string()),
             button(text(t!("common.create").to_string()))
@@ -475,7 +471,7 @@ impl Editor {
             cards.push((
                 id,
                 super::motion::removal(
-                    card,
+                    super::widgets::settings_card(card),
                     self.removed.as_ref().is_some_and(|(key, _, _)| *key == id),
                     motion_enabled,
                     Message::Removed(id),

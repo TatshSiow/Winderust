@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-09-08
+- Last refreshed: 2026-09-09
 - Primary product surfaces: Windows desktop app shell, process controls, automation settings, status dashboard, and Action Log.
 - Evidence reviewed: `.agents/memory/15-design-spec.md`, `.agents/memory/20-project-scope.md`,
   `src/application/`, `src/runtime/`, `src/control/`, `src/platform/windows/`,
@@ -110,12 +110,61 @@
 ## Iced presentation
 - Use the native Windows title bar, resize borders, and window buttons through Iced decorations. Keep close requests routed through existing unsaved-change and tray handling.
 - Status/error text and chart series use Iced semantic styles and theme palette colors.
-- Prefer Iced's built-in Light/Dark palettes, widget styles, borders, and interaction states. Do not maintain a separate Winderust style collection.
+- Use Iced's native widgets and interaction states with Winderust's neutral light/charcoal palette. Keep shared borderless card surfaces, selected navigation, and hover/press feedback in widgets.rs.
 - The existing Windows/custom accent preference changes only the primary palette color; Iced generates the remaining widget colors.
-- Use built-in primary buttons for selected navigation/tabs and primary commands, secondary buttons for secondary commands, text buttons for quiet actions, and bordered_box for setting surfaces.
+- Reserve filled primary buttons for primary commands. Use text buttons for secondary commands, subtle accent-tinted navigation/tabs, and borderless surfaces.
 - Keep application-specific layout: grouped navigation, readable page headings, compact dashboard charts, constrained form rows, status rails, and scrollbar spacing.
 - Retain bundled icons, charts, and bounded motion where standard widgets do not cover existing functionality.
 - Add custom styling only for a concrete requirement unsupported by Iced's built-ins.
 
 ## Open questions
 - None blocking implementation. Density preferences can be adjusted after reviewing native screenshots.
+
+## Kraken Desktop reference
+- User reference: https://www.kraken.com/desktop (reviewed 2026-09-08).
+- Observed in the app screenshots: compact module headers, aligned data, fine dividers, dark neutral surfaces, and selective accent color.
+- Adapt the desktop application's hierarchy, not the surrounding promotional artwork or trading workflows.
+- Use the original neutral charcoal palette in dark mode and neutral light surfaces in light mode. Preserve System/Light/Dark and the existing accent preference.
+- Page title and power-source controls share a compact toolbar; navigation uses tighter rows; dashboard charts and shortcuts form aligned modules; status groups use dividers instead of stacked nested cards.
+- Keep the native Windows frame, all feature routes, existing safety behavior, and motion preferences. No new styling framework or dependencies.
+- Reference PNGs are local review artifacts under target/design-reference/. Render checks use --features render-smoke -- --render-smoke (English/light 1120x760, Traditional Chinese/dark 900x620).
+
+## Minimal surface refinement
+- The supplied reference images emphasize color and hierarchy rather than outlined cards. Remove redundant outlines from headers, navigation, setting groups, and logs.
+- Distinguish major dashboard/navigation surfaces with a slight theme-derived tone shift. Use spacing for setting groups and fine rules only where useful for data alignment.
+- Selected navigation and tabs use a translucent accent with accent text; reserve solid accent fills for primary actions such as Save.
+- Keep standard Iced inputs, dropdowns, hover/disabled states, Windows framing, and existing functionality. Shared style functions address the requested refinement without a custom widget system.
+
+- Landing-page navigation cards and Home shortcuts use the shared borderless surface and respond across the full card on hover. Search functions through the sidebar; do not duplicate its search field on Home. The entire card is clickable; setting rows and expandable groups also use visible card surfaces.
+
+## Interaction and readability refinement
+- Use Windows Segoe UI typography for small-text readability in Iced, with 14px body text and 13px sidebar labels. Keep Iced's existing advanced shaping, system font fallback, and DPI-aware software text rendering; do not add a second renderer or claim ClearType support.
+- Combine Winderust's compact icon rows and inline feature status with Kraken's quiet neutral surfaces and selective accent. Hover changes the surface; pressing strengthens feedback without changing layout geometry.
+- Expanded navigation has a fixed 264px width. Long labels stay on one line inside clipped slots, with full labels available in native Iced tooltips. Chevron controls have a fixed width.
+- Page introductions start collapsed behind the localized How it works header action and reset when navigating. Keep warnings and validation beside their controls; landing cards retain a readable summary.
+- Native render checks also cover expanded English/Chinese help, long English navigation at minimum width, and the compact sidebar.
+
+## GPUI setting-card structure target
+The source-mapped hierarchy corrections are implemented. See [the design integrity review](docs/iced-design-integrity.md) for the original findings, corrections, and verification limits. Card surfaces alone are not evidence of parity.
+- The latest user direction supersedes the earlier flat setting-group treatment. Follow the former GPUI setting_action_card and setting_group layout from commit cab3186.
+- Each standalone setting row has a full-width, small-radius card surface. Keep labels and their controls together, with consistent padding and vertical alignment.
+- Chevrons are passive indicators inside a shared clickable row/header, never separate icon buttons. Sidebar section rows navigate to their landing page and expand; clicking the current section toggles its children.
+- Each expandable group is one enclosing card containing its full-width clickable header, state chevron, and animated body. Preserve the existing collapse state and motion preferences.
+- Use widgets::settings_card for standalone rows and widgets::setting_group for independent header actions and flat expandable bodies. Compose standard Iced containers/buttons; use Iced rounded_box styling without outlines and the existing hover styles. Do not restore GPUI dependencies or vendored code.
+- Custom rule and exclusion rows have card boundaries. Process List remains a dense table, matching the old GPUI design. Headers, explanatory text, and command bars do not need independent cards.
+
+- All card surfaces are borderless, including hover and pressed states. Use background shading and spacing to separate cards; retain native input/control boundaries.
+
+## Original layout reference — 2026-09-09
+- Reference: user-provided GPUI screenshots and `cab3186:src/ui/app/shared/page_navigation.rs`; `CONTENT_MAX_WIDTH` was 1040 pixels.
+- Center a maximum 1040-pixel workspace in the area beside the sidebar. Keep headings, forms, dashboard, and tables aligned to that frame.
+- Use 28-pixel semibold page headings with Home breadcrumbs. Retain Segoe UI and native Windows framing.
+- Home: CPU/RAM/I/O across the first row; Network and Enabled Features across the second; section shortcuts below in three columns. Narrow windows use two columns.
+- Pin Log, Settings, About, and the sidebar toggle below the scrollable main navigation.
+- Landing cards are compact, single-line navigation rows. Descriptions remain available on feature pages through How it works.
+- Process List keeps its virtualization and configurable columns, with 52-pixel rows, aligned names/icons, and internal row dividers. Action Log uses aligned table columns and hover text for truncated reasons.
+- Cards use charcoal #191b1e over #0f1011 in dark mode, white over neutral gray in light mode; keep card outlines absent.
+
+- Adaptive Engine uses numeric steppers with units and contextual help, right-aligned switches, equal-width tuning tabs, and section breadcrumbs. Its 320px desktop side panel sits outside the 1040px content frame; below 1400px it follows the editor to preserve form width.
+
+- Shared setting rows use a right-aligned On/Off switch or bounded numeric stepper. Status and tuning presets use the shell dock on desktop and a compact disclosure at narrow widths. Preserve all additional policy options below the main Adaptive Engine table. About groups identity and update controls into separate surfaces; Appearance orders Language, Accent, Theme, Animation and uses square color swatches. Unsaved settings remain in a lower-right notice.

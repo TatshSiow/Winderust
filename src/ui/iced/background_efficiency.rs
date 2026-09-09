@@ -119,43 +119,9 @@ impl Editor {
     ) -> Element<'a, Message> {
         let settings = &settings.background_efficiency;
         let enabled = settings.enabled;
-        let mut body = column![
-            checkbox(enabled)
-                .label(t!("background_efficiency.enable").to_string())
-                .on_toggle(Message::Enabled),
-            text(t!("background_efficiency.intro_1").to_string())
-                .width(Fill)
-                .style(text::secondary),
-            text(t!("background_efficiency.intro_2").to_string())
-                .width(Fill)
-                .style(text::secondary),
-            text(t!("background_efficiency.intro_3").to_string())
-                .width(Fill)
-                .style(text::secondary)
-        ]
-        .spacing(12);
-        let aggressiveness: Element<'_, Message> = if enabled {
-            pick_list(
-                BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
-                Some(Aggressiveness(settings.aggressiveness)),
-                |value| Message::Aggressiveness(value.0),
-            )
-            .into()
-        } else {
-            text(Aggressiveness(settings.aggressiveness).to_string()).into()
-        };
-        body = body
-            .push(
-                row![
-                    text(t!("background_efficiency.aggressiveness").to_string()).width(200),
-                    aggressiveness
-                ]
-                .spacing(8),
-            )
-            .push(text(
-                t!("background_efficiency.aggressiveness_help").to_string(),
-            ));
+        let mut body = column![].spacing(12);
         for (tier, detection, value) in [
+            (Tier::Background, true, settings.background_efficiency_mode),
             (
                 Tier::Focus,
                 settings.foreground_detection_enabled,
@@ -166,64 +132,63 @@ impl Editor {
                 settings.visible_window_detection_enabled,
                 settings.visible_window_efficiency_mode,
             ),
-            (Tier::Background, true, settings.background_efficiency_mode),
         ] {
             let mut group = column![].spacing(8);
-            if tier != Tier::Background {
-                let label = if tier == Tier::Focus {
-                    t!("background_efficiency.foreground_detection")
-                } else {
-                    t!("common.visible_window_detection")
-                };
-                group = group.push(
-                    checkbox(detection)
-                        .label(label.to_string())
-                        .on_toggle_maybe(
-                            enabled.then_some(move |value| Message::Detection(tier, value)),
-                        ),
-                );
+            let label = match tier {
+                Tier::Background => "background_efficiency.enable",
+                Tier::Focus => "background_efficiency.foreground_detection",
+                Tier::VisibleWindow => "common.visible_window_detection",
             }
-            group = group.push(
-                checkbox(value)
-                    .label(t!("process_list.efficiency_mode").to_string())
-                    .on_toggle_maybe(
-                        (enabled && detection)
-                            .then_some(move |value| Message::Default(tier, value)),
-                    ),
-            );
-            body = body.push(
-                container(
-                    column![
-                        button(text(format!(
-                            "{} {}",
-                            if self.collapsed[tier as usize] {
-                                ">"
-                            } else {
-                                "v"
-                            },
-                            tier.label()
-                        )))
-                        .on_press(Message::Collapse(tier))
-                        .style(button::text),
-                        super::motion::reveal(
-                            group,
-                            !self.collapsed[tier as usize],
-                            motion_enabled
-                        )
-                    ]
-                    .spacing(8),
+            .to_string();
+            let action: Element<'_, Message> = if tier == Tier::Background {
+                super::widgets::switch(enabled, Some(Message::Enabled))
+            } else {
+                super::widgets::switch(
+                    detection,
+                    enabled.then_some(move |value| Message::Detection(tier, value)),
                 )
-                .padding(12)
-                .width(Fill)
-                .style(iced::widget::container::bordered_box),
-            );
-        }
-        body = body
-            .push(text(t!("background_efficiency.custom_rules").to_string()).size(16))
-            .push(text(
-                t!("background_efficiency.custom_rules_help").to_string(),
+            };
+            let choices = [
+                super::widgets::Choice(false, t!("common.disabled").to_string()),
+                super::widgets::Choice(true, t!("common.enabled").to_string()),
+            ];
+            let selected = choices[usize::from(value)].clone();
+            group = group.push(super::widgets::setting_row(
+                "process_list.efficiency_mode",
+                pick_list(choices, Some(selected), move |v| {
+                    Message::Default(tier, if enabled && detection { v.0 } else { value })
+                })
+                .width(240),
             ));
-        body = body.push(
+            if tier == Tier::Background {
+                let aggressiveness: Element<'_, Message> = if enabled {
+                    pick_list(
+                        BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
+                        Some(Aggressiveness(settings.aggressiveness)),
+                        |value| Message::Aggressiveness(value.0),
+                    )
+                    .into()
+                } else {
+                    text(Aggressiveness(settings.aggressiveness).to_string()).into()
+                };
+                group = group.push(super::widgets::setting_row(
+                    "background_efficiency.aggressiveness",
+                    aggressiveness,
+                ));
+            }
+            body = body.push(super::widgets::setting_group(
+                label,
+                !self.collapsed[tier as usize],
+                Message::Collapse(tier),
+                action,
+                group,
+                motion_enabled,
+            ));
+        }
+        body = body.push(super::widgets::setting_title(
+            "background_efficiency.custom_rules",
+        ));
+        body = body.push(super::widgets::settings_card(
             row![
                 text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
                 button(text(t!("common.browse_executable").to_string()))
@@ -232,8 +197,9 @@ impl Editor {
                     (enabled && can_add(settings, &self.path)).then_some(Message::Add)
                 )
             ]
-            .spacing(8),
-        );
+            .spacing(8)
+            .align_y(iced::Center),
+        ));
         let filter = self.path.to_lowercase();
         let candidates: Vec<_> = candidates
             .iter()
@@ -252,18 +218,14 @@ impl Editor {
             visible_rules.insert((*index).min(visible_rules.len()), (usize::MAX, rule));
         }
         for (index, rule) in visible_rules {
-            let mut card = column![row![
+            let mut card = row![
                 checkbox(rule.enabled)
-                    .label(rule.executable_path.clone())
-                    .on_toggle_maybe(
-                        enabled.then_some(move |value| Message::RuleEnabled(index, value))
-                    ),
-                button(text(t!("common.remove").to_string())).on_press_maybe(
-                    enabled.then_some(Message::Remove(rule.executable_path.clone()))
-                )
+                    .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
+                    .width(32),
+                text(rule.executable_path.clone()).width(320),
             ]
-            .spacing(8)]
-            .spacing(8);
+            .spacing(12)
+            .align_y(iced::Center);
             for (tier, mode) in Tier::ALL.into_iter().zip([
                 rule.focus_efficiency_mode,
                 rule.visible_window_efficiency_mode,
@@ -279,8 +241,15 @@ impl Editor {
                 } else {
                     text(Mode(mode).to_string()).into()
                 };
-                card = card.push(row![text(tier.label()).width(180), control].spacing(8));
+                card = card.push(container(control).width(150));
             }
+            card = card.push(
+                button(text(t!("common.remove").to_string()))
+                    .style(super::widgets::quiet)
+                    .on_press_maybe(
+                        enabled.then_some(Message::Remove(rule.executable_path.clone())),
+                    ),
+            );
             if self.removing.as_deref() == Some(rule.executable_path.as_str()) {
                 card = card.push(
                     row![
@@ -298,14 +267,33 @@ impl Editor {
                     container(card)
                         .padding(12)
                         .width(Fill)
-                        .style(iced::widget::container::bordered_box),
+                        .style(super::widgets::surface),
                     index == usize::MAX,
                     motion_enabled,
                     Message::Removed(rule.executable_path.clone()),
                 ),
             ));
         }
-        body = body.push(iced::widget::keyed_column(rule_cards).spacing(8));
+        body = body.push(
+            scrollable(
+                column![
+                    row![
+                        text(t!("common.active").to_string()).width(32),
+                        text(t!("process_list.executable_path").to_string()).width(320),
+                        text(Tier::Focus.label()).width(150),
+                        text(Tier::VisibleWindow.label()).width(150),
+                        text(Tier::Background.label()).width(150)
+                    ]
+                    .spacing(12),
+                    iced::widget::keyed_column(rule_cards).spacing(1)
+                ]
+                .spacing(8)
+                .width(1060),
+            )
+            .direction(iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::new(),
+            )),
+        );
         if settings.custom_rules.is_empty() {
             body = body.push(text(
                 t!("background_efficiency.no_custom_rules").to_string(),

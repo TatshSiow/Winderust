@@ -8,7 +8,7 @@
 
 ## Repo Shape
 
-- Rust/Iced Windows desktop app for power/process automation, using the tiny-skia software renderer.
+- Rust/Iced Windows desktop app for power/process automation, using tiny-skia only. The user prioritizes lower memory footprint; the WGPU comparison feature has been removed.
 - Composition, messages, subscriptions, native-window lifecycle, and page dispatch: `src/ui/iced/app.rs`.
 - Page editors and views: `src/ui/iced/`; shared controls and motion: `widgets.rs` and `motion.rs`.
   UI drafts and read models remain outside `RuntimeCore`.

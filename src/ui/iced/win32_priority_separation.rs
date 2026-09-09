@@ -169,7 +169,7 @@ impl Editor {
                 .map(|bits| Choice(bits, field_label(field, bits)))
                 .collect::<Vec<_>>();
             let selected = normalize(self.value) & mask;
-            body = body.push(
+            body = body.push(super::widgets::settings_card(
                 row![
                     text(
                         {
@@ -185,8 +185,9 @@ impl Editor {
                         move |v| Message::Field(field, v.0)
                     )
                 ]
-                .spacing(8),
-            );
+                .spacing(8)
+                .align_y(iced::Center),
+            ));
             body = body.push(
                 text(
                     {
@@ -204,7 +205,7 @@ impl Editor {
                 t!("settings.win32_priority_separation_resulting_value"),
                 format_value(normalize(self.value))
             )))
-            .push(
+            .push(super::widgets::settings_card(
                 row![
                     button(text(t!("settings.refresh").to_string())).on_press(Message::Refresh),
                     button(text(t!("settings.save_backup").to_string())).on_press(Message::Backup),
@@ -212,8 +213,9 @@ impl Editor {
                         .on_press_maybe(self.backup.map(|_| Message::Restore)),
                     button(text(t!("settings.apply").to_string())).on_press(Message::Apply)
                 ]
-                .spacing(8),
-            )
+                .spacing(8)
+                .align_y(iced::Center),
+            ))
             .push(text(&self.status));
         scrollable(body).spacing(10).height(Fill).into()
     }

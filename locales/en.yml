@@ -51,6 +51,7 @@ nav:
   about: "About"
 
 common:
+  how_it_works: "How it works"
   caution: "Caution"
   danger: "Danger"
   control: "Control"
@@ -1097,6 +1098,7 @@ update_channel:
   stable: "Stable"
   pre_release: "Pre-release"
 power_plan_control:
+  automation: "Automation"
   pause_plugged: "Pause power plan switching on A/C"
 power_source:
   plugged_in: "Plugged In"

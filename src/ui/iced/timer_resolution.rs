@@ -92,19 +92,25 @@ impl Editor {
         motion_enabled: bool,
     ) -> Element<'a, Message> {
         let mut body = column![
-            checkbox(s.enabled)
-                .label(t!("timer_resolution.enable").to_string())
-                .on_toggle(Message::Enabled),
+            super::widgets::settings_card(super::widgets::setting_row(
+                "timer_resolution.enable",
+                super::widgets::switch(s.enabled, Some(Message::Enabled))
+            )),
             text(t!("timer_resolution.warning").to_string()),
-            row![
-                text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
-                button(text(t!("common.browse_executable").to_string())).on_press(Message::Browse),
-                button(text(t!("common.add").to_string())).on_press_maybe(
-                    (s.enabled && can_add_timer_resolution_process(s, &self.path))
-                        .then_some(Message::Add)
-                )
-            ]
-            .spacing(8)
+            super::widgets::settings_card(
+                row![
+                    text_input(&t!("process_list.executable_path"), &self.path)
+                        .on_input(Message::Path),
+                    button(text(t!("common.browse_executable").to_string()))
+                        .on_press(Message::Browse),
+                    button(text(t!("common.add").to_string())).on_press_maybe(
+                        (s.enabled && can_add_timer_resolution_process(s, &self.path))
+                            .then_some(Message::Add)
+                    )
+                ]
+                .spacing(8)
+                .align_y(iced::Center)
+            )
         ]
         .spacing(12);
         let matching = candidates
@@ -133,21 +139,26 @@ impl Editor {
             cards.push((
                 super::motion::key(&r.executable_path),
                 super::motion::removal(
-                    row![
-                        checkbox(r.enabled)
-                            .label(r.executable_path.clone())
-                            .on_toggle_maybe(
-                                s.enabled.then_some(move |v| Message::RuleEnabled(i, v))
-                            ),
-                        text_input(&t!("timer_resolution.requested"), &value)
-                            .on_input(move |v| Message::Resolution(i, v))
-                            .on_submit(Message::Commit(i))
-                            .width(100),
-                        text("ms"),
-                        button(text(t!("settings.apply").to_string())).on_press(Message::Commit(i)),
-                        button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
-                    ]
-                    .spacing(8),
+                    super::widgets::settings_card(
+                        row![
+                            checkbox(r.enabled)
+                                .label(r.executable_path.clone())
+                                .on_toggle_maybe(
+                                    s.enabled.then_some(move |v| Message::RuleEnabled(i, v))
+                                ),
+                            text_input(&t!("timer_resolution.requested"), &value)
+                                .on_input(move |v| Message::Resolution(i, v))
+                                .on_submit(Message::Commit(i))
+                                .width(100),
+                            text("ms"),
+                            button(text(t!("settings.apply").to_string()))
+                                .on_press(Message::Commit(i)),
+                            button(text(t!("common.remove").to_string()))
+                                .on_press(Message::Remove(i))
+                        ]
+                        .spacing(8)
+                        .align_y(iced::Center),
+                    ),
                     self.removed
                         .as_ref()
                         .is_some_and(|(_, removed)| removed.executable_path == r.executable_path),
@@ -161,13 +172,14 @@ impl Editor {
             body = body.push(text(t!("timer_resolution.no_rules").to_string()));
         }
         if self.removing.is_some() {
-            body = body.push(
+            body = body.push(super::widgets::settings_card(
                 row![
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8),
-            );
+                .spacing(8)
+                .align_y(iced::Center),
+            ));
         }
         if let Some(value) = status.requested_100ns {
             body = body.push(text(format!(
