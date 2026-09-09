@@ -85,7 +85,6 @@ common:
   save: "儲存"
   theme: "佈景主題"
   language: "語言"
-  animation: "動畫"
   unknown: "未知"
   custom: "自訂"
   status: "狀態"
@@ -141,9 +140,6 @@ theme:
   system: "跟隨系統"
   light: "淺色"
   dark: "深色"
-
-animation:
-  system: "跟隨系統"
 
 accent:
   recent_colors: "最近使用的色彩"
@@ -384,6 +380,7 @@ settings:
   save_backup: "儲存備份"
   restore_backup: "還原備份"
   action_log_mode: "動作記錄詳細程度"
+  action_log_mode_help: "選擇要記錄的新動作記錄：全部、警告與錯誤、僅錯誤，或不記錄。"
   action_log_mode_full: "完整"
   action_log_mode_full_help: "記錄所有動作記錄項目。"
   action_log_mode_warning: "警告"

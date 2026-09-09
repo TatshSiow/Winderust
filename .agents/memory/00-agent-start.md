@@ -10,7 +10,7 @@
 
 - Rust/Iced Windows desktop app for power/process automation, using tiny-skia only. The user prioritizes lower memory footprint; the WGPU comparison feature has been removed.
 - Composition, messages, subscriptions, native-window lifecycle, and page dispatch: `src/ui/iced/app.rs`.
-- Page editors and views: `src/ui/iced/`; shared controls and motion: `widgets.rs` and `motion.rs`.
+- Page editors and views: `src/ui/iced/`; shared controls: `widgets.rs`.
   UI drafts and read models remain outside `RuntimeCore`.
 - Background worker and status fan-out: `src/backend/automation.rs`.
 - Process add/check helpers: `src/ui/process_rules.rs` (`can_add_*`,
@@ -33,7 +33,7 @@
   are explicit persistent operations, not temporary managed state or crash-recovery owners.
 - Runtime feature status is one semantically stable `Arc<RuntimeFeatureStatus>` segment. Process
   catalog/list, dashboard history, update state, and shell navigation remain plain UI read models.
-  Process queries, icons, monitors, Iced subscriptions, tray, dialogs, focus, and motion remain at the
+  Process queries, icons, monitors, Iced subscriptions, tray, dialogs, and focus remain at the
   `WinderustApp` composition boundary.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
@@ -169,6 +169,6 @@
 
 ## User Constraints
 
-- Do not cut animation/motion unless explicitly asked.
+- Animations and their setting were removed at the user's request; keep UI state changes immediate until refinement is requested.
 - Lucide/icondata note: using specific lucide icons should not be removed just because `icondata_core`/`icondata_lu` look broad; verify icon references before trimming.
 - Do not restore removed legacy identifiers or files unless the user explicitly asks for compatibility work.

@@ -1,5 +1,7 @@
+use super::design;
+use super::widgets::{button, pick_list};
 use crate::application::{Win32PrioritySeparationError, Win32PrioritySeparationService};
-use iced::widget::{button, column, pick_list, row, scrollable, text};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]
@@ -153,7 +155,7 @@ impl Editor {
                     )
             ))
         ]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         for (field, key, mask, bits) in [
             (Field::Duration, "quantum_duration", 0x30, vec![0x20, 0x10]),
             (
@@ -185,7 +187,7 @@ impl Editor {
                         move |v| Message::Field(field, v.0)
                     )
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
             body = body.push(
@@ -196,7 +198,7 @@ impl Editor {
                     }
                     .to_string(),
                 )
-                .size(12),
+                .size(design::typography::CAPTION),
             );
         }
         body = body
@@ -213,11 +215,11 @@ impl Editor {
                         .on_press_maybe(self.backup.map(|_| Message::Restore)),
                     button(text(t!("settings.apply").to_string())).on_press(Message::Apply)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ))
             .push(text(&self.status));
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]

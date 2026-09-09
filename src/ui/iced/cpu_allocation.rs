@@ -1,8 +1,10 @@
+use super::design;
+use super::widgets::{button, checkbox, text_input};
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{button, checkbox, column, row, scrollable, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -58,7 +60,6 @@ impl Tier {
 pub(super) struct Editor {
     path: String,
     removing: Option<usize>,
-    deleting: Option<CpuAllocationRule>,
     preset_name: String,
     preset_mask: u64,
     editing_preset: Option<usize>,
@@ -78,7 +79,6 @@ pub(super) enum Message {
     Remove(usize),
     ConfirmRemove,
     CancelRemove,
-    Removed(String),
     NewPreset,
     EditPreset(usize),
     PresetName(String),
@@ -124,17 +124,8 @@ impl Editor {
                 if let Some(i) = self.removing.take() {
                     let rules = &mut settings_mut(s, k).rules;
                     if i < rules.len() {
-                        self.deleting = Some(rules.remove(i));
+                        rules.remove(i);
                     }
-                }
-            }
-            Message::Removed(path) => {
-                if self
-                    .deleting
-                    .as_ref()
-                    .is_some_and(|r| r.executable_path == path)
-                {
-                    self.deleting = None;
                 }
             }
             Message::CancelRemove => self.removing = None,
@@ -195,7 +186,6 @@ impl Editor {
         s: &'a Settings,
         k: Kind,
         candidates: &'a [String],
-        motion: bool,
         status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
@@ -226,11 +216,11 @@ impl Editor {
                         (feature.enabled && can_add(s, &self.path)).then_some(Message::Add)
                     )
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center)
             )
         ]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         for candidate in candidates
             .iter()
             .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()) && can_add(s, p))
@@ -244,15 +234,15 @@ impl Editor {
             body = body.push(text(t!("cpu_sets_soft.warning").to_string()));
         }
         let mut rules = Vec::new();
-        for (i, r) in feature.rules.iter().chain(self.deleting.iter()).enumerate() {
+        for (i, r) in feature.rules.iter().enumerate() {
             let mut rule = column![row![
                 checkbox(r.enabled)
                     .label(r.executable_path.clone())
                     .on_toggle(move |v| Message::RuleEnabled(i, v)),
                 button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
             ]
-            .spacing(8)]
-            .spacing(8);
+            .spacing(design::space::SMALL)]
+            .spacing(design::space::SMALL);
             for tier in [Tier::Focus, Tier::Visible, Tier::Background] {
                 let mask = tier.mask(r);
                 rule = rule.push(text(tier.label())).push(mask_selector(
@@ -263,18 +253,11 @@ impl Editor {
                 ));
             }
             rules.push((
-                super::motion::key(&r.executable_path),
-                super::motion::removal(
-                    super::widgets::settings_card(rule),
-                    self.deleting
-                        .as_ref()
-                        .is_some_and(|old| old.executable_path == r.executable_path),
-                    motion,
-                    Message::Removed(r.executable_path.clone()),
-                ),
+                super::widgets::stable_key(&r.executable_path),
+                super::widgets::settings_card(rule).into(),
             ));
         }
-        body = body.push(iced::widget::keyed_column(rules).spacing(12));
+        body = body.push(iced::widget::keyed_column(rules).spacing(super::widgets::CARD_GAP));
         if self.removing.is_some() {
             body = body.push(super::widgets::settings_card(
                 row![
@@ -282,7 +265,7 @@ impl Editor {
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         }
@@ -290,7 +273,7 @@ impl Editor {
             text(t!("cpu_allocation.presets").to_string()),
             button(text(t!("cpu_allocation.add_preset").to_string())).on_press(Message::NewPreset)
         ]
-        .spacing(8);
+        .spacing(design::space::SMALL);
         for (i, p) in s.cpu_allocation_presets.iter().enumerate() {
             rail = rail.push(button(text(p.name.clone())).on_press(Message::EditPreset(i)));
         }
@@ -321,7 +304,7 @@ impl Editor {
                         button(text(t!("common.cancel").to_string()))
                             .on_press(Message::ClosePreset)
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
             if let Some(i) = self.editing_preset {
                 rail = rail.push(
@@ -357,16 +340,13 @@ impl Editor {
                         super::widgets::quiet
                     })
             ]
-            .spacing(8),
+            .spacing(design::space::SMALL),
             rail
         ]
-        .spacing(12);
-        row![
-            scrollable(body).spacing(10).width(Fill),
-            scrollable(rail).spacing(10).width(216)
-        ]
-        .spacing(16)
-        .into()
+        .spacing(design::space::MEDIUM);
+        row![scrollable(body).width(Fill), scrollable(rail).width(216)]
+            .spacing(design::space::LARGE)
+            .into()
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {
@@ -388,7 +368,7 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
     let e =
         cpu_allocation::logical_processor_kind_mask(processors, LogicalProcessorKind::Efficiency);
     let smt = cpu_allocation::logical_processor_no_smt_mask(processors);
-    let mut presets = row![].spacing(4);
+    let mut presets = row![].spacing(design::space::TIGHT);
     for (key, m) in [
         ("cpu_allocation.all", all),
         ("cpu_allocation.p_cores", p),
@@ -405,7 +385,7 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
         presets = presets
             .push(button(text(preset.name.clone())).on_press_maybe((m != 0).then(|| message(m))));
     }
-    let mut cpus = row![].spacing(6);
+    let mut cpus = row![].spacing(design::space::CONTROL);
     for cpu in processors.iter().filter(|p| p.index < 64) {
         let bit = 1u64 << cpu.index;
         let msg = message.clone();
@@ -421,7 +401,7 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
         );
     }
     column![presets.wrap(), cpus.wrap(), text(format!("0x{mask:016X}"))]
-        .spacing(8)
+        .spacing(design::space::SMALL)
         .into()
 }
 #[cfg(test)]
@@ -448,6 +428,5 @@ mod tests {
         e.update(&mut s, Kind::Soft, Message::Remove(0));
         e.update(&mut s, Kind::Soft, Message::ConfirmRemove);
         assert!(s.cpu_sets_soft.rules.is_empty());
-        assert!(e.deleting.is_some());
     }
 }

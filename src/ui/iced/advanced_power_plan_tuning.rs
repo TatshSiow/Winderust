@@ -1,10 +1,12 @@
+use super::design;
+use super::widgets::{button, pick_list, slider, text_input};
 use crate::application::AdvancedPowerPlanTuningService;
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
     EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerPreset,
     ProcessorPowerSourceValues, ProcessorPowerValues,
 };
-use iced::widget::{button, column, pick_list, row, scrollable, slider, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -18,7 +20,6 @@ pub(super) struct Editor {
     pub(super) status: String,
     preset: Option<PresetEditor>,
     removing: Option<usize>,
-    removed: Option<(usize, AdvancedPowerPlanTuningPreset)>,
     collapsed: [bool; 2],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +63,6 @@ pub(super) enum Message {
     ClosePreset,
     Remove(usize),
     ConfirmRemove,
-    Removed(String),
     CancelRemove,
 }
 impl Editor {
@@ -74,7 +74,6 @@ impl Editor {
     pub(super) fn discard_editor(&mut self) {
         self.preset = None;
         self.removing = None;
-        self.removed = None;
     }
 
     pub(super) fn ensure_plan(&mut self, plans: &[PowerPlan]) {
@@ -274,13 +273,8 @@ impl Editor {
             Message::CancelRemove => self.removing = None,
             Message::ConfirmRemove => {
                 if let Some(i) = self.removing.take().filter(|i| *i < presets.len()) {
-                    self.removed = Some((i, presets.remove(i)));
+                    presets.remove(i);
                     self.preset = None;
-                }
-            }
-            Message::Removed(name) => {
-                if self.removed.as_ref().is_some_and(|(_, p)| p.name == name) {
-                    self.removed = None;
                 }
             }
         }
@@ -290,7 +284,6 @@ impl Editor {
         presets: &'a [AdvancedPowerPlanTuningPreset],
         plans: &[PowerPlan],
         mode: EffectivePowerMode,
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let choices = plans
             .iter()
@@ -306,7 +299,7 @@ impl Editor {
                     text(t!("processor_power.target_plan").to_string()).width(Fill),
                     pick_list(choices, selected, |p| Message::Plan(p.0))
                 ]
-                .spacing(12)
+                .spacing(design::space::MEDIUM)
                 .align_y(iced::Center)
             ),
             text(
@@ -317,7 +310,7 @@ impl Editor {
                 .to_string()
             )
         ]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         if let Some(plan) = plans.iter().find(|p| Some(&p.guid) == self.target.as_ref()) {
             if !plan.active {
                 body = body.push(text(
@@ -366,7 +359,7 @@ impl Editor {
                 let action = pick_list(options, selected, move |p| Message::Load(source, p.1))
                     .placeholder(t!("common.custom").to_string())
                     .width(280);
-                let mut controls = column![].spacing(8);
+                let mut controls = column![].spacing(design::space::SMALL);
                 for (field, label, value) in fields(values) {
                     controls = controls.push(
                         row![
@@ -381,7 +374,7 @@ impl Editor {
                                 Some(move |v| Message::ValueText(source, field, v))
                             )
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .height(46)
                         .align_y(iced::Center),
                     );
@@ -396,7 +389,7 @@ impl Editor {
                         )
                         .width(280)
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
                 body = body.push(super::widgets::setting_group(
                     title.to_string(),
@@ -404,7 +397,6 @@ impl Editor {
                     Message::Group(source),
                     action,
                     controls,
-                    motion_enabled,
                 ));
             }
         }
@@ -417,7 +409,7 @@ impl Editor {
                         (self.values.is_some() && self.dirty).then_some(Message::Apply)
                     )
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ))
             .push(text(&self.status));
@@ -425,7 +417,7 @@ impl Editor {
             let editable = matches!(p.target, PresetTarget::Custom(_));
             let mut form = column![text_input(&t!("processor_power.preset_name"), &p.name)
                 .on_input_maybe(editable.then_some(Message::PresetName))]
-            .spacing(8);
+            .spacing(design::space::SMALL);
             for (field, label, value) in fields(p.values) {
                 form = form.push(
                     row![
@@ -434,9 +426,9 @@ impl Editor {
                             .on_input_maybe(
                                 editable.then_some(move |v| Message::PresetValueText(field, v))
                             )
-                            .width(80)
+                            .width(design::NUMERIC_WIDTH)
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
             }
             form = if editable {
@@ -471,18 +463,17 @@ impl Editor {
                 .push(button(text(t!("common.cancel").to_string())).on_press(Message::ClosePreset));
             body = body.push(form);
         }
-        scrollable(body).spacing(10).height(Fill).width(Fill).into()
+        scrollable(body).height(Fill).width(Fill).into()
     }
     pub(super) fn side_panel<'a>(
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let mut rail = column![
-            text(t!("processor_power.presets").to_string()).size(18),
+            text(t!("processor_power.presets").to_string()).size(design::typography::SUBTITLE),
             text(t!("processor_power.built_in_presets").to_string())
         ]
-        .spacing(8);
+        .spacing(design::space::SMALL);
         for p in BUILT_INS {
             rail = rail.push(
                 button(text(preset_label(p)))
@@ -493,30 +484,19 @@ impl Editor {
         }
         rail = rail.push(text(t!("processor_power.custom_presets").to_string()));
         let mut preset_rows = Vec::new();
-        let mut presets_with_removal = presets.iter().enumerate().collect::<Vec<_>>();
-        if let Some((i, preset)) = &self.removed {
-            presets_with_removal.insert((*i).min(presets_with_removal.len()), (*i, preset));
-        }
-        for (i, p) in presets_with_removal {
+        for (i, p) in presets.iter().enumerate() {
             let card = row![
                 button(text(p.name.clone()))
                     .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
                 button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
             ]
-            .spacing(8);
+            .spacing(design::space::SMALL);
             preset_rows.push((
-                super::motion::key(&p.name),
-                super::motion::removal(
-                    super::widgets::settings_card(card),
-                    self.removed
-                        .as_ref()
-                        .is_some_and(|(_, removed)| removed.name == p.name),
-                    motion_enabled,
-                    Message::Removed(p.name.clone()),
-                ),
+                super::widgets::stable_key(&p.name),
+                super::widgets::settings_card(card).into(),
             ));
         }
-        rail = rail.push(iced::widget::keyed_column(preset_rows).spacing(8));
+        rail = rail.push(iced::widget::keyed_column(preset_rows).spacing(super::widgets::CARD_GAP));
         rail = rail.push(
             button(text(t!("processor_power.add_preset").to_string()))
                 .on_press(Message::OpenPreset(PresetTarget::Custom(None))),
@@ -527,10 +507,10 @@ impl Editor {
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8),
+                .spacing(design::space::SMALL),
             );
         }
-        scrollable(rail).spacing(10).height(Fill).width(Fill).into()
+        scrollable(rail).height(Fill).width(Fill).into()
     }
 }
 const BUILT_INS: [ProcessorPowerPreset; 3] = [

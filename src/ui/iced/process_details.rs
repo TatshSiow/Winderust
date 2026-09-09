@@ -1,10 +1,12 @@
+use super::super::design;
 use super::super::priority_control::{self, Kind, Tier, Value};
+use super::super::widgets::{button, checkbox, pick_list, slider};
 use super::super::{cpu_allocation, cpu_limiter};
 use crate::config::*;
 use crate::foreground::executable_path_key;
 use crate::power::PowerPlan;
 use crate::ui::process_rules::{new_cpu_limiter_rule, process_setting_matches};
-use iced::widget::{button, checkbox, column, pick_list, row, slider, text};
+use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Debug, Clone)]
@@ -269,7 +271,7 @@ pub(super) fn view<'a>(
                 .custom_rule_applies_efficiency_mode(r)
         });
     let mut body = column![
-        text(t!("process_list.open_rule_details").to_string()).size(17),
+        text(t!("process_list.open_rule_details").to_string()).size(design::typography::SUBTITLE),
         checkbox(adaptive)
             .label(t!("nav.adaptive_engine").to_string())
             .on_toggle(Message::Adaptive),
@@ -277,7 +279,7 @@ pub(super) fn view<'a>(
             .label(t!("nav.background_efficiency").to_string())
             .on_toggle(Message::Efficiency)
     ]
-    .spacing(12);
+    .spacing(design::space::MEDIUM);
     for foreground in [true, false] {
         let selected = if foreground {
             s.by_foreground
@@ -349,7 +351,7 @@ pub(super) fn view<'a>(
                         move |v| Message::Priority(kind, tier, v)
                     )
                 ]
-                .spacing(8),
+                .spacing(design::space::SMALL),
             );
         }
     }

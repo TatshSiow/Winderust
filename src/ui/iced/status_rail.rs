@@ -1,4 +1,6 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
+use super::design;
+use super::widgets::button;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
     automation::RuntimeStatusSnapshot,
@@ -6,7 +8,7 @@ use crate::{
     power::PowerPlan,
     ui::Page,
 };
-use iced::widget::{button, column, container, row, scrollable, text};
+use iced::widget::{column, container, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -86,15 +88,15 @@ pub(super) fn view<'a>(
         FeatureRunState::Unknown => "common.unknown",
     };
     let mut body = column![
-        text(t!("common.status").to_string()).size(18),
+        text(t!("common.status").to_string()).size(design::typography::SUBTITLE),
         text(t!(state_label).to_string())
-            .size(13)
+            .size(design::typography::SECONDARY)
             .style(match summary.state {
                 FeatureRunState::Running => text::success,
                 FeatureRunState::NotRunning | FeatureRunState::Unknown => text::secondary,
             })
     ]
-    .spacing(12);
+    .spacing(super::widgets::CARD_GAP);
     if power_feature.is_some() {
         let plan = runtime
             .power_plan_status
@@ -130,7 +132,7 @@ pub(super) fn view<'a>(
                     count(available.then_some(summary.skipped).flatten())
                 )
             ]
-            .spacing(6),
+            .spacing(design::space::CONTROL),
         ));
     }
     let actions = runtime
@@ -150,7 +152,7 @@ pub(super) fn view<'a>(
                     None
                 )
             ]
-            .spacing(6),
+            .spacing(design::space::CONTROL),
         ))
         .push(section(
             "common.failed_actions",
@@ -165,7 +167,7 @@ pub(super) fn view<'a>(
                     summary.last_error.as_deref()
                 )
             ]
-            .spacing(6),
+            .spacing(design::space::CONTROL),
         ));
     if page == Page::AdaptiveEngine {
         use crate::bottleneck_classifier::BottleneckState;
@@ -194,7 +196,7 @@ pub(super) fn view<'a>(
                     percent(status.busiest_gpu_tenths)
                 )
             ]
-            .spacing(6),
+            .spacing(design::space::CONTROL),
         ));
     }
     if let Some(error) = &runtime.worker_error {
@@ -218,10 +220,14 @@ pub(super) fn view<'a>(
             .style(super::widgets::quiet),
     );
     Some(
-        scrollable(container(body.width(Fill)).width(Fill).padding([0, 12]))
-            .width(Fill)
-            .height(Fill)
-            .into(),
+        scrollable(
+            container(body.width(Fill))
+                .width(Fill)
+                .padding([0, design::space::MEDIUM as u16]),
+        )
+        .width(Fill)
+        .height(Fill)
+        .into(),
     )
 }
 fn count(value: Option<usize>) -> String {
@@ -238,19 +244,23 @@ fn metric(label: &str, value: String) -> Element<'static, Message> {
     row![
         text(t!(label).to_string())
             .width(iced::Length::FillPortion(2))
-            .size(12),
+            .size(design::typography::CAPTION),
         text(value)
             .width(iced::Length::FillPortion(1))
             .align_x(iced::Right)
-            .size(13)
+            .size(design::typography::SECONDARY)
     ]
-    .spacing(8)
+    .spacing(design::space::SMALL)
     .width(Fill)
     .into()
 }
 fn section<'a>(title: &str, body: iced::widget::Column<'a, Message>) -> Element<'a, Message> {
     super::widgets::settings_card(
-        column![super::widgets::heading(t!(title).to_string(), 13), body].spacing(12),
+        column![
+            super::widgets::heading(t!(title).to_string(), design::typography::SECONDARY),
+            body
+        ]
+        .spacing(design::space::MEDIUM),
     )
     .into()
 }
@@ -271,11 +281,11 @@ fn log(
         .or_else(|| fallback.map(str::to_owned))
         .unwrap_or_else(|| t!("common.none").to_string());
     column![
-        text(t!(label).to_string()).size(12),
-        text(value).width(Fill).size(12)
+        text(t!(label).to_string()).size(design::typography::CAPTION),
+        text(value).width(Fill).size(design::typography::CAPTION)
     ]
     .width(Fill)
-    .spacing(4)
+    .spacing(design::space::TIGHT)
     .into()
 }
 fn feature_status_summary(

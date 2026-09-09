@@ -85,7 +85,6 @@ common:
   save: "Save"
   theme: "Theme"
   language: "Language"
-  animation: "Animation"
   unknown: "Unknown"
   custom: "Custom"
   status: "Status"
@@ -141,9 +140,6 @@ theme:
   system: "Follow system"
   light: "Light"
   dark: "Dark"
-
-animation:
-  system: "Follow system"
 
 accent:
   source: "Accent color"
@@ -382,6 +378,7 @@ settings:
   save_backup: "Save backup"
   restore_backup: "Restore backup"
   action_log_mode: "Log detail"
+  action_log_mode_help: "Choose which new Log entries to capture: all entries, warnings and errors, errors only, or none."
   action_log_mode_full: "Full"
   action_log_mode_full_help: "Capture all Log entries."
   action_log_mode_warning: "Warning"

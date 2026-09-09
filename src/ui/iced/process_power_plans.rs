@@ -1,5 +1,7 @@
+use super::design;
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::{config::Settings, power::PowerPlan, ui::process_rules::*};
-use iced::widget::{button, checkbox, column, pick_list, row, scrollable, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -20,7 +22,6 @@ pub(super) enum Message {
     Plan(usize, Option<String>),
     Remove(usize),
     ConfirmRemove,
-    Removed(String),
     CancelRemove,
 }
 
@@ -28,12 +29,6 @@ pub(super) enum Message {
 pub(super) struct Editor {
     path: String,
     removing: Option<String>,
-    deleting: Option<DeletedRule>,
-}
-
-enum DeletedRule {
-    Foreground(usize, crate::config::ByForegroundRule),
-    RunningApp(usize, crate::config::ByRunningAppRule),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +50,7 @@ impl Editor {
     ) {
         // Both pages have the same rule editor, but keep their distinct typed settings and policies.
         macro_rules! update_rules {
-            ($field:ident, $can_add:ident, $new_rule:ident, $variant:ident) => {{
+            ($field:ident, $can_add:ident, $new_rule:ident) => {{
                 let settings = &mut settings.$field;
                 match message {
                     Message::Enabled(value) => settings.enabled = value,
@@ -95,10 +90,17 @@ impl Editor {
                             .map(|rule| rule.executable_path.clone())
                     }
                     Message::CancelRemove => self.removing = None,
-                    Message::ConfirmRemove => if let Some(path) = self.removing.take() {
-                        if let Some(index) = settings.rules.iter().position(|rule| rule.executable_path == path) { self.deleting = Some(DeletedRule::$variant(index, settings.rules.remove(index))); }
-                    },
-                    Message::Removed(path) => if matches!(&self.deleting, Some(DeletedRule::$variant(_, rule)) if rule.executable_path == path) { self.deleting = None; },
+                    Message::ConfirmRemove => {
+                        if let Some(path) = self.removing.take() {
+                            if let Some(index) = settings
+                                .rules
+                                .iter()
+                                .position(|rule| rule.executable_path == path)
+                            {
+                                settings.rules.remove(index);
+                            }
+                        }
+                    }
                 }
             }};
         }
@@ -106,14 +108,12 @@ impl Editor {
             Kind::Foreground => update_rules!(
                 by_foreground,
                 can_add_foreground_process,
-                new_foreground_rule,
-                Foreground
+                new_foreground_rule
             ),
             Kind::RunningApp => update_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
-                new_by_running_app_rule,
-                RunningApp
+                new_by_running_app_rule
             ),
         }
     }
@@ -124,28 +124,25 @@ impl Editor {
         settings: &'a Settings,
         plans: &[PowerPlan],
         candidates: &[String],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         macro_rules! render_rules {
-            ($field:ident, $can_add:ident, $enable:literal, $variant:ident) => {{
+            ($field:ident, $can_add:ident, $enable:literal) => {{
                 let settings = &settings.$field;
                 let mut body = column![
  super::widgets::settings_card(super::widgets::setting_row($enable,super::widgets::switch(settings.enabled,Some(Message::Enabled)))),
                     text(t!("common.power_plan_priority").to_string()),
                     text(t!("common.power_plan_pause_priority").to_string()),
-                ].spacing(12);
+                ].spacing(super::widgets::CARD_GAP);
                 let mut rules_body = column![
                     row![text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
                         button(text(t!("common.browse_executable").to_string())).on_press_maybe(settings.enabled.then_some(Message::Browse)),
-                        button(text(t!("common.add").to_string())).on_press_maybe((settings.enabled && $can_add(settings, &self.path)).then_some(Message::Add))].spacing(8),
-                ].spacing(16);
+                        button(text(t!("common.add").to_string())).on_press_maybe((settings.enabled && $can_add(settings, &self.path)).then_some(Message::Add))].spacing(design::space::SMALL),
+                ].spacing(super::widgets::CARD_GAP);
                 let filter = self.path.to_lowercase();
                 let candidates: Vec<_> = candidates.iter().filter(|path| path.to_lowercase().contains(&filter) && $can_add(settings, path)).cloned().collect();
                 if settings.enabled && !candidates.is_empty() { rules_body = rules_body.push(pick_list(candidates, None::<String>, Message::Path).placeholder(t!("common.search_running_apps").to_string())); }
                 let mut cards = Vec::new();
-                let mut visible_rules: Vec<_> = settings.rules.iter().enumerate().collect();
-                if let Some(DeletedRule::$variant(index, rule)) = &self.deleting { visible_rules.insert((*index).min(visible_rules.len()), (usize::MAX,rule)); }
-                for (index, rule) in visible_rules {
+                for (index, rule) in settings.rules.iter().enumerate() {
                     let mut choices = vec![Choice(None, t!("common.none").to_string())];
                     choices.extend(plans.iter().map(|plan| Choice(Some(plan.guid.clone()), plan.display_name())));
                     let selected = choices.iter().find(|choice| choice.0 == rule.power_plan_guid).cloned().unwrap_or_else(|| Choice(rule.power_plan_guid.clone(), rule.power_plan_guid.clone().unwrap_or_default()));
@@ -153,32 +150,30 @@ impl Editor {
                     let mut card = column![
                         row![checkbox(rule.enabled).on_toggle_maybe(settings.enabled.then_some(move |value| Message::RuleEnabled(index, value))),
                             text_input(&t!("process_list.app_name"), &rule.name).on_input_maybe(settings.enabled.then_some(move |value| Message::Name(index, value))),
-                            button(text(t!("common.remove").to_string())).on_press_maybe(settings.enabled.then_some(Message::Remove(index)))].spacing(8),
+                            button(text(t!("common.remove").to_string())).on_press_maybe(settings.enabled.then_some(Message::Remove(index)))].spacing(design::space::SMALL),
                         text(&rule.executable_path),
                         selector,
-                    ].spacing(8);
+                    ].spacing(design::space::SMALL);
                     if self.removing.as_deref() == Some(rule.executable_path.as_str()) {
-                        card = card.push(row![button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove), button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)].spacing(8));
+                        card = card.push(row![button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove), button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)].spacing(design::space::SMALL));
                     }
-                    cards.push((super::motion::key(&rule.executable_path), super::motion::removal(super::widgets::settings_card(card), index == usize::MAX, motion_enabled, Message::Removed(rule.executable_path.clone()))));
+                    cards.push((super::widgets::stable_key(&rule.executable_path), super::widgets::settings_card(card).into()));
                 }
-                rules_body = rules_body.push(iced::widget::keyed_column(cards).spacing(8));
-                body = body.push(text(t!("common.rules").to_string()).size(16)).push(rules_body);
-                scrollable(body).spacing(10).height(Fill).into()
+                rules_body = rules_body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
+                body = body.push(text(t!("common.rules").to_string()).size(design::typography::SECTION)).push(rules_body);
+                scrollable(body).height(Fill).into()
             }};
         }
         match kind {
             Kind::Foreground => render_rules!(
                 by_foreground,
                 can_add_foreground_process,
-                "by_foreground.enable",
-                Foreground
+                "by_foreground.enable"
             ),
             Kind::RunningApp => render_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
-                "by_running_app.enable",
-                RunningApp
+                "by_running_app.enable"
             ),
         }
     }

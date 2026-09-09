@@ -1,16 +1,17 @@
+use super::design;
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
     can_add_app_suspension_process, new_app_suspension_rule, process_setting_matches,
 };
-use iced::widget::{button, checkbox, column, pick_list, row, scrollable, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
     removing: Option<usize>,
-    removed: Option<(usize, crate::config::AppSuspensionRule)>,
     collapsed: [bool; 3],
 }
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +41,6 @@ pub(super) enum Message {
     Toggle(usize),
     Remove(usize),
     ConfirmRemove,
-    Removed(String),
     CancelRemove,
 }
 impl Editor {
@@ -60,7 +60,6 @@ impl Editor {
             }
             Message::Path(v) => self.path = v,
             Message::Add if s.enabled && self.can_add(s, unavailable) => {
-                self.removed = None;
                 s.suspendable_apps.push(new_app_suspension_rule(&self.path));
                 self.path.clear();
             }
@@ -148,16 +147,7 @@ impl Editor {
                     .take()
                     .filter(|i| *i < s.suspendable_apps.len())
                 {
-                    self.removed = Some((i, s.suspendable_apps.remove(i)));
-                }
-            }
-            Message::Removed(path) => {
-                if self
-                    .removed
-                    .as_ref()
-                    .is_some_and(|(_, r)| r.executable_path == path)
-                {
-                    self.removed = None;
+                    s.suspendable_apps.remove(i);
                 }
             }
 
@@ -177,13 +167,12 @@ impl Editor {
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
         candidates: &[String],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
             "app_suspension.enable",
             super::widgets::switch(s.enabled, Some(Message::Enabled))
         )),]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         body = body.push(super::widgets::settings_card(delay_row(
             Delay::Background,
             "app_suspension.background_delay",
@@ -236,14 +225,13 @@ impl Editor {
                 iced::widget::Column::with_children(rows.into_iter().map(
                     |(field, label, value)| delay_row(field, label, value, s.enabled && enabled),
                 ))
-                .spacing(8);
+                .spacing(design::space::SMALL);
             body = body.push(super::widgets::setting_group(
                 key.to_string(),
                 !self.collapsed[i],
                 Message::Group(i),
                 super::widgets::switch(enabled, s.enabled.then_some(toggle)),
                 controls,
-                motion_enabled,
             ));
         }
         body = body
@@ -262,12 +250,12 @@ impl Editor {
                         (s.enabled && self.can_add(s, unavailable)).then_some(Message::Add)
                     )
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         if s.enabled && !candidates.is_empty() {
             let query = self.path.to_lowercase();
-            let mut choices = column![].spacing(3);
+            let mut choices = column![].spacing(design::space::TIGHT);
             for path in candidates
                 .iter()
                 .filter(|p| p.to_lowercase().contains(&query))
@@ -286,11 +274,7 @@ impl Editor {
             body = body.push(scrollable(choices).height(130));
         }
         let mut cards = Vec::new();
-        let mut rules = s.suspendable_apps.iter().enumerate().collect::<Vec<_>>();
-        if let Some((i, rule)) = &self.removed {
-            rules.insert((*i).min(rules.len()), (*i, rule));
-        }
-        for (i, r) in rules {
+        for (i, r) in s.suspendable_apps.iter().enumerate() {
             let frozen =
                 app_suspension::contains_process(&status.suspended_apps, &r.executable_path);
             let blocked = unavailable
@@ -309,7 +293,7 @@ impl Editor {
                     .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleNetwork(i, v)))
                     .width(40),
             ]
-            .spacing(12)
+            .spacing(design::space::MEDIUM)
             .align_y(iced::Center);
             for (upload, bytes, unit, _label) in [
                 (
@@ -343,7 +327,7 @@ impl Editor {
                             move |v| Message::Unit(i, upload, v.0)
                         )
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
             }
             card = card
@@ -367,15 +351,8 @@ impl Editor {
                         .on_press(Message::Remove(i)),
                 );
             cards.push((
-                super::motion::key(&r.executable_path),
-                super::motion::removal(
-                    super::widgets::settings_card(card),
-                    self.removed
-                        .as_ref()
-                        .is_some_and(|(_, removed)| removed.executable_path == r.executable_path),
-                    motion_enabled,
-                    Message::Removed(r.executable_path.clone()),
-                ),
+                super::widgets::stable_key(&r.executable_path),
+                super::widgets::settings_card(card).into(),
             ));
         }
         body = body.push(
@@ -390,10 +367,10 @@ impl Editor {
                         text(t!("app_suspension.download").to_string()).width(170),
                         text(t!("app_suspension.upload").to_string()).width(170)
                     ]
-                    .spacing(12),
-                    iced::widget::keyed_column(cards).spacing(1)
+                    .spacing(design::space::MEDIUM),
+                    iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .width(1240),
             )
             .direction(iced::widget::scrollable::Direction::Horizontal(
@@ -409,14 +386,14 @@ impl Editor {
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         }
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 fn delay_row(field: Delay, label: &str, value: u64, enabled: bool) -> Element<'static, Message> {

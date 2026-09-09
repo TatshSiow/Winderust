@@ -1,12 +1,13 @@
+use super::design;
 use super::priority_control::{Kind, Value};
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
 use crate::config::*;
 use crate::foreground::{
     self, ProcessActionTarget, ProcessActionTargetError, ProcessInfo, ProcessResourceSample,
 };
 use iced::widget::{
-    button, checkbox, column, container, image, mouse_area, pick_list, responsive, row, scrollable,
-    text, text_input, Space,
+    column, container, image, mouse_area, responsive, row, scrollable, text, Space,
 };
 use iced::{Element, Fill, Task};
 use rust_i18n::t;
@@ -88,8 +89,7 @@ pub(super) enum Message {
     Scrolled(f32),
     HideInaccessible(bool),
     Group(bool),
-    Expand(String, bool),
-    Frame(std::time::Instant),
+    Expand(String),
     Sort(Sort),
     Column(Sort, bool),
     ToggleColumns,
@@ -105,17 +105,7 @@ pub(super) enum Message {
     OpenLocation,
     Details(details::Message),
 }
-struct GroupTransition {
-    from: f32,
-    to: f32,
-    started: std::time::Instant,
-}
-impl GroupTransition {
-    fn progress(&self, now: std::time::Instant) -> f32 {
-        let t = (now.saturating_duration_since(self.started).as_secs_f32() / 0.18).clamp(0.0, 1.0);
-        self.from + (self.to - self.from) * t * t * (3.0 - 2.0 * t)
-    }
-}
+
 pub(super) struct ProcessList {
     processes: Vec<ProcessInfo>,
     rows: Vec<Entry>,
@@ -131,7 +121,6 @@ pub(super) struct ProcessList {
     hide_inaccessible: bool,
     grouped: bool,
     expanded: HashSet<String>,
-    transitions: HashMap<String, GroupTransition>,
     sort: Sort,
     descending: bool,
     columns: [bool; 6],
@@ -158,7 +147,6 @@ impl Default for ProcessList {
             hide_inaccessible: true,
             grouped: true,
             expanded: HashSet::new(),
-            transitions: HashMap::new(),
             sort: Sort::Name,
             descending: false,
             columns: [true; 6],
@@ -186,7 +174,6 @@ impl ProcessList {
         self.cpu.clear();
         self.icons.clear();
         self.expanded.clear();
-        self.transitions.clear();
         self.selected = None;
         self.stopping = None;
         self.offset.set(0.0);
@@ -283,38 +270,11 @@ impl ProcessList {
                 self.grouped = v;
                 self.rebuild();
             }
-            Message::Expand(key, motion) => {
-                let now = std::time::Instant::now();
-                let from = self.group_progress(&key, now);
-                let expanded = if self.expanded.remove(&key) {
-                    false
-                } else {
-                    self.expanded.insert(key.clone());
-                    true
-                };
-                if motion {
-                    self.transitions.insert(
-                        key,
-                        GroupTransition {
-                            from,
-                            to: if expanded { 1.0 } else { 0.0 },
-                            started: now,
-                        },
-                    );
-                } else {
-                    self.transitions.remove(&key);
+            Message::Expand(key) => {
+                if !self.expanded.remove(&key) {
+                    self.expanded.insert(key);
                 }
                 self.rebuild();
-            }
-            Message::Frame(now) => {
-                let before = self.transitions.len();
-                self.transitions
-                    .retain(|_, t| now.saturating_duration_since(t.started).as_millis() < 180);
-                if before != self.transitions.len() {
-                    self.rebuild();
-                } else {
-                    self.offsets = self.row_offsets(now);
-                }
             }
             Message::Sort(sort) => {
                 if self.sort == sort {
@@ -560,38 +520,10 @@ impl ProcessList {
             }
         }
     }
-    pub(super) fn animating(&self) -> bool {
-        !self.transitions.is_empty()
-    }
-    fn group_progress(&self, key: &str, now: std::time::Instant) -> f32 {
-        self.transitions
-            .get(key)
-            .map(|t| t.progress(now))
-            .unwrap_or_else(|| {
-                if self.expanded.contains(key) {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-    }
-    fn row_offsets(&self, now: std::time::Instant) -> Vec<f32> {
-        let mut offsets = Vec::with_capacity(self.rows.len() + 1);
-        offsets.push(0.0);
-        let mut remaining = 0.0f32;
-        for entry in &self.rows {
-            let height = if entry.nested {
-                let height = remaining.clamp(0.0, ROW_HEIGHT);
-                remaining = (remaining - ROW_HEIGHT).max(0.0);
-                height
-            } else {
-                remaining =
-                    entry.indices.len() as f32 * ROW_HEIGHT * self.group_progress(&entry.key, now);
-                ROW_HEIGHT
-            };
-            offsets.push(offsets.last().copied().unwrap_or_default() + height);
-        }
-        offsets
+    fn row_offsets(&self) -> Vec<f32> {
+        (0..=self.rows.len())
+            .map(|i| i as f32 * ROW_HEIGHT)
+            .collect()
     }
     fn rebuild(&mut self) {
         self.rows_revision = self.rows_revision.wrapping_add(1);
@@ -654,9 +586,7 @@ impl ProcessList {
         });
         self.rows.clear();
         for group in groups {
-            let children = if group.indices.len() > 1
-                && (self.expanded.contains(&group.key) || self.transitions.contains_key(&group.key))
-            {
+            let children = if group.indices.len() > 1 && self.expanded.contains(&group.key) {
                 group
                     .indices
                     .iter()
@@ -672,7 +602,7 @@ impl ProcessList {
             self.rows.push(group);
             self.rows.extend(children);
         }
-        self.offsets = self.row_offsets(std::time::Instant::now());
+        self.offsets = self.row_offsets();
     }
     fn cpu_total(&self, e: &Entry) -> f32 {
         e.indices
@@ -713,7 +643,6 @@ impl ProcessList {
         settings: &'a Settings,
         status: &'a RuntimeStatusSnapshot,
         plans: &'a [crate::power::PowerPlan],
-        motion: bool,
     ) -> Element<'a, Message> {
         let mut controls = row![
             text_input(&t!("process_list.search_placeholder"), &self.search)
@@ -729,11 +658,11 @@ impl ProcessList {
                 .label(t!("process_list.app_name").to_string())
                 .on_toggle(Message::Group)
         ]
-        .spacing(8);
+        .spacing(design::space::SMALL);
         controls = controls.push(text(
             t!("process_list.count", count = self.processes.len()).to_string(),
         ));
-        let mut columns = row![].spacing(8);
+        let mut columns = row![].spacing(design::space::SMALL);
         for col in Sort::ALL.into_iter().skip(1) {
             columns = columns.push(
                 checkbox(self.columns[col as usize])
@@ -746,7 +675,9 @@ impl ProcessList {
                 .style(super::widgets::quiet)
                 .on_press(Message::ToggleColumns),
         );
-        let mut body = column![controls.wrap()].spacing(8).height(Fill);
+        let mut body = column![controls.wrap()]
+            .spacing(design::space::SMALL)
+            .height(Fill);
         if self.show_columns {
             body = body.push(columns);
         }
@@ -767,7 +698,7 @@ impl ProcessList {
                 .on_press(Message::Sort(Sort::Name))
                 .style(super::widgets::quiet)
                 .width(name_width)]
-            .spacing(8);
+            .spacing(design::space::SMALL);
             for col in Sort::ALL.into_iter().skip(1) {
                 if self.columns[col as usize] {
                     header = header.push(
@@ -792,7 +723,7 @@ impl ProcessList {
                 }
                 let entry = &self.rows[row_index];
                 let p = &self.processes[entry.indices[0]];
-                let mut name = row![].spacing(8).align_y(iced::Center);
+                let mut name = row![].spacing(design::space::SMALL).align_y(iced::Center);
                 if entry.indices.len() > 1 {
                     name = name.push(
                         container(super::navigation::glyph(
@@ -831,13 +762,13 @@ impl ProcessList {
                         .padding(0)
                         .width(Fill)
                         .style(super::widgets::quiet)
-                        .on_press(Message::Expand(entry.key.clone(), motion))
+                        .on_press(Message::Expand(entry.key.clone()))
                         .into()
                 } else {
                     name.into()
                 };
                 let mut cells = row![container(name).width(name_width).clip(true)]
-                    .spacing(8)
+                    .spacing(design::space::SMALL)
                     .align_y(iced::Center);
                 for col in Sort::ALL.into_iter().skip(1) {
                     if !self.columns[col as usize] {
@@ -923,7 +854,12 @@ impl ProcessList {
                     (p.id, p.creation_time, entry.nested),
                     mouse_area(
                         container(column![
-                            container(cells).padding([12, 8]).height(ROW_HEIGHT - 1.0),
+                            container(cells)
+                                .padding([
+                                    design::space::MEDIUM as u16,
+                                    design::space::SMALL as u16
+                                ])
+                                .height(ROW_HEIGHT - 1.0),
                             iced::widget::rule::horizontal(1)
                         ])
                         .height(height)
@@ -963,13 +899,13 @@ impl ProcessList {
         if let Some(selection) = &self.selected {
             let mut pane = column![
                 row![
-                    text(&selection.name).size(18),
+                    text(&selection.name).size(design::typography::SUBTITLE),
                     button(text(t!("common.done").to_string())).on_press(Message::CloseSelection)
                 ]
-                .spacing(8),
+                .spacing(design::space::SMALL),
                 text(&selection.path)
             ]
-            .spacing(10);
+            .spacing(design::space::COMPACT);
             let eligible = selection.processes.iter().any(|p| !inaccessible(p));
             let suspendable = selection.processes.iter().any(|p| {
                 !inaccessible(p)
@@ -984,7 +920,7 @@ impl ProcessList {
                     button(text(t!("process_list.stop_process_tree").to_string()))
                         .on_press_maybe(eligible.then_some(Message::Stop(true)))
                 ]
-                .spacing(4),
+                .spacing(design::space::TIGHT),
             );
             pane = pane.push(
                 row![
@@ -995,7 +931,7 @@ impl ProcessList {
                         suspendable.then_some(Message::Action(Action::Suspend(false)))
                     )
                 ]
-                .spacing(4),
+                .spacing(design::space::TIGHT),
             );
             pane = pane.push(
                 row![
@@ -1015,7 +951,7 @@ impl ProcessList {
                         eligible.then_some(Message::Action(Action::Efficiency(false)))
                     )
                 ]
-                .spacing(4),
+                .spacing(design::space::TIGHT),
             );
             for kind in [
                 Kind::Process,
@@ -1050,7 +986,10 @@ impl ProcessList {
                     )
                     .into()
                 };
-                pane = pane.push(row![text(t!(&key).to_string()).width(Fill), control].spacing(8));
+                pane = pane.push(
+                    row![text(t!(&key).to_string()).width(Fill), control]
+                        .spacing(design::space::SMALL),
+                );
             }
             pane = pane.push(
                 button(text(t!("process_list.open_process_location").to_string()))
@@ -1080,11 +1019,11 @@ impl ProcessList {
                             button(text(t!("common.cancel").to_string()))
                                 .on_press(Message::CancelStop)
                         ]
-                        .spacing(8),
+                        .spacing(design::space::SMALL),
                     );
             }
             return row![body.width(Fill), scrollable(pane).width(380)]
-                .spacing(12)
+                .spacing(design::space::MEDIUM)
                 .into();
         }
         body.into()
@@ -1243,7 +1182,7 @@ mod tests {
         assert_eq!(list.offsets, vec![0.0]);
     }
     #[test]
-    fn group_motion_keeps_virtual_rows_bounded_and_retains_collapsing_members() {
+    fn expanded_groups_keep_virtual_rows_bounded_and_collapse_immediately() {
         let mut list = ProcessList {
             processes: (10..1010)
                 .map(|id| process(id, u64::from(id), r"C:\A\app.exe"))
@@ -1252,24 +1191,14 @@ mod tests {
         };
         list.rebuild();
         let key = list.rows[0].key.clone();
-        let started = std::time::Instant::now();
-        list.transitions.insert(
-            key,
-            GroupTransition {
-                from: 1.0,
-                to: 0.0,
-                started,
-            },
-        );
+        list.expanded.insert(key.clone());
         list.rebuild();
         assert_eq!(list.rows.len(), 1001);
-        let offsets = list.row_offsets(started + std::time::Duration::from_millis(90));
-        assert_eq!(offsets.last().copied(), Some(501.0 * ROW_HEIGHT));
-        let visible = visible_range_offsets(&offsets, 0.0, 600.0);
-        assert!(visible.len() <= 42);
-        list.transitions.clear();
+        assert!(visible_range_offsets(&list.offsets, 0.0, 600.0).len() <= 42);
+        list.expanded.remove(&key);
         list.rebuild();
         assert_eq!(list.rows.len(), 1);
+        assert_eq!(list.offsets, vec![0.0, ROW_HEIGHT]);
     }
     #[test]
     fn selected_targets_retain_creation_time_across_refresh() {

@@ -1,6 +1,8 @@
+use super::design;
+use super::widgets::{button, pick_list};
 use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
 use chrono::{Local, TimeZone};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text};
+use iced::widget::{column, container, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -63,7 +65,7 @@ impl Editor {
                         Message::Feature
                     )
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center)
             ),
             super::widgets::settings_card(
@@ -75,7 +77,7 @@ impl Editor {
                         Message::Result
                     )
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center)
             ),
             row![
@@ -90,11 +92,11 @@ impl Editor {
                 button(text(t!("action_log.next").to_string()))
                     .on_press_maybe((page + 1 < pages).then_some(Message::Page(page + 1)))
             ]
-            .spacing(8),
-            text(t!("action_log.recent_entries").to_string()).size(18),
+            .spacing(design::space::SMALL),
+            text(t!("action_log.recent_entries").to_string()).size(design::typography::SUBTITLE),
             text(action_log_pagination_label(count, page, pages, start, end)),
         ]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         if count == 0 {
             body = body.push(text(
                 if entries.is_empty() {
@@ -113,8 +115,8 @@ impl Editor {
             text(t!("action_log.process").to_string()).width(160),
             text(t!("action_log.reason").to_string()).width(Fill)
         ]
-        .spacing(8)
-        .padding(12)]
+        .spacing(design::space::SMALL)
+        .padding(design::space::MEDIUM as u16)]
         .spacing(0);
         for entry in entries_filtered
             .iter()
@@ -129,20 +131,22 @@ impl Editor {
             entries_table = entries_table.push(
                 container(
                     row![
-                        text(format!("#{}", entry.sequence)).size(12).width(48),
+                        text(format!("#{}", entry.sequence))
+                            .size(design::typography::CAPTION)
+                            .width(48),
                         text(action_log_time_label(entry.timestamp_epoch_ms))
-                            .size(12)
+                            .size(design::typography::CAPTION)
                             .width(80),
                         text(action_log_feature_label(entry.feature))
-                            .size(12)
+                            .size(design::typography::CAPTION)
                             .width(140),
                         text(action_log_result_text(entry.result))
-                            .size(12)
+                            .size(design::typography::CAPTION)
                             .style(result_style)
                             .width(90),
                         container(
                             text(action_log_process_label(entry))
-                                .size(12)
+                                .size(design::typography::CAPTION)
                                 .wrapping(text::Wrapping::None)
                         )
                         .width(160)
@@ -150,7 +154,7 @@ impl Editor {
                         iced::widget::tooltip(
                             container(
                                 text(entry.reason.clone())
-                                    .size(12)
+                                    .size(design::typography::CAPTION)
                                     .wrapping(text::Wrapping::None)
                             )
                             .width(Fill)
@@ -159,10 +163,10 @@ impl Editor {
                             iced::widget::tooltip::Position::Top
                         )
                     ]
-                    .spacing(8)
+                    .spacing(design::space::SMALL)
                     .align_y(iced::Center),
                 )
-                .padding(12)
+                .padding(design::space::MEDIUM as u16)
                 .width(Fill),
             );
             entries_table = entries_table.push(iced::widget::rule::horizontal(1));
@@ -177,7 +181,7 @@ impl Editor {
                 iced::widget::scrollable::Scrollbar::default(),
             )),
         );
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {

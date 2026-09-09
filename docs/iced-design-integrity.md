@@ -51,13 +51,13 @@ Old paths below are relative to `src/ui/app/` at `cab3186`; current paths are re
 4. Keep child rows flat inside their parent surface. Standalone cards and removable rule cards retain their own boundaries.
 5. Check the live and preset variants separately, including read-only presets and live-only custom rules.
 6. Verify expanded and collapsed states, English and Traditional Chinese, both themes, and minimum window size. Exercise controls in populated rule lists as well as empty states.
-7. Preserve current Windows framing, font rendering, safe runtime behavior, hover feedback, and animation preferences.
+7. Preserve current Windows framing, font rendering, safe runtime behavior, and hover feedback.
 
 The prior passing tests and page renders establish compilation and rendering coverage. They do not establish hierarchy parity: the render harness does not compare the control tree with GPUI, and its ordinary page sweep cannot expose missing tabs or groups that were never constructed.
 
 ## Corrections implemented
 
-- `widgets::setting_group` composes one card with one clickable header and a passive chevron, a persistent header action, and an animated child body. Native Iced delivers events to header controls first and stops propagation when they capture the event, so changing a switch or preset does not collapse the group.
+- `widgets::setting_group` composes one card with one clickable header and a passive chevron, a persistent header action, and an immediately toggled child body. Native Iced delivers events to header controls first and stops propagation when they capture the event, so changing a switch or preset does not collapse the group.
 - Priority Control and Background Efficiency now render master/background, Foreground Detection, and Visible Window Detection in that order. Their defaults and preserve options belong to the corresponding parent; aggressiveness belongs to Background Efficiency’s master card.
 - CPU Limiter’s enable switch and default limits share one expandable master card. Warnings and rules remain outside.
 - Memory Trim restores Thresholds (load and working set), When to Trim (idle time), and Safety (exclusion picker and rules). Its three collapse states are independent.
@@ -71,3 +71,13 @@ Two state tests cover live/preset tab isolation, rejection of preset Custom Rule
 
 The native render harness now covers 81 page/state combinations, including both locales/themes, minimum-size windows, Adaptive Engine tuning tabs, editable and read-only preset views, collapsed groups, and populated rule lists. These captures verify rendering; they do not constitute native mouse interaction testing or pixel-for-pixel GPUI equivalence. Native computer-use automation was unavailable in this session.
 
+
+Card spacing: use widgets::CARD_GAP (8 px) between sibling cards, including dashboard grids, rule lists, and status cards. Keep control spacing and padding inside cards separate.
+
+Scrollbars use Iced's default overlay behavior. Do not call `Scrollable::spacing` or `Scrollbar::spacing`: those embed the scrollbar and change the content width when overflow appears. Set spacing on the content rows/columns instead.
+
+Navigation sections use `navigation::section`, which inserts the child column only when expanded and nonempty. An empty column still creates inter-child spacing in Iced; leaf pages must not gain a gap after their first visit.
+
+Shared controls: use `widgets::settings_card` and `setting_row` for settings, `card_button` for navigation cards, `checkbox` and `switch` for binary controls, and `stepper` for numeric steppers. Import `button`, `text_input`, `pick_list`, and `slider` from `widgets`, not directly from Iced. These constructors return native Iced widgets, retaining event handling and semantic styles.
+
+Change shared typography, spacing, control measurements, radii, shell widths, and the base palette in `src/ui/iced/design.rs`. Change component composition and interaction styles in `widgets.rs`. Pages select shared spacing/type roles instead of literal values. Content-specific table columns, chart geometry, numeric bounds, and responsive data calculations stay local; they are not interchangeable control sizes. Windows/user accent selection remains in the appearance settings adapter.

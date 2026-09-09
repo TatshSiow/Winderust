@@ -1,14 +1,15 @@
+use super::design;
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::config::TimerResolutionSettings;
 use crate::timer_resolution::TimerResolutionSnapshot;
 use crate::ui::process_rules::{can_add_timer_resolution_process, new_timer_resolution_rule};
-use iced::widget::{button, checkbox, column, pick_list, row, scrollable, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
     removing: Option<usize>,
-    removed: Option<(usize, crate::config::TimerResolutionRule)>,
     editing: Option<(usize, String)>,
 }
 #[derive(Debug, Clone)]
@@ -21,7 +22,6 @@ pub(super) enum Message {
     Commit(usize),
     Remove(usize),
     ConfirmRemove,
-    Removed(String),
     CancelRemove,
     Browse,
 }
@@ -36,7 +36,6 @@ impl Editor {
             Message::Enabled(v) => s.enabled = v,
             Message::Path(v) => self.path = v,
             Message::Add if s.enabled && can_add_timer_resolution_process(s, &self.path) => {
-                self.removed = None;
                 s.rules
                     .push(new_timer_resolution_rule(&self.path, s.desired_100ns));
                 self.path.clear();
@@ -68,16 +67,7 @@ impl Editor {
             Message::CancelRemove => self.removing = None,
             Message::ConfirmRemove => {
                 if let Some(i) = self.removing.take().filter(|i| *i < s.rules.len()) {
-                    self.removed = Some((i, s.rules.remove(i)));
-                }
-            }
-            Message::Removed(path) => {
-                if self
-                    .removed
-                    .as_ref()
-                    .is_some_and(|(_, r)| r.executable_path == path)
-                {
-                    self.removed = None;
+                    s.rules.remove(i);
                 }
             }
 
@@ -89,7 +79,6 @@ impl Editor {
         s: &'a TimerResolutionSettings,
         status: &TimerResolutionSnapshot,
         candidates: &[String],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let mut body = column![
             super::widgets::settings_card(super::widgets::setting_row(
@@ -108,11 +97,11 @@ impl Editor {
                             .then_some(Message::Add)
                     )
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center)
             )
         ]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         let matching = candidates
             .iter()
             .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()))
@@ -125,11 +114,7 @@ impl Editor {
             );
         }
         let mut cards = Vec::new();
-        let mut rules = s.rules.iter().enumerate().collect::<Vec<_>>();
-        if let Some((i, rule)) = &self.removed {
-            rules.insert((*i).min(rules.len()), (*i, rule));
-        }
-        for (i, r) in rules {
+        for (i, r) in s.rules.iter().enumerate() {
             let value = self
                 .editing
                 .as_ref()
@@ -137,37 +122,29 @@ impl Editor {
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| format!("{}", f64::from(r.desired_100ns) / 10_000.0));
             cards.push((
-                super::motion::key(&r.executable_path),
-                super::motion::removal(
-                    super::widgets::settings_card(
-                        row![
-                            checkbox(r.enabled)
-                                .label(r.executable_path.clone())
-                                .on_toggle_maybe(
-                                    s.enabled.then_some(move |v| Message::RuleEnabled(i, v))
-                                ),
-                            text_input(&t!("timer_resolution.requested"), &value)
-                                .on_input(move |v| Message::Resolution(i, v))
-                                .on_submit(Message::Commit(i))
-                                .width(100),
-                            text("ms"),
-                            button(text(t!("settings.apply").to_string()))
-                                .on_press(Message::Commit(i)),
-                            button(text(t!("common.remove").to_string()))
-                                .on_press(Message::Remove(i))
-                        ]
-                        .spacing(8)
-                        .align_y(iced::Center),
-                    ),
-                    self.removed
-                        .as_ref()
-                        .is_some_and(|(_, removed)| removed.executable_path == r.executable_path),
-                    motion_enabled,
-                    Message::Removed(r.executable_path.clone()),
-                ),
+                super::widgets::stable_key(&r.executable_path),
+                super::widgets::settings_card(
+                    row![
+                        checkbox(r.enabled)
+                            .label(r.executable_path.clone())
+                            .on_toggle_maybe(
+                                s.enabled.then_some(move |v| Message::RuleEnabled(i, v))
+                            ),
+                        text_input(&t!("timer_resolution.requested"), &value)
+                            .on_input(move |v| Message::Resolution(i, v))
+                            .on_submit(Message::Commit(i))
+                            .width(100),
+                        text("ms"),
+                        button(text(t!("settings.apply").to_string())).on_press(Message::Commit(i)),
+                        button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                )
+                .into(),
             ));
         }
-        body = body.push(iced::widget::keyed_column(cards).spacing(8));
+        body = body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
         if s.rules.is_empty() {
             body = body.push(text(t!("timer_resolution.no_rules").to_string()));
         }
@@ -177,7 +154,7 @@ impl Editor {
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         }
@@ -191,7 +168,7 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 fn parse_resolution(value: &str, min: u32, max: u32) -> Option<u32> {

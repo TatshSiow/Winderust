@@ -1,4 +1,6 @@
+use super::design;
 use super::navigation::dashboard_sections_in_nav_order;
+use super::widgets::button;
 use crate::automation::RuntimeFeatureStatus;
 use crate::backend::dashboard_metrics::{
     sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot, NetworkUsageMonitor,
@@ -7,7 +9,7 @@ use crate::backend::dashboard_metrics::{
 use crate::config::Settings;
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::ui::Page;
-use iced::widget::{button, canvas, column, container, responsive, row, scrollable, text};
+use iced::widget::{canvas, column, container, responsive, row, scrollable, text};
 use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
 use std::collections::VecDeque;
@@ -111,10 +113,17 @@ impl Model {
     ) -> Element<'a, Message> {
         responsive(move |size| {
             let wide = size.width >= 760.0;
-            let mut body =
-                column![super::widgets::heading(t!("home.home").to_string(), 14)].spacing(8);
+            let mut body = column![super::widgets::heading(
+                t!("home.home").to_string(),
+                design::typography::BODY
+            )]
+            .spacing(super::widgets::CARD_GAP);
             let mut enabled = column![row![
-                super::widgets::heading(t!("home.enabled_features").to_string(), 14).width(Fill),
+                super::widgets::heading(
+                    t!("home.enabled_features").to_string(),
+                    design::typography::BODY
+                )
+                .width(Fill),
                 text(
                     if settings.general.enabled {
                         t!("home.master_switch_enabled")
@@ -123,11 +132,11 @@ impl Model {
                     }
                     .to_string()
                 )
-                .size(12)
+                .size(design::typography::CAPTION)
                 .style(text::success)
             ]
-            .spacing(8)]
-            .spacing(12);
+            .spacing(design::space::SMALL)]
+            .spacing(design::space::MEDIUM);
             let mut count = 0;
             for (page, active, detail) in enabled_features(settings, status, &self.latest) {
                 if active {
@@ -139,11 +148,11 @@ impl Model {
                                 text(page.label()).width(Fill),
                                 text(detail)
                             ]
-                            .spacing(8)
+                            .spacing(design::space::SMALL)
                             .align_y(iced::Center),
                         )
                         .width(Fill)
-                        .padding(8)
+                        .padding(design::space::SMALL as u16)
                         .style(super::widgets::quiet)
                         .on_press(Message::Navigate(page)),
                     );
@@ -154,7 +163,7 @@ impl Model {
                     .push(text(t!("home.no_enabled_features").to_string()).style(text::secondary));
             }
             let enabled = container(enabled)
-                .padding(14)
+                .padding(design::space::CHART_INSET as u16)
                 .height(196)
                 .width(Fill)
                 .style(super::widgets::surface);
@@ -166,14 +175,14 @@ impl Model {
                             self.chart_card(ChartKind::Memory, self.chart(ChartKind::Memory)),
                             self.chart_card(ChartKind::Io, self.chart(ChartKind::Io))
                         ]
-                        .spacing(8),
+                        .spacing(super::widgets::CARD_GAP),
                     )
                     .push(
                         row![
                             self.chart_card(ChartKind::Network, self.chart(ChartKind::Network)),
                             enabled
                         ]
-                        .spacing(8),
+                        .spacing(super::widgets::CARD_GAP),
                     );
             } else {
                 body = body
@@ -182,48 +191,42 @@ impl Model {
                             self.chart_card(ChartKind::Cpu, self.chart(ChartKind::Cpu)),
                             self.chart_card(ChartKind::Memory, self.chart(ChartKind::Memory))
                         ]
-                        .spacing(8),
+                        .spacing(super::widgets::CARD_GAP),
                     )
                     .push(
                         row![
                             self.chart_card(ChartKind::Io, self.chart(ChartKind::Io)),
                             self.chart_card(ChartKind::Network, self.chart(ChartKind::Network))
                         ]
-                        .spacing(8),
+                        .spacing(super::widgets::CARD_GAP),
                     )
                     .push(enabled);
             }
             body = body.push(super::widgets::heading(
                 t!("home.main_sections").to_string(),
-                14,
+                design::typography::BODY,
             ));
             let sections =
                 dashboard_sections_in_nav_order(settings.advanced.show_advanced_controls);
             for group in sections.chunks(if wide { 3 } else { 2 }) {
-                let mut shortcuts = row![].spacing(8);
+                let mut shortcuts = row![].spacing(super::widgets::CARD_GAP);
                 for section in group {
                     shortcuts = shortcuts.push(
-                        button(
-                            row![
-                                super::navigation::icon(section.landing_page),
-                                super::widgets::heading(section.landing_page.label(), 14)
-                                    .width(Fill),
-                                super::navigation::glyph("icons/chevron-right.svg")
-                            ]
-                            .spacing(16)
-                            .height(Fill)
-                            .align_y(iced::Center),
-                        )
-                        .height(58)
-                        .padding([12, 20])
-                        .width(Fill)
-                        .style(super::widgets::card)
+                        super::widgets::card_button(row![
+                            super::navigation::icon(section.landing_page),
+                            super::widgets::heading(
+                                section.landing_page.label(),
+                                design::typography::BODY
+                            )
+                            .width(Fill),
+                            super::navigation::glyph("icons/chevron-right.svg")
+                        ])
                         .on_press(Message::Navigate(section.landing_page)),
                     );
                 }
                 body = body.push(shortcuts);
             }
-            scrollable(body).spacing(10).height(Fill).into()
+            scrollable(body).height(Fill).into()
         })
         .into()
     }
@@ -268,10 +271,11 @@ impl Model {
         container(
             column![
                 row![
-                    super::widgets::heading(title.to_string(), 14).width(Fill),
-                    super::widgets::heading(total, 14)
+                    super::widgets::heading(title.to_string(), design::typography::BODY)
+                        .width(Fill),
+                    super::widgets::heading(total, design::typography::BODY)
                 ]
-                .spacing(8),
+                .spacing(design::space::SMALL),
                 row![
                     text(format!("{first}: {first_value}"))
                         .style(text::primary)
@@ -280,12 +284,12 @@ impl Model {
                         .style(text::primary)
                         .width(Fill)
                 ]
-                .spacing(8),
+                .spacing(design::space::SMALL),
                 canvas(chart).width(Fill).height(110)
             ]
-            .spacing(8),
+            .spacing(design::space::SMALL),
         )
-        .padding(14)
+        .padding(design::space::CHART_INSET as u16)
         .height(196)
         .width(Fill)
         .style(super::widgets::surface)

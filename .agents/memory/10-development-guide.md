@@ -138,8 +138,7 @@ and the corrected commit must be the tagged source.
 - `src/ui/iced/app.rs`: `WinderustApp` composition, message dispatch, subscriptions,
   native window/tray lifecycle, settings publication, and teardown. Runtime work remains
   in typed commands and services; UI drafts do not belong in `RuntimeCore`.
-- `src/ui/iced/`: page editors and views; `widgets.rs` and `motion.rs` supply shared controls
-  and transitions, `status_rail.rs` presents runtime status, and `navigation.rs` maps pages
+- `src/ui/iced/`: page editors and views; `widgets.rs` supplies shared controls, `status_rail.rs` presents runtime status, and `navigation.rs` maps pages
   to bundled icons. `process_list.rs` owns table sorting, grouping, and pending actions.
 - `src/ui/process_rules.rs`: shared process eligibility and rule-construction helpers.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
@@ -310,12 +309,12 @@ Process-control features must keep these defaults:
 ## UI Rules
 
 - Keep controls compact and operational.
-- Use existing Iced widgets and local `widgets.rs` / `motion.rs` helpers before adding new UI primitives.
+- Use existing Iced widgets and local `widgets.rs` helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
 - Keep `src/ui/iced/app.rs` for composition, messages, native integration, and teardown.
-  Put complete page editors and views in sibling modules and reuse `widgets.rs` and
-  `motion.rs` for shared behavior. Do not introduce another UI framework.
+  Put complete page editors and views in sibling modules and reuse `widgets.rs`
+  for shared behavior. Do not introduce another UI framework.
 - Multiple focused `impl WinderustApp` blocks are acceptable for the private UI
   module. Keep glob imports contained there; use explicit imports when a module
   gains independent ownership or its dependencies become unclear, not as

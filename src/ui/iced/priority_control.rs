@@ -1,8 +1,8 @@
+use super::design;
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::config::*;
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
-};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -11,7 +11,6 @@ use std::path::Path;
 pub(super) struct Editor {
     path: String,
     removing: Option<(Kind, String)>,
-    deleting: Option<(Kind, usize, ProcessExclusionRule)>,
     collapsed: [[bool; 3]; 6],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +64,6 @@ pub(super) enum Message {
     RuleValue(usize, Tier, Value),
     Remove(String),
     ConfirmRemove,
-    Removed(String),
     Collapse(Tier),
     CancelRemove,
 }
@@ -324,15 +322,8 @@ impl Editor {
                     let rules = target.rules_mut(settings);
                     if let Some(index) = rules.iter().position(|rule| rule.executable_path == path)
                     {
-                        self.deleting = Some((target, index, rules.remove(index)));
+                        rules.remove(index);
                     }
-                }
-            }
-            Message::Removed(path) => {
-                if self.deleting.as_ref().is_some_and(|(target, _, rule)| {
-                    *target == kind && rule.executable_path == path
-                }) {
-                    self.deleting = None;
                 }
             }
             Message::RuleEnabled(index, value) => {
@@ -550,15 +541,14 @@ impl Editor {
         settings: &'a Settings,
         kind: Kind,
         candidates: &[String],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let key = kind.key();
         let enabled = kind.enabled(settings);
         let choices = kind.choices(settings.advanced.expose_all_priority_values);
-        let mut body = column![].spacing(12);
+        let mut body = column![].spacing(super::widgets::CARD_GAP);
         for tier in [Tier::Background, Tier::Focus, Tier::VisibleWindow] {
             let detection = kind.detection(settings, tier);
-            let mut group = column![].spacing(8);
+            let mut group = column![].spacing(design::space::SMALL);
             let label = match tier {
                 Tier::Background => format!("{key}.enable"),
                 Tier::Focus => format!("{key}.foreground_detection"),
@@ -584,7 +574,7 @@ impl Editor {
             };
             group = group.push(super::widgets::setting_row(
                 "common.default",
-                iced::widget::container(control).width(240),
+                iced::widget::container(control).width(design::SELECT_WIDTH),
             ));
             if let Some(preserve) = kind.preserve(settings, tier) {
                 let label = match tier {
@@ -602,11 +592,10 @@ impl Editor {
                 Message::Collapse(tier),
                 action,
                 group,
-                motion_enabled,
             ));
         }
         body = body
-            .push(text(localized(key, "exclusions")).size(16))
+            .push(text(localized(key, "exclusions")).size(design::typography::SECTION))
             .push(text(localized(key, "exclusions_help")));
         body = body.push(super::widgets::settings_card(
             row![
@@ -617,7 +606,7 @@ impl Editor {
                     (enabled && kind.can_add(settings, &self.path)).then_some(Message::Add)
                 )
             ]
-            .spacing(8)
+            .spacing(design::space::SMALL)
             .align_y(iced::Center),
         ));
         let filter = self.path.to_lowercase();
@@ -633,13 +622,7 @@ impl Editor {
             );
         }
         let mut rule_cards = Vec::new();
-        let mut visible_rules: Vec<_> = kind.rules(settings).iter().enumerate().collect();
-        if let Some((target, index, rule)) = &self.deleting {
-            if *target == kind {
-                visible_rules.insert((*index).min(visible_rules.len()), (usize::MAX, rule));
-            }
-        }
-        for (index, rule) in visible_rules {
+        for (index, rule) in kind.rules(settings).iter().enumerate() {
             let mut card = column![row![
                 checkbox(rule.enabled)
                     .label(rule.executable_path.clone())
@@ -650,8 +633,8 @@ impl Editor {
                     enabled.then_some(Message::Remove(rule.executable_path.clone()))
                 )
             ]
-            .spacing(8)]
-            .spacing(8);
+            .spacing(design::space::SMALL)]
+            .spacing(design::space::SMALL);
             for tier in Tier::ALL {
                 let control: Element<'_, Message> = if enabled {
                     pick_list(
@@ -663,7 +646,9 @@ impl Editor {
                 } else {
                     text(kind.rule_value(rule, tier).to_string()).into()
                 };
-                card = card.push(row![text(tier.label()).width(180), control].spacing(8));
+                card = card.push(
+                    row![text(tier.label()).width(180), control].spacing(design::space::SMALL),
+                );
             }
             if self
                 .removing
@@ -677,27 +662,19 @@ impl Editor {
                         button(text(t!("common.cancel").to_string()))
                             .on_press(Message::CancelRemove)
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
             }
             rule_cards.push((
-                super::motion::key(&rule.executable_path),
-                super::motion::removal(
-                    container(card)
-                        .padding(12)
-                        .width(Fill)
-                        .style(super::widgets::surface),
-                    index == usize::MAX,
-                    motion_enabled,
-                    Message::Removed(rule.executable_path.clone()),
-                ),
+                super::widgets::stable_key(&rule.executable_path),
+                super::widgets::settings_card(card).into(),
             ));
         }
-        body = body.push(iced::widget::keyed_column(rule_cards).spacing(8));
+        body = body.push(iced::widget::keyed_column(rule_cards).spacing(super::widgets::CARD_GAP));
         if kind.rules(settings).is_empty() {
             body = body.push(text(localized(key, "no_exclusions")));
         }
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 pub(super) fn process_priority_setting_label(priority: ProcessPrioritySetting) -> String {
@@ -989,13 +966,6 @@ mod tests {
         );
         editor.update(&mut settings, Kind::Process, Message::ConfirmRemove);
         assert!(settings.process_priority.exclusions.is_empty());
-        assert!(editor.deleting.is_some());
-        editor.update(
-            &mut settings,
-            Kind::Process,
-            Message::Removed(settings_path()),
-        );
-        assert!(editor.deleting.is_none());
     }
     fn settings_path() -> String {
         crate::foreground::executable_path_key(Path::new(r"C:\Apps\editor.exe"))

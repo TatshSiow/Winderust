@@ -1,6 +1,6 @@
-use iced::widget::{
-    button, checkbox, column, pick_list, row, scrollable, slider, text, text_input,
-};
+use super::design;
+use super::widgets::{button, checkbox, pick_list, slider, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -12,7 +12,6 @@ use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule
 pub(super) struct CpuLimiter {
     path: String,
     removing: Option<String>,
-    deleting: Option<(usize, CpuLimiterRule)>,
     collapsed: bool,
     numbers: HashMap<(String, Tier), String>,
 }
@@ -68,7 +67,6 @@ pub(super) enum Message {
     RuleLimit(usize, Tier, u8),
     Remove(usize),
     ConfirmRemove,
-    Removed(String),
     CancelRemove,
 }
 
@@ -153,18 +151,9 @@ impl CpuLimiter {
                         .iter()
                         .position(|rule| rule.executable_path == path)
                     {
-                        self.deleting = Some((index, settings.rules.remove(index)));
+                        settings.rules.remove(index);
                     }
                     self.numbers.retain(|(target, _), _| target != &path);
-                }
-            }
-            Message::Removed(path) => {
-                if self
-                    .deleting
-                    .as_ref()
-                    .is_some_and(|(_, rule)| rule.executable_path == path)
-                {
-                    self.deleting = None;
                 }
             }
         }
@@ -208,16 +197,15 @@ impl CpuLimiter {
                 .width(65),
             text("%")
         ]
-        .spacing(8)
+        .spacing(design::space::SMALL)
         .into()
     }
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a CpuLimiterSettings,
         candidates: &[String],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
-        let mut body = column![].spacing(16);
+        let mut body = column![].spacing(super::widgets::CARD_GAP);
         body = body.push(text(t!("cpu_limiter.intro_4").to_string()).style(text::warning));
         if self.has_invalid_inputs() {
             body = body.push(
@@ -226,7 +214,7 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        let mut defaults = column![].spacing(12);
+        let mut defaults = column![].spacing(design::space::MEDIUM);
         for (tier, value) in Tier::ALL.into_iter().zip([
             settings.focus_allowed_cpu_time_percent,
             settings.visible_window_allowed_cpu_time_percent,
@@ -237,7 +225,7 @@ impl CpuLimiter {
                     text(tier.label()),
                     self.limit_control(None, tier, "", value, settings.enabled)
                 ]
-                .spacing(6),
+                .spacing(design::space::CONTROL),
             );
         }
         body = body.push(super::widgets::setting_group(
@@ -246,7 +234,6 @@ impl CpuLimiter {
             Message::Collapse,
             super::widgets::switch(settings.enabled, Some(Message::Enabled)),
             defaults,
-            motion_enabled,
         ));
         body = body
             .push(
@@ -265,7 +252,7 @@ impl CpuLimiter {
                             .then_some(Message::Add)
                     ),
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         let filter = self.path.to_lowercase();
@@ -283,11 +270,7 @@ impl CpuLimiter {
             );
         }
         let mut cards = Vec::new();
-        let mut visible_rules: Vec<_> = settings.rules.iter().enumerate().collect();
-        if let Some((index, rule)) = &self.deleting {
-            visible_rules.insert((*index).min(visible_rules.len()), (usize::MAX, rule));
-        }
-        for (index, rule) in visible_rules {
+        for (index, rule) in settings.rules.iter().enumerate() {
             let mut card = column![row![
                 checkbox(rule.enabled)
                     .label(rule.executable_path.clone())
@@ -299,8 +282,8 @@ impl CpuLimiter {
                 button(text(t!("common.remove").to_string()))
                     .on_press_maybe(settings.enabled.then_some(Message::Remove(index))),
             ]
-            .spacing(8)]
-            .spacing(8);
+            .spacing(design::space::SMALL)]
+            .spacing(design::space::SMALL);
             for (tier, (mode, value)) in Tier::ALL.into_iter().zip([
                 (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
                 (
@@ -324,7 +307,8 @@ impl CpuLimiter {
                 } else {
                     text(mode_label(mode)).into()
                 };
-                let mut controls = row![text(tier.label()).width(210), selector].spacing(8);
+                let mut controls =
+                    row![text(tier.label()).width(210), selector].spacing(design::space::SMALL);
                 if mode == ProcessRuleMode::Enabled {
                     controls = controls.push(self.limit_control(
                         Some(index),
@@ -344,24 +328,19 @@ impl CpuLimiter {
                         button(text(t!("common.cancel").to_string()))
                             .on_press(Message::CancelRemove),
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
             }
             cards.push((
-                super::motion::key(&rule.executable_path),
-                super::motion::removal(
-                    super::widgets::settings_card(card),
-                    index == usize::MAX,
-                    motion_enabled,
-                    Message::Removed(rule.executable_path.clone()),
-                ),
+                super::widgets::stable_key(&rule.executable_path),
+                super::widgets::settings_card(card).into(),
             ));
         }
-        body = body.push(iced::widget::keyed_column(cards).spacing(8));
-        if settings.rules.is_empty() && self.deleting.is_none() {
+        body = body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
+        if settings.rules.is_empty() {
             body = body.push(text(t!("cpu_limiter.no_rules").to_string()));
         }
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 
@@ -403,10 +382,6 @@ mod tests {
         editor.update(&mut settings, Message::Remove(0));
         editor.update(&mut settings, Message::ConfirmRemove);
         assert!(settings.rules.is_empty());
-        assert!(editor.deleting.is_some());
-        let path = editor.deleting.as_ref().unwrap().1.executable_path.clone();
-        editor.update(&mut settings, Message::Removed(path));
-        assert!(editor.deleting.is_none());
     }
     #[test]
     fn rule_edits_keep_tiers_independent_and_limits_valid() {

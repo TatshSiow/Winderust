@@ -1,12 +1,100 @@
+use super::design;
 use crate::power::PowerPlan;
-use iced::widget::{pick_list, row, slider, text, text_input};
+use iced::widget::{row, text};
 use iced::{Element, Fill};
+
+pub(super) const CARD_GAP: u32 = design::space::SMALL;
+pub(super) const CARD_PADDING: u32 = design::space::MEDIUM;
+pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
+pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
+
+pub(super) fn button<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::widget::Button<'a, M> {
+    iced::widget::button(content).padding(design::CONTROL_PADDING)
+}
+
+pub(super) fn text_input<'a, M: Clone + 'a>(
+    placeholder: &str,
+    value: &str,
+) -> iced::widget::TextInput<'a, M> {
+    iced::widget::text_input(placeholder, value)
+        .size(design::typography::BODY)
+        .padding(design::INPUT_PADDING)
+}
+
+pub(super) fn pick_list<'a, T, L, V, M>(
+    options: L,
+    selected: Option<V>,
+    on_selected: impl Fn(T) -> M + 'a,
+) -> iced::widget::PickList<'a, T, L, V, M>
+where
+    T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    V: std::borrow::Borrow<T> + 'a,
+    M: Clone + 'a,
+{
+    iced::widget::pick_list(options, selected, on_selected)
+        .text_size(design::typography::BODY)
+        .padding(design::CONTROL_PADDING)
+}
+
+pub(super) fn slider<'a, T, M>(
+    range: std::ops::RangeInclusive<T>,
+    value: T,
+    on_change: impl Fn(T) -> M + 'a,
+) -> iced::widget::Slider<'a, T, M>
+where
+    T: Copy + From<u8> + PartialOrd,
+    M: Clone + 'a,
+{
+    iced::widget::slider(range, value, on_change).height(design::SLIDER_HEIGHT)
+}
+
+pub(super) fn checkbox<'a, M: 'a>(value: bool) -> iced::widget::Checkbox<'a, M> {
+    iced::widget::checkbox(value)
+        .size(design::CHECKBOX_SIZE)
+        .text_size(design::typography::BODY)
+        .spacing(design::space::SMALL)
+}
+
+pub(super) fn card_button<'a, M: Clone + 'a>(
+    content: iced::widget::Row<'a, M>,
+) -> iced::widget::Button<'a, M> {
+    button(
+        content
+            .height(Fill)
+            .align_y(iced::Center)
+            .spacing(design::space::LARGE),
+    )
+    .height(CARD_HEIGHT)
+    .padding([CARD_PADDING as u16, design::space::WIDE as u16])
+    .width(Fill)
+    .style(card)
+}
+
+/// Stable identity for native keyed rows across insertions and deletions.
+pub(super) fn stable_key(value: &impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hash);
+    hash.finish()
+}
+
+pub(super) fn optional_content<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    visible: bool,
+) -> Element<'a, M> {
+    if visible {
+        content.into()
+    } else {
+        iced::widget::Space::new().height(0).into()
+    }
+}
 
 pub(super) fn settings_card<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
 ) -> iced::widget::Container<'a, M> {
     iced::widget::container(content)
-        .padding(12)
+        .padding(CARD_PADDING as u16)
         .width(Fill)
         .style(surface)
 }
@@ -17,11 +105,10 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     message: M,
     action: impl Into<Element<'a, M>>,
     content: impl Into<Element<'a, M>>,
-    motion_enabled: bool,
 ) -> Element<'a, M> {
     settings_card(
         iced::widget::column![
-            iced::widget::button(
+            button(
                 row![
                     iced::widget::container(setting_title(&label)).width(Fill),
                     action.into(),
@@ -31,17 +118,17 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
                         "icons/chevron-right.svg"
                     })
                 ]
-                .spacing(8)
-                .height(34)
+                .spacing(design::space::SMALL)
+                .height(SETTING_ROW_HEIGHT)
                 .align_y(iced::Center)
             )
             .width(Fill)
             .padding(0)
             .style(quiet)
             .on_press(message),
-            super::motion::reveal(content, expanded, motion_enabled)
+            optional_content(content, expanded)
         ]
-        .spacing(8),
+        .spacing(design::space::SMALL),
     )
     .into()
 }
@@ -54,8 +141,8 @@ pub(super) fn setting_row<'a, M: 'a>(
         iced::widget::container(setting_title(key)).width(Fill),
         action.into()
     ]
-    .spacing(12)
-    .height(34)
+    .spacing(design::space::MEDIUM)
+    .height(SETTING_ROW_HEIGHT)
     .align_y(iced::Center)
 }
 
@@ -65,14 +152,17 @@ pub(super) fn setting_title<'a, M: 'a>(key: &str) -> Element<'a, M> {
         |prefix| format!("{prefix}.intro_1"),
     );
     let help = rust_i18n::t!(&help_key).to_string();
-    let mut label = row![heading(rust_i18n::t!(key).to_string(), 14)]
-        .spacing(8)
-        .align_y(iced::Center);
+    let mut label = row![heading(
+        rust_i18n::t!(key).to_string(),
+        design::typography::BODY
+    )]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center);
     if help != help_key {
         label = label.push(iced::widget::tooltip(
             super::navigation::glyph("icons/info.svg"),
             iced::widget::container(text(help).width(320))
-                .padding(12)
+                .padding(design::space::MEDIUM as u16)
                 .style(surface),
             iced::widget::tooltip::Position::Top,
         ));
@@ -87,10 +177,10 @@ pub(super) fn switch<'a, M: Clone + 'a>(
     row![
         text(rust_i18n::t!(if value { "common.on" } else { "common.off" }).to_string()),
         iced::widget::toggler(value)
-            .size(20)
+            .size(design::SWITCH_SIZE)
             .on_toggle_maybe(action)
     ]
-    .spacing(8)
+    .spacing(design::space::SMALL)
     .align_y(iced::Center)
     .into()
 }
@@ -122,21 +212,21 @@ pub(super) fn stepper<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let (lower, upper) = step_values(value, range, step);
     row![
-        iced::widget::button(text("-"))
+        button(text("-"))
             .style(control_button)
-            .width(32)
+            .width(design::STEPPER_BUTTON_WIDTH)
             .on_press_maybe(lower.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))),
         text_input("", value)
             .align_x(iced::alignment::Horizontal::Center)
             .on_input_maybe(action.clone())
-            .width(80),
-        text(unit.to_owned()).width(24),
-        iced::widget::button(text("+"))
+            .width(design::NUMERIC_WIDTH),
+        text(unit.to_owned()).width(design::STEPPER_UNIT_WIDTH),
+        button(text("+"))
             .style(control_button)
-            .width(32)
+            .width(design::STEPPER_BUTTON_WIDTH)
             .on_press_maybe(upper.zip(action.as_ref()).map(|(v, f)| f(v.to_string())))
     ]
-    .spacing(6)
+    .spacing(design::space::CONTROL)
     .align_y(iced::Center)
     .into()
 }
@@ -202,38 +292,26 @@ pub(super) fn plan<M: Clone + 'static>(
         .into()
 }
 
-pub(super) fn number<M: Clone + 'static>(
-    label: String,
-    value: u32,
-    range: std::ops::RangeInclusive<u32>,
-    action: impl Fn(String) -> M + Clone + 'static,
-) -> Element<'static, M> {
-    let input_action = action.clone();
-    settings_card(
-        row![
-            text(label).width(iced::Length::FillPortion(2)),
-            slider(range.clone(), value, move |value| action(value.to_string()))
-                .width(iced::Length::FillPortion(3)),
-            stepper(
-                &value.to_string(),
-                u64::from(*range.start())..=u64::from(*range.end()),
-                1,
-                "",
-                Some(input_action)
-            )
-        ]
-        .spacing(12)
-        .align_y(iced::Center),
-    )
-    .into()
-}
-
 // Theme-derived surfaces and interaction states; controls remain standard Iced widgets.
 pub(super) fn heading<'a>(label: String, size: u32) -> iced::widget::Text<'a> {
     text(label).size(size).font(iced::Font {
         weight: iced::font::Weight::Semibold,
-        ..iced::Font::with_name("Segoe UI")
+        ..iced::Font::with_name(design::typography::FONT)
     })
+}
+
+pub(super) fn navigation_surface(theme: &iced::Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(
+            if theme.extended_palette().is_dark {
+                iced::Color::from_rgb8(11, 13, 15)
+            } else {
+                iced::Color::from_rgb8(234, 236, 239)
+            }
+            .into(),
+        ),
+        ..Default::default()
+    }
 }
 
 pub(super) fn surface(theme: &iced::Theme) -> iced::widget::container::Style {
@@ -246,7 +324,7 @@ pub(super) fn surface(theme: &iced::Theme) -> iced::widget::container::Style {
             }
             .into(),
         ),
-        border: iced::border::rounded(6),
+        border: iced::border::rounded(design::CARD_RADIUS),
         ..Default::default()
     }
 }
@@ -274,7 +352,7 @@ pub(super) fn quiet(
 ) -> iced::widget::button::Style {
     use iced::widget::button::{self, Status};
     let mut style = button::text(theme, status);
-    style.border.radius = 4.into();
+    style.border.radius = design::CONTROL_RADIUS.into();
     style.background = match status {
         Status::Hovered => Some(
             theme

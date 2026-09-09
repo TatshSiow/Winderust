@@ -1,4 +1,6 @@
-use iced::widget::{column, row, scrollable, slider};
+use super::design;
+use super::widgets::slider;
+use iced::widget::{column, row, scrollable};
 use iced::{Element, Fill};
 
 use crate::config::{Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS};
@@ -122,7 +124,7 @@ pub(super) fn view<'a>(
                 .width(180),
                 super::widgets::stepper(&value, range, step, unit, Some(action))
             ]
-            .spacing(8)
+            .spacing(design::space::SMALL)
             .align_y(iced::Center),
         ))
     };
@@ -140,7 +142,7 @@ pub(super) fn view<'a>(
                     &activity.power_plans.power_save_guid,
                     Message::IdlePlan
                 ))
-                .width(240)
+                .width(design::SELECT_WIDTH)
             )),
             super::widgets::settings_card(super::widgets::setting_row(
                 "by_activity.active_plan",
@@ -148,7 +150,7 @@ pub(super) fn view<'a>(
                     &activity.power_plans.performance_guid,
                     Message::ActivePlan
                 ))
-                .width(240)
+                .width(design::SELECT_WIDTH)
             )),
             flag(
                 "by_activity.keyboard_input",
@@ -191,9 +193,8 @@ pub(super) fn view<'a>(
                 Message::CheckInterval
             )
         ]
-        .spacing(8),
+        .spacing(super::widgets::CARD_GAP),
     )
-    .spacing(10)
     .height(Fill)
     .into()
 }

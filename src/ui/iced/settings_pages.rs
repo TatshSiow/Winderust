@@ -1,12 +1,15 @@
-use super::widgets::{self, Choice};
+use super::design;
+use super::widgets::{self, checkbox, Choice};
+use super::widgets::{button, pick_list, slider, text_input};
 use crate::{config::*, ui::Page};
-use iced::widget::{button, column, pick_list, row, scrollable, slider, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Color, Element, Fill, Theme};
 use rust_i18n::t;
 
 #[derive(Default)]
 pub(super) struct Editor {
     color: Option<String>,
+    failure_threshold: Option<String>,
     accent_collapsed: bool,
     custom_color_open: bool,
     pub(super) checking: bool,
@@ -36,7 +39,6 @@ pub(super) enum Message {
     Flag(Flag, bool),
     Language(AppLanguage),
     Theme(AppThemeMode),
-    Animation(AnimationMode),
     AccentSource(AccentColorSource),
     AccentHex(String),
     ColorChannel(u32, u8),
@@ -59,6 +61,7 @@ pub(super) enum Message {
 impl Editor {
     pub(super) fn reset_drafts(&mut self) {
         self.color = None;
+        self.failure_threshold = None;
         self.latest = None;
         self.download = None;
         self.update_error = None;
@@ -101,7 +104,6 @@ impl Editor {
                 rust_i18n::set_locale(value.locale());
             }
             Message::Theme(value) => s.general.theme_mode = value,
-            Message::Animation(value) => s.general.animation_mode = value,
             Message::AccentSource(value) => {
                 s.general.accent.source = value;
                 self.accent_collapsed = value == AccentColorSource::Windows;
@@ -149,8 +151,11 @@ impl Editor {
                 }
             }
             Message::FailureThreshold(value) => {
+                self.failure_threshold = Some(value.clone());
                 if let Ok(value) = value.parse::<u8>() {
-                    s.advanced.execution_failure_suppression_threshold = value.clamp(1, 100)
+                    if (1..=100).contains(&value) {
+                        s.advanced.execution_failure_suppression_threshold = value;
+                    }
                 }
             }
             Message::LogMode(value) => s.advanced.action_log_mode = value,
@@ -190,50 +195,66 @@ impl Editor {
             ))
         };
         let body = match page {
-            Page::WinderustBehaviour => column![
-                flag("settings.master_switch", s.general.enabled, Flag::Enabled),
-                flag(
-                    "settings.startup_windows",
-                    s.general.startup_with_windows,
-                    Flag::Startup
-                ),
-                flag(
-                    "settings.start_minimized",
-                    s.general.start_minimized,
-                    Flag::Minimized
-                ),
-                flag("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
-                text(t!("settings.advanced").to_string()).size(18),
-                flag(
-                    "settings.allow_cross_session_process_control",
-                    s.general.allow_cross_session_process_control,
-                    Flag::CrossSession
-                ),
-                text(t!("settings.allow_cross_session_process_control_help").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
-                flag(
-                    "settings.pause_dashboard_metrics",
-                    s.advanced.pause_dashboard_metrics,
-                    Flag::PauseDashboard
-                ),
-                flag(
-                    "settings.pause_process_population",
-                    s.advanced.pause_process_population,
-                    Flag::PauseProcesses
-                ),
-                text(t!("settings.pause_process_population_help").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
-                widgets::number(
-                    t!("settings.failure_suppression_threshold").to_string(),
-                    u32::from(s.advanced.execution_failure_suppression_threshold),
-                    1..=100,
-                    Message::FailureThreshold
-                ),
-                super::widgets::settings_card(
-                    row![
-                        text(t!("settings.action_log_mode").to_string()).width(Fill),
+            Page::WinderustBehaviour => {
+                let check = |key: &str, value, flag| {
+                    iced::widget::container(
+                        checkbox(value)
+                            .label(t!(key).to_string())
+                            .on_toggle(move |value| Message::Flag(flag, value)),
+                    )
+                    .height(36)
+                    .center_y(36)
+                };
+                column![
+                    column![
+                        check("settings.master_switch", s.general.enabled, Flag::Enabled),
+                        check(
+                            "settings.startup_windows",
+                            s.general.startup_with_windows,
+                            Flag::Startup
+                        ),
+                        check(
+                            "settings.start_minimized",
+                            s.general.start_minimized,
+                            Flag::Minimized
+                        ),
+                        check("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
+                    ],
+                    widgets::heading(
+                        t!("settings.advanced").to_string(),
+                        design::typography::BODY
+                    ),
+                    flag(
+                        "settings.allow_cross_session_process_control",
+                        s.general.allow_cross_session_process_control,
+                        Flag::CrossSession
+                    ),
+                    flag(
+                        "settings.pause_dashboard_metrics",
+                        s.advanced.pause_dashboard_metrics,
+                        Flag::PauseDashboard
+                    ),
+                    flag(
+                        "settings.pause_process_population",
+                        s.advanced.pause_process_population,
+                        Flag::PauseProcesses
+                    ),
+                    widgets::settings_card(widgets::setting_row(
+                        "settings.failure_suppression_threshold",
+                        text_input(
+                            "",
+                            self.failure_threshold.as_deref().unwrap_or(
+                                &s.advanced
+                                    .execution_failure_suppression_threshold
+                                    .to_string()
+                            )
+                        )
+                        .on_input(Message::FailureThreshold)
+                        .align_x(iced::Center)
+                        .width(design::STANDALONE_NUMERIC_WIDTH),
+                    )),
+                    widgets::settings_card(widgets::setting_row(
+                        "settings.action_log_mode",
                         pick_list(
                             ActionLogMode::ALL
                                 .into_iter()
@@ -243,31 +264,34 @@ impl Editor {
                                 s.advanced.action_log_mode,
                                 log_label(s.advanced.action_log_mode)
                             )),
-                            |value| Message::LogMode(value.0)
+                            |value| Message::LogMode(value.0),
                         )
-                    ]
-                    .spacing(12)
-                    .align_y(iced::Center)
-                ),
-                super::widgets::settings_card(
+                        .width(design::SELECT_WIDTH),
+                    )),
+                    widgets::heading(
+                        t!("settings.settings_files").to_string(),
+                        design::typography::BODY
+                    ),
                     row![
                         button(text(t!("settings.export_settings").to_string()))
+                            .style(widgets::control_button)
                             .on_press(Message::Export),
                         button(text(t!("settings.import_settings").to_string()))
-                            .on_press(Message::Import)
+                            .style(widgets::control_button)
+                            .on_press(Message::Import),
                     ]
-                    .spacing(8)
-                    .align_y(iced::Center)
-                ),
-            ]
-            .spacing(14),
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                ]
+                .spacing(super::widgets::CARD_GAP)
+            }
             Page::LanguageAndAppearance => {
                 let colors = column(ACCENT_PALETTE.chunks(8).map(|chunk| {
                     row(chunk.iter().map(|color| color_button(*color).into()))
-                        .spacing(6)
+                        .spacing(design::space::CONTROL)
                         .into()
                 }))
-                .spacing(6);
+                .spacing(design::space::CONTROL);
                 let saved = column(s.general.accent.custom_colors.chunks(8).enumerate().map(
                     |(chunk_index, chunk)| {
                         row(chunk.iter().enumerate().map(|(i, color)| {
@@ -276,14 +300,14 @@ impl Editor {
                                 button(text(t!("common.remove").to_string()))
                                     .on_press(Message::RemoveColor(chunk_index * 8 + i))
                             ]
-                            .spacing(4)
+                            .spacing(design::space::TIGHT)
                             .into()
                         }))
-                        .spacing(6)
+                        .spacing(design::space::CONTROL)
                         .into()
                     },
                 ))
-                .spacing(6);
+                .spacing(design::space::CONTROL);
                 let mut custom = column![
                     text(t!("accent.custom").to_string()),
                     button(super::navigation::glyph("icons/settings.svg"))
@@ -293,7 +317,7 @@ impl Editor {
                     colors,
                     saved
                 ]
-                .spacing(10);
+                .spacing(design::space::COMPACT);
                 if self.custom_color_open {
                     for (label, shift) in [("R", 16), ("G", 8), ("B", 0)] {
                         let value = ((s.general.accent.custom_color >> shift) & 255) as u8;
@@ -305,7 +329,7 @@ impl Editor {
                                 )),
                                 text(value.to_string()).width(32)
                             ]
-                            .spacing(8),
+                            .spacing(design::space::SMALL),
                         );
                     }
                     custom = custom.push(
@@ -326,7 +350,7 @@ impl Editor {
                                     .then_some(Message::SaveColor)
                             )
                         ]
-                        .spacing(8),
+                        .spacing(design::space::SMALL),
                     );
                 }
                 column![
@@ -345,7 +369,7 @@ impl Editor {
                                 |v| Message::Language(v.0)
                             )
                         ]
-                        .spacing(12)
+                        .spacing(design::space::MEDIUM)
                         .align_y(iced::Center)
                     ),
                     super::widgets::setting_group(
@@ -370,8 +394,7 @@ impl Editor {
                             )),
                             |v| Message::AccentSource(v.0)
                         ),
-                        custom,
-                        animations(s.general.animation_mode)
+                        custom
                     ),
                     super::widgets::settings_card(
                         row![
@@ -388,25 +411,7 @@ impl Editor {
                                 |v| Message::Theme(v.0)
                             )
                         ]
-                        .spacing(12)
-                        .align_y(iced::Center)
-                    ),
-                    super::widgets::settings_card(
-                        row![
-                            text(t!("common.animation").to_string()).width(Fill),
-                            pick_list(
-                                AnimationMode::ALL
-                                    .into_iter()
-                                    .map(|v| Choice(v, animation_label(v)))
-                                    .collect::<Vec<_>>(),
-                                Some(Choice(
-                                    s.general.animation_mode,
-                                    animation_label(s.general.animation_mode)
-                                )),
-                                |v| Message::Animation(v.0)
-                            )
-                        ]
-                        .spacing(12)
+                        .spacing(design::space::MEDIUM)
                         .align_y(iced::Center)
                     ),
                     flag(
@@ -420,7 +425,7 @@ impl Editor {
                         Flag::CardStatus
                     ),
                 ]
-                .spacing(12)
+                .spacing(super::widgets::CARD_GAP)
             }
             Page::ExperimentalFeatures => column![
                 flag(
@@ -440,9 +445,9 @@ impl Editor {
                     .width(Fill)
                     .style(text::secondary)
             ]
-            .spacing(14),
+            .spacing(super::widgets::CARD_GAP),
             Page::About => {
-                let mut links = row![].spacing(8);
+                let mut links = row![].spacing(design::space::SMALL);
                 for (key, url) in [
                     ("about.github", "https://github.com/TatshSiow/Winderust"),
                     ("about.discord", "https://discord.gg/M7nctFZUxX"),
@@ -464,12 +469,15 @@ impl Editor {
                         row![
                             iced::widget::image(logo()).width(52).height(52),
                             column![
-                                widgets::heading(t!("app.name").to_string(), 14),
+                                widgets::heading(
+                                    t!("app.name").to_string(),
+                                    design::typography::BODY
+                                ),
                                 text(t!("app.description").to_string())
                             ]
-                            .spacing(8)
+                            .spacing(design::space::SMALL)
                         ]
-                        .spacing(16)
+                        .spacing(design::space::LARGE)
                         .align_y(iced::Center),
                         text(format!(
                             "{} Wanderlust {} Windows Derust",
@@ -479,7 +487,7 @@ impl Editor {
                         text("Copyright (C) 2026 Tatsh Siow / GPL-3.0-only"),
                         links
                     ]
-                    .spacing(16),
+                    .spacing(design::space::LARGE),
                 );
                 let updates = widgets::settings_card(
                     column![
@@ -497,11 +505,11 @@ impl Editor {
                                     )),
                                     |v| Message::Channel(v.0)
                                 )
-                                .width(240),
+                                .width(design::SELECT_WIDTH),
                                 button(text(t!("about.check_for_updates").to_string()))
                                     .on_press_maybe((!self.checking).then_some(Message::Check))
                             ]
-                            .spacing(12)
+                            .spacing(design::space::MEDIUM)
                         ),
                         widgets::setting_row(
                             "about.latest_version",
@@ -519,15 +527,15 @@ impl Editor {
                             )
                         )
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
                 let mut body = column![
-                    widgets::heading(t!("nav.about").to_string(), 14),
+                    widgets::heading(t!("nav.about").to_string(), design::typography::BODY),
                     identity,
-                    widgets::heading(t!("about.updates").to_string(), 14),
+                    widgets::heading(t!("about.updates").to_string(), design::typography::BODY),
                     updates
                 ]
-                .spacing(12);
+                .spacing(super::widgets::CARD_GAP);
                 if self.latest.is_some() {
                     body = body.push(text(
                         t!(if self.download.is_some() {
@@ -551,7 +559,7 @@ impl Editor {
             }
             _ => column![],
         };
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 fn color_button(color: u32) -> iced::widget::Button<'static, Message> {
@@ -576,14 +584,7 @@ fn theme_label(v: AppThemeMode) -> String {
     }
     .to_string()
 }
-fn animation_label(v: AnimationMode) -> String {
-    match v {
-        AnimationMode::System => t!("animation.system"),
-        AnimationMode::On => t!("common.on"),
-        AnimationMode::Off => t!("common.off"),
-    }
-    .to_string()
-}
+
 fn channel_label(v: UpdateChannel) -> String {
     match v {
         UpdateChannel::Stable => t!("update_channel.stable"),
@@ -615,14 +616,7 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
                 != 0
         }
     };
-    let mut palette = iced::theme::Palette {
-        background: rgb(if light { 0xf3f4f5 } else { 0x0f1011 }),
-        text: rgb(if light { 0x202327 } else { 0xf0f0f2 }),
-        primary: rgb(0x35bfff),
-        success: rgb(if light { 0x477d23 } else { 0xa4db61 }),
-        warning: rgb(0xe8b45b),
-        danger: rgb(0xe56d76),
-    };
+    let mut palette = design::palette(light);
     // Preserve the appearance preference; Iced derives all widget colors and states.
     if let Some(accent) = if s.accent.source == AccentColorSource::Custom {
         Some(s.accent.custom_color)
@@ -653,28 +647,6 @@ fn windows_accent() -> Option<u32> {
         )
         .map(|v| ((v & 255) << 16) | (v & 0xff00) | ((v >> 16) & 255))
     })
-}
-pub(super) fn animations(mode: AnimationMode) -> bool {
-    match mode {
-        AnimationMode::On => true,
-        AnimationMode::Off => false,
-        AnimationMode::System => {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
-            };
-            let mut enabled = 1i32;
-            // SAFETY: enabled is a writable BOOL-sized output for the documented query; no pointers are retained.
-            let result = unsafe {
-                SystemParametersInfoW(
-                    SPI_GETCLIENTAREAANIMATION,
-                    0,
-                    (&mut enabled as *mut i32).cast(),
-                    0,
-                )
-            };
-            result == 0 || enabled != 0
-        }
-    }
 }
 
 fn sanitize_advanced(settings: &mut Settings) {
@@ -873,6 +845,22 @@ fn logo() -> iced::widget::image::Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failure_threshold_retains_drafts_without_publishing_invalid_values() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        editor.update(&mut settings, Message::FailureThreshold("12".into()));
+        for draft in ["", "0", "101", "invalid"] {
+            editor.update(&mut settings, Message::FailureThreshold(draft.into()));
+            assert_eq!(editor.failure_threshold.as_deref(), Some(draft));
+            assert_eq!(
+                settings.advanced.execution_failure_suppression_threshold,
+                12
+            );
+        }
+        editor.reset_drafts();
+        assert!(editor.failure_threshold.is_none());
+    }
     #[test]
     fn resetting_drafts_preserves_in_flight_update_check() {
         let mut e = Editor {

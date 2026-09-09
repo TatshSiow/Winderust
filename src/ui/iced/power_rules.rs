@@ -1,11 +1,11 @@
-use super::widgets::{self, Choice};
+use super::design;
+use super::widgets::{self, checkbox, Choice};
+use super::widgets::{button, pick_list, slider, text_input};
 use crate::{
     config::{ByCpuLoadRule, ByTimeRule, CpuUsageComparison, Settings, WeekdaySetting},
     power::PowerPlan,
 };
-use iced::widget::{
-    button, checkbox, column, pick_list, row, scrollable, slider, text, text_input,
-};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +24,6 @@ pub(super) enum Message {
     Remove(usize),
     ConfirmRemove,
     CancelRemove,
-    Removed(u64),
     Toggle(usize),
     Day(usize, WeekdaySetting, bool),
     Start(usize, String),
@@ -44,10 +43,7 @@ enum Field {
     Upper,
     Duration,
 }
-enum RemovedRule {
-    Time(ByTimeRule),
-    Cpu(ByCpuLoadRule),
-}
+
 #[derive(Clone, Copy)]
 enum RuleRef<'a> {
     Time(&'a ByTimeRule),
@@ -56,7 +52,6 @@ enum RuleRef<'a> {
 #[derive(Default)]
 pub(super) struct Editor {
     removing: Option<usize>,
-    removed: Option<(u64, usize, RemovedRule)>,
     ids: Vec<u64>,
     next_id: u64,
     inputs: BTreeMap<(u64, Field), String>,
@@ -111,50 +106,43 @@ impl Editor {
                 Kind::Time => s.by_time.enabled = v,
                 Kind::CpuLoad => s.by_cpu_load.enabled = v,
             },
-            Message::Add => {
-                self.removed = None;
-                match kind {
-                    Kind::Time if s.by_time.enabled => s.by_time.rules.push(ByTimeRule {
-                        enabled: true,
-                        name: t!("by_time.new_rule").to_string(),
-                        days: WeekdaySetting::all().to_vec(),
-                        start_time: "22:00".into(),
-                        end_time: "08:00".into(),
-                        power_plan_guid: active(),
-                    }),
-                    Kind::CpuLoad if s.by_cpu_load.enabled => {
-                        s.by_cpu_load.rules.push(ByCpuLoadRule {
-                            enabled: true,
-                            name: t!("by_cpu_load.new_rule").to_string(),
-                            comparison: CpuUsageComparison::AtOrBelow,
-                            threshold_percent: 20,
-                            upper_threshold_percent: None,
-                            duration_seconds: 30,
-                            power_plan_guid: active(),
-                            else_enabled: false,
-                            else_power_plan_guid: active(),
-                        })
-                    }
-                    _ => {}
-                }
-            }
+            Message::Add => match kind {
+                Kind::Time if s.by_time.enabled => s.by_time.rules.push(ByTimeRule {
+                    enabled: true,
+                    name: t!("by_time.new_rule").to_string(),
+                    days: WeekdaySetting::all().to_vec(),
+                    start_time: "22:00".into(),
+                    end_time: "08:00".into(),
+                    power_plan_guid: active(),
+                }),
+                Kind::CpuLoad if s.by_cpu_load.enabled => s.by_cpu_load.rules.push(ByCpuLoadRule {
+                    enabled: true,
+                    name: t!("by_cpu_load.new_rule").to_string(),
+                    comparison: CpuUsageComparison::AtOrBelow,
+                    threshold_percent: 20,
+                    upper_threshold_percent: None,
+                    duration_seconds: 30,
+                    power_plan_guid: active(),
+                    else_enabled: false,
+                    else_power_plan_guid: active(),
+                }),
+                _ => {}
+            },
             Message::Remove(i) => self.removing = Some(i),
             Message::CancelRemove => self.removing = None,
             Message::ConfirmRemove => {
                 if let Some(i) = self.removing.take().filter(|i| *i < self.ids.len()) {
                     let id = self.ids.remove(i);
-                    let rule = match kind {
-                        Kind::Time => RemovedRule::Time(s.by_time.rules.remove(i)),
-                        Kind::CpuLoad => RemovedRule::Cpu(s.by_cpu_load.rules.remove(i)),
+                    match kind {
+                        Kind::Time => {
+                            s.by_time.rules.remove(i);
+                        }
+                        Kind::CpuLoad => {
+                            s.by_cpu_load.rules.remove(i);
+                        }
                     };
                     self.inputs.retain(|(key, _), _| *key != id);
                     self.collapsed.remove(&id);
-                    self.removed = Some((id, i, rule));
-                }
-            }
-            Message::Removed(id) => {
-                if self.removed.as_ref().is_some_and(|(key, _, _)| *key == id) {
-                    self.removed = None;
                 }
             }
             Message::Toggle(i) => {
@@ -263,7 +251,6 @@ impl Editor {
         kind: Kind,
         s: &'a Settings,
         plans: &[PowerPlan],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let (enabled, label) = match kind {
             Kind::Time => (s.by_time.enabled, "by_time.enable"),
@@ -279,13 +266,13 @@ impl Editor {
             button(text(t!("common.create").to_string()))
                 .on_press_maybe(enabled.then_some(Message::Add))
         ]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         if kind == Kind::Time {
             body = body.push(text(
                 crate::features::power_plan_control::next_by_time_switch_label(&s.by_time),
             ));
         }
-        let mut rules = match kind {
+        let rules = match kind {
             Kind::Time => s
                 .by_time
                 .rules
@@ -313,13 +300,7 @@ impl Editor {
                 })
                 .collect::<Vec<_>>(),
         };
-        if let Some((id, i, r)) = &self.removed {
-            let r = match r {
-                RemovedRule::Time(r) => RuleRef::Time(r),
-                RemovedRule::Cpu(r) => RuleRef::Cpu(r),
-            };
-            rules.insert((*i).min(rules.len()), (*id, *i, r));
-        }
+
         if rules.is_empty() {
             body = body.push(text(t!("common.no_custom_rules").to_string()));
         }
@@ -343,11 +324,11 @@ impl Editor {
                 button(text(t!("common.remove").to_string()))
                     .on_press_maybe(enabled.then_some(Message::Remove(index)))
             ]
-            .spacing(8);
-            let mut controls = column![].spacing(10);
+            .spacing(design::space::SMALL);
+            let mut controls = column![].spacing(design::space::COMPACT);
             match rule {
                 RuleRef::Time(r) => {
-                    let mut days = row![].spacing(8);
+                    let mut days = row![].spacing(design::space::SMALL);
                     for (day, key) in WeekdaySetting::all().into_iter().zip([
                         "weekday.mon",
                         "weekday.tue",
@@ -379,7 +360,7 @@ impl Editor {
                                 .on_input_maybe(enabled.then_some(move |v| Message::End(index, v)))
                                 .width(100)
                         ]
-                        .spacing(8),
+                        .spacing(design::space::SMALL),
                     );
                 }
                 RuleRef::Cpu(r) => {
@@ -419,10 +400,9 @@ impl Editor {
                         Message::Upper,
                     );
                     controls = controls
-                        .push(super::motion::reveal(
+                        .push(super::widgets::optional_content(
                             upper,
                             r.comparison == CpuUsageComparison::Between,
-                            motion_enabled,
                         ))
                         .push(self.number(
                             (id, index),
@@ -440,12 +420,11 @@ impl Editor {
                                     enabled.then_some(move |v| Message::Else(index, v)),
                                 ),
                         )
-                        .push(super::motion::reveal(
+                        .push(super::widgets::optional_content(
                             widgets::plan(r.else_power_plan_guid.clone(), plans, move |v| {
                                 Message::ElsePlan(index, v)
                             }),
                             r.else_enabled,
-                            motion_enabled,
                         ));
                 }
             }
@@ -454,9 +433,9 @@ impl Editor {
             }));
             let mut card = column![
                 header,
-                super::motion::reveal(controls, !self.collapsed.contains(&id), motion_enabled)
+                super::widgets::optional_content(controls, !self.collapsed.contains(&id))
             ]
-            .spacing(10);
+            .spacing(design::space::COMPACT);
             if self.removing == Some(index) {
                 card = card.push(
                     row![
@@ -465,21 +444,13 @@ impl Editor {
                         button(text(t!("common.cancel").to_string()))
                             .on_press(Message::CancelRemove)
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
             }
-            cards.push((
-                id,
-                super::motion::removal(
-                    super::widgets::settings_card(card),
-                    self.removed.as_ref().is_some_and(|(key, _, _)| *key == id),
-                    motion_enabled,
-                    Message::Removed(id),
-                ),
-            ));
+            cards.push((id, super::widgets::settings_card(card).into()));
         }
-        body = body.push(iced::widget::keyed_column(cards).spacing(12));
-        scrollable(body).spacing(10).height(Fill).into()
+        body = body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
+        scrollable(body).height(Fill).into()
     }
     fn input(&self, id: u64, field: Field, current: String) -> String {
         self.inputs.get(&(id, field)).cloned().unwrap_or(current)
@@ -499,9 +470,9 @@ impl Editor {
             slider(0..=max, value, move |v| action(index, v.to_string())),
             text_input("", &self.input(id, field, value.to_string()))
                 .on_input(move |v| action(index, v))
-                .width(80)
+                .width(design::NUMERIC_WIDTH)
         ]
-        .spacing(10)
+        .spacing(design::space::COMPACT)
         .into()
     }
 }
@@ -528,7 +499,6 @@ mod tests {
         e.update(Kind::Time, &mut s, &[], Message::Remove(0));
         e.update(Kind::Time, &mut s, &[], Message::ConfirmRemove);
         assert!(s.by_time.rules.is_empty());
-        assert!(e.removed.is_some());
     }
     #[test]
     fn cpu_rules_keep_per_rule_plans_and_typed_threshold_limits() {

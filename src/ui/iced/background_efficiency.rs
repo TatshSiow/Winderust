@@ -1,12 +1,12 @@
+use super::design;
 use super::priority_control::Tier;
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::config::{
     BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
     ProcessRuleMode, Settings,
 };
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
-};
+use iced::widget::{column, container, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -15,7 +15,6 @@ use std::path::Path;
 pub(super) struct Editor {
     path: String,
     removing: Option<String>,
-    deleting: Option<(usize, BackgroundEfficiencyRule)>,
     collapsed: [bool; 3],
 }
 #[derive(Debug, Clone)]
@@ -31,7 +30,6 @@ pub(super) enum Message {
     RuleMode(usize, Tier, ProcessRuleMode),
     Remove(String),
     ConfirmRemove,
-    Removed(String),
     Collapse(Tier),
     CancelRemove,
 }
@@ -96,17 +94,8 @@ impl Editor {
                         .iter()
                         .position(|rule| rule.executable_path == path)
                     {
-                        self.deleting = Some((index, settings.custom_rules.remove(index)));
+                        settings.custom_rules.remove(index);
                     }
-                }
-            }
-            Message::Removed(path) => {
-                if self
-                    .deleting
-                    .as_ref()
-                    .is_some_and(|(_, rule)| rule.executable_path == path)
-                {
-                    self.deleting = None;
                 }
             }
         }
@@ -115,11 +104,10 @@ impl Editor {
         &'a self,
         settings: &'a Settings,
         candidates: &[String],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let settings = &settings.background_efficiency;
         let enabled = settings.enabled;
-        let mut body = column![].spacing(12);
+        let mut body = column![].spacing(super::widgets::CARD_GAP);
         for (tier, detection, value) in [
             (Tier::Background, true, settings.background_efficiency_mode),
             (
@@ -133,7 +121,7 @@ impl Editor {
                 settings.visible_window_efficiency_mode,
             ),
         ] {
-            let mut group = column![].spacing(8);
+            let mut group = column![].spacing(design::space::SMALL);
             let label = match tier {
                 Tier::Background => "background_efficiency.enable",
                 Tier::Focus => "background_efficiency.foreground_detection",
@@ -158,7 +146,7 @@ impl Editor {
                 pick_list(choices, Some(selected), move |v| {
                     Message::Default(tier, if enabled && detection { v.0 } else { value })
                 })
-                .width(240),
+                .width(design::SELECT_WIDTH),
             ));
             if tier == Tier::Background {
                 let aggressiveness: Element<'_, Message> = if enabled {
@@ -182,7 +170,6 @@ impl Editor {
                 Message::Collapse(tier),
                 action,
                 group,
-                motion_enabled,
             ));
         }
         body = body.push(super::widgets::setting_title(
@@ -197,7 +184,7 @@ impl Editor {
                     (enabled && can_add(settings, &self.path)).then_some(Message::Add)
                 )
             ]
-            .spacing(8)
+            .spacing(design::space::SMALL)
             .align_y(iced::Center),
         ));
         let filter = self.path.to_lowercase();
@@ -213,18 +200,14 @@ impl Editor {
             );
         }
         let mut rule_cards = Vec::new();
-        let mut visible_rules: Vec<_> = settings.custom_rules.iter().enumerate().collect();
-        if let Some((index, rule)) = &self.deleting {
-            visible_rules.insert((*index).min(visible_rules.len()), (usize::MAX, rule));
-        }
-        for (index, rule) in visible_rules {
+        for (index, rule) in settings.custom_rules.iter().enumerate() {
             let mut card = row![
                 checkbox(rule.enabled)
                     .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
                     .width(32),
                 text(rule.executable_path.clone()).width(320),
             ]
-            .spacing(12)
+            .spacing(design::space::MEDIUM)
             .align_y(iced::Center);
             for (tier, mode) in Tier::ALL.into_iter().zip([
                 rule.focus_efficiency_mode,
@@ -258,20 +241,12 @@ impl Editor {
                         button(text(t!("common.cancel").to_string()))
                             .on_press(Message::CancelRemove)
                     ]
-                    .spacing(8),
+                    .spacing(design::space::SMALL),
                 );
             }
             rule_cards.push((
-                super::motion::key(&rule.executable_path),
-                super::motion::removal(
-                    container(card)
-                        .padding(12)
-                        .width(Fill)
-                        .style(super::widgets::surface),
-                    index == usize::MAX,
-                    motion_enabled,
-                    Message::Removed(rule.executable_path.clone()),
-                ),
+                super::widgets::stable_key(&rule.executable_path),
+                super::widgets::settings_card(card).into(),
             ));
         }
         body = body.push(
@@ -284,10 +259,10 @@ impl Editor {
                         text(Tier::VisibleWindow.label()).width(150),
                         text(Tier::Background.label()).width(150)
                     ]
-                    .spacing(12),
-                    iced::widget::keyed_column(rule_cards).spacing(1)
+                    .spacing(design::space::MEDIUM),
+                    iced::widget::keyed_column(rule_cards).spacing(super::widgets::CARD_GAP)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .width(1060),
             )
             .direction(iced::widget::scrollable::Direction::Horizontal(
@@ -299,7 +274,7 @@ impl Editor {
                 t!("background_efficiency.no_custom_rules").to_string(),
             ));
         }
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 fn can_add(settings: &BackgroundEfficiencySettings, path: &str) -> bool {

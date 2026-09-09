@@ -24,9 +24,8 @@ page names and sections. The vendored GPUI directory is unchanged.
 - Virtualized Process List with grouped rows, sorting, resource columns, icons,
   per-process details, saved policies, and typed one-shot commands.
 - Action Log filters, pagination, clearing, and atomic CSV export to a chosen path.
-- Animated navigation, page transitions, groups, removals, and virtualized process
-  group expansion. Confirmed removal changes settings immediately; animation
-  copies do not determine whether a change is saved.
+- Immediate navigation, expand/collapse, and confirmed deletion. Process groups
+  remain virtualized; no animation frame subscription or retained deletion copies.
 - Existing native tray, minimized start, single-instance restoration, portable
   settings, runtime safety and shutdown restoration boundaries.
 

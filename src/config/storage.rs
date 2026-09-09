@@ -94,8 +94,8 @@ mod tests {
 
     use crate::config::{
         AccentSettings, ActionLogMode, AdaptiveEnginePreset, AdaptiveEngineSettings,
-        AdvancedPowerPlanTuningPreset, AdvancedSettings, AnimationMode, AppLanguage,
-        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
+        AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage, AppSuspensionRule,
+        AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
         BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
         ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule,
         ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings,
@@ -217,7 +217,6 @@ mod tests {
                 theme_mode: AppThemeMode::Dark,
                 accent: AccentSettings::default(),
                 language: AppLanguage::ZhTw,
-                animation_mode: AnimationMode::Off,
                 navigation_collapsed: true,
                 show_enabled_feature_counts_in_sidebar: false,
                 show_feature_status_on_cards: false,

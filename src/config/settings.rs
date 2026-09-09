@@ -159,8 +159,6 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub language: AppLanguage,
     #[serde(default)]
-    pub animation_mode: AnimationMode,
-    #[serde(default)]
     pub navigation_collapsed: bool,
     #[serde(default = "default_true")]
     pub show_enabled_feature_counts_in_sidebar: bool,
@@ -194,19 +192,6 @@ pub enum AppThemeMode {
 
 impl AppThemeMode {
     pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnimationMode {
-    #[default]
-    System,
-    On,
-    Off,
-}
-
-impl AnimationMode {
-    pub const ALL: [Self; 3] = [Self::System, Self::On, Self::Off];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1530,7 +1515,6 @@ impl Default for Settings {
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
-                animation_mode: AnimationMode::System,
                 navigation_collapsed: false,
                 show_enabled_feature_counts_in_sidebar: true,
                 show_feature_status_on_cards: true,

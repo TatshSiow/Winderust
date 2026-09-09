@@ -419,7 +419,6 @@ pub(super) fn windows_event_wake_required(
 pub(super) fn appearance_events_required(settings: &Settings) -> bool {
     settings.general.theme_mode == AppThemeMode::System
         || settings.general.accent.source == AccentColorSource::Windows
-        || settings.general.animation_mode == AnimationMode::System
 }
 
 pub(super) fn activity_power_plan_required(settings: &Settings) -> bool {

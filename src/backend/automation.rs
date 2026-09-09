@@ -22,7 +22,7 @@ use crate::{
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
     config::{
-        AccentColorSource, AnimationMode, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
+        AccentColorSource, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
         ProcessGpuPriority, ProcessIoPriority, ProcessMemoryPriority, ProcessPrioritySetting,
         ProcessThreadPrioritySetting, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },

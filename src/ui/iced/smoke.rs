@@ -247,7 +247,6 @@ pub(crate) fn render_all_pages() {
     settings.general.start_minimized = false;
     settings.general.startup_with_windows = false;
     settings.advanced.show_advanced_controls = true;
-    settings.general.animation_mode = crate::config::AnimationMode::Off;
     let mut editor = SettingsEditor::with_settings(settings);
     let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
     REQUESTED.store(true, Ordering::Relaxed);

@@ -1,6 +1,8 @@
+use super::design;
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::config::MemoryTrimSettings;
 use crate::ui::process_rules::{can_add_memory_trim_exclusion, new_process_exclusion_rule};
-use iced::widget::{button, checkbox, column, pick_list, row, scrollable, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -9,7 +11,6 @@ pub(super) struct Editor {
     pub(super) path: String,
     collapsed: [bool; 3],
     removing: Option<usize>,
-    removed: Option<(usize, crate::config::ProcessExclusionRule)>,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -23,7 +24,6 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     Remove(usize),
     ConfirmRemove,
-    Removed(String),
     CancelRemove,
     TrimNow,
     Browse,
@@ -41,7 +41,6 @@ impl Editor {
             Message::Add
                 if settings.enabled && can_add_memory_trim_exclusion(settings, &self.path) =>
             {
-                self.removed = None;
                 settings
                     .exclusions
                     .push(new_process_exclusion_rule(&self.path));
@@ -81,16 +80,7 @@ impl Editor {
                     .take()
                     .filter(|i| *i < settings.exclusions.len())
                 {
-                    self.removed = Some((i, settings.exclusions.remove(i)));
-                }
-            }
-            Message::Removed(path) => {
-                if self
-                    .removed
-                    .as_ref()
-                    .is_some_and(|(_, r)| r.executable_path == path)
-                {
-                    self.removed = None;
+                    settings.exclusions.remove(i);
                 }
             }
 
@@ -101,13 +91,12 @@ impl Editor {
         &'a self,
         settings: &'a MemoryTrimSettings,
         candidates: &[String],
-        motion_enabled: bool,
     ) -> Element<'a, Message> {
         let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
             "memory_trim.enable",
             super::widgets::switch(settings.enabled, Some(Message::Enabled))
         )),]
-        .spacing(12);
+        .spacing(super::widgets::CARD_GAP);
         let field = |label: &str, value: String, change: fn(String) -> Message| {
             row![
                 text(t!(label).to_string()).width(Fill),
@@ -115,7 +104,7 @@ impl Editor {
                     .on_input_maybe(settings.enabled.then_some(change))
                     .width(140)
             ]
-            .spacing(12)
+            .spacing(design::space::MEDIUM)
             .align_y(iced::Center)
         };
         for (index, label, content) in [
@@ -134,7 +123,7 @@ impl Editor {
                         Message::WorkingSet
                     )
                 ]
-                .spacing(12),
+                .spacing(design::space::MEDIUM),
             ),
             (
                 1,
@@ -152,7 +141,6 @@ impl Editor {
                 Message::Collapse(index),
                 iced::widget::Space::new(),
                 content,
-                motion_enabled,
             ));
         }
         let mut safety = column![
@@ -165,10 +153,10 @@ impl Editor {
                         .then_some(Message::Add)
                 )
             ]
-            .spacing(8)
+            .spacing(design::space::SMALL)
             .align_y(iced::Center)
         ]
-        .spacing(12);
+        .spacing(design::space::MEDIUM);
         let matching = candidates
             .iter()
             .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()))
@@ -181,38 +169,27 @@ impl Editor {
             );
         }
         let mut cards = Vec::new();
-        let mut rules = settings.exclusions.iter().enumerate().collect::<Vec<_>>();
-        if let Some((i, rule)) = &self.removed {
-            rules.insert((*i).min(rules.len()), (*i, rule));
-        }
-        for (i, r) in rules {
+        for (i, r) in settings.exclusions.iter().enumerate() {
             cards.push((
-                super::motion::key(&r.executable_path),
-                super::motion::removal(
-                    super::widgets::settings_card(
-                        row![
-                            checkbox(r.enabled)
-                                .label(r.executable_path.clone())
-                                .on_toggle_maybe(
-                                    settings
-                                        .enabled
-                                        .then_some(move |v| Message::RuleEnabled(i, v))
-                                ),
-                            button(text(t!("common.remove").to_string()))
-                                .on_press(Message::Remove(i))
-                        ]
-                        .spacing(8)
-                        .align_y(iced::Center),
-                    ),
-                    self.removed
-                        .as_ref()
-                        .is_some_and(|(_, removed)| removed.executable_path == r.executable_path),
-                    motion_enabled,
-                    Message::Removed(r.executable_path.clone()),
-                ),
+                super::widgets::stable_key(&r.executable_path),
+                super::widgets::settings_card(
+                    row![
+                        checkbox(r.enabled)
+                            .label(r.executable_path.clone())
+                            .on_toggle_maybe(
+                                settings
+                                    .enabled
+                                    .then_some(move |v| Message::RuleEnabled(i, v))
+                            ),
+                        button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                )
+                .into(),
             ));
         }
-        safety = safety.push(iced::widget::keyed_column(cards).spacing(8));
+        safety = safety.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
         if settings.exclusions.is_empty() {
             safety = safety.push(text(t!("memory_trim.no_exclusions").to_string()));
         }
@@ -222,7 +199,7 @@ impl Editor {
                     button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
                     button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         }
@@ -232,13 +209,12 @@ impl Editor {
             Message::Collapse(2),
             iced::widget::Space::new(),
             safety,
-            motion_enabled,
         ));
         body = body.push(
             button(text(t!("memory_trim.trim_now").to_string()))
                 .on_press_maybe(settings.enabled.then_some(Message::TrimNow)),
         );
-        scrollable(body).spacing(10).height(Fill).into()
+        scrollable(body).height(Fill).into()
     }
 }
 #[cfg(test)]
@@ -273,11 +249,5 @@ mod tests {
         e.update(&mut s, Message::Remove(0));
         e.update(&mut s, Message::ConfirmRemove);
         assert!(s.exclusions.is_empty());
-        assert!(e.removed.is_some());
-        e.update(&mut s, Message::Removed("wrong.exe".into()));
-        assert!(e.removed.is_some());
-        e.update(&mut s, Message::Removed(path.into()));
-        assert!(s.exclusions.is_empty());
-        assert!(e.removed.is_none());
     }
 }

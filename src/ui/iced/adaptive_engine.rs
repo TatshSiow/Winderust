@@ -1,12 +1,14 @@
+use super::design;
 use super::priority_control::{
     process_dynamic_priority_boost_setting_label, process_gpu_priority_setting_label,
     process_io_priority_setting_label, process_memory_priority_setting_label,
     process_priority_setting_label, process_thread_priority_setting_label,
 };
+use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::automation::RuntimeStatusSnapshot;
 use crate::config::*;
 use crate::power::ProcessorBoostMode;
-use iced::widget::{button, checkbox, column, pick_list, row, scrollable, text, text_input};
+use iced::widget::{column, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[path = "adaptive_presets.rs"]
@@ -51,7 +53,6 @@ pub(super) struct Editor {
     path: String,
     error: String,
     removing: Option<usize>,
-    deleting: Option<ProcessExclusionRule>,
     numbers: std::collections::HashMap<&'static str, String>,
     invalid_numbers: std::collections::HashMap<&'static str, (u64, u64, &'static str)>,
 }
@@ -89,7 +90,6 @@ pub(super) enum Message {
     RemoveExclusion(usize),
     ConfirmRemoveExclusion,
     CancelRemoveExclusion,
-    RemovedExclusion(String),
     ExclusionEnabled(usize, bool),
 }
 impl Editor {
@@ -229,17 +229,8 @@ impl Editor {
             Message::ConfirmRemoveExclusion => {
                 if let Some(i) = self.removing.take() {
                     if i < s.cpu_scheduler.custom_rules.len() {
-                        self.deleting = Some(s.cpu_scheduler.custom_rules.remove(i));
+                        s.cpu_scheduler.custom_rules.remove(i);
                     }
-                }
-            }
-            Message::RemovedExclusion(path) => {
-                if self
-                    .deleting
-                    .as_ref()
-                    .is_some_and(|r| r.executable_path == path)
-                {
-                    self.deleting = None;
                 }
             }
             Message::CancelRemoveExclusion => self.removing = None,
@@ -315,31 +306,25 @@ impl Editor {
         live: &'a Settings,
         _status: &'a RuntimeStatusSnapshot,
         candidates: &'a [String],
-        motion: bool,
     ) -> Element<'a, Message> {
         let s = self.draft.as_ref().unwrap_or(live);
         let editable = self.draft.is_none() || !self.read_only;
-        let mut body = column![].spacing(12);
+        let mut body = column![].spacing(super::widgets::CARD_GAP);
         macro_rules! toggle {($key:expr,$($field:ident).+) => {row![
             setting_label($key).width(Fill),
-            text(t!(if s.$($field).+ {"common.on"} else {"common.off"}).to_string()),
-            iced::widget::toggler(s.$($field).+).size(20).on_toggle_maybe(editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v)))
-        ].spacing(8).height(34).align_y(iced::Center)};}
+            super::widgets::switch(s.$($field).+, editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v)))
+        ].spacing(design::space::SMALL).height(super::widgets::SETTING_ROW_HEIGHT).align_y(iced::Center)};}
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
             let key=stringify!($($field).+);
             let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
-            let current=s.$($field).+ as u64;
-            let change=|n:u64| Message::Number(|s,n|s.$($field).+ = n as _,n.to_string(),$min,$max,key,$key);
             let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if $max==100 {"%"} else {""};
             row![setting_label($key).width(Fill),
-                button(text("-")).style(iced::widget::button::secondary).width(32).on_press_maybe((editable && current>$min).then(||change(current.saturating_sub(1).max($min)))),
-                text_input("",&value).align_x(iced::alignment::Horizontal::Center).on_input_maybe(editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key))).width(80),
-                text(unit).width(22),
-                button(text("+")).style(iced::widget::button::secondary).width(32).on_press_maybe((editable && current<$max).then(||change(current.saturating_add(1).min($max))))
-            ].spacing(8).height(46).align_y(iced::Center)
+                super::widgets::stepper(&value, $min..=$max, 1, unit,
+                    editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
+            ].spacing(design::space::SMALL).height(46).align_y(iced::Center)
         }};}
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).width(Fill).into()}else{text($label(selected)).into()};control}};}
-        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(8).height(46).align_y(iced::Center)};}
+        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).height(46).align_y(iced::Center)};}
         if self.draft.is_none() {
             body = body.push(super::widgets::settings_card(toggle!(
                 "adaptive_engine.enable",
@@ -386,12 +371,12 @@ impl Editor {
                     .width(280)
                     .placeholder(t!("common.custom").to_string())
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         }
         let tab = self.tuning_tabs[usize::from(self.draft.is_some())];
-        let mut tabs = row![].spacing(4);
+        let mut tabs = row![].spacing(design::space::TIGHT);
         for next in TuningTab::ALL
             .into_iter()
             .filter(|tab| self.draft.is_none() || *tab != TuningTab::CustomRules)
@@ -414,7 +399,7 @@ impl Editor {
         }
         body = body.push(
             iced::widget::container(tabs)
-                .padding(4)
+                .padding(design::space::TIGHT as u16)
                 .width(Fill)
                 .style(super::widgets::surface),
         );
@@ -458,25 +443,17 @@ impl Editor {
                         cpu_scheduler.cpu_recovery_time_seconds
                     )
                 ]
-                .spacing(12);
+                .spacing(design::space::MEDIUM);
                 let action: Element<'_, Message> = if self.draft.is_none() {
-                    iced::widget::toggler(s.cpu_scheduler.cpu_pressure_restraint_enabled)
-                        .size(20)
-                        .label(
-                            t!(if s.cpu_scheduler.cpu_pressure_restraint_enabled {
-                                "common.on"
-                            } else {
-                                "common.off"
-                            })
-                            .to_string(),
-                        )
-                        .on_toggle(|v| {
+                    super::widgets::switch(
+                        s.cpu_scheduler.cpu_pressure_restraint_enabled,
+                        Some(|v| {
                             Message::Toggle(
                                 |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
                                 v,
                             )
-                        })
-                        .into()
+                        }),
+                    )
                 } else {
                     iced::widget::Space::new().into()
                 };
@@ -486,7 +463,6 @@ impl Editor {
                     Message::Collapse(0),
                     action,
                     pressure,
-                    motion,
                 ));
                 let mut allocation = column![
                     number!(
@@ -508,7 +484,7 @@ impl Editor {
                         cpu_scheduler.dynamic_resource_zones_enabled
                     )
                 ]
-                .spacing(12);
+                .spacing(design::space::MEDIUM);
                 if !s.cpu_scheduler.dynamic_resource_zones_enabled {
                     allocation = allocation.push(choice!(
                         s,
@@ -567,24 +543,16 @@ impl Editor {
                     "cpu_scheduler.limit_background_processors".to_string(),
                     !self.collapsed[usize::from(self.draft.is_some())][1],
                     Message::Collapse(1),
-                    iced::widget::toggler(s.cpu_scheduler.limit_background_processors_enabled)
-                        .size(20)
-                        .label(
-                            t!(if s.cpu_scheduler.limit_background_processors_enabled {
-                                "common.on"
-                            } else {
-                                "common.off"
-                            })
-                            .to_string(),
-                        )
-                        .on_toggle_maybe(editable.then_some(|v| {
+                    super::widgets::switch(
+                        s.cpu_scheduler.limit_background_processors_enabled,
+                        editable.then_some(|v| {
                             Message::Toggle(
                                 |s, v| s.cpu_scheduler.limit_background_processors_enabled = v,
                                 v,
                             )
-                        })),
+                        }),
+                    ),
                     allocation,
-                    motion,
                 ));
             }
             TuningTab::ProcessorPower => {
@@ -592,8 +560,10 @@ impl Editor {
                     "adaptive_engine.processor_power_policy",
                     adaptive_engine.processor_power_policy_enabled
                 )));
-                body = body
-                    .push(text(t!("adaptive_engine.base_processor_policy").to_string()).size(16));
+                body = body.push(
+                    text(t!("adaptive_engine.base_processor_policy").to_string())
+                        .size(design::typography::SECTION),
+                );
                 body = body.push(super::widgets::settings_card(number!(
                     "processor_power.core_parking_min",
                     0,
@@ -628,7 +598,8 @@ impl Editor {
                 )));
 
                 body = body.push(
-                    text(t!("adaptive_engine.background_pressure_profile").to_string()).size(16),
+                    text(t!("adaptive_engine.background_pressure_profile").to_string())
+                        .size(design::typography::SECTION),
                 );
                 body = body.push(super::widgets::settings_card(number!(
                     "adaptive_engine.ac_boost_policy",
@@ -660,7 +631,8 @@ impl Editor {
                 )));
 
                 body = body.push(
-                    text(t!("adaptive_engine.focus_and_launch_profile").to_string()).size(16),
+                    text(t!("adaptive_engine.focus_and_launch_profile").to_string())
+                        .size(design::typography::SECTION),
                 );
                 body = body.push(super::widgets::settings_card(number!(
                     "adaptive_engine.ac_boost_policy",
@@ -701,8 +673,8 @@ impl Editor {
                     text(t!("common.background_process").to_string())
                         .width(iced::Length::FillPortion(1))
                 ]
-                .spacing(12)]
-                .spacing(8);
+                .spacing(design::space::MEDIUM)]
+                .spacing(design::space::SMALL);
                 table = table.push(super::widgets::settings_card(
                     row![
                         row![
@@ -716,8 +688,8 @@ impl Editor {
                             text(t!("nav.process_priority").to_string())
                         ]
                         .align_y(iced::Center)
-                        .height(34)
-                        .spacing(8)
+                        .height(super::widgets::SETTING_ROW_HEIGHT)
+                        .spacing(design::space::SMALL)
                         .width(280),
                         column![selector!(
                             s,
@@ -731,7 +703,7 @@ impl Editor {
                             process_priority_setting_label,
                             cpu_scheduler.focus_process_priority
                         )]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![selector!(
                             s,
@@ -745,7 +717,7 @@ impl Editor {
                             process_priority_setting_label,
                             cpu_scheduler.visible_window_priority
                         )]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![selector!(
                             s,
@@ -759,10 +731,10 @@ impl Editor {
                             process_priority_setting_label,
                             cpu_scheduler.background_priority
                         )]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1))
                     ]
-                    .spacing(12),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::settings_card(
                     row![
@@ -777,8 +749,8 @@ impl Editor {
                             text(t!("nav.background_efficiency").to_string())
                         ]
                         .align_y(iced::Center)
-                        .height(34)
-                        .spacing(8)
+                        .height(super::widgets::SETTING_ROW_HEIGHT)
+                        .spacing(design::space::SMALL)
                         .width(280),
                         column![
                             iced::widget::Space::new().height(0),
@@ -808,7 +780,7 @@ impl Editor {
                             )
                             .width(Fill)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             iced::widget::Space::new().height(0),
@@ -838,7 +810,7 @@ impl Editor {
                             )
                             .width(Fill)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![pick_list(
                             [
@@ -860,10 +832,10 @@ impl Editor {
                             )
                         )
                         .width(Fill)]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1))
                     ]
-                    .spacing(12),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::settings_card(
                     row![
@@ -878,8 +850,8 @@ impl Editor {
                             text(t!("nav.thread_priority").to_string())
                         ]
                         .align_y(iced::Center)
-                        .height(34)
-                        .spacing(8)
+                        .height(super::widgets::SETTING_ROW_HEIGHT)
+                        .spacing(design::space::SMALL)
                         .width(280),
                         column![
                             iced::widget::Space::new().height(0),
@@ -897,7 +869,7 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             iced::widget::Space::new().height(0),
@@ -915,7 +887,7 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             selector!(
@@ -932,10 +904,10 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1))
                     ]
-                    .spacing(12),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::settings_card(
                     row![
@@ -950,8 +922,8 @@ impl Editor {
                             text(t!("nav.dynamic_priority_boost").to_string())
                         ]
                         .align_y(iced::Center)
-                        .height(34)
-                        .spacing(8)
+                        .height(super::widgets::SETTING_ROW_HEIGHT)
+                        .spacing(design::space::SMALL)
                         .width(280),
                         column![
                             iced::widget::Space::new().height(0),
@@ -964,7 +936,7 @@ impl Editor {
                                 cpu_scheduler.dynamic_priority_boost.foreground_boost
                             )
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             iced::widget::Space::new().height(0),
@@ -977,7 +949,7 @@ impl Editor {
                                 cpu_scheduler.dynamic_priority_boost.visible_window_boost
                             )
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![selector!(
                             s,
@@ -987,10 +959,10 @@ impl Editor {
                             process_dynamic_priority_boost_setting_label,
                             cpu_scheduler.dynamic_priority_boost.background_boost
                         )]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1))
                     ]
-                    .spacing(12),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::settings_card(
                     row![
@@ -1005,8 +977,8 @@ impl Editor {
                             text(t!("nav.io_priority").to_string())
                         ]
                         .align_y(iced::Center)
-                        .height(34)
-                        .spacing(8)
+                        .height(super::widgets::SETTING_ROW_HEIGHT)
+                        .spacing(design::space::SMALL)
                         .width(280),
                         column![
                             iced::widget::Space::new().height(0),
@@ -1024,7 +996,7 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             iced::widget::Space::new().height(0),
@@ -1042,7 +1014,7 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             selector!(
@@ -1059,10 +1031,10 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1))
                     ]
-                    .spacing(12),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::settings_card(
                     row![
@@ -1077,8 +1049,8 @@ impl Editor {
                             text(t!("nav.gpu_priority").to_string())
                         ]
                         .align_y(iced::Center)
-                        .height(34)
-                        .spacing(8)
+                        .height(super::widgets::SETTING_ROW_HEIGHT)
+                        .spacing(design::space::SMALL)
                         .width(280),
                         column![
                             iced::widget::Space::new().height(0),
@@ -1096,7 +1068,7 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             iced::widget::Space::new().height(0),
@@ -1114,7 +1086,7 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![
                             selector!(
@@ -1131,10 +1103,10 @@ impl Editor {
                             ),
                             iced::widget::Space::new().height(0)
                         ]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1))
                     ]
-                    .spacing(12),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::settings_card(
                     row![
@@ -1149,8 +1121,8 @@ impl Editor {
                             text(t!("nav.memory_priority").to_string())
                         ]
                         .align_y(iced::Center)
-                        .height(34)
-                        .spacing(8)
+                        .height(super::widgets::SETTING_ROW_HEIGHT)
+                        .spacing(design::space::SMALL)
                         .width(280),
                         column![selector!(
                             s,
@@ -1160,7 +1132,7 @@ impl Editor {
                             process_memory_priority_setting_label,
                             cpu_scheduler.focus_process_memory_priority
                         )]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![selector!(
                             s,
@@ -1170,7 +1142,7 @@ impl Editor {
                             process_memory_priority_setting_label,
                             cpu_scheduler.visible_window_memory_priority
                         )]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1)),
                         column![selector!(
                             s,
@@ -1180,10 +1152,10 @@ impl Editor {
                             process_memory_priority_setting_label,
                             cpu_scheduler.background_memory_priority
                         )]
-                        .spacing(8)
+                        .spacing(design::space::SMALL)
                         .width(iced::Length::FillPortion(1))
                     ]
-                    .spacing(12),
+                    .spacing(design::space::MEDIUM),
                 ));
                 body = body.push(iced::widget::scrollable(table.width(960)).direction(
                     iced::widget::scrollable::Direction::Horizontal(
@@ -1284,8 +1256,7 @@ impl Editor {
                             cpu_scheduler.gpu_priority.preserve_background_priority
                         )
                     ]
-                    .spacing(12),
-                    motion,
+                    .spacing(design::space::MEDIUM),
                 ));
             }
             TuningTab::CustomRules => {}
@@ -1300,7 +1271,7 @@ impl Editor {
                             .on_press(Message::Browse),
                         button(text(t!("common.add").to_string())).on_press(Message::AddExclusion)
                     ]
-                    .spacing(8)
+                    .spacing(design::space::SMALL)
                     .align_y(iced::Center),
                 ));
             for candidate in candidates
@@ -1312,36 +1283,24 @@ impl Editor {
                     body.push(button(text(candidate)).on_press(Message::Path(candidate.clone())));
             }
             let mut rules = Vec::new();
-            for (i, r) in s
-                .cpu_scheduler
-                .custom_rules
-                .iter()
-                .chain(self.deleting.iter())
-                .enumerate()
-            {
+            for (i, r) in s.cpu_scheduler.custom_rules.iter().enumerate() {
                 rules.push((
-                    super::motion::key(&r.executable_path),
-                    super::motion::removal(
-                        super::widgets::settings_card(
-                            row![
-                                checkbox(r.enabled)
-                                    .label(r.executable_path.clone())
-                                    .on_toggle(move |v| Message::ExclusionEnabled(i, v)),
-                                button(text(t!("common.remove").to_string()))
-                                    .on_press(Message::RemoveExclusion(i))
-                            ]
-                            .spacing(8)
-                            .align_y(iced::Center),
-                        ),
-                        self.deleting
-                            .as_ref()
-                            .is_some_and(|old| old.executable_path == r.executable_path),
-                        motion,
-                        Message::RemovedExclusion(r.executable_path.clone()),
-                    ),
+                    super::widgets::stable_key(&r.executable_path),
+                    super::widgets::settings_card(
+                        row![
+                            checkbox(r.enabled)
+                                .label(r.executable_path.clone())
+                                .on_toggle(move |v| Message::ExclusionEnabled(i, v)),
+                            button(text(t!("common.remove").to_string()))
+                                .on_press(Message::RemoveExclusion(i))
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                    )
+                    .into(),
                 ));
             }
-            body = body.push(iced::widget::keyed_column(rules).spacing(8));
+            body = body.push(iced::widget::keyed_column(rules).spacing(super::widgets::CARD_GAP));
         }
         if self.draft.is_none() && tab == TuningTab::CustomRules && self.removing.is_some() {
             body = body.push(super::widgets::settings_card(
@@ -1352,21 +1311,22 @@ impl Editor {
                     button(text(t!("common.cancel").to_string()))
                         .on_press(Message::CancelRemoveExclusion)
                 ]
-                .spacing(8)
+                .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             ));
         }
         if let Some(error) = self.validation_error() {
             body = body.push(text(error));
         }
-        scrollable(body).spacing(10).width(Fill).height(Fill).into()
+        scrollable(body).width(Fill).height(Fill).into()
     }
     pub(super) fn side_panel<'a>(
         &'a self,
         live: &'a Settings,
         status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
-        let mut rail = column![text(t!("adaptive_engine.built_in_presets").to_string())].spacing(8);
+        let mut rail = column![text(t!("adaptive_engine.built_in_presets").to_string())]
+            .spacing(design::space::SMALL);
         for p in BuiltInAdaptiveEnginePreset::ALL {
             rail = rail.push(
                 row![
@@ -1378,7 +1338,7 @@ impl Editor {
                         .style(super::widgets::quiet)
                         .on_press(Message::ViewBuiltIn(p))
                 ]
-                .spacing(4),
+                .spacing(design::space::TIGHT),
             );
         }
         rail = rail.push(text(t!("adaptive_engine.custom_presets").to_string()));
@@ -1395,7 +1355,7 @@ impl Editor {
                     button(text(t!("adaptive_engine.edit_preset").to_string()))
                         .on_press(Message::Edit(i))
                 ]
-                .spacing(4),
+                .spacing(design::space::TIGHT),
             );
         }
         rail = rail.push(
@@ -1462,11 +1422,11 @@ impl Editor {
                         super::widgets::quiet
                     })
             ]
-            .spacing(8),
+            .spacing(design::space::SMALL),
             rail
         ]
-        .spacing(12);
-        scrollable(rail).spacing(10).width(Fill).height(Fill).into()
+        .spacing(design::space::MEDIUM);
+        scrollable(rail).width(Fill).height(Fill).into()
     }
 }
 fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
@@ -1478,15 +1438,18 @@ fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
         "processor_power.boost_policy" => "adaptive_engine.base_boost_policy_help".to_string(),
         _ => format!("{key}_help"),
     };
-    let mut label = row![super::widgets::heading(t!(key).to_string(), 14)]
-        .spacing(8)
-        .align_y(iced::Center);
+    let mut label = row![super::widgets::heading(
+        t!(key).to_string(),
+        design::typography::BODY
+    )]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center);
     let help = t!(&help_key).to_string();
     if help != help_key {
         label = label.push(iced::widget::tooltip(
             super::navigation::glyph("icons/info.svg"),
             iced::widget::container(text(help).width(320))
-                .padding(10)
+                .padding(design::space::COMPACT as u16)
                 .style(super::widgets::surface),
             iced::widget::tooltip::Position::Top,
         ));
@@ -1591,7 +1554,6 @@ mod tests {
         editor.update(&mut settings, Message::RemoveExclusion(0));
         editor.update(&mut settings, Message::ConfirmRemoveExclusion);
         assert!(settings.cpu_scheduler.custom_rules.is_empty());
-        assert!(editor.deleting.is_some());
     }
     #[test]
     fn read_only_builtin_and_invalid_numbers_do_not_mutate() {

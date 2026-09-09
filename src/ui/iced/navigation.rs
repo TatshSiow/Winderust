@@ -1,16 +1,38 @@
+use super::design;
 use crate::config::Settings;
 use crate::ui::{self, Page};
 use iced::{Element, Theme};
 use rust_i18n::t;
 use std::collections::HashSet;
 
+pub(super) fn section<'a, Message: 'a>(
+    header: impl Into<Element<'a, Message>>,
+    children: Vec<Element<'a, Message>>,
+    expanded: bool,
+) -> Element<'a, Message> {
+    let mut section = iced::widget::column![header.into()].spacing(design::space::TINY);
+    // An empty column still participates in spacing; leaf pages must have no child slot.
+    if expanded && !children.is_empty() {
+        section = section.push(
+            iced::widget::column(children)
+                .spacing(design::space::TINY)
+                .padding([0, design::space::COMPACT as u16]),
+        );
+    }
+    section.into()
+}
+
 pub(super) fn label<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
     use iced::widget::{container, text, tooltip};
     tooltip(
-        container(text(page.label()).size(13).wrapping(text::Wrapping::None))
-            .width(iced::Fill)
-            .height(18)
-            .clip(true),
+        container(
+            text(page.label())
+                .size(design::typography::SECONDARY)
+                .wrapping(text::Wrapping::None),
+        )
+        .width(iced::Fill)
+        .height(design::ICON_SIZE)
+        .clip(true),
         text(page.label()),
         tooltip::Position::Right,
     )
@@ -55,8 +77,8 @@ pub(super) fn icon<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
     iced::widget::svg(
         crate::ui::assets::iced_icon(icon_path(page)).expect("Every UI icon is bundled"),
     )
-    .width(18)
-    .height(18)
+    .width(design::ICON_SIZE)
+    .height(design::ICON_SIZE)
     .style(|theme: &Theme, _| iced::widget::svg::Style {
         color: Some(theme.palette().primary),
     })
@@ -65,8 +87,8 @@ pub(super) fn icon<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
 
 pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message> {
     iced::widget::svg(crate::ui::assets::iced_icon(path).expect("Every UI icon is bundled"))
-        .width(18)
-        .height(18)
+        .width(design::ICON_SIZE)
+        .height(design::ICON_SIZE)
         .style(|theme: &Theme, _| iced::widget::svg::Style {
             color: Some(theme.palette().text),
         })
@@ -413,6 +435,26 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn leaf_navigation_keeps_one_layout_child_after_first_visit() {
+        let build = |expanded, children| {
+            section::<()>(
+                iced::widget::Space::new().height(design::NAVIGATION_ROW_HEIGHT),
+                children,
+                expanded,
+            )
+        };
+        for expanded in [false, true] {
+            assert_eq!(build(expanded, vec![]).as_widget().children().len(), 1);
+        }
+        let child = || {
+            iced::widget::Space::new()
+                .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
+                .into()
+        };
+        assert_eq!(build(false, vec![child()]).as_widget().children().len(), 1);
+        assert_eq!(build(true, vec![child()]).as_widget().children().len(), 2);
+    }
     #[test]
     fn every_page_has_a_bundled_icon_and_sidebar_counts_follow_feature_settings() {
         for section in Page::sections() {

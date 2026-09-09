@@ -16,10 +16,9 @@ Prefer visible state, compact controls, and predictable rows over large illustra
   searchable when expanded and keeps a search action in its remembered compact
   icon rail; the quiet navigation-styled toggle stays below a divider in normal
   sidebar flow rather than floating over content. Keep icon and row geometry
-  stable across the animated expanded/compact transition; selected and hover
+  stable between expanded and compact states; selected and hover
   surfaces retain rounded compact-row geometry instead of being edge-clipped.
-  Search remains one persistent field across both states so its icon, text
-  metrics, focus, and rounded surface never swap or reflow during the motion.
+  Show a search field when expanded and a search action when compact.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/iced/app.rs`.
@@ -36,7 +35,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 ## Components
 
 - Reuse `src/ui/iced/widgets.rs` for shared numeric and power-plan controls, and
-  `motion.rs` for collapsible groups and removal transitions. Use Iced buttons,
+  native conditional content for collapsible groups. Use Iced buttons,
   checkboxes, pick lists, text inputs, and sliders for their natural control types.
 - Use switches or checkboxes for binary state.
 - Use sliders, steppers, or numeric inputs for numeric settings.
@@ -62,13 +61,9 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## Motion
 
-- Preserve motion unless the user explicitly asks to remove it.
-- Respect `AnimationMode`: system/on/off flows through `settings_pages::animations()`.
-- Use `motion::reveal` and `motion::removal` with stable keyed rows and the shared animation preference.
-  Confirmed deletion must update settings immediately; animation may retain only a transient visual copy.
-- Motion should clarify state changes: selected navigation, hover, dropdowns, popovers, switches, collapsible groups, and process groups.
-- Right-side status and preset rails slide at the window edge using the shared control-motion timing, collapse to the same 64 px action-row pattern as navigation, and retain their content only until an exit transition completes.
-- Keep animation IDs stable and bounded. Do not create unbounded global motion state keyed by volatile data.
+- Animations were removed at the user's request to start fresh. Navigation, panels, groups, and confirmed deletions update immediately.
+- Keep native hover/pressed feedback and stable keyed rows. Do not reintroduce transitions or an animation preference until requested.
+- Keep Process List virtualization independent of animation or frame subscriptions.
 
 ## Process List
 
