@@ -1,6 +1,6 @@
 # Architecture
 
-Winderust is a mechanism-centered modular monolith: one GPUI application process, one optional
+Winderust is a mechanism-centered modular monolith: one Iced application process, one optional
 automation worker, and one typed owner for each Windows mechanism. UI and feature code express
 intent; only controllers and their narrow Windows adapters own live mutations.
 
@@ -33,7 +33,7 @@ Windows events / UI intent / persisted settings
 
 ## Responsibilities
 
-- `WinderustApp` owns GPUI composition, dialogs, navigation, process-list presentation, and local
+- `WinderustApp` owns Iced composition, dialogs, navigation, process-list presentation, and local
   read models.
 - `SettingsEditor` is the only settings draft, revision, persistence, import, and export boundary.
 - `RuntimeHandle` owns worker lifecycle, event sources, typed commands, and published status.

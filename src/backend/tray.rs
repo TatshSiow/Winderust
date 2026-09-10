@@ -140,7 +140,7 @@ pub fn is_hidden_to_tray() -> bool {
 
 pub fn hide_window(hwnd: HWND) {
     set_hidden_to_tray(true);
-    // SAFETY: hwnd is obtained from the live GPUI window; ShowWindow does not retain pointers.
+    // SAFETY: hwnd is obtained from the live Iced window; ShowWindow does not retain pointers.
     unsafe { ShowWindow(hwnd, SW_HIDE) };
 }
 
@@ -185,7 +185,7 @@ fn subclass_window(hwnd: HWND) -> Result<isize, String> {
     // SAFETY: clearing the calling thread's last-error value lets the zero return from the
     // following SetWindowLongPtrW call be distinguished from failure.
     unsafe { SetLastError(0) };
-    // SAFETY: hwnd is the live GPUI window and tray_wnd_proc has the required static callback ABI.
+    // SAFETY: hwnd is the live Iced window and tray_wnd_proc has the required static callback ABI.
     let previous =
         unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, tray_wnd_proc as *const () as isize) };
     if previous == 0 {

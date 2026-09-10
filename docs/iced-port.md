@@ -7,7 +7,7 @@ avoid replaying the scene for hundreds of small regions during table updates.
 See `vendor/iced_tiny_skia/README.winderust.md` for provenance and its regression test.
 Production Cargo dependencies contain neither GPUI nor gpui-component.
 The implementation lives in `src/ui/iced/`; `src/ui.rs` retains the canonical
-page names and sections. The vendored GPUI directory is unchanged.
+page names and sections. The unused vendored GPUI directory has been removed.
 
 ## Implemented
 
@@ -57,5 +57,4 @@ for this migrated build; earlier prototype measurements are not production data.
 ## Source cleanup
 
 The retired `src/ui/app.rs` and `src/ui/app/` renderer is removed. The production
-crate has no GPUI dependency or frontend switch. The existing `vendor/gpui/`
-directory remains read-only as requested.
+crate has no GPUI dependency or frontend switch. The unused `vendor/gpui/` directory and GPUI shader-compiler setup have been removed.

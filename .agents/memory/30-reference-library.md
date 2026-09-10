@@ -115,7 +115,6 @@ This prototype does not implement Explorer-restart recovery or change the produc
 
 `src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live Iced window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`. `src/ui/iced/app.rs` latches a failed install for the current Hide to tray / Start minimized configuration, preventing the visible UI tick from retrying `Shell_NotifyIconW` every second; changing that configuration permits one new attempt and the original failure remains visible when Start minimized falls back to ordinary minimization.
 
-Historical GPUI comparison reference (not used by the production Iced UI): the crates.io `gpui 0.2.2` source is patched locally under `vendor/gpui`. Its Windows `VSyncProvider` otherwise calls `DwmFlush` and invalidates every GPUI HWND at display cadence even when all windows are hidden. The patch checks `IsWindowVisible` first and, while every HWND is hidden, skips compositor/device/redraw work and polls visibility at 250 ms. This bounds tray restore detection without retaining a 60 Hz background wake source.
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -123,9 +122,6 @@ Historical GPUI comparison reference (not used by the production Iced UI): the c
 | `ShowWindow` | Hides the window with `SW_HIDE` and shows it with `SW_SHOW`, preserving its current size and maximized state instead of resetting it with `SW_RESTORE`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow |
 | `SetWindowLongPtrW` | Installs and restores the temporary `GWLP_WNDPROC` tray callback. A zero return is a failure only when `GetLastError` is nonzero after first clearing it with `SetLastError(0)`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw |
 | `CallWindowProcW` | Forwards unhandled messages to the exact original window procedure. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw |
-| `IsWindowVisible` | Lets the patched GPUI Windows vsync loop skip compositor and redraw work while every GPUI HWND is hidden. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-iswindowvisible |
-| `DwmFlush` | GPUI uses this to synchronize visible rendering with DWM; Winderust's local patch does not call it while all GPUI windows are hidden. | https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmflush |
-| `RedrawWindow` | GPUI invalidates visible HWNDs after each vsync; hidden-only iterations are suppressed by the local patch. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-redrawwindow |
 
 ## External Web Links
 
