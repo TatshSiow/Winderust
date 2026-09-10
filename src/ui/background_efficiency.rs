@@ -111,7 +111,7 @@ impl Editor {
                 settings.visible_window_efficiency_mode,
             ),
         ] {
-            let mut group = column![].spacing(design::space::SMALL);
+            let mut group = column![];
             let label = match tier {
                 Tier::Background => "background_efficiency.enable",
                 Tier::Focus => "background_efficiency.foreground_detection",
@@ -139,16 +139,18 @@ impl Editor {
                 .width(design::SELECT_WIDTH),
             ));
             if tier == Tier::Background {
-                let aggressiveness: Element<'_, Message> = if enabled {
-                    pick_list(
-                        BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
-                        Some(Aggressiveness(settings.aggressiveness)),
-                        |value| Message::Aggressiveness(value.0),
-                    )
-                    .into()
-                } else {
-                    text(Aggressiveness(settings.aggressiveness).to_string()).into()
-                };
+                let aggressiveness = pick_list(
+                    BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
+                    Some(Aggressiveness(settings.aggressiveness)),
+                    move |value| {
+                        Message::Aggressiveness(if enabled {
+                            value.0
+                        } else {
+                            settings.aggressiveness
+                        })
+                    },
+                )
+                .width(design::SELECT_WIDTH);
                 group = group.push(super::widgets::setting_row(
                     "background_efficiency.aggressiveness",
                     aggressiveness,
@@ -179,8 +181,19 @@ impl Editor {
             let mut card = row![
                 checkbox(rule.enabled)
                     .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
-                    .width(32),
-                text(rule.executable_path.clone()).width(320),
+                    .width(48),
+                container(super::app_picker::app_name(
+                    &rule.executable_path,
+                    candidates
+                ))
+                .width(iced::Length::FillPortion(2)),
+                container(
+                    text(rule.executable_path.clone())
+                        .style(text::secondary)
+                        .wrapping(text::Wrapping::None)
+                )
+                .clip(true)
+                .width(iced::Length::FillPortion(3)),
             ]
             .spacing(design::space::MEDIUM)
             .align_y(iced::Center);
@@ -195,15 +208,17 @@ impl Editor {
                         Some(Mode(mode)),
                         move |mode| Message::RuleMode(index, tier, mode.0),
                     )
+                    .width(Fill)
                     .into()
                 } else {
                     text(Mode(mode).to_string()).into()
                 };
-                card = card.push(container(control).width(150));
+                card = card.push(container(control).width(iced::Length::FillPortion(2)));
             }
             card = card.push(
-                button(text(t!("common.remove").to_string()))
-                    .style(super::widgets::quiet)
+                button(super::navigation::glyph("icons/trash-2.svg"))
+                    .width(40)
+                    .style(iced::widget::button::danger)
                     .on_press_maybe(
                         enabled.then_some(Message::Remove(rule.executable_path.clone())),
                     ),
@@ -211,34 +226,35 @@ impl Editor {
 
             rule_cards.push((
                 super::widgets::stable_key(&rule.executable_path),
-                super::widgets::settings_card(card).into(),
-            ));
-        }
-        body = body.push(
-            scrollable(
                 column![
-                    row![
-                        text(t!("common.active").to_string()).width(32),
-                        text(t!("process_list.executable_path").to_string()).width(320),
-                        text(Tier::Focus.label()).width(150),
-                        text(Tier::VisibleWindow.label()).width(150),
-                        text(Tier::Background.label()).width(150)
-                    ]
-                    .spacing(design::space::MEDIUM),
-                    iced::widget::keyed_column(rule_cards).spacing(super::widgets::CARD_GAP)
+                    container(card).padding(super::widgets::CARD_PADDING as u16),
+                    iced::widget::rule::horizontal(1)
                 ]
-                .spacing(design::space::SMALL)
-                .width(1060),
-            )
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::new(),
-            )),
-        );
-        if settings.custom_rules.is_empty() {
-            body = body.push(text(
-                t!("background_efficiency.no_custom_rules").to_string(),
+                .into(),
             ));
         }
+        let header = row![
+            text(t!("common.active").to_string()).width(48),
+            text(t!("process_list.app_name").to_string()).width(iced::Length::FillPortion(2)),
+            text(t!("process_list.executable_path").to_string())
+                .width(iced::Length::FillPortion(3)),
+            text(Tier::Focus.label()).width(iced::Length::FillPortion(2)),
+            text(Tier::VisibleWindow.label()).width(iced::Length::FillPortion(2)),
+            text(Tier::Background.label()).width(iced::Length::FillPortion(2)),
+            text(t!("common.actions").to_string()).width(40),
+        ]
+        .spacing(design::space::MEDIUM);
+        let rows: Element<'_, Message> = if settings.custom_rules.is_empty() {
+            container(
+                text(t!("background_efficiency.no_custom_rules").to_string())
+                    .style(text::secondary),
+            )
+            .padding(design::space::LARGE as u16)
+            .into()
+        } else {
+            iced::widget::keyed_column(rule_cards).into()
+        };
+        body = body.push(super::widgets::rules_table(header, rows));
         scrollable(body).height(Fill).into()
     }
 }

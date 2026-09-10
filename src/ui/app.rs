@@ -1275,34 +1275,49 @@ impl WinderustApp {
             header = header.push(iced::widget::Space::new().width(Fill));
         }
         if self.page.supports_power_source_profiles() {
+            let plugged_in = crate::backend::power_source::is_plugged_in();
+            let mut tabs = row![].spacing(design::space::TIGHT);
+            for (profile, key, live) in [
+                (
+                    PowerSourceProfile::PluggedIn,
+                    "power_source.plugged_in",
+                    plugged_in == Some(true),
+                ),
+                (
+                    PowerSourceProfile::OnBattery,
+                    "power_source.on_battery",
+                    plugged_in == Some(false),
+                ),
+            ] {
+                let mut label = row![text(t!(key).to_string()).size(design::typography::BODY)]
+                    .spacing(design::space::TIGHT)
+                    .align_y(iced::Center);
+                if live {
+                    label = label.push(
+                        container(iced::widget::Space::new().width(6).height(6)).style(
+                            |theme: &Theme| container::Style {
+                                background: Some(theme.palette().success.into()),
+                                border: iced::border::rounded(3),
+                                ..Default::default()
+                            },
+                        ),
+                    );
+                }
+                tabs = tabs.push(
+                    button(container(label).center_y(Fill))
+                        .height(32)
+                        .on_press(Message::PowerSource(profile))
+                        .style(if self.power_source == profile {
+                            widgets::selected_control
+                        } else {
+                            widgets::quiet
+                        }),
+                );
+            }
             header = header.push(
-                row![
-                    button(
-                        text(t!("power_source.plugged_in").to_string())
-                            .size(design::typography::CAPTION)
-                    )
-                    .on_press(Message::PowerSource(PowerSourceProfile::PluggedIn))
-                    .style(
-                        if self.power_source == PowerSourceProfile::PluggedIn {
-                            widgets::selected_control
-                        } else {
-                            widgets::quiet
-                        }
-                    ),
-                    button(
-                        text(t!("power_source.on_battery").to_string())
-                            .size(design::typography::CAPTION)
-                    )
-                    .on_press(Message::PowerSource(PowerSourceProfile::OnBattery))
-                    .style(
-                        if self.power_source == PowerSourceProfile::OnBattery {
-                            widgets::selected_control
-                        } else {
-                            widgets::quiet
-                        }
-                    ),
-                ]
-                .spacing(design::space::TIGHT),
+                container(tabs)
+                    .padding(design::space::TIGHT as u16)
+                    .style(widgets::surface),
             );
         }
         let description = navigation::page_help(self.page);

@@ -8,6 +8,31 @@ pub(super) const CARD_PADDING: u32 = design::space::MEDIUM;
 pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
 pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
 
+pub(super) fn rules_table<'a, M: 'a>(
+    header: iced::widget::Row<'a, M>,
+    rows: Element<'a, M>,
+) -> Element<'a, M> {
+    iced::widget::container(iced::widget::column![
+        iced::widget::container(header)
+            .padding(CARD_PADDING as u16)
+            .style(|theme: &iced::Theme| iced::widget::container::Style {
+                text_color: Some(muted_color(theme)),
+                ..Default::default()
+            }),
+        iced::widget::rule::horizontal(1),
+        rows,
+    ])
+    .width(Fill)
+    .clip(true)
+    .style(|theme| {
+        let mut style = surface(theme);
+        style.border.width = 1.0;
+        style.border.color = control_border(theme);
+        style
+    })
+    .into()
+}
+
 pub(super) fn panel_tab<'a, M: Clone + 'a>(
     label: String,
     selected: bool,
@@ -265,7 +290,7 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     expanded: bool,
     message: M,
     action: impl Into<Element<'a, M>>,
-    content: impl Into<Element<'a, M>>,
+    content: iced::widget::Column<'a, M>,
 ) -> Element<'a, M> {
     settings_card(
         iced::widget::column![
@@ -288,14 +313,7 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
             .style(quiet)
             .on_press(message),
             optional_content(
-                iced::widget::rule::horizontal(1).style(|theme| iced::widget::rule::Style {
-                    color: control_border(theme),
-                    ..iced::widget::rule::default(theme)
-                }),
-                expanded,
-            ),
-            optional_content(
-                iced::widget::container(content).padding(iced::Padding {
+                iced::widget::container(content.spacing(2 * CARD_PADDING)).padding(iced::Padding {
                     top: CARD_PADDING as f32,
                     right: CARD_PADDING as f32,
                     bottom: CARD_PADDING as f32,
