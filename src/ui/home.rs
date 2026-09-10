@@ -124,16 +124,25 @@ impl Model {
                     design::typography::BODY
                 )
                 .width(Fill),
-                text(
-                    if settings.general.enabled {
-                        t!("home.master_switch_enabled")
+                button(
+                    text(
+                        if settings.general.enabled {
+                            t!("home.master_switch_enabled")
+                        } else {
+                            t!("home.master_switch_disabled")
+                        }
+                        .to_string()
+                    )
+                    .size(design::typography::CAPTION)
+                    .style(if settings.general.enabled {
+                        text::primary
                     } else {
-                        t!("home.master_switch_disabled")
-                    }
-                    .to_string()
+                        text::secondary
+                    })
                 )
-                .size(design::typography::CAPTION)
-                .style(text::success)
+                .padding(0)
+                .style(super::widgets::quiet)
+                .on_press(Message::Navigate(Page::WinderustBehaviour))
             ]
             .spacing(design::space::SMALL)]
             .spacing(design::space::MEDIUM);
@@ -278,10 +287,14 @@ impl Model {
                 .spacing(design::space::SMALL),
                 row![
                     text(format!("{first}: {first_value}"))
-                        .style(text::primary)
+                        .style(|theme| text::Style {
+                            color: Some(chart_colors(theme)[0])
+                        })
                         .width(Fill),
                     text(format!("{second}: {second_value}"))
-                        .style(text::primary)
+                        .style(|theme| text::Style {
+                            color: Some(chart_colors(theme)[1])
+                        })
                         .width(Fill)
                 ]
                 .spacing(design::space::SMALL),
@@ -395,28 +408,51 @@ struct Chart {
     samples: Vec<ChartSample>,
     maximum: f64,
 }
+fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
+    let bright = theme.palette().primary;
+    let dark = iced::Color {
+        r: bright.r * 0.65,
+        g: bright.g * 0.65,
+        b: bright.b * 0.65,
+        ..bright
+    };
+    [bright, dark]
+}
+
 impl canvas::Program<Message> for Chart {
-    type State = ();
+    type State = Option<usize>;
     fn update(
         &self,
-        _: &mut (),
+        hovered: &mut Self::State,
         event: &canvas::Event,
-        _: Rectangle,
-        _: mouse::Cursor,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> Option<iced::widget::Action<Message>> {
-        matches!(
-            event,
-            canvas::Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft)
-        )
-        .then(iced::widget::Action::request_redraw)
+        let next = if matches!(event, canvas::Event::Mouse(mouse::Event::CursorLeft)) {
+            None
+        } else {
+            cursor
+                .position_in(bounds)
+                .filter(|point| point.y <= (bounds.height - 28.0).max(0.0))
+                .map(|point| {
+                    ((point.x / bounds.width.max(1.0)).clamp(0.0, 1.0) * (HISTORY_LEN - 1) as f32)
+                        .round() as usize
+                })
+                .filter(|slot| *slot >= HISTORY_LEN - self.samples.len())
+        };
+        if *hovered == next {
+            return None;
+        }
+        *hovered = next;
+        Some(iced::widget::Action::request_redraw())
     }
     fn draw(
         &self,
-        _: &(),
+        hovered: &Self::State,
         renderer: &Renderer,
         theme: &Theme,
         bounds: Rectangle,
-        cursor: mouse::Cursor,
+        _: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let height = (bounds.height - 28.0).max(1.0);
@@ -433,12 +469,12 @@ impl canvas::Program<Message> for Chart {
         }
         for series in 0..2 {
             let path = canvas::Path::new(|path| {
-                for (index, sample) in self.samples.iter().enumerate() {
-                    let x = (HISTORY_LEN - self.samples.len() + index) as f32
-                        / (HISTORY_LEN - 1) as f32
-                        * width;
-                    let y = height
-                        * (1.0 - (sample.values[series] / self.maximum).clamp(0.0, 1.0) as f32);
+                // Empty history is a visual zero baseline, not recorded samples.
+                let values = std::iter::repeat_n(0.0, HISTORY_LEN - self.samples.len())
+                    .chain(self.samples.iter().map(|sample| sample.values[series]));
+                for (index, value) in values.enumerate() {
+                    let x = index as f32 / (HISTORY_LEN - 1) as f32 * width;
+                    let y = height * (1.0 - (value / self.maximum).clamp(0.0, 1.0) as f32);
                     if index == 0 {
                         path.move_to(Point::new(x, y));
                     } else {
@@ -450,19 +486,10 @@ impl canvas::Program<Message> for Chart {
                 &path,
                 canvas::Stroke::default()
                     .with_width(1.8)
-                    .with_color(if series == 0 {
-                        theme.palette().primary
-                    } else {
-                        iced::Color {
-                            a: 0.55,
-                            ..theme.palette().primary
-                        }
-                    }),
+                    .with_color(chart_colors(theme)[series]),
             );
         }
-        if let Some(cursor) = cursor.position_in(bounds) {
-            let slot =
-                ((cursor.x / width).clamp(0.0, 1.0) * (HISTORY_LEN - 1) as f32).round() as usize;
+        if let Some(slot) = *hovered {
             if let Some(index) = slot.checked_sub(HISTORY_LEN - self.samples.len()) {
                 if let Some(sample) = self.samples.get(index) {
                     let x = slot as f32 / (HISTORY_LEN - 1) as f32 * width;
@@ -868,6 +895,43 @@ fn activity_label(settings: &Settings, sample: &Sample) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chart_hover_stays_on_the_same_sample_and_clears_outside_the_plot() {
+        use canvas::Program;
+        let chart = Chart {
+            samples: (0..HISTORY_LEN)
+                .map(|_| ChartSample {
+                    values: [1.0, 2.0],
+                    labels: [String::new(), String::new()],
+                })
+                .collect(),
+            maximum: 100.0,
+        };
+        let bounds = Rectangle::with_size(iced::Size::new(590.0, 110.0));
+        let mut hovered = None;
+        let mut move_to = |x, y| {
+            let position = Point::new(x, y);
+            chart
+                .update(
+                    &mut hovered,
+                    &canvas::Event::Mouse(mouse::Event::CursorMoved { position }),
+                    bounds,
+                    mouse::Cursor::Available(position),
+                )
+                .is_some()
+        };
+        assert!(move_to(300.0, 20.0));
+        assert!(!move_to(300.1, 21.0));
+        assert!(move_to(320.0, 20.0));
+        assert!(move_to(320.0, 100.0));
+        assert!(!move_to(320.0, 100.0));
+        assert_eq!(hovered, None);
+        let colors = chart_colors(&Theme::Dark);
+        assert_ne!(colors[0], colors[1]);
+        assert_eq!(colors[0].a, 1.0);
+        assert_eq!(colors[1].a, 1.0);
+    }
+
     #[test]
     fn histories_bound_real_samples_and_do_not_insert_unavailable_data() {
         let mut model = Model::default();
