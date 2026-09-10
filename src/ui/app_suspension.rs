@@ -11,7 +11,6 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    removing: Option<usize>,
     collapsed: [bool; 3],
 }
 #[derive(Debug, Clone, Copy)]
@@ -40,8 +39,6 @@ pub(super) enum Message {
     Unit(usize, bool, NetworkThresholdUnit),
     Toggle(usize),
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
 }
 impl Editor {
     pub(super) fn update(
@@ -139,14 +136,8 @@ impl Editor {
                     }
                 }
             }
-            Message::Remove(i) => self.removing = Some(i),
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some(i) = self
-                    .removing
-                    .take()
-                    .filter(|i| *i < s.suspendable_apps.len())
-                {
+            Message::Remove(i) => {
+                if i < s.suspendable_apps.len() {
                     s.suspendable_apps.remove(i);
                 }
             }
@@ -166,7 +157,7 @@ impl Editor {
         s: &'a AppSuspensionSettings,
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
-        candidates: &[String],
+        candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
             "app_suspension.enable",
@@ -240,39 +231,21 @@ impl Editor {
                     .width(Fill)
                     .style(text::secondary),
             )
-            .push(super::widgets::settings_card(
-                row![
-                    text_input(&t!("process_list.executable_path"), &self.path)
-                        .on_input(Message::Path),
-                    button(text(t!("common.browse_executable").to_string()))
-                        .on_press(Message::Browse),
-                    button(text(t!("common.add").to_string())).on_press_maybe(
-                        (s.enabled && self.can_add(s, unavailable)).then_some(Message::Add)
+            .push(super::app_picker::view(
+                &self.path,
+                candidates,
+                s.enabled,
+                Message::Path,
+                Message::Browse,
+                (s.enabled && self.can_add(s, unavailable)).then_some(Message::Add),
+                |path| {
+                    Some(
+                        !unavailable
+                            .iter()
+                            .any(|blocked| process_setting_matches(blocked, path)),
                     )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
+                },
             ));
-        if s.enabled && !candidates.is_empty() {
-            let query = self.path.to_lowercase();
-            let mut choices = column![].spacing(design::space::TIGHT);
-            for path in candidates
-                .iter()
-                .filter(|p| p.to_lowercase().contains(&query))
-            {
-                let blocked = unavailable.iter().any(|p| process_setting_matches(p, path));
-                let label = if blocked {
-                    format!("{} - {}", path, t!("app_suspension.indicator.unavailable"))
-                } else {
-                    path.clone()
-                };
-                choices = choices.push(
-                    button(text(label))
-                        .on_press_maybe((!blocked).then_some(Message::Path(path.clone()))),
-                );
-            }
-            body = body.push(scrollable(choices).height(130));
-        }
         let mut cards = Vec::new();
         for (i, r) in s.suspendable_apps.iter().enumerate() {
             let frozen =
@@ -380,16 +353,7 @@ impl Editor {
         if s.suspendable_apps.is_empty() {
             body = body.push(text(t!("app_suspension.no_suspendable").to_string()));
         }
-        if self.removing.is_some() {
-            body = body.push(super::widgets::settings_card(
-                row![
-                    button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
-                    button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ));
-        }
+
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
         }

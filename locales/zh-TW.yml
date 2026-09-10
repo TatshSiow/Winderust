@@ -107,6 +107,7 @@ common:
   no_power_plans_loaded: "尚未載入電源計畫"
   no_running_apps_loaded: "尚未載入執行中的應用程式"
   no_matching_apps: "沒有相符的應用程式"
+  browse_local_executable: "瀏覽本機執行檔..."
   browse_executable: "瀏覽本機執行檔..."
   select_executable: "選擇執行檔"
   executable_files: "執行檔"

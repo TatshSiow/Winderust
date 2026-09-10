@@ -21,14 +21,11 @@ pub(super) enum Message {
     Name(usize, String),
     Plan(usize, Option<String>),
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
 }
 
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    removing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,21 +81,8 @@ impl Editor {
                         }
                     }
                     Message::Remove(index) => {
-                        self.removing = settings
-                            .rules
-                            .get(index)
-                            .map(|rule| rule.executable_path.clone())
-                    }
-                    Message::CancelRemove => self.removing = None,
-                    Message::ConfirmRemove => {
-                        if let Some(path) = self.removing.take() {
-                            if let Some(index) = settings
-                                .rules
-                                .iter()
-                                .position(|rule| rule.executable_path == path)
-                            {
-                                settings.rules.remove(index);
-                            }
+                        if index < settings.rules.len() {
+                            settings.rules.remove(index);
                         }
                     }
                 }
@@ -123,44 +107,87 @@ impl Editor {
         kind: Kind,
         settings: &'a Settings,
         plans: &[PowerPlan],
-        candidates: &[String],
+        candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         macro_rules! render_rules {
             ($field:ident, $can_add:ident, $enable:literal) => {{
                 let settings = &settings.$field;
                 let mut body = column![
- super::widgets::settings_card(super::widgets::setting_row($enable,super::widgets::switch(settings.enabled,Some(Message::Enabled)))),
+                    super::widgets::settings_card(super::widgets::setting_row(
+                        $enable,
+                        super::widgets::switch(settings.enabled, Some(Message::Enabled))
+                    )),
                     text(t!("common.power_plan_priority").to_string()),
                     text(t!("common.power_plan_pause_priority").to_string()),
-                ].spacing(super::widgets::CARD_GAP);
-                let mut rules_body = column![
-                    row![text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
-                        button(text(t!("common.browse_executable").to_string())).on_press_maybe(settings.enabled.then_some(Message::Browse)),
-                        button(text(t!("common.add").to_string())).on_press_maybe((settings.enabled && $can_add(settings, &self.path)).then_some(Message::Add))].spacing(design::space::SMALL),
-                ].spacing(super::widgets::CARD_GAP);
-                let filter = self.path.to_lowercase();
-                let candidates: Vec<_> = candidates.iter().filter(|path| path.to_lowercase().contains(&filter) && $can_add(settings, path)).cloned().collect();
-                if settings.enabled && !candidates.is_empty() { rules_body = rules_body.push(pick_list(candidates, None::<String>, Message::Path).placeholder(t!("common.search_running_apps").to_string())); }
+                ]
+                .spacing(super::widgets::CARD_GAP);
+                let mut rules_body = column![super::app_picker::view(
+                    &self.path,
+                    candidates,
+                    settings.enabled,
+                    Message::Path,
+                    Message::Browse,
+                    (settings.enabled && $can_add(settings, &self.path)).then_some(Message::Add),
+                    |path| $can_add(settings, path).then_some(true)
+                )]
+                .spacing(super::widgets::CARD_GAP);
                 let mut cards = Vec::new();
                 for (index, rule) in settings.rules.iter().enumerate() {
                     let mut choices = vec![Choice(None, t!("common.none").to_string())];
-                    choices.extend(plans.iter().map(|plan| Choice(Some(plan.guid.clone()), plan.display_name())));
-                    let selected = choices.iter().find(|choice| choice.0 == rule.power_plan_guid).cloned().unwrap_or_else(|| Choice(rule.power_plan_guid.clone(), rule.power_plan_guid.clone().unwrap_or_default()));
-                    let selector: Element<'_,Message> = if settings.enabled { pick_list(choices,Some(selected),move |choice|Message::Plan(index,choice.0)).into() } else { text(selected.1).into() };
-                    let mut card = column![
-                        row![checkbox(rule.enabled).on_toggle_maybe(settings.enabled.then_some(move |value| Message::RuleEnabled(index, value))),
-                            text_input(&t!("process_list.app_name"), &rule.name).on_input_maybe(settings.enabled.then_some(move |value| Message::Name(index, value))),
-                            button(text(t!("common.remove").to_string())).on_press_maybe(settings.enabled.then_some(Message::Remove(index)))].spacing(design::space::SMALL),
+                    choices.extend(
+                        plans
+                            .iter()
+                            .map(|plan| Choice(Some(plan.guid.clone()), plan.display_name())),
+                    );
+                    let selected = choices
+                        .iter()
+                        .find(|choice| choice.0 == rule.power_plan_guid)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Choice(
+                                rule.power_plan_guid.clone(),
+                                rule.power_plan_guid.clone().unwrap_or_default(),
+                            )
+                        });
+                    let selector: Element<'_, Message> = if settings.enabled {
+                        pick_list(choices, Some(selected), move |choice| {
+                            Message::Plan(index, choice.0)
+                        })
+                        .into()
+                    } else {
+                        text(selected.1).into()
+                    };
+                    let card = column![
+                        row![
+                            checkbox(rule.enabled).on_toggle_maybe(
+                                settings
+                                    .enabled
+                                    .then_some(move |value| Message::RuleEnabled(index, value))
+                            ),
+                            text_input(&t!("process_list.app_name"), &rule.name).on_input_maybe(
+                                settings
+                                    .enabled
+                                    .then_some(move |value| Message::Name(index, value))
+                            ),
+                            button(text(t!("common.remove").to_string()))
+                                .on_press_maybe(settings.enabled.then_some(Message::Remove(index)))
+                        ]
+                        .spacing(design::space::SMALL),
                         text(&rule.executable_path),
                         selector,
-                    ].spacing(design::space::SMALL);
-                    if self.removing.as_deref() == Some(rule.executable_path.as_str()) {
-                        card = card.push(row![button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove), button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)].spacing(design::space::SMALL));
-                    }
-                    cards.push((super::widgets::stable_key(&rule.executable_path), super::widgets::settings_card(card).into()));
+                    ]
+                    .spacing(design::space::SMALL);
+
+                    cards.push((
+                        super::widgets::stable_key(&rule.executable_path),
+                        super::widgets::settings_card(card).into(),
+                    ));
                 }
-                rules_body = rules_body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
-                body = body.push(text(t!("common.rules").to_string()).size(design::typography::SECTION)).push(rules_body);
+                rules_body = rules_body
+                    .push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
+                body = body
+                    .push(text(t!("common.rules").to_string()).size(design::typography::SECTION))
+                    .push(rules_body);
                 scrollable(body).height(Fill).into()
             }};
         }

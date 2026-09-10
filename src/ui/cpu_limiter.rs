@@ -11,7 +11,6 @@ use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule
 #[derive(Default)]
 pub(super) struct CpuLimiter {
     path: String,
-    removing: Option<String>,
     collapsed: bool,
     numbers: HashMap<(String, Tier), String>,
 }
@@ -66,8 +65,6 @@ pub(super) enum Message {
     RuleMode(usize, Tier, ProcessRuleMode),
     RuleLimit(usize, Tier, u8),
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
 }
 
 impl CpuLimiter {
@@ -138,22 +135,10 @@ impl CpuLimiter {
                 }
             }
             Message::Remove(index) => {
-                self.removing = settings
-                    .rules
-                    .get(index)
-                    .map(|rule| rule.executable_path.clone())
-            }
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some(path) = self.removing.take() {
-                    if let Some(index) = settings
-                        .rules
-                        .iter()
-                        .position(|rule| rule.executable_path == path)
-                    {
-                        settings.rules.remove(index);
-                    }
-                    self.numbers.retain(|(target, _), _| target != &path);
+                if index < settings.rules.len() {
+                    let rule = settings.rules.remove(index);
+                    self.numbers
+                        .retain(|(path, _), _| path != &rule.executable_path);
                 }
             }
         }
@@ -203,7 +188,7 @@ impl CpuLimiter {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a CpuLimiterSettings,
-        candidates: &[String],
+        candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         body = body.push(text(t!("cpu_limiter.intro_4").to_string()).style(text::warning));
@@ -241,34 +226,16 @@ impl CpuLimiter {
                     .width(Fill)
                     .style(text::secondary),
             )
-            .push(super::widgets::settings_card(
-                row![
-                    text_input(&t!("process_list.executable_path"), &self.path)
-                        .on_input(Message::Path),
-                    button(text(t!("common.browse_executable").to_string()))
-                        .on_press_maybe(settings.enabled.then_some(Message::Browse)),
-                    button(text(t!("common.add").to_string())).on_press_maybe(
-                        (settings.enabled && can_add_cpu_limiter_process(settings, &self.path))
-                            .then_some(Message::Add)
-                    ),
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
+            .push(super::app_picker::view(
+                &self.path,
+                candidates,
+                settings.enabled,
+                Message::Path,
+                Message::Browse,
+                (settings.enabled && can_add_cpu_limiter_process(settings, &self.path))
+                    .then_some(Message::Add),
+                |path| can_add_cpu_limiter_process(settings, path).then_some(true),
             ));
-        let filter = self.path.to_lowercase();
-        let candidates: Vec<_> = candidates
-            .iter()
-            .filter(|path| {
-                path.to_lowercase().contains(&filter) && can_add_cpu_limiter_process(settings, path)
-            })
-            .cloned()
-            .collect();
-        if settings.enabled && !candidates.is_empty() {
-            body = body.push(
-                pick_list(candidates, None::<String>, Message::Path)
-                    .placeholder(t!("common.search_running_apps").to_string()),
-            );
-        }
         let mut cards = Vec::new();
         for (index, rule) in settings.rules.iter().enumerate() {
             let mut card = column![row![
@@ -320,17 +287,7 @@ impl CpuLimiter {
                 }
                 card = card.push(controls);
             }
-            if self.removing.as_deref() == Some(rule.executable_path.as_str()) {
-                card = card.push(
-                    row![
-                        button(text(t!("common.remove").to_string()))
-                            .on_press(Message::ConfirmRemove),
-                        button(text(t!("common.cancel").to_string()))
-                            .on_press(Message::CancelRemove),
-                    ]
-                    .spacing(design::space::SMALL),
-                );
-            }
+
             cards.push((
                 super::widgets::stable_key(&rule.executable_path),
                 super::widgets::settings_card(card).into(),
@@ -380,7 +337,6 @@ mod tests {
         editor.update(&mut settings, Message::Default(Tier::Focus, 34));
         assert!(!editor.has_invalid_inputs());
         editor.update(&mut settings, Message::Remove(0));
-        editor.update(&mut settings, Message::ConfirmRemove);
         assert!(settings.rules.is_empty());
     }
     #[test]
@@ -399,8 +355,6 @@ mod tests {
         assert_eq!(settings.rules[0].background_mode, ProcessRuleMode::Default);
         assert!(settings.rules[0].has_valid_allowed_cpu_time());
         editor.update(&mut settings, Message::Remove(0));
-        editor.update(&mut settings, Message::CancelRemove);
-        editor.update(&mut settings, Message::ConfirmRemove);
-        assert_eq!(settings.rules.len(), 1);
+        assert!(settings.rules.is_empty());
     }
 }

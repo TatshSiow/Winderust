@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{button, checkbox, pick_list};
 use crate::config::*;
 use crate::ui::process_rules::can_add_process_candidate;
 use iced::widget::{column, row, scrollable, text};
@@ -10,7 +10,6 @@ use std::path::Path;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    removing: Option<(Kind, String)>,
     collapsed: [[bool; 3]; 6],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,9 +62,8 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     RuleValue(usize, Tier, Value),
     Remove(String),
-    ConfirmRemove,
+
     Collapse(Tier),
-    CancelRemove,
 }
 impl Kind {
     pub(super) fn key(self) -> &'static str {
@@ -311,21 +309,15 @@ impl Editor {
                     self.path.clear();
                 }
             }
-            Message::Remove(path) => self.removing = Some((kind, path)),
+            Message::Remove(path) => {
+                kind.rules_mut(settings)
+                    .retain(|rule| rule.executable_path != path);
+            }
             Message::Collapse(tier) => {
                 let collapsed = &mut self.collapsed[kind as usize][tier as usize];
                 *collapsed = !*collapsed;
             }
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some((target, path)) = self.removing.take() {
-                    let rules = target.rules_mut(settings);
-                    if let Some(index) = rules.iter().position(|rule| rule.executable_path == path)
-                    {
-                        rules.remove(index);
-                    }
-                }
-            }
+
             Message::RuleEnabled(index, value) => {
                 if let Some(rule) = kind.rules_mut(settings).get_mut(index) {
                     rule.enabled = value;
@@ -540,7 +532,7 @@ impl Editor {
         &'a self,
         settings: &'a Settings,
         kind: Kind,
-        candidates: &[String],
+        candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let key = kind.key();
         let enabled = kind.enabled(settings);
@@ -597,30 +589,15 @@ impl Editor {
         body = body
             .push(text(localized(key, "exclusions")).size(design::typography::SECTION))
             .push(text(localized(key, "exclusions_help")));
-        body = body.push(super::widgets::settings_card(
-            row![
-                text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
-                button(text(t!("common.browse_executable").to_string()))
-                    .on_press_maybe(enabled.then_some(Message::Browse)),
-                button(text(t!("common.add").to_string())).on_press_maybe(
-                    (enabled && kind.can_add(settings, &self.path)).then_some(Message::Add)
-                )
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center),
+        body = body.push(super::app_picker::view(
+            &self.path,
+            candidates,
+            enabled,
+            Message::Path,
+            Message::Browse,
+            (enabled && kind.can_add(settings, &self.path)).then_some(Message::Add),
+            |path| kind.can_add(settings, path).then_some(true),
         ));
-        let filter = self.path.to_lowercase();
-        let candidates: Vec<_> = candidates
-            .iter()
-            .filter(|path| path.to_lowercase().contains(&filter) && kind.can_add(settings, path))
-            .cloned()
-            .collect();
-        if enabled && !candidates.is_empty() {
-            body = body.push(
-                pick_list(candidates, None::<String>, Message::Path)
-                    .placeholder(t!("process_list.app_name").to_string()),
-            );
-        }
         let mut rule_cards = Vec::new();
         for (index, rule) in kind.rules(settings).iter().enumerate() {
             let mut card = column![row![
@@ -650,21 +627,7 @@ impl Editor {
                     row![text(tier.label()).width(180), control].spacing(design::space::SMALL),
                 );
             }
-            if self
-                .removing
-                .as_ref()
-                .is_some_and(|(target, path)| *target == kind && path == &rule.executable_path)
-            {
-                card = card.push(
-                    row![
-                        button(text(t!("common.remove").to_string()))
-                            .on_press(Message::ConfirmRemove),
-                        button(text(t!("common.cancel").to_string()))
-                            .on_press(Message::CancelRemove)
-                    ]
-                    .spacing(design::space::SMALL),
-                );
-            }
+
             rule_cards.push((
                 super::widgets::stable_key(&rule.executable_path),
                 super::widgets::settings_card(card).into(),
@@ -890,9 +853,7 @@ mod tests {
             Kind::Process,
             Message::Remove(settings_path()),
         );
-        editor.update(&mut settings, Kind::Process, Message::CancelRemove);
-        editor.update(&mut settings, Kind::Process, Message::ConfirmRemove);
-        assert_eq!(settings.process_priority.exclusions.len(), 1);
+        assert!(settings.process_priority.exclusions.is_empty());
     }
     #[test]
     fn every_priority_page_updates_only_its_own_defaults_and_rule_tier() {
@@ -964,7 +925,6 @@ mod tests {
             Kind::Process,
             Message::Remove(settings_path()),
         );
-        editor.update(&mut settings, Kind::Process, Message::ConfirmRemove);
         assert!(settings.process_priority.exclusions.is_empty());
     }
     fn settings_path() -> String {

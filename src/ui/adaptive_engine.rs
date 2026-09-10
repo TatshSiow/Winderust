@@ -52,7 +52,6 @@ pub(super) struct Editor {
     priority_expanded: [[bool; 7]; 2],
     path: String,
     error: String,
-    removing: Option<usize>,
     numbers: std::collections::HashMap<&'static str, String>,
     invalid_numbers: std::collections::HashMap<&'static str, (u64, u64, &'static str)>,
 }
@@ -88,8 +87,7 @@ pub(super) enum Message {
     Browse,
     AddExclusion,
     RemoveExclusion(usize),
-    ConfirmRemoveExclusion,
-    CancelRemoveExclusion,
+
     ExclusionEnabled(usize, bool),
 }
 impl Editor {
@@ -231,15 +229,12 @@ impl Editor {
                     self.path.clear();
                 }
             }
-            Message::RemoveExclusion(i) => self.removing = Some(i),
-            Message::ConfirmRemoveExclusion => {
-                if let Some(i) = self.removing.take() {
-                    if i < s.cpu_scheduler.custom_rules.len() {
-                        s.cpu_scheduler.custom_rules.remove(i);
-                    }
+            Message::RemoveExclusion(i) => {
+                if i < s.cpu_scheduler.custom_rules.len() {
+                    s.cpu_scheduler.custom_rules.remove(i);
                 }
             }
-            Message::CancelRemoveExclusion => self.removing = None,
+
             Message::ExclusionEnabled(i, v) => {
                 if let Some(r) = s.cpu_scheduler.custom_rules.get_mut(i) {
                     r.enabled = v
@@ -311,7 +306,7 @@ impl Editor {
         &'a self,
         live: &'a Settings,
         _status: &'a RuntimeStatusSnapshot,
-        candidates: &'a [String],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let s = self.draft.as_ref().unwrap_or(live);
         let editable = self.draft.is_none() || !self.read_only;
@@ -1566,57 +1561,103 @@ impl Editor {
         if self.draft.is_none() && tab == TuningTab::CustomRules {
             body = body
                 .push(text(t!("cpu_scheduler.custom_rules").to_string()))
-                .push(super::widgets::settings_card(
-                    row![
-                        text_input("C:\\App\\app.exe", &self.path).on_input(Message::Path),
-                        button(text(t!("common.browse_executable").to_string()))
-                            .on_press(Message::Browse),
-                        button(text(t!("common.add").to_string())).on_press(Message::AddExclusion)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                ));
-            for candidate in candidates
-                .iter()
-                .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()))
-                .take(8)
-            {
-                body =
-                    body.push(button(text(candidate)).on_press(Message::Path(candidate.clone())));
-            }
-            let mut rules = Vec::new();
-            for (i, r) in s.cpu_scheduler.custom_rules.iter().enumerate() {
-                rules.push((
-                    super::widgets::stable_key(&r.executable_path),
-                    super::widgets::settings_card(
-                        row![
-                            checkbox(r.enabled)
-                                .label(r.executable_path.clone())
-                                .on_toggle(move |v| Message::ExclusionEnabled(i, v)),
-                            button(text(t!("common.remove").to_string()))
-                                .on_press(Message::RemoveExclusion(i))
-                        ]
-                        .spacing(design::space::SMALL)
-                        .align_y(iced::Center),
+                .push(super::app_picker::view(
+                    &self.path,
+                    candidates,
+                    true,
+                    Message::Path,
+                    Message::Browse,
+                    super::process_rules::can_add_process_candidate(
+                        &self.path,
+                        |path| {
+                            s.cpu_scheduler.custom_rules.iter().any(|rule| {
+                                super::process_rules::process_setting_matches(
+                                    &rule.executable_path,
+                                    path,
+                                )
+                            })
+                        },
+                        crate::cpu_scheduler::is_builtin_excluded,
                     )
-                    .into(),
+                    .then_some(Message::AddExclusion),
+                    |path| {
+                        super::process_rules::can_add_process_candidate(
+                            path,
+                            |path| {
+                                s.cpu_scheduler.custom_rules.iter().any(|rule| {
+                                    super::process_rules::process_setting_matches(
+                                        &rule.executable_path,
+                                        path,
+                                    )
+                                })
+                            },
+                            crate::cpu_scheduler::is_builtin_excluded,
+                        )
+                        .then_some(true)
+                    },
                 ));
-            }
-            body = body.push(iced::widget::keyed_column(rules).spacing(super::widgets::CARD_GAP));
-        }
-        if self.draft.is_none() && tab == TuningTab::CustomRules && self.removing.is_some() {
-            body = body.push(super::widgets::settings_card(
+            let mut rules = column![
                 row![
-                    text(t!("common.remove").to_string()),
-                    button(text(t!("common.remove").to_string()))
-                        .on_press(Message::ConfirmRemoveExclusion),
-                    button(text(t!("common.cancel").to_string()))
-                        .on_press(Message::CancelRemoveExclusion)
+                    text(t!("common.active").to_string()).width(48),
+                    text(t!("process_list.app_name").to_string()).width(Fill),
+                    text(t!("process_list.executable_path").to_string())
+                        .width(iced::Length::FillPortion(2)),
+                    text(t!("common.actions").to_string()).width(64),
                 ]
                 .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ));
+                .padding(super::widgets::CARD_PADDING as u16),
+                iced::widget::rule::horizontal(1)
+            ];
+            for (i, rule) in s.cpu_scheduler.custom_rules.iter().enumerate() {
+                rules = rules.push(
+                    row![
+                        checkbox(rule.enabled)
+                            .on_toggle(move |value| Message::ExclusionEnabled(i, value))
+                            .width(48),
+                        iced::widget::container(super::app_picker::app_name(
+                            &rule.executable_path,
+                            candidates
+                        ))
+                        .width(Fill)
+                        .clip(true),
+                        text(rule.executable_path.clone())
+                            .style(text::secondary)
+                            .wrapping(iced::widget::text::Wrapping::None)
+                            .width(iced::Length::FillPortion(2)),
+                        iced::widget::container(iced::widget::tooltip(
+                            button(super::navigation::glyph("icons/trash-2.svg"))
+                                .style(iced::widget::button::danger)
+                                .on_press(Message::RemoveExclusion(i)),
+                            text(t!("common.remove").to_string()),
+                            iced::widget::tooltip::Position::Top
+                        ))
+                        .width(64)
+                        .center_x(64),
+                    ]
+                    .height(super::widgets::CARD_HEIGHT)
+                    .padding(super::widgets::CARD_PADDING as u16)
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                );
+            }
+            if s.cpu_scheduler.custom_rules.is_empty() {
+                rules = rules.push(
+                    iced::widget::container(
+                        text(t!("common.no_custom_rules").to_string()).style(text::secondary),
+                    )
+                    .height(super::widgets::CARD_HEIGHT)
+                    .center_y(super::widgets::CARD_HEIGHT)
+                    .padding(super::widgets::CARD_PADDING as u16),
+                );
+            }
+            body = body.push(
+                iced::widget::container(rules)
+                    .width(Fill)
+                    .style(super::widgets::surface)
+                    .clip(true),
+            );
         }
+
         if let Some(error) = self.validation_error() {
             body = body.push(text(error));
         }
@@ -1819,6 +1860,31 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn remove_updates_only_the_draft_and_discard_restores_the_rule() {
+        let mut original = Settings::default();
+        original
+            .cpu_scheduler
+            .custom_rules
+            .push(ProcessExclusionRule {
+                executable_path: r"C:\Apps\test.exe".into(),
+                ..Default::default()
+            });
+        let mut settings = crate::application::SettingsEditor::with_settings(original.clone());
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Message::RemoveExclusion(0));
+        assert!(settings.cpu_scheduler.custom_rules.is_empty());
+        assert_eq!(
+            settings.persisted().cpu_scheduler.custom_rules,
+            original.cpu_scheduler.custom_rules
+        );
+        settings.cancel();
+        assert_eq!(
+            settings.cpu_scheduler.custom_rules,
+            original.cpu_scheduler.custom_rules
+        );
+    }
+
+    #[test]
     fn priority_cards_expand_independently_for_live_and_preset_views() {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
@@ -1899,7 +1965,6 @@ mod tests {
         assert_eq!(settings.cpu_scheduler.custom_rules, vec![exclusion]);
         assert!(!settings.cpu_scheduler.process_priority_enabled);
         editor.update(&mut settings, Message::RemoveExclusion(0));
-        editor.update(&mut settings, Message::ConfirmRemoveExclusion);
         assert!(settings.cpu_scheduler.custom_rules.is_empty());
     }
     #[test]

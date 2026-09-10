@@ -19,7 +19,6 @@ pub(super) struct Editor {
     pub(super) dirty: bool,
     pub(super) status: String,
     preset: Option<PresetEditor>,
-    removing: Option<usize>,
     collapsed: [bool; 2],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,8 +61,6 @@ pub(super) enum Message {
     SavePreset,
     ClosePreset,
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
 }
 impl Editor {
     pub(super) fn has_pending_editor(&self) -> bool {
@@ -73,7 +70,6 @@ impl Editor {
     }
     pub(super) fn discard_editor(&mut self) {
         self.preset = None;
-        self.removing = None;
     }
 
     pub(super) fn ensure_plan(&mut self, plans: &[PowerPlan]) {
@@ -269,10 +265,8 @@ impl Editor {
                 }
             }
             Message::ClosePreset => self.preset = None,
-            Message::Remove(i) => self.removing = Some(i),
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some(i) = self.removing.take().filter(|i| *i < presets.len()) {
+            Message::Remove(i) => {
+                if i < presets.len() {
                     presets.remove(i);
                     self.preset = None;
                 }
@@ -501,15 +495,7 @@ impl Editor {
             button(text(t!("processor_power.add_preset").to_string()))
                 .on_press(Message::OpenPreset(PresetTarget::Custom(None))),
         );
-        if self.removing.is_some() {
-            rail = rail.push(
-                row![
-                    button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
-                    button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
-                ]
-                .spacing(design::space::SMALL),
-            );
-        }
+
         scrollable(rail).height(Fill).width(Fill).into()
     }
 }

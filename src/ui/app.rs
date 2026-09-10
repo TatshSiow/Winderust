@@ -154,7 +154,7 @@ struct WinderustApp {
     soft_allocation: cpu_allocation::Editor,
     hard_allocation: cpu_allocation::Editor,
     adaptive: adaptive_engine::Editor,
-    candidates: Vec<String>,
+    candidates: Vec<super::app_picker::Candidate>,
     unavailable_candidates: Vec<String>,
     catalog_loading: bool,
     settings: SettingsEditor,
@@ -207,7 +207,7 @@ enum Message {
     Efficiency(background_efficiency::Message),
     Allocation(cpu_allocation::Kind, cpu_allocation::Message),
     Adaptive(adaptive_engine::Message),
-    Catalog(Result<Vec<crate::foreground::ProcessCandidateInfo>, String>),
+    Catalog(Result<Vec<super::app_picker::Candidate>, String>),
     ExecutableChosen(Page, PowerSourceProfile, Option<PathBuf>),
     Page(Page),
     Tick,
@@ -457,13 +457,12 @@ impl WinderustApp {
                     Ok(candidates) if !self.settings.advanced.pause_process_population => {
                         self.unavailable_candidates = candidates
                             .iter()
-                            .filter(|candidate| !candidate.has_suspendable_instance)
-                            .map(|candidate| candidate.image_path.to_string_lossy().into_owned())
+                            .filter(|candidate| !candidate.info.has_suspendable_instance)
+                            .map(|candidate| {
+                                candidate.info.image_path.to_string_lossy().into_owned()
+                            })
                             .collect();
-                        self.candidates = candidates
-                            .into_iter()
-                            .map(|candidate| candidate.image_path.to_string_lossy().into_owned())
-                            .collect();
+                        self.candidates = candidates;
                     }
                     Ok(_) => {}
                     Err(error) => self.message = error,
@@ -653,8 +652,11 @@ impl WinderustApp {
                     if page.supports_power_source_profiles() && !self.catalog_loading {
                         self.catalog_loading = true;
                         tasks.push(
-                            tasks::run(crate::foreground::list_process_candidates)
-                                .map(|result| Message::Catalog(result.and_then(|result| result))),
+                            tasks::run({
+                                let cached = self.candidates.clone();
+                                move || super::app_picker::load(cached)
+                            })
+                            .map(|result| Message::Catalog(result.and_then(|result| result))),
                         );
                     }
                 }
@@ -741,8 +743,11 @@ impl WinderustApp {
                         self.catalog_loading = true;
                         self.catalog_sampled_at = std::time::Instant::now();
                         work.push(
-                            tasks::run(crate::foreground::list_process_candidates)
-                                .map(|r| Message::Catalog(r.and_then(|r| r))),
+                            tasks::run({
+                                let cached = self.candidates.clone();
+                                move || super::app_picker::load(cached)
+                            })
+                            .map(|r| Message::Catalog(r.and_then(|r| r))),
                         );
                     }
                 }

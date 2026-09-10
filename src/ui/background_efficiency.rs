@@ -1,6 +1,6 @@
 use super::design;
 use super::priority_control::Tier;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{button, checkbox, pick_list};
 use crate::config::{
     BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
     ProcessRuleMode, Settings,
@@ -14,7 +14,6 @@ use std::path::Path;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    removing: Option<String>,
     collapsed: [bool; 3],
 }
 #[derive(Debug, Clone)]
@@ -29,9 +28,8 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     RuleMode(usize, Tier, ProcessRuleMode),
     Remove(String),
-    ConfirmRemove,
+
     Collapse(Tier),
-    CancelRemove,
 }
 impl Editor {
     pub(super) fn update(&mut self, settings: &mut Settings, message: Message) {
@@ -81,29 +79,21 @@ impl Editor {
                     } = mode;
                 }
             }
-            Message::Remove(path) => self.removing = Some(path),
+            Message::Remove(path) => {
+                settings
+                    .custom_rules
+                    .retain(|rule| rule.executable_path != path);
+            }
             Message::Collapse(tier) => {
                 let collapsed = &mut self.collapsed[tier as usize];
                 *collapsed = !*collapsed;
-            }
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some(path) = self.removing.take() {
-                    if let Some(index) = settings
-                        .custom_rules
-                        .iter()
-                        .position(|rule| rule.executable_path == path)
-                    {
-                        settings.custom_rules.remove(index);
-                    }
-                }
             }
         }
     }
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a Settings,
-        candidates: &[String],
+        candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let settings = &settings.background_efficiency;
         let enabled = settings.enabled;
@@ -175,30 +165,15 @@ impl Editor {
         body = body.push(super::widgets::setting_title(
             "background_efficiency.custom_rules",
         ));
-        body = body.push(super::widgets::settings_card(
-            row![
-                text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
-                button(text(t!("common.browse_executable").to_string()))
-                    .on_press_maybe(enabled.then_some(Message::Browse)),
-                button(text(t!("common.add").to_string())).on_press_maybe(
-                    (enabled && can_add(settings, &self.path)).then_some(Message::Add)
-                )
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center),
+        body = body.push(super::app_picker::view(
+            &self.path,
+            candidates,
+            enabled,
+            Message::Path,
+            Message::Browse,
+            (enabled && can_add(settings, &self.path)).then_some(Message::Add),
+            |path| can_add(settings, path).then_some(true),
         ));
-        let filter = self.path.to_lowercase();
-        let candidates: Vec<_> = candidates
-            .iter()
-            .filter(|path| path.to_lowercase().contains(&filter) && can_add(settings, path))
-            .cloned()
-            .collect();
-        if enabled && !candidates.is_empty() {
-            body = body.push(
-                pick_list(candidates, None::<String>, Message::Path)
-                    .placeholder(t!("process_list.app_name").to_string()),
-            );
-        }
         let mut rule_cards = Vec::new();
         for (index, rule) in settings.custom_rules.iter().enumerate() {
             let mut card = row![
@@ -233,17 +208,7 @@ impl Editor {
                         enabled.then_some(Message::Remove(rule.executable_path.clone())),
                     ),
             );
-            if self.removing.as_deref() == Some(rule.executable_path.as_str()) {
-                card = card.push(
-                    row![
-                        button(text(t!("common.remove").to_string()))
-                            .on_press(Message::ConfirmRemove),
-                        button(text(t!("common.cancel").to_string()))
-                            .on_press(Message::CancelRemove)
-                    ]
-                    .spacing(design::space::SMALL),
-                );
-            }
+
             rule_cards.push((
                 super::widgets::stable_key(&rule.executable_path),
                 super::widgets::settings_card(card).into(),

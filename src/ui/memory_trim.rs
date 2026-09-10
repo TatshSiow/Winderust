@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{button, checkbox, text_input};
 use crate::config::MemoryTrimSettings;
 use crate::ui::process_rules::{can_add_memory_trim_exclusion, new_process_exclusion_rule};
 use iced::widget::{column, row, scrollable, text};
@@ -10,7 +10,6 @@ use rust_i18n::t;
 pub(super) struct Editor {
     pub(super) path: String,
     collapsed: [bool; 3],
-    removing: Option<usize>,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -23,8 +22,7 @@ pub(super) enum Message {
     Idle(String),
     RuleEnabled(usize, bool),
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
+
     TrimNow,
     Browse,
 }
@@ -72,14 +70,8 @@ impl Editor {
                     r.enabled = v;
                 }
             }
-            Message::Remove(i) => self.removing = Some(i),
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some(i) = self
-                    .removing
-                    .take()
-                    .filter(|i| *i < settings.exclusions.len())
-                {
+            Message::Remove(i) => {
+                if i < settings.exclusions.len() {
                     settings.exclusions.remove(i);
                 }
             }
@@ -90,7 +82,7 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a MemoryTrimSettings,
-        candidates: &[String],
+        candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
             "memory_trim.enable",
@@ -145,29 +137,18 @@ impl Editor {
         }
         let mut safety = column![
             text(t!("memory_trim.category_safety_help").to_string()).style(text::secondary),
-            row![
-                text_input(&t!("process_list.executable_path"), &self.path).on_input(Message::Path),
-                button(text(t!("common.browse_executable").to_string())).on_press(Message::Browse),
-                button(text(t!("common.add").to_string())).on_press_maybe(
-                    (settings.enabled && can_add_memory_trim_exclusion(settings, &self.path))
-                        .then_some(Message::Add)
-                )
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center)
+            super::app_picker::view(
+                &self.path,
+                candidates,
+                settings.enabled,
+                Message::Path,
+                Message::Browse,
+                (settings.enabled && can_add_memory_trim_exclusion(settings, &self.path))
+                    .then_some(Message::Add),
+                |path| can_add_memory_trim_exclusion(settings, path).then_some(true)
+            )
         ]
         .spacing(design::space::MEDIUM);
-        let matching = candidates
-            .iter()
-            .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()))
-            .cloned()
-            .collect::<Vec<_>>();
-        if settings.enabled && !matching.is_empty() {
-            safety = safety.push(
-                pick_list(matching, None::<String>, Message::Path)
-                    .placeholder(t!("common.running").to_string()),
-            );
-        }
         let mut cards = Vec::new();
         for (i, r) in settings.exclusions.iter().enumerate() {
             cards.push((
@@ -193,16 +174,7 @@ impl Editor {
         if settings.exclusions.is_empty() {
             safety = safety.push(text(t!("memory_trim.no_exclusions").to_string()));
         }
-        if self.removing.is_some() {
-            safety = safety.push(super::widgets::settings_card(
-                row![
-                    button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
-                    button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ));
-        }
+
         body = body.push(super::widgets::setting_group(
             "memory_trim.category_safety".to_string(),
             !self.collapsed[2],
@@ -233,7 +205,7 @@ mod tests {
         assert_eq!(settings, before);
     }
     #[test]
-    fn invalid_thresholds_and_cancel_do_not_mutate_settings() {
+    fn invalid_thresholds_and_missing_removals_do_not_mutate_settings() {
         let mut e = Editor::default();
         let mut s = crate::config::Settings::default().memory_trim;
         let before = s.clone();
@@ -241,13 +213,10 @@ mod tests {
         e.update(&mut s, Message::Idle("86401".into()));
         e.update(&mut s, Message::WorkingSet("-1".into()));
         e.update(&mut s, Message::Remove(0));
-        e.update(&mut s, Message::CancelRemove);
-        e.update(&mut s, Message::ConfirmRemove);
         assert_eq!(s, before);
         let path = r"C:\Apps\test.exe";
         s.exclusions.push(new_process_exclusion_rule(path));
         e.update(&mut s, Message::Remove(0));
-        e.update(&mut s, Message::ConfirmRemove);
         assert!(s.exclusions.is_empty());
     }
 }

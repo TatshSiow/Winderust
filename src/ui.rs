@@ -1,6 +1,7 @@
 mod action_log;
 mod adaptive_engine;
 mod advanced_power_plan_tuning;
+mod app_picker;
 mod app_suspension;
 mod background_efficiency;
 mod by_activity;

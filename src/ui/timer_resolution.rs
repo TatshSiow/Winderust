@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{button, checkbox, text_input};
 use crate::config::TimerResolutionSettings;
 use crate::timer_resolution::TimerResolutionSnapshot;
 use crate::ui::process_rules::{can_add_timer_resolution_process, new_timer_resolution_rule};
@@ -9,7 +9,6 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    removing: Option<usize>,
     editing: Option<(usize, String)>,
 }
 #[derive(Debug, Clone)]
@@ -21,8 +20,7 @@ pub(super) enum Message {
     Resolution(usize, String),
     Commit(usize),
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
+
     Browse,
 }
 impl Editor {
@@ -63,11 +61,10 @@ impl Editor {
                     }
                 }
             }
-            Message::Remove(i) => self.removing = Some(i),
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some(i) = self.removing.take().filter(|i| *i < s.rules.len()) {
+            Message::Remove(i) => {
+                if i < s.rules.len() {
                     s.rules.remove(i);
+                    self.editing = None;
                 }
             }
 
@@ -78,7 +75,7 @@ impl Editor {
         &'a self,
         s: &'a TimerResolutionSettings,
         status: &TimerResolutionSnapshot,
-        candidates: &[String],
+        candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![
             super::widgets::settings_card(super::widgets::setting_row(
@@ -86,33 +83,18 @@ impl Editor {
                 super::widgets::switch(s.enabled, Some(Message::Enabled))
             )),
             text(t!("timer_resolution.warning").to_string()),
-            super::widgets::settings_card(
-                row![
-                    text_input(&t!("process_list.executable_path"), &self.path)
-                        .on_input(Message::Path),
-                    button(text(t!("common.browse_executable").to_string()))
-                        .on_press(Message::Browse),
-                    button(text(t!("common.add").to_string())).on_press_maybe(
-                        (s.enabled && can_add_timer_resolution_process(s, &self.path))
-                            .then_some(Message::Add)
-                    )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center)
+            super::app_picker::view(
+                &self.path,
+                candidates,
+                s.enabled,
+                Message::Path,
+                Message::Browse,
+                (s.enabled && can_add_timer_resolution_process(s, &self.path))
+                    .then_some(Message::Add),
+                |path| can_add_timer_resolution_process(s, path).then_some(true)
             )
         ]
         .spacing(super::widgets::CARD_GAP);
-        let matching = candidates
-            .iter()
-            .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()))
-            .cloned()
-            .collect::<Vec<_>>();
-        if s.enabled && !matching.is_empty() {
-            body = body.push(
-                pick_list(matching, None::<String>, Message::Path)
-                    .placeholder(t!("common.running").to_string()),
-            );
-        }
         let mut cards = Vec::new();
         for (i, r) in s.rules.iter().enumerate() {
             let value = self
@@ -148,16 +130,7 @@ impl Editor {
         if s.rules.is_empty() {
             body = body.push(text(t!("timer_resolution.no_rules").to_string()));
         }
-        if self.removing.is_some() {
-            body = body.push(super::widgets::settings_card(
-                row![
-                    button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
-                    button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ));
-        }
+
         if let Some(value) = status.requested_100ns {
             body = body.push(text(format!(
                 "{}: {}",

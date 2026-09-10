@@ -59,7 +59,6 @@ impl Tier {
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    removing: Option<usize>,
     preset_name: String,
     preset_mask: u64,
     editing_preset: Option<usize>,
@@ -77,8 +76,7 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     Mask(usize, Tier, u64),
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
+
     NewPreset,
     EditPreset(usize),
     PresetName(String),
@@ -119,16 +117,13 @@ impl Editor {
                     tier.set(r, m & available)
                 }
             }
-            Message::Remove(i) => self.removing = Some(i),
-            Message::ConfirmRemove => {
-                if let Some(i) = self.removing.take() {
-                    let rules = &mut settings_mut(s, k).rules;
-                    if i < rules.len() {
-                        rules.remove(i);
-                    }
+            Message::Remove(i) => {
+                let rules = &mut settings_mut(s, k).rules;
+                if i < rules.len() {
+                    rules.remove(i);
                 }
             }
-            Message::CancelRemove => self.removing = None,
+
             Message::NewPreset => {
                 self.preset_open = true;
                 self.presets_tab = true;
@@ -185,7 +180,7 @@ impl Editor {
         &'a self,
         s: &'a Settings,
         k: Kind,
-        candidates: &'a [String],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
         let feature = settings(s, k);
@@ -204,29 +199,17 @@ impl Editor {
             text(t!("cpu_allocation.rules_help").to_string())
                 .width(Fill)
                 .style(text::secondary),
-            super::widgets::settings_card(
-                row![
-                    text_input("C:\\App\\app.exe", &self.path)
-                        .on_input(Message::Path)
-                        .width(Fill),
-                    button(text(t!("common.browse_executable").to_string()))
-                        .on_press(Message::Browse),
-                    button(text(t!("common.add").to_string())).on_press_maybe(
-                        (feature.enabled && can_add(s, &self.path)).then_some(Message::Add)
-                    )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center)
+            super::app_picker::view(
+                &self.path,
+                candidates,
+                feature.enabled,
+                Message::Path,
+                Message::Browse,
+                (feature.enabled && can_add(s, &self.path)).then_some(Message::Add),
+                |path| can_add(s, path).then_some(true)
             )
         ]
         .spacing(super::widgets::CARD_GAP);
-        for candidate in candidates
-            .iter()
-            .filter(|p| p.to_lowercase().contains(&self.path.to_lowercase()) && can_add(s, p))
-            .take(8)
-        {
-            body = body.push(button(text(candidate)).on_press(Message::Path(candidate.clone())));
-        }
         if matches!(k, Kind::Hard) {
             body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
         } else if cpu_allocation::has_multiple_processor_groups() {
@@ -257,17 +240,7 @@ impl Editor {
             ));
         }
         body = body.push(iced::widget::keyed_column(rules).spacing(super::widgets::CARD_GAP));
-        if self.removing.is_some() {
-            body = body.push(super::widgets::settings_card(
-                row![
-                    text(t!("common.remove").to_string()),
-                    button(text(t!("common.remove").to_string())).on_press(Message::ConfirmRemove),
-                    button(text(t!("common.cancel").to_string())).on_press(Message::CancelRemove)
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ));
-        }
+
         scrollable(body).width(Fill).height(Fill).into()
     }
 
@@ -433,7 +406,6 @@ mod tests {
         assert_eq!(s.cpu_sets_soft.rules[0].focus_core_mask, 1);
         assert!(s.cpu_allocation_presets.is_empty());
         e.update(&mut s, Kind::Soft, Message::Remove(0));
-        e.update(&mut s, Kind::Soft, Message::ConfirmRemove);
         assert!(s.cpu_sets_soft.rules.is_empty());
     }
 }

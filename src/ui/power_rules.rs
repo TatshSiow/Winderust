@@ -22,8 +22,7 @@ pub(super) enum Message {
     Name(usize, String),
     Plan(usize, Option<String>),
     Remove(usize),
-    ConfirmRemove,
-    CancelRemove,
+
     Toggle(usize),
     Day(usize, WeekdaySetting, bool),
     Start(usize, String),
@@ -51,7 +50,6 @@ enum RuleRef<'a> {
 }
 #[derive(Default)]
 pub(super) struct Editor {
-    removing: Option<usize>,
     ids: Vec<u64>,
     next_id: u64,
     inputs: BTreeMap<(u64, Field), String>,
@@ -128,10 +126,8 @@ impl Editor {
                 }),
                 _ => {}
             },
-            Message::Remove(i) => self.removing = Some(i),
-            Message::CancelRemove => self.removing = None,
-            Message::ConfirmRemove => {
-                if let Some(i) = self.removing.take().filter(|i| *i < self.ids.len()) {
+            Message::Remove(i) => {
+                if i < self.ids.len() {
                     let id = self.ids.remove(i);
                     match kind {
                         Kind::Time => {
@@ -140,11 +136,12 @@ impl Editor {
                         Kind::CpuLoad => {
                             s.by_cpu_load.rules.remove(i);
                         }
-                    };
+                    }
                     self.inputs.retain(|(key, _), _| *key != id);
                     self.collapsed.remove(&id);
                 }
             }
+
             Message::Toggle(i) => {
                 if let Some(id) = self.ids.get(i) {
                     if !self.collapsed.remove(id) {
@@ -431,22 +428,12 @@ impl Editor {
             controls = controls.push(widgets::plan(guid.clone(), plans, move |v| {
                 Message::Plan(index, v)
             }));
-            let mut card = column![
+            let card = column![
                 header,
                 super::widgets::optional_content(controls, !self.collapsed.contains(&id))
             ]
             .spacing(design::space::COMPACT);
-            if self.removing == Some(index) {
-                card = card.push(
-                    row![
-                        button(text(t!("common.remove").to_string()))
-                            .on_press(Message::ConfirmRemove),
-                        button(text(t!("common.cancel").to_string()))
-                            .on_press(Message::CancelRemove)
-                    ]
-                    .spacing(design::space::SMALL),
-                );
-            }
+
             cards.push((id, super::widgets::settings_card(card).into()));
         }
         body = body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
@@ -497,7 +484,6 @@ mod tests {
         e.update(Kind::Time, &mut s, &[], Message::Start(0, "23:30".into()));
         assert!(e.valid());
         e.update(Kind::Time, &mut s, &[], Message::Remove(0));
-        e.update(Kind::Time, &mut s, &[], Message::ConfirmRemove);
         assert!(s.by_time.rules.is_empty());
     }
     #[test]
