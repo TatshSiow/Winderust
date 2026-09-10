@@ -285,6 +285,8 @@ home:
   focus_and_launch_profile: "Focus and Launch"
 
 process_list:
+  filters: "Filters"
+  columns: "Columns"
   include: "Include"
   exclude: "Exclude"
   search_placeholder: "Search processes..."
@@ -311,6 +313,7 @@ process_list:
   executable_path: "Executable path"
   pid: "PID"
   status: "Status"
+  status_unavailable: "Unavailable"
   status_active: "Active"
   status_protected_system_process: "Protected system process"
   status_administrator_required: "Administrator required"
@@ -353,6 +356,8 @@ process_list:
   foreground: "foreground"
   background: "background"
   details_power: "Power plans"
+  immediate_actions: "Immediate Action"
+  rulesets: "Rulesets"
   details_exclusions: "Feature exclusions"
   details_priority: "Priority Control"
   adaptive_engine: "Adaptive Engine"

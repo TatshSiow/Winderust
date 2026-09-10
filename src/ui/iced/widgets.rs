@@ -9,7 +9,9 @@ pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
 pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
 
 pub(super) fn button<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::widget::Button<'a, M> {
-    iced::widget::button(content).padding(design::CONTROL_PADDING)
+    iced::widget::button(content)
+        .padding(design::CONTROL_PADDING)
+        .style(control_button)
 }
 
 pub(super) fn sidebar_toggle<'a, M: 'a>(
@@ -342,13 +344,7 @@ pub(super) fn selected(
 ) -> iced::widget::button::Style {
     let mut style = quiet(theme, status);
     if status != iced::widget::button::Status::Disabled {
-        let alpha = match status {
-            iced::widget::button::Status::Hovered => 0.22,
-            iced::widget::button::Status::Pressed => 0.30,
-            _ => 0.12,
-        };
-        style.background = Some(theme.palette().primary.scale_alpha(alpha).into());
-        style.text_color = theme.extended_palette().primary.strong.color;
+        style.text_color = theme.palette().primary;
     }
     style
 }
@@ -361,16 +357,7 @@ pub(super) fn quiet(
     let mut style = button::text(theme, status);
     style.border.radius = design::CONTROL_RADIUS.into();
     style.background = match status {
-        Status::Hovered => Some(
-            theme
-                .extended_palette()
-                .background
-                .strong
-                .color
-                .scale_alpha(0.35)
-                .into(),
-        ),
-        Status::Pressed => Some(theme.palette().primary.scale_alpha(0.18).into()),
+        Status::Hovered | Status::Pressed => Some(theme.palette().primary.scale_alpha(0.18).into()),
         _ => None,
     };
     style
@@ -396,14 +383,27 @@ mod tests {
     use iced::{widget::button::Status, Theme};
 
     #[test]
-    fn interactive_surfaces_distinguish_hover_press_and_disabled_in_both_themes() {
+    fn interactive_surfaces_share_accent_feedback_and_text_only_selection() {
         for theme in [Theme::CatppuccinLatte, Theme::CatppuccinMocha] {
-            for style in [quiet, selected, card] {
+            assert_eq!(selected(&theme, Status::Active).background, None);
+            assert_eq!(
+                selected(&theme, Status::Active).text_color,
+                theme.palette().primary
+            );
+            assert_eq!(
+                selected(&theme, Status::Hovered).text_color,
+                theme.palette().primary
+            );
+            for style in [quiet, selected, card, control_button] {
                 let active = style(&theme, Status::Active);
                 let hovered = style(&theme, Status::Hovered);
                 let pressed = style(&theme, Status::Pressed);
                 assert_ne!(active.background, hovered.background);
-                assert_ne!(hovered.background, pressed.background);
+                assert_eq!(hovered.background, pressed.background);
+                assert_eq!(
+                    hovered.background,
+                    Some(theme.palette().primary.scale_alpha(0.18).into())
+                );
                 assert_eq!(active.border.width, 0.0);
                 assert_eq!(hovered.border.width, 0.0);
                 assert_eq!(pressed.border.width, 0.0);

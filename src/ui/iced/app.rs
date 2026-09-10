@@ -1013,7 +1013,21 @@ impl WinderustApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        iced::widget::responsive(|size| self.view_at_width(size.width)).into()
+        let content = iced::widget::responsive(|size| self.view_at_width(size.width));
+        if self.page == Page::ProcessList && self.processes.context_open() {
+            iced::widget::stack![
+                content,
+                iced::widget::opaque(
+                    iced::widget::mouse_area(iced::widget::Space::new().width(Fill).height(Fill))
+                        .on_press(Message::Processes(process_list::Message::CloseSelection))
+                        .on_right_press(Message::Processes(process_list::Message::CloseSelection))
+                        .on_middle_press(Message::Processes(process_list::Message::CloseSelection))
+                ),
+            ]
+            .into()
+        } else {
+            content.into()
+        }
     }
 
     fn view_at_width(&self, width: f32) -> Element<'_, Message> {
@@ -1338,7 +1352,9 @@ impl WinderustApp {
             );
         }
         let content = self.page_view();
-        let side_panel = if self.page == Page::AdaptiveEngine {
+        let side_panel = if self.page == Page::ProcessList {
+            Some(self.processes.side_panel().map(Message::Processes))
+        } else if self.page == Page::AdaptiveEngine {
             Some(
                 self.adaptive
                     .side_panel(&self.settings, &self.status)

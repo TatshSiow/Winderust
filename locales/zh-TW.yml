@@ -285,6 +285,8 @@ home:
   focus_and_launch_profile: "焦點與啟動"
 
 process_list:
+  filters: "篩選"
+  columns: "欄位"
   include: "包含"
   exclude: "排除"
   user: "使用者"
@@ -316,6 +318,7 @@ process_list:
   executable_path: "執行檔路徑"
   pid: "PID"
   status: "狀態"
+  status_unavailable: "無法使用"
   status_active: "作用中"
   status_protected_system_process: "\u53d7\u4fdd\u8b77\u7684\u7cfb\u7d71\u8655\u7406\u7a0b\u5e8f"
   status_administrator_required: "\u9700\u8981\u7cfb\u7d71\u7ba1\u7406\u54e1\u6b0a\u9650"
@@ -355,6 +358,8 @@ process_list:
 
   thread_priority: "執行緒優先順序"
   dynamic_priority_boost: "動態優先順序提升"
+  immediate_actions: "即時操作"
+  rulesets: "規則集"
   details_exclusions: "功能排除"
   details_priority: "優先順序控制"
   adaptive_engine: "自適應引擎"

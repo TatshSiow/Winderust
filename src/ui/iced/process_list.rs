@@ -41,6 +41,21 @@ pub(super) struct Selection {
     name: String,
 }
 impl Selection {
+    fn has_tree(&self, population: &[ProcessInfo]) -> bool {
+        self.processes.len() > 1
+            || self.processes.iter().any(|parent| {
+                population.iter().any(|child| {
+                    child.id != parent.id
+                        && child.parent_id == Some(parent.id)
+                        && match (parent.creation_time, child.creation_time) {
+                            (Some(parent), Some(child)) => child >= parent,
+                            // Let the existing tree validation reject an unverifiable relationship.
+                            _ => true,
+                        }
+                })
+            })
+    }
+
     fn targets(&self) -> Vec<Result<ProcessActionTarget, ProcessActionTargetError>> {
         self.processes.iter().map(snapshot_target).collect()
     }
@@ -81,6 +96,19 @@ pub(super) enum Action {
     Efficiency(bool),
     Suspend(bool),
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ProcessTab {
+    #[default]
+    Immediate,
+    Rulesets,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum PriorityMenu {
+    #[default]
+    Closed,
+    Types,
+    Levels(Kind),
+}
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Refresh,
@@ -92,8 +120,13 @@ pub(super) enum Message {
     Expand(String),
     Sort(Sort),
     Column(Sort, bool),
-    ToggleColumns,
     Select(usize, u64),
+    Context(usize, u64),
+    PointerMoved(iced::Point),
+    OpenDetails,
+    ProcessTab(ProcessTab),
+    PriorityMenu(PriorityMenu),
+    Menu(Box<Message>),
     Current(Result<(Selection, Vec<Value>, Option<bool>), String>),
     CloseSelection,
     Action(Action),
@@ -124,8 +157,11 @@ pub(super) struct ProcessList {
     sort: Sort,
     descending: bool,
     columns: [bool; 6],
-    show_columns: bool,
     selected: Option<Selection>,
+    pointer: iced::Point,
+    context: Option<iced::Point>,
+    priority_menu: PriorityMenu,
+    process_tab: ProcessTab,
     current: Vec<Value>,
     efficiency: Option<bool>,
     stopping: Option<(Selection, bool)>,
@@ -150,8 +186,11 @@ impl Default for ProcessList {
             sort: Sort::Name,
             descending: false,
             columns: [true; 6],
-            show_columns: false,
             selected: None,
+            pointer: iced::Point::ORIGIN,
+            context: None,
+            priority_menu: PriorityMenu::Closed,
+            process_tab: ProcessTab::Immediate,
             current: Vec::new(),
             efficiency: None,
             stopping: None,
@@ -159,6 +198,10 @@ impl Default for ProcessList {
     }
 }
 impl ProcessList {
+    pub(super) fn context_open(&self) -> bool {
+        self.context.is_some() && self.selected.is_some()
+    }
+
     pub(super) fn discard(&mut self, message: Message) {
         if matches!(message, Message::Loaded(_)) {
             self.refreshing = false;
@@ -175,6 +218,7 @@ impl ProcessList {
         self.icons.clear();
         self.expanded.clear();
         self.selected = None;
+        self.context = None;
         self.stopping = None;
         self.offset.set(0.0);
     }
@@ -285,8 +329,29 @@ impl ProcessList {
                 }
                 self.rebuild();
             }
-            Message::ToggleColumns => self.show_columns = !self.show_columns,
             Message::Column(column, v) => self.columns[column as usize] = v,
+            Message::Menu(message) => {
+                let task = self.update(*message, settings, runtime);
+                self.selected = None;
+                self.context = None;
+                return task;
+            }
+            Message::PointerMoved(position) => self.pointer = position,
+            Message::PriorityMenu(menu) => self.priority_menu = menu,
+            Message::ProcessTab(tab) => self.process_tab = tab,
+            Message::OpenDetails => {
+                self.context = None;
+                self.process_tab = ProcessTab::Rulesets;
+            }
+            Message::Context(index, revision) => {
+                if revision != self.rows_revision || index >= self.rows.len() {
+                    return Task::none();
+                }
+                let task = self.update(Message::Select(index, revision), settings, runtime);
+                self.context = Some(self.pointer);
+                self.priority_menu = PriorityMenu::Closed;
+                return task;
+            }
             Message::Select(index, revision) => {
                 let Some(entry) = self
                     .rows
@@ -309,9 +374,12 @@ impl ProcessList {
                         .unwrap_or_default(),
                     name: p.name.clone(),
                 };
+                self.context = None;
+                self.stopping = None;
                 self.current.clear();
                 self.efficiency = None;
                 self.selected = Some(selection.clone());
+                self.process_tab = ProcessTab::Immediate;
                 let allow = settings.general.allow_cross_session_process_control;
                 return background(
                     move || {
@@ -385,7 +453,11 @@ impl ProcessList {
                 }
                 Err(e) => self.error = Some(e),
             },
-            Message::CloseSelection => self.selected = None,
+            Message::CloseSelection => {
+                self.selected = None;
+                self.context = None;
+                self.stopping = None;
+            }
             Message::Action(action) => {
                 if let Some(selection) = &self.selected {
                     let targets = selection.targets();
@@ -425,6 +497,7 @@ impl ProcessList {
                 }
             }
             Message::Stop(tree) => {
+                self.context = None;
                 if let Some(selection) = &self.selected {
                     self.stopping = Some((selection.clone(), tree));
                 }
@@ -638,49 +711,102 @@ impl ProcessList {
                 .unwrap_or_else(|| "?".into())
         )
     }
+    fn immediate_priorities(&self, settings: &Settings, eligible: bool) -> Element<'_, Message> {
+        let mut controls = column![].spacing(design::space::SMALL);
+        for kind in [
+            Kind::Process,
+            Kind::Thread,
+            Kind::Io,
+            Kind::Gpu,
+            Kind::Memory,
+            Kind::DynamicBoost,
+        ] {
+            let key = format!("nav.{}", kind.key());
+            let choices = kind
+                .choices(settings.advanced.expose_all_priority_values)
+                .into_iter()
+                .filter(|v| !is_default(*v))
+                .collect::<Vec<_>>();
+            let current = self
+                .current
+                .iter()
+                .copied()
+                .find(|v| value_kind(*v) == kind);
+            let control: Element<'_, Message> = if eligible {
+                pick_list(choices, current, move |v| {
+                    Message::Action(Action::Priority(v))
+                })
+                .placeholder(t!("common.unknown").to_string())
+                .width(design::SELECT_WIDTH)
+                .into()
+            } else {
+                text(
+                    current
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| t!("common.unknown").to_string()),
+                )
+                .into()
+            };
+            controls = controls.push(super::widgets::settings_card(super::widgets::setting_row(
+                &key, control,
+            )));
+        }
+        controls.into()
+    }
+
+    pub(super) fn side_panel(&self) -> Element<'_, Message> {
+        let mut filters = column![
+            super::widgets::heading(
+                t!("process_list.filters").to_string(),
+                design::typography::SUBTITLE
+            ),
+            checkbox(self.hide_inaccessible)
+                .label(t!("process_list.hide_inaccessible_processes").to_string())
+                .on_toggle(Message::HideInaccessible),
+            checkbox(self.grouped)
+                .label(t!("process_list.app_name").to_string())
+                .on_toggle(Message::Group),
+            super::widgets::heading(
+                t!("process_list.columns").to_string(),
+                design::typography::SECONDARY
+            ),
+        ]
+        .spacing(design::space::MEDIUM);
+        for col in Sort::ALL.into_iter().skip(1) {
+            filters = filters.push(
+                checkbox(self.columns[col as usize])
+                    .label(col.label())
+                    .on_toggle(move |value| Message::Column(col, value)),
+            );
+        }
+        scrollable(filters).height(Fill).into()
+    }
+
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a Settings,
         status: &'a RuntimeStatusSnapshot,
         plans: &'a [crate::power::PowerPlan],
     ) -> Element<'a, Message> {
-        let mut controls = row![
+        let controls = row![
             text_input(&t!("process_list.search_placeholder"), &self.search)
                 .on_input(Message::Search)
                 .width(280),
-            button(text(t!("settings.refresh").to_string()))
-                .on_press_maybe((!self.refreshing).then_some(Message::Refresh))
-                .style(super::widgets::quiet),
-            checkbox(self.hide_inaccessible)
-                .label(t!("process_list.hide_inaccessible_processes").to_string())
-                .on_toggle(Message::HideInaccessible),
-            checkbox(self.grouped)
-                .label(t!("process_list.app_name").to_string())
-                .on_toggle(Message::Group)
+            Space::new().width(Fill),
+            text(t!("process_list.count", count = self.processes.len()).to_string()),
+            iced::widget::tooltip(
+                button(super::navigation::glyph("icons/refresh-cw.svg"))
+                    .style(super::widgets::quiet)
+                    .on_press(Message::Refresh),
+                text(t!("settings.refresh").to_string()),
+                iced::widget::tooltip::Position::Bottom,
+            ),
         ]
-        .spacing(design::space::SMALL);
-        controls = controls.push(text(
-            t!("process_list.count", count = self.processes.len()).to_string(),
-        ));
-        let mut columns = row![].spacing(design::space::SMALL);
-        for col in Sort::ALL.into_iter().skip(1) {
-            columns = columns.push(
-                checkbox(self.columns[col as usize])
-                    .label(col.label())
-                    .on_toggle(move |v| Message::Column(col, v)),
-            );
-        }
-        controls = controls.push(
-            button(super::navigation::glyph("icons/settings.svg"))
-                .style(super::widgets::quiet)
-                .on_press(Message::ToggleColumns),
-        );
-        let mut body = column![controls.wrap()]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center);
+        let mut body = column![controls.width(Fill)]
             .spacing(design::space::SMALL)
             .height(Fill);
-        if self.show_columns {
-            body = body.push(columns);
-        }
         if let Some(e) = &self.error {
             body = body.push(text(e));
         }
@@ -833,22 +959,17 @@ impl ProcessList {
                                 } else {
                                     "process_list.status_active"
                                 };
-                            t!(key).to_string()
+                            key.to_string()
                         }
                     };
-                    cells = cells.push(
-                        container(
-                            text(value)
-                                .wrapping(iced::widget::text::Wrapping::None)
-                                .style(if col == Sort::Status {
-                                    text::primary
-                                } else {
-                                    text::default
-                                }),
-                        )
-                        .width(column_width(col))
-                        .clip(true),
-                    );
+                    let cell = if col == Sort::Status {
+                        status_cell(&value)
+                    } else {
+                        text(value)
+                            .wrapping(iced::widget::text::Wrapping::None)
+                            .into()
+                    };
+                    cells = cells.push(container(cell).width(column_width(col)).clip(true));
                 }
                 visible_rows.push((
                     (p.id, p.creation_time, entry.nested),
@@ -866,7 +987,7 @@ impl ProcessList {
                         .clip(true),
                     )
                     .on_press(Message::Select(row_index, self.rows_revision))
-                    .on_right_press(Message::Select(row_index, self.rows_revision))
+                    .on_right_press(Message::Context(row_index, self.rows_revision))
                     .into(),
                 ));
             }
@@ -896,111 +1017,305 @@ impl ProcessList {
                 range.end == self.rows.len(),
             )
         }));
+        let body = mouse_area(body).on_move(Message::PointerMoved);
         if let Some(selection) = &self.selected {
-            let mut pane = column![
-                row![
-                    text(&selection.name).size(design::typography::SUBTITLE),
-                    button(text(t!("common.done").to_string())).on_press(Message::CloseSelection)
-                ]
-                .spacing(design::space::SMALL),
-                text(&selection.path)
-            ]
-            .spacing(design::space::COMPACT);
             let eligible = selection.processes.iter().any(|p| !inaccessible(p));
+            let tree = selection.has_tree(&self.processes);
+            let stop_label = if tree {
+                "process_list.stop_process_tree"
+            } else {
+                "process_list.stop_process"
+            };
             let suspendable = selection.processes.iter().any(|p| {
                 !inaccessible(p)
                     && p.session_id.is_some_and(|s| s != 0)
                     && p.is_service_account == Some(false)
                     && !crate::app_suspension::is_builtin_excluded(&p.name)
             });
-            pane = pane.push(
-                row![
-                    button(text(t!("process_list.stop_process").to_string()))
-                        .on_press_maybe(eligible.then_some(Message::Stop(false))),
-                    button(text(t!("process_list.stop_process_tree").to_string()))
-                        .on_press_maybe(eligible.then_some(Message::Stop(true)))
-                ]
-                .spacing(design::space::TIGHT),
-            );
-            pane = pane.push(
-                row![
-                    button(text(t!("process_list.suspend_process").to_string())).on_press_maybe(
-                        suspendable.then_some(Message::Action(Action::Suspend(true)))
-                    ),
-                    button(text(t!("process_list.resume_process").to_string())).on_press_maybe(
-                        suspendable.then_some(Message::Action(Action::Suspend(false)))
-                    )
-                ]
-                .spacing(design::space::TIGHT),
-            );
-            pane = pane.push(
-                row![
-                    text(format!(
-                        "{}: {}",
-                        t!("process_list.efficiency_mode"),
-                        t!(match self.efficiency {
-                            Some(true) => "common.on",
-                            Some(false) => "common.off",
-                            None => "common.unknown",
-                        })
-                    )),
-                    button(text(t!("common.on").to_string())).on_press_maybe(
-                        eligible.then_some(Message::Action(Action::Efficiency(true)))
-                    ),
-                    button(text(t!("common.off").to_string())).on_press_maybe(
-                        eligible.then_some(Message::Action(Action::Efficiency(false)))
-                    )
-                ]
-                .spacing(design::space::TIGHT),
-            );
-            for kind in [
-                Kind::Process,
-                Kind::Thread,
-                Kind::Io,
-                Kind::Gpu,
-                Kind::Memory,
-                Kind::DynamicBoost,
-            ] {
-                let key = format!("nav.{}", kind.key());
-                let choices = kind
-                    .choices(settings.advanced.expose_all_priority_values)
-                    .into_iter()
-                    .filter(|v| !is_default(*v))
-                    .collect::<Vec<_>>();
-                let current = self
-                    .current
-                    .iter()
-                    .copied()
-                    .find(|v| value_kind(*v) == kind);
-                let control: Element<'_, Message> = if eligible {
-                    pick_list(choices, current, move |v| {
-                        Message::Action(Action::Priority(v))
+            let suspended = selection.processes.iter().any(|p| {
+                status
+                    .feature_status
+                    .app_suspension
+                    .suspended_process_ids
+                    .contains(&p.id)
+            });
+            let suspension_label = if suspended {
+                "process_list.resume_process"
+            } else {
+                "process_list.suspend_process"
+            };
+            if let Some(position) = self.context {
+                return iced::widget::stack![
+                    body,
+                    responsive(move |_size| {
+                        let mut menu = column![mouse_area(
+                            button(
+                                row![
+                                    text(t!("nav.priority_control").to_string()),
+                                    super::navigation::glyph("icons/chevron-right.svg")
+                                ]
+                                .spacing(design::space::SMALL)
+                                .align_y(iced::Center)
+                            )
+                            .style(super::widgets::quiet)
+                            .on_press(Message::PriorityMenu(PriorityMenu::Types))
+                        )
+                        .on_enter(Message::PriorityMenu(PriorityMenu::Types))]
+                        .spacing(design::space::TINY);
+                        for (key, message, enabled) in [
+                            ("process_list.open_rule_details", Message::OpenDetails, true),
+                            (
+                                "process_list.open_process_location",
+                                Message::Menu(Box::new(Message::OpenLocation)),
+                                !selection.path.is_empty(),
+                            ),
+                            (
+                                suspension_label,
+                                Message::Menu(Box::new(Message::Action(Action::Suspend(
+                                    !suspended,
+                                )))),
+                                suspendable,
+                            ),
+                            (stop_label, Message::Stop(tree), eligible),
+                        ] {
+                            menu = menu.push(
+                                mouse_area(
+                                    button(text(t!(key).to_string()))
+                                        .style(move |theme, status| {
+                                            let mut style = super::widgets::quiet(theme, status);
+                                            if status != iced::widget::button::Status::Disabled {
+                                                style.text_color = match key {
+                                                    "process_list.suspend_process" => {
+                                                        theme
+                                                            .extended_palette()
+                                                            .warning
+                                                            .strong
+                                                            .color
+                                                    }
+                                                    "process_list.resume_process" => {
+                                                        if theme.extended_palette().is_dark {
+                                                            iced::Color::from_rgb8(0x70, 0xb7, 0xff)
+                                                        } else {
+                                                            iced::Color::from_rgb8(0x00, 0x67, 0xb0)
+                                                        }
+                                                    }
+                                                    "process_list.stop_process"
+                                                    | "process_list.stop_process_tree" => {
+                                                        theme.palette().danger
+                                                    }
+                                                    _ => style.text_color,
+                                                };
+                                            }
+                                            style
+                                        })
+                                        .on_press_maybe(enabled.then_some(message)),
+                                )
+                                .on_enter(Message::PriorityMenu(PriorityMenu::Closed)),
+                            );
+                        }
+                        menu = menu.push(
+                            button(text(format!(
+                                "{}: {}",
+                                t!("process_list.efficiency_mode"),
+                                t!(match self.efficiency {
+                                    Some(true) => "common.on",
+                                    Some(false) => "common.off",
+                                    None => "common.unknown",
+                                })
+                            )))
+                            .style(move |theme, status| {
+                                let mut style = super::widgets::quiet(theme, status);
+                                if self.efficiency == Some(true)
+                                    && status != iced::widget::button::Status::Disabled
+                                {
+                                    style.text_color = theme.palette().success;
+                                }
+                                style
+                            })
+                            .on_press_maybe(
+                                self.efficiency.filter(|_| eligible).map(|enabled| {
+                                    Message::Menu(Box::new(Message::Action(Action::Efficiency(
+                                        !enabled,
+                                    ))))
+                                }),
+                            ),
+                        );
+                        let panel = |content: Element<'a, Message>| {
+                            iced::widget::opaque(
+                                container(content)
+                                    .padding(design::space::SMALL as u16)
+                                    .style(super::widgets::surface),
+                            )
+                        };
+                        let mut cascade = row![panel(menu.into())].spacing(0);
+                        if self.priority_menu != PriorityMenu::Closed {
+                            let mut types = column![].spacing(design::space::TINY);
+                            for kind in [
+                                Kind::Process,
+                                Kind::Thread,
+                                Kind::Io,
+                                Kind::Gpu,
+                                Kind::Memory,
+                                Kind::DynamicBoost,
+                            ] {
+                                let key = format!("nav.{}", kind.key());
+                                types = types.push(
+                                    mouse_area(
+                                        button(
+                                            row![
+                                                text(t!(&key).to_string()),
+                                                super::navigation::glyph("icons/chevron-right.svg")
+                                            ]
+                                            .spacing(design::space::SMALL)
+                                            .align_y(iced::Center),
+                                        )
+                                        .style(
+                                            if self.priority_menu == PriorityMenu::Levels(kind) {
+                                                super::widgets::selected
+                                            } else {
+                                                super::widgets::quiet
+                                            },
+                                        )
+                                        .on_press(
+                                            Message::PriorityMenu(PriorityMenu::Levels(kind)),
+                                        ),
+                                    )
+                                    .on_enter(Message::PriorityMenu(PriorityMenu::Levels(kind))),
+                                );
+                            }
+                            cascade = cascade.push(panel(types.into()));
+                            if let PriorityMenu::Levels(kind) = self.priority_menu {
+                                let mut levels = column![].spacing(design::space::TINY);
+                                for value in kind
+                                    .choices(settings.advanced.expose_all_priority_values)
+                                    .into_iter()
+                                    .filter(|value| !is_default(*value))
+                                {
+                                    levels = levels.push(
+                                        button(text(value.to_string()))
+                                            .style(if self.current.contains(&value) {
+                                                super::widgets::selected
+                                            } else {
+                                                super::widgets::quiet
+                                            })
+                                            .on_press_maybe(eligible.then_some(Message::Menu(
+                                                Box::new(Message::Action(Action::Priority(value))),
+                                            ))),
+                                    );
+                                }
+                                cascade = cascade
+                                    .push(panel(scrollable(levels).height(iced::Shrink).into()));
+                            }
+                        }
+                        iced::widget::float(cascade)
+                            .translate(move |bounds, viewport| {
+                                let desired = iced::Point::new(
+                                    bounds.x + position.x - viewport.x,
+                                    bounds.y + position.y - viewport.y,
+                                );
+                                let point = popup_position(desired, viewport.size(), bounds.size());
+                                iced::Vector::new(
+                                    viewport.x + point.x - bounds.x,
+                                    viewport.y + point.y - bounds.y,
+                                )
+                            })
+                            .into()
                     })
-                    .placeholder(t!("settings.apply").to_string())
-                    .into()
-                } else {
-                    text(
-                        current
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| t!("common.unknown").to_string()),
-                    )
-                    .into()
-                };
-                pane = pane.push(
-                    row![text(t!(&key).to_string()).width(Fill), control]
-                        .spacing(design::space::SMALL),
+                ]
+                .into();
+            }
+            let icon: Element<'_, Message> = selection
+                .processes
+                .first()
+                .and_then(|p| p.image_path.as_ref())
+                .and_then(|path| self.icons.get(path))
+                .and_then(Option::as_ref)
+                .map(|icon| image((**icon).clone()).width(20).height(20).into())
+                .unwrap_or_else(|| super::navigation::glyph("icons/app-window.svg"));
+            let header = container(
+                row![
+                    icon,
+                    column![
+                        text(&selection.name),
+                        text(&selection.path)
+                            .size(design::typography::SECONDARY)
+                            .style(iced::widget::text::secondary),
+                    ]
+                    .width(Fill)
+                    .spacing(design::space::TIGHT),
+                    button(text("\u{00d7}")).on_press(Message::CloseSelection),
+                ]
+                .spacing(design::space::MEDIUM)
+                .align_y(iced::Center),
+            )
+            .padding(design::space::LARGE as u16);
+            let mut tabs = row![].spacing(design::space::SMALL);
+            for (tab, key) in [
+                (ProcessTab::Immediate, "process_list.immediate_actions"),
+                (ProcessTab::Rulesets, "process_list.rulesets"),
+            ] {
+                tabs = tabs.push(
+                    button(text(t!(key).to_string()))
+                        .style(if self.process_tab == tab {
+                            super::widgets::selected
+                        } else {
+                            super::widgets::quiet
+                        })
+                        .on_press(Message::ProcessTab(tab)),
                 );
             }
-            pane = pane.push(
-                button(text(t!("process_list.open_process_location").to_string()))
-                    .on_press(Message::OpenLocation),
-            );
-            if eligible && !selection.path.is_empty() {
-                pane = pane
-                    .push(details::view(settings, &selection.path, plans).map(Message::Details));
+            let mut pane = column![].spacing(super::widgets::CARD_GAP);
+            match self.process_tab {
+                ProcessTab::Rulesets => {
+                    if eligible && !selection.path.is_empty() {
+                        pane = pane.push(
+                            details::view(settings, &selection.path, plans).map(Message::Details),
+                        );
+                    } else {
+                        pane = pane.push(text(t!("process_list.status_access_denied").to_string()));
+                    }
+                }
+                ProcessTab::Immediate => {
+                    let efficiency: Element<'_, Message> = match self.efficiency {
+                        Some(enabled) => super::widgets::switch(
+                            enabled,
+                            eligible.then_some(|value| Message::Action(Action::Efficiency(value))),
+                        ),
+                        None => text(t!("common.unknown").to_string()).into(),
+                    };
+                    pane = pane
+                        .push(super::widgets::settings_card(super::widgets::setting_row(
+                            "process_list.efficiency_mode",
+                            efficiency,
+                        )))
+                        .push(super::widgets::heading(
+                            t!("nav.priority_control").to_string(),
+                            design::typography::BODY,
+                        ))
+                        .push(self.immediate_priorities(settings, eligible))
+                        .push(
+                            row![
+                                button(text(t!(suspension_label).to_string())).on_press_maybe(
+                                    suspendable
+                                        .then_some(Message::Action(Action::Suspend(!suspended)))
+                                ),
+                                button(text(t!("process_list.open_process_location").to_string()))
+                                    .on_press_maybe(
+                                        (!selection.path.is_empty())
+                                            .then_some(Message::OpenLocation)
+                                    ),
+                                Space::new().width(Fill),
+                                button(text(t!(stop_label).to_string()))
+                                    .style(iced::widget::button::danger)
+                                    .on_press_maybe(eligible.then_some(Message::Stop(tree))),
+                            ]
+                            .spacing(design::space::SMALL)
+                            .align_y(iced::Center),
+                        );
+                }
             }
             if let Some((stopping, tree)) = &self.stopping {
-                pane = pane
+                pane = column![]
                     .push(text(
                         t!(
                             if *tree {
@@ -1022,13 +1337,57 @@ impl ProcessList {
                         .spacing(design::space::SMALL),
                     );
             }
-            return row![body.width(Fill), scrollable(pane).width(380)]
-                .spacing(design::space::MEDIUM)
-                .into();
+            return iced::widget::stack![
+                body,
+                mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| {
+                    container::Style {
+                        background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                        ..Default::default()
+                    }
+                }))
+                .on_press(Message::CloseSelection)
+                .on_right_press(Message::CloseSelection),
+                container(iced::widget::opaque(
+                    container(column![
+                        header,
+                        iced::widget::rule::horizontal(1),
+                        container(tabs)
+                            .padding([design::space::SMALL as u16, design::space::LARGE as u16]),
+                        scrollable(container(pane).padding(design::space::LARGE as u16))
+                            .height(Fill),
+                    ])
+                    .width(Fill)
+                    .max_width(960)
+                    .height(Fill)
+                    .max_height(680)
+                    .style(|theme| container::Style {
+                        background: Some(theme.palette().background.into()),
+                        border: iced::Border {
+                            color: theme.extended_palette().background.strong.color,
+                            width: 1.0,
+                            radius: design::CARD_RADIUS.into(),
+                        },
+                        ..Default::default()
+                    })
+                ))
+                .padding(design::space::MEDIUM as u16)
+                .center_x(Fill)
+                .center_y(Fill),
+            ]
+            .into();
         }
         body.into()
     }
 }
+fn popup_position(position: iced::Point, bounds: iced::Size, popup: iced::Size) -> iced::Point {
+    iced::Point::new(
+        position.x.clamp(0.0, (bounds.width - popup.width).max(0.0)),
+        position
+            .y
+            .clamp(0.0, (bounds.height - popup.height).max(0.0)),
+    )
+}
+
 fn value_kind(v: Value) -> Kind {
     match v {
         Value::Process(_) => Kind::Process,
@@ -1070,6 +1429,57 @@ fn snapshot_target(p: &ProcessInfo) -> Result<ProcessActionTarget, ProcessAction
         is_service_account: p.is_service_account,
     })
 }
+fn status_cell(key: &str) -> Element<'static, Message> {
+    let unavailable = matches!(
+        key,
+        "process_list.status_protected_system_process" | "process_list.status_access_denied"
+    );
+    let (icon, dark, light) = match key {
+        "process_list.status_suspended" => ("icons/pause.svg", 0xe8b45b, 0x886000),
+        "process_list.status_efficiency_mode" => ("icons/leaf.svg", 0xa4db61, 0x477d23),
+        "process_list.status_active" => ("icons/play.svg", 0x70b7ff, 0x0067b0),
+        _ => ("icons/ban.svg", 0x9aa0a6, 0x666666),
+    };
+    let color = move |theme: &iced::Theme| {
+        let rgb = if theme.extended_palette().is_dark {
+            dark
+        } else {
+            light
+        };
+        iced::Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+    };
+    let label = if unavailable {
+        t!("process_list.status_unavailable")
+    } else {
+        t!(key)
+    };
+    let cell = row![
+        iced::widget::svg(crate::ui::assets::iced_icon(icon).expect("Status icon is bundled"))
+            .width(design::ICON_SIZE)
+            .height(design::ICON_SIZE)
+            .style(move |theme, _| iced::widget::svg::Style {
+                color: Some(color(theme))
+            }),
+        text(label.to_string())
+            .wrapping(iced::widget::text::Wrapping::None)
+            .style(move |theme| text::Style {
+                color: Some(color(theme))
+            }),
+    ]
+    .spacing(design::space::CONTROL)
+    .align_y(iced::Center);
+    if unavailable {
+        iced::widget::tooltip(
+            cell,
+            text(t!(key).to_string()),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into()
+    } else {
+        cell.into()
+    }
+}
+
 fn protected(p: &ProcessInfo) -> bool {
     p.is_critical == Some(true)
         || foreground::contains_process_name(foreground::CORE_BUILT_IN_PROCESS_EXCLUSIONS, &p.name)
@@ -1123,6 +1533,48 @@ fn background<T: Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stop_action_uses_tree_for_groups_or_children_but_not_reused_parent_ids() {
+        let parent = process(10, 100, "parent.exe");
+        let mut child = process(11, 200, "child.exe");
+        child.parent_id = Some(parent.id);
+        let mut selection = Selection {
+            processes: vec![parent.clone()],
+            path: String::new(),
+            name: parent.name.clone(),
+        };
+        assert!(!selection.has_tree(std::slice::from_ref(&parent)));
+        assert!(selection.has_tree(&[parent.clone(), child.clone()]));
+        child.creation_time = Some(50);
+        assert!(!selection.has_tree(&[parent.clone(), child.clone()]));
+        child.creation_time = None;
+        assert!(selection.has_tree(&[parent.clone(), child.clone()]));
+        selection.processes.push(child);
+        assert!(selection.has_tree(&[parent]));
+    }
+
+    #[test]
+    fn context_menu_stays_inside_the_viewport() {
+        let bounds = iced::Size::new(640.0, 480.0);
+        let menu = iced::Size::new(320.0, 300.0);
+        assert_eq!(
+            popup_position(iced::Point::new(630.0, 470.0), bounds, menu),
+            iced::Point::new(320.0, 180.0)
+        );
+        assert_eq!(
+            popup_position(iced::Point::new(20.0, 30.0), bounds, menu),
+            iced::Point::new(20.0, 30.0)
+        );
+        assert_eq!(
+            popup_position(
+                iced::Point::new(-5.0, -5.0),
+                iced::Size::new(100.0, 100.0),
+                menu
+            ),
+            iced::Point::ORIGIN
+        );
+    }
+
     #[test]
     fn action_feedback_retains_the_original_selection() {
         let mut list = ProcessList {
