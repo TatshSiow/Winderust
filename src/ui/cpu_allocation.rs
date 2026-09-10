@@ -251,11 +251,9 @@ impl Editor {
         status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
-        let mut rail = column![
-            text(t!("cpu_allocation.presets").to_string()),
-            button(text(t!("cpu_allocation.add_preset").to_string())).on_press(Message::NewPreset)
-        ]
-        .spacing(design::space::SMALL);
+        let mut rail =
+            column![text(t!("cpu_allocation.presets").to_string()).style(text::secondary)]
+                .spacing(design::space::SMALL);
         for (i, p) in s.cpu_allocation_presets.iter().enumerate() {
             rail = rail.push(button(text(p.name.clone())).on_press(Message::EditPreset(i)));
         }
@@ -305,28 +303,29 @@ impl Editor {
                 rail = rail.push(status.map(Message::Status));
             }
         }
-        let rail = column![
-            row![
-                button(text(t!("common.status").to_string()))
-                    .on_press(Message::RailTab(false))
-                    .style(if self.presets_tab {
-                        super::widgets::quiet
-                    } else {
-                        super::widgets::selected_control
-                    }),
-                button(text(t!("cpu_allocation.presets").to_string()))
-                    .on_press(Message::RailTab(true))
-                    .style(if self.presets_tab {
-                        super::widgets::selected_control
-                    } else {
-                        super::widgets::quiet
-                    })
-            ]
-            .spacing(design::space::SMALL),
-            rail
+        let tabs = row![
+            super::widgets::panel_tab(
+                t!("common.status").to_string(),
+                !self.presets_tab,
+                Message::RailTab(false)
+            ),
+            super::widgets::panel_tab(
+                t!("cpu_allocation.presets").to_string(),
+                self.presets_tab,
+                Message::RailTab(true)
+            )
         ]
-        .spacing(design::space::MEDIUM);
-        scrollable(rail).width(Fill).height(Fill).into()
+        .spacing(design::space::SMALL);
+        let mut panel = column![tabs, scrollable(rail).width(Fill).height(Fill)]
+            .spacing(design::space::MEDIUM)
+            .height(Fill);
+        if self.presets_tab {
+            panel = panel.push(super::widgets::preset_footer(
+                t!("cpu_allocation.add_preset").to_string(),
+                Message::NewPreset,
+            ));
+        }
+        panel.into()
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {

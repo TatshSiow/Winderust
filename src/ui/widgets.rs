@@ -8,6 +8,62 @@ pub(super) const CARD_PADDING: u32 = design::space::MEDIUM;
 pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
 pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
 
+pub(super) fn panel_tab<'a, M: Clone + 'a>(
+    label: String,
+    selected: bool,
+    message: M,
+) -> iced::widget::Button<'a, M> {
+    button(
+        iced::widget::container(heading(label, design::typography::BODY))
+            .center_x(Fill)
+            .center_y(Fill),
+    )
+    .width(Fill)
+    .height(design::NAVIGATION_ROW_HEIGHT)
+    .style(if selected { selected_control } else { quiet })
+    .on_press(message)
+}
+
+pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Element<'a, M> {
+    iced::widget::column![
+        iced::widget::rule::horizontal(1),
+        iced::widget::container(
+            button(
+                iced::widget::container(
+                    row![
+                        iced::widget::svg(
+                            super::assets::iced_icon("icons/plus.svg")
+                                .expect("Every UI icon is bundled")
+                        )
+                        .width(design::ICON_SIZE)
+                        .height(design::ICON_SIZE)
+                        .style(|theme: &iced::Theme, _| {
+                            iced::widget::svg::Style {
+                                color: Some(theme.extended_palette().primary.base.text),
+                            }
+                        }),
+                        text(label)
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                )
+                .center_x(Fill)
+                .center_y(Fill)
+            )
+            .width(Fill)
+            .height(32)
+            .style(|theme, status| {
+                let mut style = iced::widget::button::primary(theme, status);
+                style.border.radius = design::CONTROL_RADIUS.into();
+                style
+            })
+            .on_press(message)
+        )
+        .padding([design::space::MEDIUM as u16, 0])
+    ]
+    .into()
+}
+
 pub(super) fn indicator_chip(theme: &iced::Theme, active: bool) -> iced::widget::container::Style {
     iced::widget::container::Style {
         text_color: Some(if active {

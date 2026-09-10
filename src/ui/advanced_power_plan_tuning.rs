@@ -491,12 +491,16 @@ impl Editor {
             ));
         }
         rail = rail.push(iced::widget::keyed_column(preset_rows).spacing(super::widgets::CARD_GAP));
-        rail = rail.push(
-            button(text(t!("processor_power.add_preset").to_string()))
-                .on_press(Message::OpenPreset(PresetTarget::Custom(None))),
-        );
-
-        scrollable(rail).height(Fill).width(Fill).into()
+        column![
+            scrollable(rail).height(Fill).width(Fill),
+            super::widgets::preset_footer(
+                t!("processor_power.add_preset").to_string(),
+                Message::OpenPreset(PresetTarget::Custom(None))
+            )
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill)
+        .into()
     }
 }
 const BUILT_INS: [ProcessorPowerPreset; 3] = [

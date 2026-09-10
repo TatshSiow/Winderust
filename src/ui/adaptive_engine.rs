@@ -1668,25 +1668,34 @@ impl Editor {
         live: &'a Settings,
         status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
-        let mut rail = column![text(t!("adaptive_engine.built_in_presets").to_string())]
-            .spacing(design::space::SMALL);
+        let mut rail = column![
+            text(t!("adaptive_engine.built_in_presets").to_string()).style(text::secondary)
+        ]
+        .spacing(design::space::SMALL);
         for p in BuiltInAdaptiveEnginePreset::ALL {
             rail = rail.push(
                 row![
-                    button(text(built_in_adaptive_engine_preset_label(p)))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::BuiltIn(p)),
+                    button(
+                        iced::widget::container(text(built_in_adaptive_engine_preset_label(p)))
+                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
+                    )
+                    .width(Fill)
+                    .style(super::widgets::quiet)
+                    .on_press(Message::BuiltIn(p)),
                     button(super::navigation::glyph("icons/info.svg"))
                         .style(super::widgets::quiet)
                         .on_press(Message::ViewBuiltIn(p))
                 ]
-                .spacing(design::space::TIGHT),
+                .spacing(design::space::TIGHT)
+                .align_y(iced::Center),
             );
         }
-        rail = rail.push(text(t!("adaptive_engine.custom_presets").to_string()));
+        rail = rail
+            .push(text(t!("adaptive_engine.custom_presets").to_string()).style(text::secondary));
         if live.adaptive_engine_presets.is_empty() {
-            rail = rail.push(text(t!("adaptive_engine.no_custom_presets").to_string()));
+            rail = rail.push(
+                text(t!("adaptive_engine.no_custom_presets").to_string()).style(text::secondary),
+            );
         }
         for (i, p) in live.adaptive_engine_presets.iter().enumerate() {
             rail = rail.push(
@@ -1698,12 +1707,10 @@ impl Editor {
                     button(text(t!("adaptive_engine.edit_preset").to_string()))
                         .on_press(Message::Edit(i))
                 ]
-                .spacing(design::space::TIGHT),
+                .spacing(design::space::TIGHT)
+                .align_y(iced::Center),
             );
         }
-        rail = rail.push(
-            button(text(t!("adaptive_engine.add_preset").to_string())).on_press(Message::New),
-        );
         if self.draft.is_some() {
             rail = rail
                 .push(
@@ -1725,19 +1732,9 @@ impl Editor {
                 }
             }
         }
-        let snapshot = &status.feature_status.cpu_scheduler;
-        rail = rail.push(text(snapshot.message.clone())).push(text(format!(
-            "{}: {}",
-            t!("common.adjusted_processes"),
-            snapshot.adjusted_processes
-        )));
-        if let Some(e) = &snapshot.last_error {
-            rail = rail.push(text(e.clone()));
+        if !self.error.is_empty() {
+            rail = rail.push(text(self.error.clone()).style(text::danger));
         }
-        for app in &snapshot.adjusted_apps {
-            rail = rail.push(text(app.clone()));
-        }
-        rail = rail.push(text(self.error.clone()));
         if !self.presets_tab {
             rail = column![];
             if let Some(status) =
@@ -1746,30 +1743,29 @@ impl Editor {
                 rail = rail.push(status.map(Message::Status));
             }
         }
-        let rail = column![
-            row![
-                button(text(t!("common.status").to_string()))
-                    .width(Fill)
-                    .on_press(Message::RailTab(false))
-                    .style(if self.presets_tab {
-                        super::widgets::quiet
-                    } else {
-                        super::widgets::selected_control
-                    }),
-                button(text(t!("adaptive_engine.presets").to_string()))
-                    .width(Fill)
-                    .on_press(Message::RailTab(true))
-                    .style(if self.presets_tab {
-                        super::widgets::selected_control
-                    } else {
-                        super::widgets::quiet
-                    })
-            ]
-            .spacing(design::space::SMALL),
-            rail
+        let tabs = row![
+            super::widgets::panel_tab(
+                t!("common.status").to_string(),
+                !self.presets_tab,
+                Message::RailTab(false)
+            ),
+            super::widgets::panel_tab(
+                t!("adaptive_engine.presets").to_string(),
+                self.presets_tab,
+                Message::RailTab(true)
+            )
         ]
-        .spacing(design::space::MEDIUM);
-        scrollable(rail).width(Fill).height(Fill).into()
+        .spacing(design::space::SMALL);
+        let mut panel = column![tabs, scrollable(rail).width(Fill).height(Fill)]
+            .spacing(design::space::MEDIUM)
+            .height(Fill);
+        if self.presets_tab {
+            panel = panel.push(super::widgets::preset_footer(
+                t!("adaptive_engine.add_preset").to_string(),
+                Message::New,
+            ));
+        }
+        panel.into()
     }
 }
 fn priority_option_row<'a>(key: &str, cells: [Element<'a, Message>; 3]) -> Element<'a, Message> {
