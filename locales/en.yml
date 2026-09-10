@@ -614,6 +614,10 @@ background_efficiency:
   no_custom_rules: "No custom rules are configured."
 
 adaptive_engine:
+  detection: "Detection"
+  keep_existing_priority: "Keep existing priority"
+  same_or_higher: "Same or higher"
+  same_or_lower: "Same or lower"
   bottleneck_classifier: "System Bottleneck"
   bottleneck_unknown: "Collecting data"
   bottleneck_headroom: "Headroom"

@@ -49,7 +49,7 @@ pub(super) struct Editor {
     presets_tab: bool,
     tuning_tabs: [TuningTab; 2],
     collapsed: [[bool; 2]; 2],
-    advanced_expanded: bool,
+    priority_expanded: [[bool; 7]; 2],
     path: String,
     error: String,
     removing: Option<usize>,
@@ -62,7 +62,7 @@ pub(super) enum Message {
     RailTab(bool),
     TuningTab(TuningTab),
     Collapse(usize),
-    ToggleAdvanced,
+    TogglePriority(usize),
     Status(super::status_rail::Message),
     Number(
         fn(&mut Settings, u64),
@@ -113,7 +113,13 @@ impl Editor {
                     self.tuning_tabs[usize::from(self.draft.is_some())] = tab;
                 }
             }
-            Message::ToggleAdvanced => self.advanced_expanded = !self.advanced_expanded,
+            Message::TogglePriority(index) => {
+                if let Some(expanded) =
+                    self.priority_expanded[usize::from(self.draft.is_some())].get_mut(index)
+                {
+                    *expanded = !*expanded;
+                }
+            }
             Message::Collapse(index) => {
                 if let Some(value) =
                     self.collapsed[usize::from(self.draft.is_some())].get_mut(index)
@@ -665,33 +671,36 @@ impl Editor {
             }
             TuningTab::PriorityControl => {
                 let mut table = column![row![
-                    text(t!("common.control").to_string()).width(280),
-                    text(t!("common.focus_process").to_string())
-                        .width(iced::Length::FillPortion(1)),
-                    text(t!("common.visible_window").to_string())
-                        .width(iced::Length::FillPortion(1)),
-                    text(t!("common.background_process").to_string())
-                        .width(iced::Length::FillPortion(1))
-                ]
-                .spacing(design::space::MEDIUM)]
-                .spacing(design::space::SMALL);
-                table = table.push(super::widgets::settings_card(
+                    text(t!("common.control").to_string()).width(Fill),
                     row![
-                        row![
-                            super::widgets::switch(
-                                s.cpu_scheduler.process_priority_enabled,
-                                editable.then_some(|v| Message::Toggle(
+                        text(t!("common.enabled").to_string()).width(64),
+                        text(t!("common.focus_process").to_string()).width(Fill),
+                        text(t!("common.visible_window").to_string()).width(Fill),
+                        text(t!("common.background_process").to_string()).width(Fill),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .width(iced::Length::FillPortion(3)),
+                    iced::widget::Space::new().width(design::ICON_SIZE),
+                ]
+                .spacing(design::space::SMALL)
+                .padding(super::widgets::CARD_PADDING as u16)]
+                .spacing(super::widgets::CARD_GAP);
+                table = table.push(super::widgets::setting_group(
+                    "nav.process_priority".to_string(),
+                    self.priority_expanded[usize::from(self.draft.is_some())][0],
+                    Message::TogglePriority(0),
+                    row![
+                        iced::widget::container(super::widgets::switch(
+                            s.cpu_scheduler.process_priority_enabled,
+                            editable.then_some(|v| {
+                                Message::Toggle(
                                     |s, v| s.cpu_scheduler.process_priority_enabled = v,
-                                    v
-                                ))
-                            ),
-                            text(t!("nav.process_priority").to_string())
-                        ]
-                        .align_y(iced::Center)
-                        .height(super::widgets::SETTING_ROW_HEIGHT)
-                        .spacing(design::space::SMALL)
-                        .width(280),
-                        column![selector!(
+                                    v,
+                                )
+                            }),
+                        ))
+                        .width(64),
+                        iced::widget::container(selector!(
                             s,
                             "cpu_allocation.focus",
                             ProcessPrioritySetting,
@@ -702,10 +711,9 @@ impl Editor {
                             },
                             process_priority_setting_label,
                             cpu_scheduler.focus_process_priority
-                        )]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![selector!(
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
                             s,
                             "common.visible_window",
                             ProcessPrioritySetting,
@@ -716,10 +724,9 @@ impl Editor {
                             },
                             process_priority_setting_label,
                             cpu_scheduler.visible_window_priority
-                        )]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![selector!(
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
                             s,
                             "common.background_process",
                             ProcessPrioritySetting,
@@ -730,30 +737,98 @@ impl Editor {
                             },
                             process_priority_setting_label,
                             cpu_scheduler.background_priority
-                        )]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1))
+                        ))
+                        .width(Fill)
                     ]
-                    .spacing(design::space::MEDIUM),
-                ));
-                table = table.push(super::widgets::settings_card(
-                    row![
-                        row![
-                            super::widgets::switch(
-                                s.cpu_scheduler.background_efficiency_enabled,
-                                editable.then_some(|v| Message::Toggle(
-                                    |s, v| s.cpu_scheduler.background_efficiency_enabled = v,
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                    .width(iced::Length::FillPortion(3)),
+                    column![
+                        iced::widget::rule::horizontal(1),
+                        priority_option_row(
+                            "adaptive_engine.detection",
+                            [
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .process_priority_foreground_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .process_priority_foreground_detection_enabled = v
+                                    },
                                     v
-                                ))
-                            ),
-                            text(t!("nav.background_efficiency").to_string())
-                        ]
-                        .align_y(iced::Center)
-                        .height(super::widgets::SETTING_ROW_HEIGHT)
-                        .spacing(design::space::SMALL)
-                        .width(280),
-                        column![
-                            iced::widget::Space::new().height(0),
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .process_priority_visible_window_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .process_priority_visible_window_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                text("\u{2014}").style(iced::widget::text::secondary).into()
+                            ]
+                        ),
+                        priority_option_row(
+                            "adaptive_engine.keep_existing_priority",
+                            [
+                                checkbox(s.cpu_scheduler.process_priority_preserve_foreground)
+                                    .label(t!("adaptive_engine.same_or_higher").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler.process_priority_preserve_foreground = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(s.cpu_scheduler.process_priority_preserve_visible_window)
+                                    .label(t!("adaptive_engine.same_or_higher").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .process_priority_preserve_visible_window = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(s.cpu_scheduler.process_priority_preserve_background)
+                                    .label(t!("adaptive_engine.same_or_lower").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler.process_priority_preserve_background = v
+                                        },
+                                        v
+                                    )))
+                                    .into()
+                            ]
+                        )
+                    ]
+                    .spacing(design::space::SMALL),
+                ));
+                table = table.push(super::widgets::setting_group(
+                    "nav.background_efficiency".to_string(),
+                    self.priority_expanded[usize::from(self.draft.is_some())][1],
+                    Message::TogglePriority(1),
+                    row![
+                        iced::widget::container(super::widgets::switch(
+                            s.cpu_scheduler.background_efficiency_enabled,
+                            editable.then_some(|v| {
+                                Message::Toggle(
+                                    |s, v| s.cpu_scheduler.background_efficiency_enabled = v,
+                                    v,
+                                )
+                            }),
+                        ))
+                        .width(64),
+                        iced::widget::container(
                             pick_list(
                                 [
                                     Choice(false, t!("common.disabled").to_string()),
@@ -779,11 +854,9 @@ impl Editor {
                                 )
                             )
                             .width(Fill)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            iced::widget::Space::new().height(0),
+                        )
+                        .width(Fill),
+                        iced::widget::container(
                             pick_list(
                                 [
                                     Choice(false, t!("common.disabled").to_string()),
@@ -809,455 +882,684 @@ impl Editor {
                                 )
                             )
                             .width(Fill)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![pick_list(
-                            [
-                                Choice(false, t!("common.disabled").to_string()),
-                                Choice(true, t!("common.enabled").to_string())
-                            ],
-                            Some(Choice(
-                                s.cpu_scheduler.background_efficiency_mode,
-                                t!(if s.cpu_scheduler.background_efficiency_mode {
-                                    "common.enabled"
-                                } else {
-                                    "common.disabled"
-                                })
-                                .to_string()
-                            )),
-                            |v| Message::Toggle(
-                                |s, v| s.cpu_scheduler.background_efficiency_mode = v,
-                                v.0
-                            )
                         )
-                        .width(Fill)]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1))
+                        .width(Fill),
+                        iced::widget::container(
+                            pick_list(
+                                [
+                                    Choice(false, t!("common.disabled").to_string()),
+                                    Choice(true, t!("common.enabled").to_string())
+                                ],
+                                Some(Choice(
+                                    s.cpu_scheduler.background_efficiency_mode,
+                                    t!(if s.cpu_scheduler.background_efficiency_mode {
+                                        "common.enabled"
+                                    } else {
+                                        "common.disabled"
+                                    })
+                                    .to_string()
+                                )),
+                                |v| Message::Toggle(
+                                    |s, v| s.cpu_scheduler.background_efficiency_mode = v,
+                                    v.0
+                                )
+                            )
+                            .width(Fill)
+                        )
+                        .width(Fill)
                     ]
-                    .spacing(design::space::MEDIUM),
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                    .width(iced::Length::FillPortion(3)),
+                    column![
+                        iced::widget::rule::horizontal(1),
+                        priority_option_row(
+                            "adaptive_engine.detection",
+                            [
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .focus_process_background_efficiency_override_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .focus_process_background_efficiency_override_enabled =
+                                            v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .visible_window_background_efficiency_override_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .visible_window_background_efficiency_override_enabled =
+                                            v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                text("\u{2014}").style(iced::widget::text::secondary).into()
+                            ]
+                        )
+                    ]
+                    .spacing(design::space::SMALL),
                 ));
-                table = table.push(super::widgets::settings_card(
+                table = table.push(super::widgets::setting_group(
+                    "nav.thread_priority".to_string(),
+                    self.priority_expanded[usize::from(self.draft.is_some())][2],
+                    Message::TogglePriority(2),
                     row![
-                        row![
-                            super::widgets::switch(
-                                s.cpu_scheduler.thread_priority.enabled,
-                                editable.then_some(|v| Message::Toggle(
+                        iced::widget::container(super::widgets::switch(
+                            s.cpu_scheduler.thread_priority.enabled,
+                            editable.then_some(|v| {
+                                Message::Toggle(
                                     |s, v| s.cpu_scheduler.thread_priority.enabled = v,
-                                    v
-                                ))
-                            ),
-                            text(t!("nav.thread_priority").to_string())
-                        ]
-                        .align_y(iced::Center)
-                        .height(super::widgets::SETTING_ROW_HEIGHT)
-                        .spacing(design::space::SMALL)
-                        .width(280),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "cpu_allocation.focus",
-                                ProcessThreadPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessThreadPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessThreadPrioritySetting::ALL
-                                },
-                                process_thread_priority_setting_label,
-                                cpu_scheduler.thread_priority.foreground_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "common.visible_window",
-                                ProcessThreadPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessThreadPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessThreadPrioritySetting::ALL
-                                },
-                                process_thread_priority_setting_label,
-                                cpu_scheduler.thread_priority.visible_window_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            selector!(
-                                s,
-                                "common.background_process",
-                                ProcessThreadPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessThreadPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessThreadPrioritySetting::ALL
-                                },
-                                process_thread_priority_setting_label,
-                                cpu_scheduler.thread_priority.background_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1))
+                                    v,
+                                )
+                            }),
+                        ))
+                        .width(64),
+                        iced::widget::container(selector!(
+                            s,
+                            "cpu_allocation.focus",
+                            ProcessThreadPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessThreadPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessThreadPrioritySetting::ALL
+                            },
+                            process_thread_priority_setting_label,
+                            cpu_scheduler.thread_priority.foreground_priority
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
+                            s,
+                            "common.visible_window",
+                            ProcessThreadPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessThreadPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessThreadPrioritySetting::ALL
+                            },
+                            process_thread_priority_setting_label,
+                            cpu_scheduler.thread_priority.visible_window_priority
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
+                            s,
+                            "common.background_process",
+                            ProcessThreadPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessThreadPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessThreadPrioritySetting::ALL
+                            },
+                            process_thread_priority_setting_label,
+                            cpu_scheduler.thread_priority.background_priority
+                        ))
+                        .width(Fill)
                     ]
-                    .spacing(design::space::MEDIUM),
-                ));
-                table = table.push(super::widgets::settings_card(
-                    row![
-                        row![
-                            super::widgets::switch(
-                                s.cpu_scheduler.dynamic_priority_boost.enabled,
-                                editable.then_some(|v| Message::Toggle(
-                                    |s, v| s.cpu_scheduler.dynamic_priority_boost.enabled = v,
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                    .width(iced::Length::FillPortion(3)),
+                    column![
+                        iced::widget::rule::horizontal(1),
+                        priority_option_row(
+                            "adaptive_engine.detection",
+                            [
+                                checkbox(
+                                    s.cpu_scheduler.thread_priority.foreground_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .thread_priority
+                                            .foreground_detection_enabled = v
+                                    },
                                     v
-                                ))
-                            ),
-                            text(t!("nav.dynamic_priority_boost").to_string())
-                        ]
-                        .align_y(iced::Center)
-                        .height(super::widgets::SETTING_ROW_HEIGHT)
-                        .spacing(design::space::SMALL)
-                        .width(280),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "cpu_allocation.focus",
-                                ProcessDynamicPriorityBoostSetting,
-                                &ProcessDynamicPriorityBoostSetting::ALL,
-                                process_dynamic_priority_boost_setting_label,
-                                cpu_scheduler.dynamic_priority_boost.foreground_boost
-                            )
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "common.visible_window",
-                                ProcessDynamicPriorityBoostSetting,
-                                &ProcessDynamicPriorityBoostSetting::ALL,
-                                process_dynamic_priority_boost_setting_label,
-                                cpu_scheduler.dynamic_priority_boost.visible_window_boost
-                            )
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![selector!(
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .thread_priority
+                                        .visible_window_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .thread_priority
+                                            .visible_window_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                text("\u{2014}").style(iced::widget::text::secondary).into()
+                            ]
+                        ),
+                        priority_option_row(
+                            "adaptive_engine.keep_existing_priority",
+                            [
+                                checkbox(
+                                    s.cpu_scheduler.thread_priority.preserve_foreground_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .thread_priority
+                                            .preserve_foreground_priority = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .thread_priority
+                                        .preserve_visible_window_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .thread_priority
+                                            .preserve_visible_window_priority = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.cpu_scheduler.thread_priority.preserve_background_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_lower").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .thread_priority
+                                            .preserve_background_priority = v
+                                    },
+                                    v
+                                )))
+                                .into()
+                            ]
+                        )
+                    ]
+                    .spacing(design::space::SMALL),
+                ));
+                table = table.push(super::widgets::setting_group(
+                    "nav.dynamic_priority_boost".to_string(),
+                    self.priority_expanded[usize::from(self.draft.is_some())][3],
+                    Message::TogglePriority(3),
+                    row![
+                        iced::widget::container(super::widgets::switch(
+                            s.cpu_scheduler.dynamic_priority_boost.enabled,
+                            editable.then_some(|v| {
+                                Message::Toggle(
+                                    |s, v| s.cpu_scheduler.dynamic_priority_boost.enabled = v,
+                                    v,
+                                )
+                            }),
+                        ))
+                        .width(64),
+                        iced::widget::container(selector!(
+                            s,
+                            "cpu_allocation.focus",
+                            ProcessDynamicPriorityBoostSetting,
+                            &ProcessDynamicPriorityBoostSetting::ALL,
+                            process_dynamic_priority_boost_setting_label,
+                            cpu_scheduler.dynamic_priority_boost.foreground_boost
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
+                            s,
+                            "common.visible_window",
+                            ProcessDynamicPriorityBoostSetting,
+                            &ProcessDynamicPriorityBoostSetting::ALL,
+                            process_dynamic_priority_boost_setting_label,
+                            cpu_scheduler.dynamic_priority_boost.visible_window_boost
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
                             s,
                             "common.background_process",
                             ProcessDynamicPriorityBoostSetting,
                             &ProcessDynamicPriorityBoostSetting::ALL,
                             process_dynamic_priority_boost_setting_label,
                             cpu_scheduler.dynamic_priority_boost.background_boost
-                        )]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1))
+                        ))
+                        .width(Fill)
                     ]
-                    .spacing(design::space::MEDIUM),
-                ));
-                table = table.push(super::widgets::settings_card(
-                    row![
-                        row![
-                            super::widgets::switch(
-                                s.cpu_scheduler.io_priority.enabled,
-                                editable.then_some(|v| Message::Toggle(
-                                    |s, v| s.cpu_scheduler.io_priority.enabled = v,
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                    .width(iced::Length::FillPortion(3)),
+                    column![
+                        iced::widget::rule::horizontal(1),
+                        priority_option_row(
+                            "adaptive_engine.detection",
+                            [
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .dynamic_priority_boost
+                                        .foreground_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .dynamic_priority_boost
+                                            .foreground_detection_enabled = v
+                                    },
                                     v
-                                ))
-                            ),
-                            text(t!("nav.io_priority").to_string())
-                        ]
-                        .align_y(iced::Center)
-                        .height(super::widgets::SETTING_ROW_HEIGHT)
-                        .spacing(design::space::SMALL)
-                        .width(280),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "cpu_allocation.focus",
-                                ProcessIoPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessIoPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessIoPrioritySetting::ALL
-                                },
-                                process_io_priority_setting_label,
-                                cpu_scheduler.io_priority.foreground_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "common.visible_window",
-                                ProcessIoPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessIoPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessIoPrioritySetting::ALL
-                                },
-                                process_io_priority_setting_label,
-                                cpu_scheduler.io_priority.visible_window_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            selector!(
-                                s,
-                                "common.background_process",
-                                ProcessIoPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessIoPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessIoPrioritySetting::ALL
-                                },
-                                process_io_priority_setting_label,
-                                cpu_scheduler.io_priority.background_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1))
-                    ]
-                    .spacing(design::space::MEDIUM),
-                ));
-                table = table.push(super::widgets::settings_card(
-                    row![
-                        row![
-                            super::widgets::switch(
-                                s.cpu_scheduler.gpu_priority.enabled,
-                                editable.then_some(|v| Message::Toggle(
-                                    |s, v| s.cpu_scheduler.gpu_priority.enabled = v,
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .dynamic_priority_boost
+                                        .visible_window_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .dynamic_priority_boost
+                                            .visible_window_detection_enabled = v
+                                    },
                                     v
-                                ))
-                            ),
-                            text(t!("nav.gpu_priority").to_string())
-                        ]
-                        .align_y(iced::Center)
-                        .height(super::widgets::SETTING_ROW_HEIGHT)
-                        .spacing(design::space::SMALL)
-                        .width(280),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "cpu_allocation.focus",
-                                ProcessGpuPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessGpuPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessGpuPrioritySetting::ALL
-                                },
-                                process_gpu_priority_setting_label,
-                                cpu_scheduler.gpu_priority.foreground_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            iced::widget::Space::new().height(0),
-                            selector!(
-                                s,
-                                "common.visible_window",
-                                ProcessGpuPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessGpuPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessGpuPrioritySetting::ALL
-                                },
-                                process_gpu_priority_setting_label,
-                                cpu_scheduler.gpu_priority.visible_window_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![
-                            selector!(
-                                s,
-                                "common.background_process",
-                                ProcessGpuPrioritySetting,
-                                if s.advanced.expose_all_priority_values {
-                                    &ProcessGpuPrioritySetting::ADVANCED_ALL
-                                } else {
-                                    &ProcessGpuPrioritySetting::ALL
-                                },
-                                process_gpu_priority_setting_label,
-                                cpu_scheduler.gpu_priority.background_priority
-                            ),
-                            iced::widget::Space::new().height(0)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1))
+                                )))
+                                .into(),
+                                text("\u{2014}").style(iced::widget::text::secondary).into()
+                            ]
+                        )
                     ]
-                    .spacing(design::space::MEDIUM),
+                    .spacing(design::space::SMALL),
                 ));
-                table = table.push(super::widgets::settings_card(
+                table = table.push(super::widgets::setting_group(
+                    "nav.io_priority".to_string(),
+                    self.priority_expanded[usize::from(self.draft.is_some())][4],
+                    Message::TogglePriority(4),
                     row![
-                        row![
-                            super::widgets::switch(
-                                s.cpu_scheduler.memory_priority_enabled,
-                                editable.then_some(|v| Message::Toggle(
+                        iced::widget::container(super::widgets::switch(
+                            s.cpu_scheduler.io_priority.enabled,
+                            editable.then_some(|v| {
+                                Message::Toggle(|s, v| s.cpu_scheduler.io_priority.enabled = v, v)
+                            }),
+                        ))
+                        .width(64),
+                        iced::widget::container(selector!(
+                            s,
+                            "cpu_allocation.focus",
+                            ProcessIoPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessIoPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessIoPrioritySetting::ALL
+                            },
+                            process_io_priority_setting_label,
+                            cpu_scheduler.io_priority.foreground_priority
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
+                            s,
+                            "common.visible_window",
+                            ProcessIoPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessIoPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessIoPrioritySetting::ALL
+                            },
+                            process_io_priority_setting_label,
+                            cpu_scheduler.io_priority.visible_window_priority
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
+                            s,
+                            "common.background_process",
+                            ProcessIoPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessIoPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessIoPrioritySetting::ALL
+                            },
+                            process_io_priority_setting_label,
+                            cpu_scheduler.io_priority.background_priority
+                        ))
+                        .width(Fill)
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                    .width(iced::Length::FillPortion(3)),
+                    column![
+                        iced::widget::rule::horizontal(1),
+                        priority_option_row(
+                            "adaptive_engine.detection",
+                            [
+                                checkbox(s.cpu_scheduler.io_priority.foreground_detection_enabled)
+                                    .label(t!("common.enabled").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .io_priority
+                                                .foreground_detection_enabled = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(
+                                    s.cpu_scheduler.io_priority.visible_window_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .io_priority
+                                            .visible_window_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                text("\u{2014}").style(iced::widget::text::secondary).into()
+                            ]
+                        ),
+                        priority_option_row(
+                            "adaptive_engine.keep_existing_priority",
+                            [
+                                checkbox(s.cpu_scheduler.io_priority.preserve_foreground_priority)
+                                    .label(t!("adaptive_engine.same_or_higher").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .io_priority
+                                                .preserve_foreground_priority = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(
+                                    s.cpu_scheduler.io_priority.preserve_visible_window_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .io_priority
+                                            .preserve_visible_window_priority = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(s.cpu_scheduler.io_priority.preserve_background_priority)
+                                    .label(t!("adaptive_engine.same_or_lower").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .io_priority
+                                                .preserve_background_priority = v
+                                        },
+                                        v
+                                    )))
+                                    .into()
+                            ]
+                        )
+                    ]
+                    .spacing(design::space::SMALL),
+                ));
+                table = table.push(super::widgets::setting_group(
+                    "nav.gpu_priority".to_string(),
+                    self.priority_expanded[usize::from(self.draft.is_some())][5],
+                    Message::TogglePriority(5),
+                    row![
+                        iced::widget::container(super::widgets::switch(
+                            s.cpu_scheduler.gpu_priority.enabled,
+                            editable.then_some(|v| {
+                                Message::Toggle(|s, v| s.cpu_scheduler.gpu_priority.enabled = v, v)
+                            }),
+                        ))
+                        .width(64),
+                        iced::widget::container(selector!(
+                            s,
+                            "cpu_allocation.focus",
+                            ProcessGpuPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessGpuPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessGpuPrioritySetting::ALL
+                            },
+                            process_gpu_priority_setting_label,
+                            cpu_scheduler.gpu_priority.foreground_priority
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
+                            s,
+                            "common.visible_window",
+                            ProcessGpuPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessGpuPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessGpuPrioritySetting::ALL
+                            },
+                            process_gpu_priority_setting_label,
+                            cpu_scheduler.gpu_priority.visible_window_priority
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
+                            s,
+                            "common.background_process",
+                            ProcessGpuPrioritySetting,
+                            if s.advanced.expose_all_priority_values {
+                                &ProcessGpuPrioritySetting::ADVANCED_ALL
+                            } else {
+                                &ProcessGpuPrioritySetting::ALL
+                            },
+                            process_gpu_priority_setting_label,
+                            cpu_scheduler.gpu_priority.background_priority
+                        ))
+                        .width(Fill)
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                    .width(iced::Length::FillPortion(3)),
+                    column![
+                        iced::widget::rule::horizontal(1),
+                        priority_option_row(
+                            "adaptive_engine.detection",
+                            [
+                                checkbox(s.cpu_scheduler.gpu_priority.foreground_detection_enabled)
+                                    .label(t!("common.enabled").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .gpu_priority
+                                                .foreground_detection_enabled = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .gpu_priority
+                                        .visible_window_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .gpu_priority
+                                            .visible_window_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                text("\u{2014}").style(iced::widget::text::secondary).into()
+                            ]
+                        ),
+                        priority_option_row(
+                            "adaptive_engine.keep_existing_priority",
+                            [
+                                checkbox(s.cpu_scheduler.gpu_priority.preserve_foreground_priority)
+                                    .label(t!("adaptive_engine.same_or_higher").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .gpu_priority
+                                                .preserve_foreground_priority = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .gpu_priority
+                                        .preserve_visible_window_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .gpu_priority
+                                            .preserve_visible_window_priority = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(s.cpu_scheduler.gpu_priority.preserve_background_priority)
+                                    .label(t!("adaptive_engine.same_or_lower").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .gpu_priority
+                                                .preserve_background_priority = v
+                                        },
+                                        v
+                                    )))
+                                    .into()
+                            ]
+                        )
+                    ]
+                    .spacing(design::space::SMALL),
+                ));
+                table = table.push(super::widgets::setting_group(
+                    "nav.memory_priority".to_string(),
+                    self.priority_expanded[usize::from(self.draft.is_some())][6],
+                    Message::TogglePriority(6),
+                    row![
+                        iced::widget::container(super::widgets::switch(
+                            s.cpu_scheduler.memory_priority_enabled,
+                            editable.then_some(|v| {
+                                Message::Toggle(
                                     |s, v| s.cpu_scheduler.memory_priority_enabled = v,
-                                    v
-                                ))
-                            ),
-                            text(t!("nav.memory_priority").to_string())
-                        ]
-                        .align_y(iced::Center)
-                        .height(super::widgets::SETTING_ROW_HEIGHT)
-                        .spacing(design::space::SMALL)
-                        .width(280),
-                        column![selector!(
+                                    v,
+                                )
+                            }),
+                        ))
+                        .width(64),
+                        iced::widget::container(selector!(
                             s,
                             "cpu_allocation.focus",
                             ProcessMemoryPrioritySetting,
                             &ProcessMemoryPrioritySetting::ALL,
                             process_memory_priority_setting_label,
                             cpu_scheduler.focus_process_memory_priority
-                        )]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![selector!(
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
                             s,
                             "common.visible_window",
                             ProcessMemoryPrioritySetting,
                             &ProcessMemoryPrioritySetting::ALL,
                             process_memory_priority_setting_label,
                             cpu_scheduler.visible_window_memory_priority
-                        )]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1)),
-                        column![selector!(
+                        ))
+                        .width(Fill),
+                        iced::widget::container(selector!(
                             s,
                             "common.background_process",
                             ProcessMemoryPrioritySetting,
                             &ProcessMemoryPrioritySetting::ALL,
                             process_memory_priority_setting_label,
                             cpu_scheduler.background_memory_priority
-                        )]
-                        .spacing(design::space::SMALL)
-                        .width(iced::Length::FillPortion(1))
+                        ))
+                        .width(Fill)
                     ]
-                    .spacing(design::space::MEDIUM),
-                ));
-                body = body.push(iced::widget::scrollable(table.width(960)).direction(
-                    iced::widget::scrollable::Direction::Horizontal(
-                        iced::widget::scrollable::Scrollbar::new(),
-                    ),
-                ));
-                body = body.push(super::widgets::setting_group(
-                    "settings.advanced".to_string(),
-                    self.advanced_expanded,
-                    Message::ToggleAdvanced,
-                    iced::widget::Space::new(),
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                    .width(iced::Length::FillPortion(3)),
                     column![
-                        toggle!(
-                            "background_efficiency.foreground_detection",
-                            cpu_scheduler.focus_process_background_efficiency_override_enabled
+                        iced::widget::rule::horizontal(1),
+                        priority_option_row(
+                            "adaptive_engine.detection",
+                            [
+                                checkbox(
+                                    s.cpu_scheduler.memory_priority_foreground_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .memory_priority_foreground_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.cpu_scheduler
+                                        .memory_priority_visible_window_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.cpu_scheduler
+                                            .memory_priority_visible_window_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                text("\u{2014}").style(iced::widget::text::secondary).into()
+                            ]
                         ),
-                        iced::widget::Space::new().height(0),
-                        toggle!(
-                            "common.visible_window_detection",
-                            cpu_scheduler.visible_window_background_efficiency_override_enabled
-                        ),
-                        iced::widget::Space::new().height(0),
-                        iced::widget::Space::new().height(0),
-                        toggle!(
-                            "thread_priority.foreground_detection",
-                            cpu_scheduler.thread_priority.foreground_detection_enabled
-                        ),
-                        toggle!(
-                            "common.preserve_foreground_priority",
-                            cpu_scheduler.thread_priority.preserve_foreground_priority
-                        ),
-                        toggle!(
-                            "common.visible_window_detection",
-                            cpu_scheduler
-                                .thread_priority
-                                .visible_window_detection_enabled
-                        ),
-                        toggle!(
-                            "common.preserve_visible_window_priority",
-                            cpu_scheduler
-                                .thread_priority
-                                .preserve_visible_window_priority
-                        ),
-                        toggle!(
-                            "common.preserve_background_priority",
-                            cpu_scheduler.thread_priority.preserve_background_priority
-                        ),
-                        toggle!(
-                            "dynamic_priority_boost.foreground_detection",
-                            cpu_scheduler
-                                .dynamic_priority_boost
-                                .foreground_detection_enabled
-                        ),
-                        toggle!(
-                            "common.visible_window_detection",
-                            cpu_scheduler
-                                .dynamic_priority_boost
-                                .visible_window_detection_enabled
-                        ),
-                        toggle!(
-                            "io_priority.foreground_detection",
-                            cpu_scheduler.io_priority.foreground_detection_enabled
-                        ),
-                        toggle!(
-                            "common.preserve_foreground_priority",
-                            cpu_scheduler.io_priority.preserve_foreground_priority
-                        ),
-                        toggle!(
-                            "common.visible_window_detection",
-                            cpu_scheduler.io_priority.visible_window_detection_enabled
-                        ),
-                        toggle!(
-                            "common.preserve_visible_window_priority",
-                            cpu_scheduler.io_priority.preserve_visible_window_priority
-                        ),
-                        toggle!(
-                            "common.preserve_background_priority",
-                            cpu_scheduler.io_priority.preserve_background_priority
-                        ),
-                        toggle!(
-                            "gpu_priority.foreground_detection",
-                            cpu_scheduler.gpu_priority.foreground_detection_enabled
-                        ),
-                        toggle!(
-                            "common.preserve_foreground_priority",
-                            cpu_scheduler.gpu_priority.preserve_foreground_priority
-                        ),
-                        toggle!(
-                            "common.visible_window_detection",
-                            cpu_scheduler.gpu_priority.visible_window_detection_enabled
-                        ),
-                        toggle!(
-                            "common.preserve_visible_window_priority",
-                            cpu_scheduler.gpu_priority.preserve_visible_window_priority
-                        ),
-                        toggle!(
-                            "common.preserve_background_priority",
-                            cpu_scheduler.gpu_priority.preserve_background_priority
+                        priority_option_row(
+                            "adaptive_engine.keep_existing_priority",
+                            [
+                                checkbox(s.cpu_scheduler.memory_priority_preserve_foreground)
+                                    .label(t!("adaptive_engine.same_or_higher").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler.memory_priority_preserve_foreground = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(s.cpu_scheduler.memory_priority_preserve_visible_window)
+                                    .label(t!("adaptive_engine.same_or_higher").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler
+                                                .memory_priority_preserve_visible_window = v
+                                        },
+                                        v
+                                    )))
+                                    .into(),
+                                checkbox(s.cpu_scheduler.memory_priority_preserve_background)
+                                    .label(t!("adaptive_engine.same_or_lower").to_string())
+                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                        |s, v| {
+                                            s.cpu_scheduler.memory_priority_preserve_background = v
+                                        },
+                                        v
+                                    )))
+                                    .into()
+                            ]
                         )
                     ]
-                    .spacing(design::space::MEDIUM),
+                    .spacing(design::space::SMALL),
                 ));
+                body = body.push(table.width(Fill));
             }
             TuningTab::CustomRules => {}
         }
@@ -1429,6 +1731,30 @@ impl Editor {
         scrollable(rail).width(Fill).height(Fill).into()
     }
 }
+fn priority_option_row<'a>(key: &str, cells: [Element<'a, Message>; 3]) -> Element<'a, Message> {
+    let [focus, visible, background] = cells;
+    row![
+        text(t!(key).to_string())
+            .size(design::typography::SECONDARY)
+            .style(iced::widget::text::secondary)
+            .width(Fill),
+        row![
+            iced::widget::Space::new().width(64),
+            iced::widget::container(focus).width(Fill),
+            iced::widget::container(visible).width(Fill),
+            iced::widget::container(background).width(Fill),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center)
+        .width(iced::Length::FillPortion(3)),
+        iced::widget::Space::new().width(design::ICON_SIZE),
+    ]
+    .spacing(design::space::SMALL)
+    .height(super::widgets::SETTING_ROW_HEIGHT)
+    .align_y(iced::Center)
+    .into()
+}
+
 fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
     let help_key = match key {
         "adaptive_engine.enable" => "adaptive_engine.intro_1".to_string(),
@@ -1492,6 +1818,27 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn priority_cards_expand_independently_for_live_and_preset_views() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        editor.update(&mut settings, Message::TogglePriority(2));
+        assert_eq!(
+            editor.priority_expanded[0],
+            [false, false, true, false, false, false, false]
+        );
+        editor.update(
+            &mut settings,
+            Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Balanced),
+        );
+        editor.update(&mut settings, Message::TogglePriority(4));
+        assert!(editor.priority_expanded[1][4]);
+        assert!(!editor.priority_expanded[1][2]);
+        editor.update(&mut settings, Message::Cancel);
+        assert!(editor.priority_expanded[0][2]);
+        assert!(!editor.priority_expanded[0][4]);
+    }
+
     use super::*;
     #[test]
     fn tuning_navigation_keeps_live_and_preset_state_separate() {

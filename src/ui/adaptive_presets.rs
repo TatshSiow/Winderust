@@ -161,6 +161,11 @@ pub(super) fn apply_cpu_scheduler_preset(
 ) {
     let values = cpu_scheduler_preset_values(preset);
     settings.process_priority_enabled = values.process_priority_enabled;
+    settings.process_priority_foreground_detection_enabled = true;
+    settings.process_priority_visible_window_detection_enabled = true;
+    settings.process_priority_preserve_foreground = false;
+    settings.process_priority_preserve_visible_window = false;
+    settings.process_priority_preserve_background = false;
     settings.background_efficiency_enabled = values.background_efficiency_enabled;
     settings.focus_process_background_efficiency_override_enabled = true;
     settings.visible_window_background_efficiency_override_enabled = true;
@@ -175,6 +180,11 @@ pub(super) fn apply_cpu_scheduler_preset(
     settings.dynamic_priority_boost = dynamic_priority_boost_preset_values(preset);
     settings.gpu_priority = gpu_priority_preset_values(preset);
     settings.memory_priority_enabled = values.memory_priority_enabled;
+    settings.memory_priority_foreground_detection_enabled = true;
+    settings.memory_priority_visible_window_detection_enabled = true;
+    settings.memory_priority_preserve_foreground = true;
+    settings.memory_priority_preserve_visible_window = true;
+    settings.memory_priority_preserve_background = true;
     settings.focus_process_memory_priority = values.focus_process_memory_priority;
     settings.visible_window_memory_priority = values.visible_window_memory_priority;
     settings.background_memory_priority = values.background_memory_priority;
@@ -404,5 +414,62 @@ pub(super) fn gpu_priority_preset_values(
         preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_and_memory_options_round_trip_in_custom_presets() {
+        let mut settings = Settings::default();
+        settings
+            .cpu_scheduler
+            .process_priority_foreground_detection_enabled = false;
+        settings
+            .cpu_scheduler
+            .process_priority_visible_window_detection_enabled = false;
+        settings.cpu_scheduler.process_priority_preserve_foreground = true;
+        settings
+            .cpu_scheduler
+            .process_priority_preserve_visible_window = true;
+        settings.cpu_scheduler.process_priority_preserve_background = true;
+        settings
+            .cpu_scheduler
+            .memory_priority_foreground_detection_enabled = false;
+        settings
+            .cpu_scheduler
+            .memory_priority_visible_window_detection_enabled = false;
+        settings.cpu_scheduler.memory_priority_preserve_foreground = false;
+        settings
+            .cpu_scheduler
+            .memory_priority_preserve_visible_window = false;
+        settings.cpu_scheduler.memory_priority_preserve_background = false;
+        let preset = capture_adaptive_engine_preset(&settings, "Custom".into());
+        let encoded = toml::to_string(&preset).unwrap();
+        let decoded: AdaptiveEnginePreset = toml::from_str(&encoded).unwrap();
+        let mut restored = Settings::default();
+        apply_adaptive_engine_preset(&mut restored, &decoded);
+        assert_eq!(restored.cpu_scheduler, settings.cpu_scheduler);
+
+        apply_cpu_scheduler_preset(
+            &mut restored.cpu_scheduler,
+            BuiltInAdaptiveEnginePreset::Balanced,
+        );
+        let defaults = CpuSchedulerSettings::default();
+        assert_eq!(
+            restored
+                .cpu_scheduler
+                .process_priority_foreground_detection_enabled,
+            defaults.process_priority_foreground_detection_enabled
+        );
+        assert!(!restored.cpu_scheduler.process_priority_preserve_background);
+        assert!(
+            restored
+                .cpu_scheduler
+                .memory_priority_visible_window_detection_enabled
+        );
+        assert!(restored.cpu_scheduler.memory_priority_preserve_background);
     }
 }

@@ -686,3 +686,80 @@ fn process_cpu_demand_percent_uses_one_logical_processor_capacity() {
 
     assert_eq!(usage, 100.0);
 }
+
+#[test]
+fn process_detection_falls_through_and_preservation_follows_selected_tier() {
+    let mut settings = CpuSchedulerSettings {
+        process_priority_preserve_foreground: true,
+        process_priority_preserve_visible_window: true,
+        process_priority_preserve_background: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        process_priority_policy(&settings, true, true),
+        (
+            Some(PriorityClassValue::AboveNormal),
+            PriorityClassPreservation::PreserveHigherOrHighOrRealtime
+        )
+    );
+    settings.process_priority_foreground_detection_enabled = false;
+    assert_eq!(
+        process_priority_policy(&settings, true, true),
+        (
+            Some(PriorityClassValue::Normal),
+            PriorityClassPreservation::PreserveHigherOrHighOrRealtime
+        )
+    );
+    settings.process_priority_visible_window_detection_enabled = false;
+    assert_eq!(
+        process_priority_policy(&settings, true, true),
+        (
+            Some(PriorityClassValue::BelowNormal),
+            PriorityClassPreservation::PreserveLowerOrHighOrRealtime
+        )
+    );
+    let pressure =
+        cpu_pressure_restraint_target(&settings, CpuSchedulerTier::VisibleWindow, true).unwrap();
+    assert_eq!(pressure.priority, Some(PriorityClassValue::BelowNormal));
+    assert_eq!(
+        pressure.preservation,
+        PriorityClassPreservation::PreserveLowerOrHighOrRealtime
+    );
+    settings.process_priority_preserve_background = false;
+    assert_eq!(
+        process_priority_policy(&settings, true, true).1,
+        PriorityClassPreservation::PreserveHighOrRealtime
+    );
+    settings.process_priority_enabled = false;
+    assert_eq!(process_priority_policy(&settings, true, true).0, None);
+}
+
+#[test]
+fn memory_detection_falls_through_without_changing_default_semantics() {
+    use crate::config::ProcessMemoryPrioritySetting as Memory;
+    let mut settings = CpuSchedulerSettings {
+        focus_process_memory_priority: Memory::Normal,
+        visible_window_memory_priority: Memory::Medium,
+        background_memory_priority: Memory::Low,
+        ..Default::default()
+    };
+    assert_eq!(
+        memory_priority_policy(&settings, true, true),
+        (Memory::Normal, true, false)
+    );
+    settings.memory_priority_foreground_detection_enabled = false;
+    assert_eq!(
+        memory_priority_policy(&settings, true, true),
+        (Memory::Medium, false, true)
+    );
+    settings.memory_priority_visible_window_detection_enabled = false;
+    assert_eq!(
+        memory_priority_policy(&settings, true, true),
+        (Memory::Low, false, false)
+    );
+    settings.background_memory_priority = Memory::Default;
+    assert!(memory_priority_policy(&settings, false, true)
+        .0
+        .priority()
+        .is_none());
+}

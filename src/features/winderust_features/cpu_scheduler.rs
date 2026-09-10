@@ -166,6 +166,7 @@ struct CpuAllocationSelection {
 
 struct PressureTargetPolicy {
     priority: Option<PriorityClassValue>,
+    preservation: PriorityClassPreservation,
     apply_background_efficiency: bool,
 }
 
@@ -174,6 +175,7 @@ struct PriorityTarget {
     executable_path: String,
     creation_time: u64,
     priority: Option<PriorityClassValue>,
+    preservation: PriorityClassPreservation,
     apply_background_efficiency: bool,
 }
 
@@ -195,6 +197,7 @@ struct FocusProcessPriorityGroup<'a> {
     targets: &'a [(u32, String, String, u64)],
     stability_delay_ms: u64,
     priority: PriorityClassValue,
+    preservation: PriorityClassPreservation,
 }
 
 impl CpuSchedulerManager {
@@ -426,53 +429,54 @@ impl CpuSchedulerManager {
         let mut cpu_allocation_targets = Vec::new();
         let mut cpu_scheduler_memory_targets = Vec::new();
         if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
-            if let Some(priority) = settings.focus_process_memory_priority.priority() {
-                for process in processes
-                    .iter()
-                    .filter(|process| {
-                        process.is_critical == Some(false) && process.can_set_information
-                    })
-                    .filter(|process| foreground_process_group_ids.contains(&process.id))
-                    .filter(|process| !excluded_process_ids.contains(&process.id))
-                    .filter(|process| {
-                        !settings.custom_rules.iter().any(|rule| rule.enabled)
-                            || crate::foreground::process_executable_path(process).is_some_and(
-                                |path| {
-                                    !settings
-                                        .custom_rule_enabled_for(path.to_string_lossy().as_ref())
-                                },
-                            )
-                    })
-                    .filter(|process| {
-                        focus_process_priority_eligible(
-                            process.id,
-                            &process.name,
-                            current_process_id,
-                            current_session_id,
-                        )
-                    })
-                {
-                    let Some(executable_path) =
-                        cached_executable_path(process, &mut executable_paths)
-                    else {
-                        continue;
-                    };
-                    let Some(creation_time) = process.creation_time else {
-                        continue;
-                    };
-                    cpu_scheduler_memory_targets.push(MemoryPriorityTarget {
-                        process_id: process.id,
-                        process_name: process.name.clone(),
-                        executable_path,
-                        creation_time,
-                        priority,
-                        foreground: true,
-                        visible_window: false,
-                        preserve_foreground_priority: true,
-                        preserve_visible_window_priority: true,
-                        preserve_background_priority: true,
-                    });
-                }
+            for process in processes
+                .iter()
+                .filter(|process| process.is_critical == Some(false) && process.can_set_information)
+                .filter(|process| foreground_process_group_ids.contains(&process.id))
+                .filter(|process| !excluded_process_ids.contains(&process.id))
+                .filter(|process| {
+                    !settings.custom_rules.iter().any(|rule| rule.enabled)
+                        || crate::foreground::process_executable_path(process).is_some_and(|path| {
+                            !settings.custom_rule_enabled_for(path.to_string_lossy().as_ref())
+                        })
+                })
+                .filter(|process| {
+                    focus_process_priority_eligible(
+                        process.id,
+                        &process.name,
+                        current_process_id,
+                        current_session_id,
+                    )
+                })
+            {
+                let (value, foreground, visible_window) = memory_priority_policy(
+                    settings,
+                    true,
+                    visible_window_process_group_ids.contains(&process.id),
+                );
+                let Some(priority) = value.priority() else {
+                    continue;
+                };
+                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
+                else {
+                    continue;
+                };
+                let Some(creation_time) = process.creation_time else {
+                    continue;
+                };
+                cpu_scheduler_memory_targets.push(MemoryPriorityTarget {
+                    process_id: process.id,
+                    process_name: process.name.clone(),
+                    executable_path,
+                    creation_time,
+                    priority,
+                    foreground,
+                    visible_window,
+                    preserve_foreground_priority: settings.memory_priority_preserve_foreground,
+                    preserve_visible_window_priority: settings
+                        .memory_priority_preserve_visible_window,
+                    preserve_background_priority: settings.memory_priority_preserve_background,
+                });
             }
         }
         if background_pressure_applies {
@@ -506,6 +510,7 @@ impl CpuSchedulerManager {
                             executable_path,
                             creation_time,
                             priority: policy.priority,
+                            preservation: policy.preservation,
                             apply_background_efficiency: policy.apply_background_efficiency,
                         },
                     );
@@ -640,14 +645,12 @@ impl CpuSchedulerManager {
                     process.decision = Some(candidate.decision);
                 }
                 if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
-                    let priority = match candidate.tier {
-                        CpuSchedulerTier::VisibleWindow => {
-                            settings.visible_window_memory_priority.priority()
-                        }
-                        CpuSchedulerTier::Background => {
-                            settings.background_memory_priority.priority()
-                        }
-                    };
+                    let (value, foreground, visible_window) = memory_priority_policy(
+                        settings,
+                        false,
+                        candidate.tier == CpuSchedulerTier::VisibleWindow,
+                    );
+                    let priority = value.priority();
                     if let Some(priority) = priority {
                         cpu_scheduler_memory_targets.push(MemoryPriorityTarget {
                             process_id: candidate.process_id,
@@ -655,11 +658,14 @@ impl CpuSchedulerManager {
                             executable_path: executable_path.clone(),
                             creation_time,
                             priority,
-                            foreground: false,
-                            visible_window: candidate.tier == CpuSchedulerTier::VisibleWindow,
-                            preserve_foreground_priority: true,
-                            preserve_visible_window_priority: true,
-                            preserve_background_priority: true,
+                            foreground,
+                            visible_window,
+                            preserve_foreground_priority: settings
+                                .memory_priority_preserve_foreground,
+                            preserve_visible_window_priority: settings
+                                .memory_priority_preserve_visible_window,
+                            preserve_background_priority: settings
+                                .memory_priority_preserve_background,
                         });
                     }
                 }
@@ -888,7 +894,7 @@ impl CpuSchedulerManager {
                         target: control_target,
                         owner: ControlOwner::AdaptiveEngine,
                         priority,
-                        preservation: PriorityClassPreservation::PreserveHighOrRealtime,
+                        preservation: target.preservation,
                     },
                     allow_cross_session_process_control,
                 ) {
@@ -952,13 +958,20 @@ impl CpuSchedulerManager {
         }
 
         if let Some(foreground_id) = foreground_process_id {
+            let (configured_priority, preservation) = process_priority_policy(
+                settings,
+                true,
+                visible_window_process_group_ids.contains(&foreground_id),
+            );
             let foreground_priority = if settings.process_priority_enabled
                 && (cpu_pressure_restraint_applies || focus_and_launch_profile_active)
             {
-                if focus_and_launch_profile_active {
+                if focus_and_launch_profile_active
+                    && settings.process_priority_foreground_detection_enabled
+                {
                     Some(PriorityClassValue::AboveNormal)
                 } else {
-                    cpu_scheduler_priority_value(settings.focus_process_priority)
+                    configured_priority
                 }
             } else {
                 None
@@ -1003,6 +1016,7 @@ impl CpuSchedulerManager {
                             FOCUS_PROCESS_PRIORITY_STABILITY_DELAY_MS
                         },
                         priority,
+                        preservation,
                     },
                     priority_efficiency_controller,
                     allow_cross_session_process_control,
@@ -1339,6 +1353,7 @@ impl CpuSchedulerManager {
             targets,
             stability_delay_ms,
             priority,
+            preservation,
         } = group;
         let mut result = FocusProcessPriorityGroupResult::default();
         let foreground_name = foreground_process_name.unwrap_or("").trim();
@@ -1434,7 +1449,7 @@ impl CpuSchedulerManager {
                     ),
                     owner: ControlOwner::CpuSchedulerFocusPriority,
                     priority,
-                    preservation: PriorityClassPreservation::PreserveHighOrRealtime,
+                    preservation,
                 },
                 allow_cross_session_process_control,
             ) {

@@ -135,13 +135,22 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
                 .align_y(iced::Center)
             )
             .width(Fill)
-            .padding(0)
+            .padding(CARD_PADDING as u16)
             .style(quiet)
             .on_press(message),
-            optional_content(content, expanded)
+            optional_content(
+                iced::widget::container(content).padding(iced::Padding {
+                    top: 0.0,
+                    right: CARD_PADDING as f32,
+                    bottom: CARD_PADDING as f32,
+                    left: CARD_PADDING as f32,
+                }),
+                expanded,
+            )
         ]
-        .spacing(design::space::SMALL),
+        .spacing(0),
     )
+    .padding(0)
     .into()
 }
 

@@ -122,21 +122,15 @@ pub(super) fn cpu_pressure_restraint_target(
     tier: CpuSchedulerTier,
     background_efficiency_managed: bool,
 ) -> Option<PressureTargetPolicy> {
-    let priority = if settings.process_priority_enabled {
-        let priority = match tier {
-            CpuSchedulerTier::VisibleWindow => settings.visible_window_priority,
-            CpuSchedulerTier::Background => settings.background_priority,
-        };
-        cpu_scheduler_priority_value(priority)
-    } else {
-        None
-    };
+    let (priority, preservation) =
+        process_priority_policy(settings, false, tier == CpuSchedulerTier::VisibleWindow);
     let apply_background_efficiency = !background_efficiency_managed
         && settings.background_efficiency_enabled
         && settings.background_efficiency_mode_for(false, tier == CpuSchedulerTier::VisibleWindow);
 
     (priority.is_some() || apply_background_efficiency).then_some(PressureTargetPolicy {
         priority,
+        preservation,
         apply_background_efficiency,
     })
 }
@@ -278,4 +272,62 @@ pub(super) fn process_age_in_focus_and_launch_window(
     profile_window: Duration,
 ) -> bool {
     age <= profile_window
+}
+
+pub(super) fn process_priority_policy(
+    settings: &CpuSchedulerSettings,
+    foreground: bool,
+    visible_window: bool,
+) -> (Option<PriorityClassValue>, PriorityClassPreservation) {
+    let foreground = foreground && settings.process_priority_foreground_detection_enabled;
+    let visible_window =
+        visible_window && settings.process_priority_visible_window_detection_enabled;
+    let (value, preserve) = if foreground {
+        (
+            settings.focus_process_priority,
+            settings.process_priority_preserve_foreground,
+        )
+    } else if visible_window {
+        (
+            settings.visible_window_priority,
+            settings.process_priority_preserve_visible_window,
+        )
+    } else {
+        (
+            settings.background_priority,
+            settings.process_priority_preserve_background,
+        )
+    };
+    let preservation = if !preserve {
+        PriorityClassPreservation::PreserveHighOrRealtime
+    } else if foreground || visible_window {
+        PriorityClassPreservation::PreserveHigherOrHighOrRealtime
+    } else {
+        PriorityClassPreservation::PreserveLowerOrHighOrRealtime
+    };
+    (
+        settings
+            .process_priority_enabled
+            .then(|| cpu_scheduler_priority_value(value))
+            .flatten(),
+        preservation,
+    )
+}
+
+pub(super) fn memory_priority_policy(
+    settings: &CpuSchedulerSettings,
+    foreground: bool,
+    visible_window: bool,
+) -> (crate::config::ProcessMemoryPrioritySetting, bool, bool) {
+    let foreground = foreground && settings.memory_priority_foreground_detection_enabled;
+    let visible_window =
+        !foreground && visible_window && settings.memory_priority_visible_window_detection_enabled;
+    let priority = if foreground {
+        settings.focus_process_memory_priority
+    } else if visible_window {
+        settings.visible_window_memory_priority
+    } else {
+        settings.background_memory_priority
+    };
+    (priority, foreground, visible_window)
 }

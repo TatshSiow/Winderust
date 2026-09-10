@@ -616,6 +616,10 @@ background_efficiency:
   no_custom_rules: "尚未設定自訂規則。"
 
 adaptive_engine:
+  detection: "偵測"
+  keep_existing_priority: "保留現有優先順序"
+  same_or_higher: "相同或更高"
+  same_or_lower: "相同或更低"
   bottleneck_classifier: "系統瓶頸"
   bottleneck_unknown: "正在收集資料"
   bottleneck_headroom: "仍有餘裕"

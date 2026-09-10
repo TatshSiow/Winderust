@@ -919,6 +919,16 @@ pub struct ByRunningAppRule {
 #[serde(deny_unknown_fields)]
 pub struct CpuSchedulerSettings {
     pub process_priority_enabled: bool,
+    #[serde(default = "default_true")]
+    pub process_priority_foreground_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub process_priority_visible_window_detection_enabled: bool,
+    #[serde(default)]
+    pub process_priority_preserve_foreground: bool,
+    #[serde(default)]
+    pub process_priority_preserve_visible_window: bool,
+    #[serde(default)]
+    pub process_priority_preserve_background: bool,
     pub background_efficiency_enabled: bool,
     pub focus_process_background_efficiency_override_enabled: bool,
     pub visible_window_background_efficiency_override_enabled: bool,
@@ -933,6 +943,16 @@ pub struct CpuSchedulerSettings {
     pub dynamic_priority_boost: DynamicPriorityBoostSettings,
     pub gpu_priority: GpuPrioritySettings,
     pub memory_priority_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_foreground_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_visible_window_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_foreground: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_visible_window: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_background: bool,
     pub focus_process_memory_priority: ProcessMemoryPrioritySetting,
     pub visible_window_memory_priority: ProcessMemoryPrioritySetting,
     pub background_memory_priority: ProcessMemoryPrioritySetting,
@@ -1890,6 +1910,11 @@ impl Default for CpuSchedulerSettings {
     fn default() -> Self {
         Self {
             process_priority_enabled: default_true(),
+            process_priority_foreground_detection_enabled: true,
+            process_priority_visible_window_detection_enabled: true,
+            process_priority_preserve_foreground: false,
+            process_priority_preserve_visible_window: false,
+            process_priority_preserve_background: false,
             background_efficiency_enabled: default_true(),
             focus_process_background_efficiency_override_enabled: default_true(),
             visible_window_background_efficiency_override_enabled: default_true(),
@@ -1904,6 +1929,11 @@ impl Default for CpuSchedulerSettings {
             dynamic_priority_boost: default_dynamic_priority_boost_settings(),
             gpu_priority: default_gpu_priority_settings(),
             memory_priority_enabled: false,
+            memory_priority_foreground_detection_enabled: true,
+            memory_priority_visible_window_detection_enabled: true,
+            memory_priority_preserve_foreground: true,
+            memory_priority_preserve_visible_window: true,
+            memory_priority_preserve_background: true,
             focus_process_memory_priority: ProcessMemoryPrioritySetting::Default,
             visible_window_memory_priority: ProcessMemoryPrioritySetting::Default,
             background_memory_priority: ProcessMemoryPrioritySetting::Low,

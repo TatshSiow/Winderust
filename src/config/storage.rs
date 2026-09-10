@@ -111,6 +111,30 @@ mod tests {
     };
 
     #[test]
+    fn omitted_adaptive_priority_options_use_behavior_preserving_defaults() {
+        let defaults = CpuSchedulerSettings::default();
+        let raw = toml::to_string(&defaults).unwrap();
+        let raw = raw
+            .lines()
+            .filter(|line| {
+                ![
+                    "process_priority_foreground_detection_enabled",
+                    "process_priority_visible_window_detection_enabled",
+                    "process_priority_preserve_",
+                    "memory_priority_foreground_detection_enabled",
+                    "memory_priority_visible_window_detection_enabled",
+                    "memory_priority_preserve_",
+                ]
+                .iter()
+                .any(|key| line.starts_with(key))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed: CpuSchedulerSettings = toml::from_str(&raw).unwrap();
+        assert_eq!(parsed, defaults);
+    }
+
+    #[test]
     fn background_efficiency_rule_without_tiers_remains_an_exclusion() {
         let rule: BackgroundEfficiencyRule = toml::from_str(
             r#"
@@ -446,6 +470,11 @@ mod tests {
             },
             cpu_scheduler: CpuSchedulerSettings {
                 process_priority_enabled: true,
+                process_priority_foreground_detection_enabled: true,
+                process_priority_visible_window_detection_enabled: true,
+                process_priority_preserve_foreground: false,
+                process_priority_preserve_visible_window: false,
+                process_priority_preserve_background: false,
                 background_efficiency_enabled: true,
                 focus_process_background_efficiency_override_enabled: true,
                 visible_window_background_efficiency_override_enabled: true,
@@ -460,6 +489,11 @@ mod tests {
                 dynamic_priority_boost: DynamicPriorityBoostSettings::default(),
                 gpu_priority: GpuPrioritySettings::default(),
                 memory_priority_enabled: true,
+                memory_priority_foreground_detection_enabled: true,
+                memory_priority_visible_window_detection_enabled: true,
+                memory_priority_preserve_foreground: true,
+                memory_priority_preserve_visible_window: true,
+                memory_priority_preserve_background: true,
                 focus_process_memory_priority: ProcessMemoryPrioritySetting::Normal,
                 visible_window_memory_priority: ProcessMemoryPrioritySetting::Medium,
                 background_memory_priority: ProcessMemoryPrioritySetting::Low,
