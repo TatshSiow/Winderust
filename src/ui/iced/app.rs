@@ -62,7 +62,6 @@ pub(crate) fn run(
                     navigation_search: String::new(),
                     expanded_section: None,
                     status_collapsed: false,
-                    compact_panel_open: false,
                     description_expanded: false,
                     preferences: settings_pages::Editor::default(),
                     home: home::Model::default(),
@@ -148,7 +147,6 @@ struct WinderustApp {
     navigation_search: String,
     expanded_section: Option<Page>,
     status_collapsed: bool,
-    compact_panel_open: bool,
     description_expanded: bool,
     preferences: settings_pages::Editor,
     home: home::Model,
@@ -206,7 +204,6 @@ enum Message {
     ToggleSection(Page),
     ToggleDescription,
     ToggleStatus,
-    ToggleCompactPanel,
     Preferences(settings_pages::Message),
     Status(status_rail::Message),
     Home(home::Message),
@@ -271,7 +268,6 @@ impl WinderustApp {
                 }
                 self.expanded_section = (self.expanded_section != Some(page)).then_some(page);
             }
-            Message::ToggleCompactPanel => self.compact_panel_open = !self.compact_panel_open,
             Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
             Message::Status(status_rail::Message::ActionLog) => {
                 return self.update(Message::Page(Page::ActionLog))
@@ -1213,9 +1209,6 @@ impl WinderustApp {
             }
         }
         let mut toggle_content = row![];
-        if !collapsed {
-            toggle_content = toggle_content.push(iced::widget::Space::new().width(3));
-        }
         toggle_content = toggle_content
             .push(navigation::glyph(if collapsed {
                 "icons/panel-left-open.svg"
@@ -1229,18 +1222,15 @@ impl WinderustApp {
                 text(t!("nav.collapse_navigation").to_string()).size(design::typography::SECONDARY),
             );
         }
-        let navigation_toggle = button(container(toggle_content.height(Fill)).width(Fill).align_x(
-            if collapsed {
-                iced::alignment::Horizontal::Center
-            } else {
-                iced::Left
-            },
-        ))
-        .width(Fill)
-        .height(design::NAVIGATION_ROW_HEIGHT)
-        .padding(design::NAVIGATION_ROW_PADDING)
-        .on_press(Message::ToggleNavigation)
-        .style(widgets::quiet);
+        let navigation_toggle =
+            widgets::sidebar_toggle(container(toggle_content.height(Fill)).width(Fill).align_x(
+                if collapsed {
+                    iced::alignment::Horizontal::Center
+                } else {
+                    iced::Left
+                },
+            ))
+            .on_press(Message::ToggleNavigation);
         utilities = utilities
             .push(iced::widget::rule::horizontal(1))
             .push(iced::widget::tooltip(
@@ -1348,7 +1338,7 @@ impl WinderustApp {
             );
         }
         let content = self.page_view();
-        let mut side_panel = if self.page == Page::AdaptiveEngine {
+        let side_panel = if self.page == Page::AdaptiveEngine {
             Some(
                 self.adaptive
                     .side_panel(&self.settings, &self.status)
@@ -1360,11 +1350,21 @@ impl WinderustApp {
                     .side_panel(&self.settings.advanced_power_plan_tuning_presets)
                     .map(Message::PowerTuning),
             )
-        } else if !matches!(self.page, Page::CpuSetsSoft | Page::ProcessorAffinityHard) {
+        } else if self.page == Page::CpuSetsSoft {
+            Some(
+                self.soft_allocation
+                    .side_panel(&self.settings, cpu_allocation::Kind::Soft, &self.status)
+                    .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
+            )
+        } else if self.page == Page::ProcessorAffinityHard {
+            Some(
+                self.hard_allocation
+                    .side_panel(&self.settings, cpu_allocation::Kind::Hard, &self.status)
+                    .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
+            )
+        } else {
             status_rail::view(self.page, &self.settings, &self.status, &self.power_plans)
                 .map(|panel| panel.map(Message::Status))
-        } else {
-            None
         };
         body = body.push(content);
         if let Some(error) = &self.status.worker_error {
@@ -1372,30 +1372,6 @@ impl WinderustApp {
         }
         if !self.message.is_empty() {
             body = body.push(text(&self.message));
-        }
-        if side_panel.is_some() && width < design::SIDE_PANEL_BREAKPOINT {
-            body = body.push(
-                button(
-                    row![
-                        text(t!("common.status").to_string()),
-                        text(t!("adaptive_engine.presets").to_string()),
-                        navigation::glyph(if self.compact_panel_open {
-                            "icons/chevron-down.svg"
-                        } else {
-                            "icons/chevron-right.svg"
-                        })
-                    ]
-                    .spacing(design::space::MEDIUM)
-                    .align_y(iced::Center),
-                )
-                .style(widgets::quiet)
-                .on_press(Message::ToggleCompactPanel),
-            );
-            if self.compact_panel_open {
-                if let Some(panel) = side_panel.take() {
-                    body = body.push(container(panel).height(220));
-                }
-            }
         }
         let layout = row![
             container(
@@ -1407,7 +1383,7 @@ impl WinderustApp {
             .width(if !collapsed {
                 design::NAVIGATION_WIDTH
             } else {
-                design::NAVIGATION_COLLAPSED_WIDTH
+                design::SIDEBAR_COLLAPSED_WIDTH
             }),
             container(
                 container(body)
@@ -1421,47 +1397,49 @@ impl WinderustApp {
         ]
         .spacing(design::space::SMALL)
         .height(Fill);
-        let layout: Element<'_, Message> =
-            if let Some(panel) = side_panel.filter(|_| width >= design::SIDE_PANEL_BREAKPOINT) {
-                layout
-                    .push(
-                        container(
-                            column![
-                                container(widgets::optional_content(panel, !self.status_collapsed))
-                                    .height(Fill),
-                                button(
-                                    row![
-                                        navigation::glyph(if self.status_collapsed {
-                                            "icons/panel-right-open.svg"
-                                        } else {
-                                            "icons/panel-right-close.svg"
-                                        }),
-                                        text(if self.status_collapsed {
-                                            String::new()
-                                        } else {
-                                            t!("nav.collapse_side_panel").to_string()
-                                        })
-                                    ]
-                                    .spacing(design::space::SMALL)
-                                    .align_y(iced::Center)
-                                )
-                                .style(widgets::quiet)
-                                .on_press(Message::ToggleStatus)
-                            ]
-                            .spacing(design::space::MEDIUM)
-                            .padding(design::space::MEDIUM as u16)
-                            .height(Fill),
-                        )
-                        .width(if !self.status_collapsed {
-                            design::STATUS_WIDTH
-                        } else {
-                            design::STATUS_COLLAPSED_WIDTH
-                        }),
+        let layout: Element<'_, Message> = if let Some(panel) = side_panel {
+            layout
+                .push(
+                    container(
+                        column![
+                            container(widgets::optional_content(panel, !self.status_collapsed))
+                                .height(Fill)
+                                .padding([0, design::space::CONTROL as u16]),
+                            iced::widget::rule::horizontal(1),
+                            widgets::sidebar_toggle(
+                                row![
+                                    text(if self.status_collapsed {
+                                        String::new()
+                                    } else {
+                                        t!("nav.collapse_side_panel").to_string()
+                                    })
+                                    .size(design::typography::SECONDARY)
+                                    .width(Fill),
+                                    navigation::glyph(if self.status_collapsed {
+                                        "icons/panel-right-open.svg"
+                                    } else {
+                                        "icons/panel-right-close.svg"
+                                    }),
+                                ]
+                                .height(Fill)
+                                .align_y(iced::Center)
+                            )
+                            .on_press(Message::ToggleStatus)
+                        ]
+                        .spacing(design::space::TINY)
+                        .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
+                        .height(Fill),
                     )
-                    .into()
-            } else {
-                layout.into()
-            };
+                    .width(if !self.status_collapsed {
+                        design::SIDE_PANEL_WIDTH
+                    } else {
+                        design::SIDEBAR_COLLAPSED_WIDTH
+                    }),
+                )
+                .into()
+        } else {
+            layout.into()
+        };
         if self.pending_changes() {
             iced::widget::stack![
                 layout,
@@ -1562,21 +1540,11 @@ impl WinderustApp {
                 .map(Message::Efficiency),
             Page::CpuSetsSoft => self
                 .soft_allocation
-                .view(
-                    &self.settings,
-                    cpu_allocation::Kind::Soft,
-                    &self.candidates,
-                    &self.status,
-                )
+                .view(&self.settings, cpu_allocation::Kind::Soft, &self.candidates)
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
             Page::ProcessorAffinityHard => self
                 .hard_allocation
-                .view(
-                    &self.settings,
-                    cpu_allocation::Kind::Hard,
-                    &self.candidates,
-                    &self.status,
-                )
+                .view(&self.settings, cpu_allocation::Kind::Hard, &self.candidates)
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             Page::AdaptiveEngine => self
                 .adaptive

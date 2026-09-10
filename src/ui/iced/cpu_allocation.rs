@@ -186,7 +186,6 @@ impl Editor {
         s: &'a Settings,
         k: Kind,
         candidates: &'a [String],
-        status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
         let feature = settings(s, k);
@@ -269,6 +268,16 @@ impl Editor {
                 .align_y(iced::Center),
             ));
         }
+        scrollable(body).width(Fill).height(Fill).into()
+    }
+
+    pub(super) fn side_panel<'a>(
+        &'a self,
+        s: &'a Settings,
+        k: Kind,
+        status: &'a crate::automation::RuntimeStatusSnapshot,
+    ) -> Element<'a, Message> {
+        let processors = cpu_allocation::logical_processors();
         let mut rail = column![
             text(t!("cpu_allocation.presets").to_string()),
             button(text(t!("cpu_allocation.add_preset").to_string())).on_press(Message::NewPreset)
@@ -344,9 +353,7 @@ impl Editor {
             rail
         ]
         .spacing(design::space::MEDIUM);
-        row![scrollable(body).width(Fill), scrollable(rail).width(216)]
-            .spacing(design::space::LARGE)
-            .into()
+        scrollable(rail).width(Fill).height(Fill).into()
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {

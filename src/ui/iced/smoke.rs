@@ -164,9 +164,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
         }
         if extra == Some(9) {
-            let before = app.compact_panel_open;
-            let _ = app.update(Message::ToggleCompactPanel);
-            assert_eq!(app.compact_panel_open, !before);
+            let before = app.status_collapsed;
+            let _ = app.update(Message::ToggleStatus);
+            assert_eq!(app.status_collapsed, !before);
         }
         if extra == Some(18) {
             app.settings.background_efficiency.enabled = true;

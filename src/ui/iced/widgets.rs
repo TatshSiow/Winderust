@@ -12,6 +12,16 @@ pub(super) fn button<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::wid
     iced::widget::button(content).padding(design::CONTROL_PADDING)
 }
 
+pub(super) fn sidebar_toggle<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+) -> iced::widget::Button<'a, M> {
+    button(content)
+        .width(Fill)
+        .height(design::NAVIGATION_ROW_HEIGHT)
+        .padding([design::space::COMPACT as u16, 13])
+        .style(quiet)
+}
+
 pub(super) fn text_input<'a, M: Clone + 'a>(
     placeholder: &str,
     value: &str,
