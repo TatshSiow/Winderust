@@ -294,10 +294,7 @@ pub(super) fn plan<M: Clone + 'static>(
 
 // Theme-derived surfaces and interaction states; controls remain standard Iced widgets.
 pub(super) fn heading<'a>(label: String, size: u32) -> iced::widget::Text<'a> {
-    text(label).size(size).font(iced::Font {
-        weight: iced::font::Weight::Semibold,
-        ..iced::Font::with_name(design::typography::FONT)
-    })
+    text(label).size(size).font(design::typography::FONT)
 }
 
 pub(super) fn navigation_surface(theme: &iced::Theme) -> iced::widget::container::Style {

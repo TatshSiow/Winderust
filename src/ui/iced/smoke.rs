@@ -87,12 +87,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let section = Page::SettingsHome;
             let _ = app.update(Message::ToggleSection(section));
             assert_eq!(app.page, section);
-            assert!(!app.collapsed_sections.contains(&section));
+            assert_eq!(app.expanded_section, Some(section));
             let _ = app.update(Message::ToggleSection(section));
-            assert!(app.collapsed_sections.contains(&section));
+            assert_eq!(app.expanded_section, None);
             let _ = app.update(Message::ToggleSection(section));
-            assert!(!app.collapsed_sections.contains(&section));
+            assert_eq!(app.expanded_section, Some(section));
+            let _ = app.update(Message::ToggleSection(Page::PowerPlanControl));
+            assert_eq!(app.expanded_section, Some(Page::PowerPlanControl));
             let _ = app.update(Message::Page(page));
+            assert_eq!(app.expanded_section, Some(page.section_landing_page()));
         }
         if extra == Some(0) {
             let _ = app.update(Message::Efficiency(

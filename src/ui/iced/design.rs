@@ -13,7 +13,10 @@ pub(super) mod space {
 }
 
 pub(super) mod typography {
-    pub const FONT: &str = "Segoe UI";
+    pub const FONT: iced::Font = iced::Font {
+        weight: iced::font::Weight::Semibold,
+        ..iced::Font::with_name("Segoe UI")
+    };
     pub const BADGE: u32 = 11;
     pub const CAPTION: u32 = 12;
     pub const SECONDARY: u32 = 13;
@@ -40,8 +43,9 @@ pub(super) const CONTROL_RADIUS: f32 = 4.0;
 pub(super) const CONTENT_WIDTH: u32 = 1040;
 pub(super) const SIDE_PANEL_BREAKPOINT: f32 = 1400.0;
 pub(super) const NAVIGATION_WIDTH: f32 = 264.0;
-pub(super) const NAVIGATION_COLLAPSED_WIDTH: f32 = 72.0;
+pub(super) const NAVIGATION_COLLAPSED_WIDTH: f32 = 56.0;
 pub(super) const NAVIGATION_ROW_HEIGHT: u32 = 40;
+pub(super) const NAVIGATION_ROW_PADDING: [u16; 2] = [space::COMPACT as u16, space::TINY as u16];
 pub(super) const NAVIGATION_CHILD_ROW_HEIGHT: u32 = 34;
 pub(super) const STATUS_WIDTH: f32 = 320.0;
 pub(super) const STATUS_COLLAPSED_WIDTH: f32 = 48.0;

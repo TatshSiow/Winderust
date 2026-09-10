@@ -2,7 +2,7 @@ use std::{cell::RefCell, path::PathBuf, time::Duration};
 use widgets::{button, text_input};
 
 use iced::widget::{column, container, row, scrollable, text};
-use iced::{Element, Fill, Font, Subscription, Task, Theme};
+use iced::{Element, Fill, Subscription, Task, Theme};
 use rust_i18n::t;
 
 use crate::application::SettingsEditor;
@@ -60,10 +60,7 @@ pub(crate) fn run(
                     #[cfg(feature = "render-smoke")]
                     smoke: smoke::Run::requested(),
                     navigation_search: String::new(),
-                    collapsed_sections: Page::sections()
-                        .iter()
-                        .map(|section| section.landing_page)
-                        .collect(),
+                    expanded_section: None,
                     status_collapsed: false,
                     compact_panel_open: false,
                     description_expanded: false,
@@ -130,7 +127,7 @@ pub(crate) fn run(
         ..Default::default()
     })
     .settings(iced::Settings {
-        default_font: Font::with_name(design::typography::FONT),
+        default_font: design::typography::FONT,
         default_text_size: design::typography::BODY.into(),
         ..Default::default()
     })
@@ -149,7 +146,7 @@ struct WinderustApp {
     smoke: Option<smoke::Run>,
     appearance: Theme,
     navigation_search: String,
-    collapsed_sections: std::collections::HashSet<Page>,
+    expanded_section: Option<Page>,
     status_collapsed: bool,
     compact_panel_open: bool,
     description_expanded: bool,
@@ -272,9 +269,7 @@ impl WinderustApp {
                 if self.page != page {
                     return self.update(Message::Page(page));
                 }
-                if !self.collapsed_sections.remove(&page) {
-                    self.collapsed_sections.insert(page);
-                }
+                self.expanded_section = (self.expanded_section != Some(page)).then_some(page);
             }
             Message::ToggleCompactPanel => self.compact_panel_open = !self.compact_panel_open,
             Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
@@ -645,7 +640,7 @@ impl WinderustApp {
             Message::Page(page) => {
                 self.description_expanded = false;
                 self.page = page;
-                self.collapsed_sections.remove(&page.section_landing_page());
+                self.expanded_section = Some(page.section_landing_page());
                 if page == Page::Win32PrioritySeparation {
                     self.priority_separation.refresh();
                 }
@@ -1071,14 +1066,23 @@ impl WinderustApp {
             .width(Fill);
         if collapsed {
             navigation = navigation.push(
-                button(navigation::glyph("icons/search.svg"))
-                    .on_press(Message::ToggleNavigation)
-                    .style(widgets::quiet),
+                button(
+                    container(navigation::glyph("icons/search.svg"))
+                        .center_x(Fill)
+                        .center_y(Fill),
+                )
+                .width(Fill)
+                .height(design::NAVIGATION_ROW_HEIGHT)
+                .on_press(Message::ToggleNavigation)
+                .style(widgets::quiet),
             );
         } else {
             navigation = navigation.push(
-                text_input(&t!("home.search_placeholder"), &self.navigation_search)
-                    .on_input(Message::NavigationSearch),
+                container(
+                    text_input(&t!("home.search_placeholder"), &self.navigation_search)
+                        .on_input(Message::NavigationSearch),
+                )
+                .center_y(design::NAVIGATION_ROW_HEIGHT),
             );
         }
         let search_pages = navigation::dashboard_search_pages(
@@ -1086,7 +1090,7 @@ impl WinderustApp {
             self.settings.advanced.show_advanced_controls,
         );
         let mut utilities = column![]
-            .spacing(design::space::TIGHT)
+            .spacing(design::space::TINY)
             .padding([design::space::SMALL as u16, design::space::CONTROL as u16]);
         for section in Page::sections() {
             if section.landing_page == Page::AdvancedControls
@@ -1118,7 +1122,10 @@ impl WinderustApp {
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center);
-            if !collapsed {
+            if collapsed {
+                // Balance the selection marker so the icon remains centered.
+                label = label.push(iced::widget::Space::new().width(3));
+            } else {
                 label = label.push(navigation::label(section.landing_page));
                 if self.settings.general.show_enabled_feature_counts_in_sidebar {
                     if let Some(count) = navigation::section_enabled_feature_count(
@@ -1139,31 +1146,33 @@ impl WinderustApp {
             let expandable = !collapsed && section.pages.iter().any(|p| *p != section.landing_page);
             if expandable {
                 label = label.push(navigation::glyph(
-                    if self.collapsed_sections.contains(&section.landing_page) {
+                    if self.expanded_section != Some(section.landing_page) {
                         "icons/chevron-right.svg"
                     } else {
                         "icons/chevron-down.svg"
                     },
                 ));
             }
-            let section_header = button(label.height(Fill))
-                .height(design::NAVIGATION_ROW_HEIGHT)
-                .padding([design::space::COMPACT as u16, design::space::MEDIUM as u16])
-                .width(if collapsed {
-                    iced::Length::Fixed(56.0)
+            let section_header = button(container(label.height(Fill)).width(Fill).align_x(
+                if collapsed {
+                    iced::alignment::Horizontal::Center
                 } else {
-                    Fill
-                })
-                .on_press(if expandable {
-                    Message::ToggleSection(section.landing_page)
-                } else {
-                    Message::Page(section.landing_page)
-                })
-                .style(if self.page == section.landing_page {
-                    widgets::selected
-                } else {
-                    widgets::quiet
-                });
+                    iced::Left
+                },
+            ))
+            .height(design::NAVIGATION_ROW_HEIGHT)
+            .padding(design::NAVIGATION_ROW_PADDING)
+            .width(Fill)
+            .on_press(if expandable {
+                Message::ToggleSection(section.landing_page)
+            } else {
+                Message::Page(section.landing_page)
+            })
+            .style(if self.page == section.landing_page {
+                widgets::selected
+            } else {
+                widgets::quiet
+            });
             let mut children = Vec::new();
             for page in section
                 .pages
@@ -1192,7 +1201,7 @@ impl WinderustApp {
             let section_content = navigation::section(
                 section_header,
                 children,
-                !collapsed && !self.collapsed_sections.contains(&section.landing_page),
+                !collapsed && self.expanded_section == Some(section.landing_page),
             );
             if matches!(
                 section.landing_page,
@@ -1203,24 +1212,35 @@ impl WinderustApp {
                 navigation = navigation.push(section_content);
             }
         }
-        let mut toggle_content = row![navigation::glyph(if collapsed {
-            "icons/panel-left-open.svg"
-        } else {
-            "icons/panel-left-close.svg"
-        })]
-        .spacing(design::space::MEDIUM)
-        .align_y(iced::Center);
+        let mut toggle_content = row![];
+        if !collapsed {
+            toggle_content = toggle_content.push(iced::widget::Space::new().width(3));
+        }
+        toggle_content = toggle_content
+            .push(navigation::glyph(if collapsed {
+                "icons/panel-left-open.svg"
+            } else {
+                "icons/panel-left-close.svg"
+            }))
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center);
         if !collapsed {
             toggle_content = toggle_content.push(
                 text(t!("nav.collapse_navigation").to_string()).size(design::typography::SECONDARY),
             );
         }
-        let navigation_toggle = button(toggle_content.height(Fill))
-            .width(Fill)
-            .height(design::NAVIGATION_ROW_HEIGHT)
-            .padding(design::space::COMPACT as u16)
-            .on_press(Message::ToggleNavigation)
-            .style(widgets::quiet);
+        let navigation_toggle = button(container(toggle_content.height(Fill)).width(Fill).align_x(
+            if collapsed {
+                iced::alignment::Horizontal::Center
+            } else {
+                iced::Left
+            },
+        ))
+        .width(Fill)
+        .height(design::NAVIGATION_ROW_HEIGHT)
+        .padding(design::NAVIGATION_ROW_PADDING)
+        .on_press(Message::ToggleNavigation)
+        .style(widgets::quiet);
         utilities = utilities
             .push(iced::widget::rule::horizontal(1))
             .push(iced::widget::tooltip(
