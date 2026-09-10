@@ -1138,7 +1138,7 @@ impl WinderustApp {
                                     design::space::TINY as u16,
                                     design::space::CONTROL as u16,
                                 ])
-                                .style(container::transparent),
+                                .style(move |theme| widgets::indicator_chip(theme, count > 0)),
                         );
                     }
                 }

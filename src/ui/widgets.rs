@@ -8,6 +8,23 @@ pub(super) const CARD_PADDING: u32 = design::space::MEDIUM;
 pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
 pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
 
+pub(super) fn indicator_chip(theme: &iced::Theme, active: bool) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(if active {
+            theme.palette().primary
+        } else {
+            muted_color(theme)
+        }),
+        background: Some(if active {
+            theme.palette().primary.scale_alpha(0.15).into()
+        } else {
+            theme.extended_palette().background.neutral.color.into()
+        }),
+        border: iced::border::rounded(design::CONTROL_RADIUS),
+        ..Default::default()
+    }
+}
+
 pub(super) fn muted_color(theme: &iced::Theme) -> iced::Color {
     theme.extended_palette().secondary.base.color
 }
