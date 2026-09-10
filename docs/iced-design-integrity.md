@@ -29,7 +29,7 @@ The correction needs a small shared group composition with a header action and a
 
 ## Evidence map
 
-Old paths below are relative to `src/ui/app/` at `cab3186`; current paths are relative to `src/ui/iced/`.
+Old paths below are relative to `src/ui/app/` at `cab3186`; current paths are relative to `src/ui/`.
 
 | Area | GPUI source | Iced source |
 |---|---|---|
@@ -80,4 +80,4 @@ Navigation sections use `navigation::section`, which inserts the child column on
 
 Shared controls: use `widgets::settings_card` and `setting_row` for settings, `card_button` for navigation cards, `checkbox` and `switch` for binary controls, and `stepper` for numeric steppers. Import `button`, `text_input`, `pick_list`, and `slider` from `widgets`, not directly from Iced. These constructors return native Iced widgets, retaining event handling and semantic styles.
 
-Change shared typography, spacing, control measurements, radii, shell widths, and the base palette in `src/ui/iced/design.rs`. Change component composition and interaction styles in `widgets.rs`. Pages select shared spacing/type roles instead of literal values. Content-specific table columns, chart geometry, numeric bounds, and responsive data calculations stay local; they are not interchangeable control sizes. Windows/user accent selection remains in the appearance settings adapter.
+Change shared typography, spacing, control measurements, radii, shell widths, and the base palette in `src/ui/design.rs`. Change component composition and interaction styles in `widgets.rs`. Pages select shared spacing/type roles instead of literal values. Content-specific table columns, chart geometry, numeric bounds, and responsive data calculations stay local; they are not interchangeable control sizes. Windows/user accent selection remains in the appearance settings adapter.

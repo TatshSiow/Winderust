@@ -49,7 +49,7 @@ Winderust is a Windows-only Rust application. Install:
 - A Windows SDK with the resource compiler (`rc.exe`)
 
 The desktop UI uses Iced 0.14 with the tiny-skia software renderer. Page editors
-live in `src/ui/iced/`; `app.rs` composes their messages, runtime commands, and
+live in `src/ui/`; `app.rs` composes their messages, runtime commands, and
 native window lifecycle. Keep Windows mutations in the existing typed services
 and controllers.
 

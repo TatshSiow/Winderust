@@ -7,7 +7,7 @@
 - Evidence reviewed: `.agents/memory/15-design-spec.md`, `.agents/memory/20-project-scope.md`,
   `src/application/`, `src/runtime/`, `src/control/`, `src/platform/windows/`,
   `src/backend/automation.rs`, `src/backend/automation/runner.rs`,
-  `src/backend/crash_recovery.rs`, `src/ui/iced/app.rs`, `src/ui/iced/`, `locales/`, and the current
+  `src/backend/crash_recovery.rs`, `src/ui/app.rs`, `src/ui/`, `locales/`, and the current
   feature-policy modules.
 
 ## Brand

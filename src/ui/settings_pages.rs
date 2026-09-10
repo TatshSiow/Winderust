@@ -837,7 +837,7 @@ fn logo() -> iced::widget::image::Handle {
     static HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
         std::sync::LazyLock::new(|| {
             iced::widget::image::Handle::from_bytes(
-                include_bytes!("../../../image/icon-design.png").as_slice(),
+                include_bytes!("../../image/icon-design.png").as_slice(),
             )
         });
     HANDLE.clone()

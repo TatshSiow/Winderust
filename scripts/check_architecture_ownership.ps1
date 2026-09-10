@@ -134,8 +134,8 @@ Assert-NoSourceMatch `
     -Boundary 'Process List does not own Process Priority or Efficiency Mode restoration' `
     -Pattern 'process_priority::apply_once|background_efficiency::apply_efficiency_mode_once|process_quick_action_restore|process_efficiency_mode_overrides' `
     -Paths @(
-        'src/ui/iced/app.rs',
-        'src/ui/iced/process_list.rs'
+        'src/ui/app.rs',
+        'src/ui/process_list.rs'
     )
 
 Assert-SourceMatchCount `
@@ -157,7 +157,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own Memory Priority mutation or restoration' `
     -Pattern 'memory_priority::apply_once|memory_priority::current_priority|quick_apply_memory_priority|current_memory_priority\(' `
-    -Paths @('src/ui/iced/process_list.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'CPU Scheduler does not own a Memory Priority writer' `
@@ -225,7 +225,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own Thread Priority mutation or restoration' `
     -Pattern 'quick_apply_thread_priority|thread_priority::apply_once|thread_priority::current_priority' `
-    -Paths @('src/ui/iced/process_list.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoUnexpectedWriter `
     -Mechanism 'Dynamic Priority Boost' `
@@ -280,7 +280,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own I/O Priority mutation or restoration' `
     -Pattern 'io_priority::apply_once|io_priority::current_priority|current_io_priority\(' `
-    -Paths @('src/ui/iced/process_list.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'CPU Scheduler does not own an I/O Priority writer' `
@@ -314,7 +314,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own GPU Priority mutation or restoration' `
     -Pattern 'gpu_priority::apply_once|gpu_priority::current_priority|current_gpu_priority\(' `
-    -Paths @('src/ui/iced/process_list.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'CPU Scheduler does not own a GPU Priority writer' `
@@ -439,8 +439,8 @@ Assert-NoSourceMatch `
     -Pattern 'SetInformationJobObject|ProcessFreezer|record_suspended_job|forget_suspended_job|app_suspension_(?:freeze_requests|process_requests)' `
     -Paths @(
         'src/features/advanced_controls/app_suspension.rs',
-        'src/ui/iced/app_suspension.rs',
-        'src/ui/iced/process_list.rs',
+        'src/ui/app_suspension.rs',
+        'src/ui/process_list.rs',
         'src/backend/automation.rs',
         'src/backend/automation/status.rs'
     )
@@ -531,7 +531,7 @@ Assert-NoSourceMatch `
     -Pattern 'TerminateProcess|fn terminate_process|fn terminate_process_trees' `
     -Paths @(
         'src/foreground/process_list.rs',
-        'src/ui/iced/process_list.rs'
+        'src/ui/process_list.rs'
     )
 
 Assert-NoSourceMatch `
@@ -701,31 +701,31 @@ Assert-SourceMatchCount `
 Assert-SourceMatchCount `
     -Boundary 'Process List enumeration and confirmed tree refresh stay independent of RuntimeCore observations' `
     -Pattern 'list_processes_with_paths\(\)' `
-    -Paths @('src/ui/iced/process_list.rs') `
+    -Paths @('src/ui/process_list.rs') `
     -ExpectedCount 2
 
 Assert-SourceMatchCount `
     -Boundary 'Process List owns one resource sampling call' `
     -Pattern 'sample_process_resources\(' `
-    -Paths @('src/ui/iced/process_list.rs') `
+    -Paths @('src/ui/process_list.rs') `
     -ExpectedCount 1
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one Process Catalog candidate collection' `
     -Pattern '^\s*candidates:\s*Vec<String>,' `
-    -Paths @('src/ui/iced/app.rs') `
+    -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one Process List read model' `
     -Pattern '^\s*processes:\s*process_list::ProcessList,' `
-    -Paths @('src/ui/iced/app.rs') `
+    -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror Process List resources selection or sorting' `
     -Pattern '^\s*(?:process_resource_samples|process_resource_usage|hide_inaccessible|expanded_groups|selected_process_id|process_details)\s*:' `
-    -Paths @('src/ui/iced/app.rs')
+    -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'runtime and control layers do not depend on UI models or Iced' `
@@ -735,45 +735,45 @@ Assert-NoSourceMatch `
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one Home read model' `
     -Pattern '^\s*home:\s*home::Model,' `
-    -Paths @('src/ui/iced/app.rs') `
+    -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror individual dashboard histories' `
     -Pattern '^\s*(?:cpu_usage|cpu_usage_history|memory_usage|memory_usage_history|io_usage|io_usage_history|network_usage|network_usage_history)\s*:' `
-    -Paths @('src/ui/iced/app.rs')
+    -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'Home model keeps native sampling handles on its worker' `
     -Pattern '^\s*\w+:\s*(?:CpuUsageMonitor|IoUsageMonitor|NetworkUsageMonitor)|unsafe impl Send|Mutex<(?:CpuUsageMonitor|IoUsageMonitor|NetworkUsageMonitor)' `
-    -Paths @('src/ui/iced/home.rs')
+    -Paths @('src/ui/home.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one settings and update UI editor' `
     -Pattern '^\s*preferences:\s*settings_pages::Editor,' `
-    -Paths @('src/ui/iced/app.rs') `
+    -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror update response fields' `
     -Pattern '^\s*(?:available_update|latest_version|update_check_in_progress|update_check_message|startup_update_modal_visible|startup_update_modal_closing)\s*:' `
-    -Paths @('src/ui/iced/app.rs')
+    -Paths @('src/ui/app.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'Iced application owns one current navigation page' `
     -Pattern '^\s*page:\s*Page,' `
-    -Paths @('src/ui/iced/app.rs') `
+    -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
     -Boundary 'navigation remains a UI projection without Windows mutation or runtime lifecycle' `
     -Pattern 'RuntimeHandle|RuntimeCore|windows_sys|unsafe|crate::control|crate::platform' `
-    -Paths @('src/ui/iced/navigation.rs')
+    -Paths @('src/ui/navigation.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp retains one segmented runtime status snapshot' `
     -Pattern '^\s*status:\s*RuntimeStatusSnapshot,' `
-    -Paths @('src/ui/iced/app.rs') `
+    -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-SourceMatchCount `
@@ -782,7 +782,7 @@ Assert-SourceMatchCount `
     -Paths @('src/backend/automation.rs') `
     -ExpectedCount 1
 
-$icedApplication = Get-Content -LiteralPath 'src/ui/iced/app.rs' -Encoding utf8 -Raw
+$icedApplication = Get-Content -LiteralPath 'src/ui/app.rs' -Encoding utf8 -Raw
 if ($icedApplication -notmatch '(?s)struct WinderustApp\s*\{[^}]*\bsettings:\s*SettingsEditor,') {
     throw 'WinderustApp must retain SettingsEditor as its settings composition boundary.'
 }
@@ -792,17 +792,17 @@ Write-Host 'Architecture ownership gate passed: WinderustApp owns SettingsEditor
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror individual runtime feature snapshots' `
     -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|cpu_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|cpu_scheduler_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
-    -Paths @('src/ui/iced/app.rs')
+    -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'production Iced renderer contains no GPUI entities or framework dependencies' `
     -Pattern '\bgpui(?:_component)?\b|\bEntity<|\bContext<Self>' `
-    -Paths @('src/ui/iced')
+    -Paths @('src/ui')
 
 Assert-NoSourceMatch `
     -Boundary 'Iced process controls do not mutate native state outside runtime commands' `
     -Pattern 'SetPriorityClass|SetProcessInformation|SetProcessAffinityMask|SetProcessDefaultCpuSets|SuspendThread|ResumeThread|TerminateProcess|unsafe' `
-    -Paths @('src/ui/iced/process_list.rs', 'src/ui/iced/process_details.rs', 'src/ui/iced/cpu_allocation.rs', 'src/ui/iced/adaptive_engine.rs')
+    -Paths @('src/ui/process_list.rs', 'src/ui/process_details.rs', 'src/ui/cpu_allocation.rs', 'src/ui/adaptive_engine.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'single RuntimeHandle lifecycle facade' `

@@ -21,7 +21,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
   Show a search field when expanded and a search action when compact.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
-  dispatch stays in `WinderustApp::page_view` in `src/ui/iced/app.rs`.
+  dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
 
 ## Layout Rules
 
@@ -34,7 +34,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## Components
 
-- Reuse `src/ui/iced/widgets.rs` for shared numeric and power-plan controls, and
+- Reuse `src/ui/widgets.rs` for shared numeric and power-plan controls, and
   native conditional content for collapsible groups. Use Iced buttons,
   checkboxes, pick lists, text inputs, and sliders for their natural control types.
 - Use switches or checkboxes for binary state.
@@ -55,7 +55,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 ## Icons
 
 - Reuse bundled Lucide SVGs through `src/ui/assets.rs`; page icons are mapped in
-  `src/ui/iced/navigation.rs`.
+  `src/ui/navigation.rs`.
 - Trace all asset consumers before changing Lucide generation or dependencies.
 - Keep action icons at existing sizes, usually 12-18 px depending on row density.
 

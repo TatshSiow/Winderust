@@ -1,6 +1,27 @@
+mod action_log;
+mod adaptive_engine;
+mod advanced_power_plan_tuning;
+mod app_suspension;
+mod background_efficiency;
+mod by_activity;
+mod cpu_allocation;
+mod cpu_limiter;
+mod design;
+mod home;
+mod memory_trim;
+mod navigation;
+mod power_rules;
+mod priority_control;
+mod process_list;
+mod process_power_plans;
+mod settings_pages;
+mod status_rail;
+mod tasks;
+mod timer_resolution;
+mod widgets;
+mod win32_priority_separation;
 use rust_i18n::t;
 
-#[path = "ui/iced/app.rs"]
 pub(crate) mod app;
 pub(crate) mod assets;
 pub(crate) mod process_rules;

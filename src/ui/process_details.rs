@@ -10,7 +10,7 @@ use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Debug, Clone)]
-pub(in crate::ui::app) enum Message {
+pub(in crate::ui) enum Message {
     Priority(Kind, Tier, Value),
     ResetPriority(Kind),
     Adaptive(bool),

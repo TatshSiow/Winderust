@@ -3,7 +3,7 @@ use crate::config::*;
 use crate::power::{AdaptivePowerBoostValues, ProcessorBoostMode, ProcessorPowerValues};
 use rust_i18n::t;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::ui::app) enum BuiltInAdaptiveEnginePreset {
+pub(in crate::ui) enum BuiltInAdaptiveEnginePreset {
     PowerSave,
     Balanced,
     Performance,

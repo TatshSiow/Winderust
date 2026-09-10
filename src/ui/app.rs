@@ -1,3 +1,9 @@
+use super::{
+    action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
+    by_activity, cpu_allocation, cpu_limiter, design, home, memory_trim, navigation, power_rules,
+    priority_control, process_list, process_power_plans, settings_pages, status_rail, tasks,
+    timer_resolution, widgets, win32_priority_separation,
+};
 use std::{cell::RefCell, path::PathBuf, time::Duration};
 use widgets::{button, text_input};
 
@@ -15,30 +21,9 @@ use crate::{
     tray,
 };
 
-mod action_log;
-mod adaptive_engine;
-mod advanced_power_plan_tuning;
-mod app_suspension;
-mod background_efficiency;
-mod by_activity;
-mod cpu_allocation;
-mod cpu_limiter;
-mod design;
-mod home;
-mod memory_trim;
-mod navigation;
-mod power_rules;
-mod priority_control;
-mod process_list;
-mod process_power_plans;
-mod settings_pages;
 #[cfg(feature = "render-smoke")]
+#[path = "smoke.rs"]
 pub(crate) mod smoke;
-mod status_rail;
-mod tasks;
-mod timer_resolution;
-mod widgets;
-mod win32_priority_separation;
 
 pub(crate) fn run(
     settings: SettingsEditor,

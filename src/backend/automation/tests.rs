@@ -2232,7 +2232,7 @@ fn shared_property_precedence_inputs_are_characterized() {
 
 #[test]
 fn power_plan_decisions_have_one_visibility_independent_runtime_route() {
-    let ui_source = include_str!("../../ui/iced/app.rs");
+    let ui_source = include_str!("../../ui/app.rs");
     assert!(!ui_source.contains("decide("));
     assert!(!ui_source.contains("record_power_plan_change"));
     assert!(!ui_source.contains("set_active("));

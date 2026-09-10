@@ -6,7 +6,7 @@ The local `iced_tiny_skia` patch combines heavily fragmented repaint regions to
 avoid replaying the scene for hundreds of small regions during table updates.
 See `vendor/iced_tiny_skia/README.winderust.md` for provenance and its regression test.
 Production Cargo dependencies contain neither GPUI nor gpui-component.
-The implementation lives in `src/ui/iced/`; `src/ui.rs` retains the canonical
+The implementation lives in `src/ui/`; `src/ui.rs` retains the canonical
 page names and sections. The unused vendored GPUI directory has been removed.
 
 ## Implemented
