@@ -15,6 +15,7 @@ mod power_rules;
 mod priority_control;
 mod process_list;
 mod process_power_plans;
+mod select;
 mod settings_pages;
 mod status_rail;
 mod tasks;

@@ -111,8 +111,8 @@
 - Use the native Windows title bar, resize borders, and window buttons through Iced decorations. Keep close requests routed through existing unsaved-change and tray handling.
 - Status/error text and chart series use Iced semantic styles and theme palette colors.
 - Use Iced's native widgets and interaction states with Winderust's neutral light/charcoal palette. Keep shared borderless card surfaces, selected navigation, and hover/press feedback in widgets.rs.
-- The existing Windows/custom accent preference changes only the primary palette color; Iced generates the remaining widget colors.
-- Reserve filled primary buttons for primary commands. Use text buttons for secondary commands, subtle accent-tinted navigation/tabs, and borderless surfaces.
+- The Windows/custom accent preference seeds the primary palette; shared neutral surface, border, and muted-text roles preserve hierarchy across light and dark themes.
+- Reserve filled primary buttons for primary commands. Use text buttons for secondary commands, gentle accent interaction shading, and borderless surfaces.
 - Keep application-specific layout: grouped navigation, readable page headings, compact dashboard charts, constrained form rows, status rails, and scrollbar spacing.
 - Retain bundled icons, charts, and bounded motion where standard widgets do not cover existing functionality.
 - Add custom styling only for a concrete requirement unsupported by Iced's built-ins.
@@ -124,7 +124,7 @@
 - User reference: https://www.kraken.com/desktop (reviewed 2026-09-08).
 - Observed in the app screenshots: compact module headers, aligned data, fine dividers, dark neutral surfaces, and selective accent color.
 - Adapt the desktop application's hierarchy, not the surrounding promotional artwork or trading workflows.
-- Use the original neutral charcoal palette in dark mode and neutral light surfaces in light mode. Preserve System/Light/Dark and the existing accent preference.
+- Use neutral charcoal surfaces in dark mode and neutral pale surfaces in light mode; keep gentle accent tinting in interaction states. Preserve System/Light/Dark and the existing accent preference.
 - Page title and power-source controls share a compact toolbar; navigation uses tighter rows; dashboard charts and shortcuts form aligned modules; status groups use dividers instead of stacked nested cards.
 - Keep the native Windows frame, all feature routes, existing safety behavior, and motion preferences. No new styling framework or dependencies.
 - Reference PNGs are local review artifacts under target/design-reference/. Render checks use --features render-smoke -- --render-smoke (English/light 1120x760, Traditional Chinese/dark 900x620).
@@ -132,7 +132,7 @@
 ## Minimal surface refinement
 - The supplied reference images emphasize color and hierarchy rather than outlined cards. Remove redundant outlines from headers, navigation, setting groups, and logs.
 - Distinguish major dashboard/navigation surfaces with a slight theme-derived tone shift. Use spacing for setting groups and fine rules only where useful for data alignment.
-- Selected navigation and tabs use a translucent accent with accent text; reserve solid accent fills for primary actions such as Save.
+- Selected tabs use the shared gentle accent-filled selection surface; inactive tabs are quiet. Navigation and menu selections retain accent text. Hover, selected, and pressed surfaces use the current accent at 10%, 15%, and 20% opacity. Disabled cards and buttons retain their surface with muted text. Reserve solid accent fills for primary actions such as Save.
 - Keep standard Iced inputs, dropdowns, hover/disabled states, Windows framing, and existing functionality. Shared style functions address the requested refinement without a custom widget system.
 
 - Landing-page navigation cards and Home shortcuts use the shared borderless surface and respond across the full card on hover. Search functions through the sidebar; do not duplicate its search field on Home. The entire card is clickable; setting rows and expandable groups also use visible card surfaces.
@@ -173,3 +173,9 @@ The source-mapped hierarchy corrections are implemented. See [the design integri
 - Custom-rule app selection uses the shared src/ui/app_picker.rs search dropdown: a compact input beside Add, two-line app name/path entries with cached icons and aligned placeholders, and Browse local executable inside the menu. The popup overlays the page, stays within the viewport, and supports keyboard selection and outside-click dismissal. Each feature retains its own eligibility and duplicate checks; unavailable App Suspension targets remain visible but disabled.
 
 - Removing a rule, exclusion, or custom preset updates the settings draft immediately. Do not add a second removal confirmation; Save commits the draft and Discard restores the saved settings.
+
+Dropdowns use the shared Select control: a native Iced pick-list field with a native-widget overlay menu, persistent accent selection marker, gentle accent hover, and white/base option text. The menu stays within the viewport, scrolls to the selected option on open, and supports keyboard selection and outside-click dismissal.
+
+The shared extended palette defines neutral navigation, card/field, button, border, and muted-text roles. Accent fills, checkbox marks, and switch thumbs follow the original Winderust rule: white in light mode; in dark mode, white when weighted RGB brightness (0.299R + 0.587G + 0.114B) is below 140, otherwise #111111. Keep semantic status colors distinct. Windows appearance comes from UISettings.GetColorValue; explicit theme and custom accent preferences override system values.
+
+Inactive navigation icons and resting control borders use neutral tones. Active navigation retains the accent; enabled switch thumbs use the shared theme-and-accent foreground rule. Expanded setting groups have a header divider, and the active custom color swatch has a contrasting outline. Appearance dropdowns use the shared select width.

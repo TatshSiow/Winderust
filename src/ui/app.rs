@@ -1118,7 +1118,7 @@ impl WinderustApp {
                             .then_some(theme.palette().primary.into()),
                         ..Default::default()
                     }),
-                navigation::icon(section.landing_page)
+                navigation::icon(section.landing_page, self.page == section.landing_page)
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center);
@@ -1181,10 +1181,13 @@ impl WinderustApp {
             {
                 children.push(
                     button(
-                        row![navigation::icon(*page), navigation::label(*page)]
-                            .spacing(design::space::SMALL)
-                            .height(Fill)
-                            .align_y(iced::Center),
+                        row![
+                            navigation::icon(*page, self.page == *page),
+                            navigation::label(*page)
+                        ]
+                        .spacing(design::space::SMALL)
+                        .height(Fill)
+                        .align_y(iced::Center),
                     )
                     .width(Fill)
                     .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
@@ -1281,7 +1284,7 @@ impl WinderustApp {
                     .on_press(Message::PowerSource(PowerSourceProfile::PluggedIn))
                     .style(
                         if self.power_source == PowerSourceProfile::PluggedIn {
-                            widgets::selected
+                            widgets::selected_control
                         } else {
                             widgets::quiet
                         }
@@ -1293,7 +1296,7 @@ impl WinderustApp {
                     .on_press(Message::PowerSource(PowerSourceProfile::OnBattery))
                     .style(
                         if self.power_source == PowerSourceProfile::OnBattery {
-                            widgets::selected
+                            widgets::selected_control
                         } else {
                             widgets::quiet
                         }
@@ -1688,7 +1691,7 @@ impl WinderustApp {
                     ));
                 }
                 let mut heading = row![
-                    navigation::icon(*page),
+                    navigation::icon(*page, self.page == *page),
                     widgets::heading(page.label(), design::typography::BODY).width(Fill)
                 ]
                 .spacing(design::space::COMPACT)

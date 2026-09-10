@@ -312,12 +312,12 @@ impl Editor {
                     .style(if self.presets_tab {
                         super::widgets::quiet
                     } else {
-                        super::widgets::selected
+                        super::widgets::selected_control
                     }),
                 button(text(t!("cpu_allocation.presets").to_string()))
                     .on_press(Message::RailTab(true))
                     .style(if self.presets_tab {
-                        super::widgets::selected
+                        super::widgets::selected_control
                     } else {
                         super::widgets::quiet
                     })

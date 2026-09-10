@@ -28,6 +28,7 @@ pub(super) mod typography {
 }
 
 pub(super) const CONTROL_PADDING: [u16; 2] = [5, 10];
+pub(super) const SELECT_PADDING: [u16; 2] = [7, 12];
 pub(super) const INPUT_PADDING: u16 = 5;
 pub(super) const CHECKBOX_SIZE: u32 = 16;
 pub(super) const SWITCH_SIZE: u32 = 20;
@@ -59,5 +60,59 @@ pub(super) fn palette(light: bool) -> iced::theme::Palette {
         success: rgb(if light { 0x477d23 } else { 0xa4db61 }),
         warning: rgb(0xe8b45b),
         danger: rgb(0xe56d76),
+    }
+}
+
+/// Neutral surface roles shared by native controls and application components.
+pub(super) fn extended_palette(palette: iced::theme::Palette) -> iced::theme::palette::Extended {
+    use iced::theme::palette::{Extended, Pair};
+    let mut colors = Extended::generate(palette);
+    let color = |dark, light| {
+        let value = if colors.is_dark { dark } else { light };
+        iced::Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8)
+    };
+    colors.background.weaker = Pair::new(color(0x0b0d0f, 0xeaecef), palette.text); // navigation
+    colors.background.weak = Pair::new(color(0x191b1e, 0xffffff), palette.text); // cards / fields
+    colors.background.neutral = Pair::new(color(0x2c3137, 0xe2e6ea), palette.text); // buttons
+    colors.background.strong = Pair::new(color(0x363c43, 0xc5cbd2), palette.text); // borders
+    colors.secondary.base = Pair::new(color(0x9199a1, 0x5e666f), palette.background);
+    let foreground = accent_foreground(palette.primary, colors.is_dark);
+    for pair in [
+        &mut colors.primary.base,
+        &mut colors.primary.weak,
+        &mut colors.primary.strong,
+    ] {
+        pair.text = foreground;
+    }
+    colors
+}
+
+// Matches origin/main's accent_glyph_color and primary_foreground policy.
+fn accent_foreground(accent: iced::Color, dark: bool) -> iced::Color {
+    let brightness = 0.299 * accent.r + 0.587 * accent.g + 0.114 * accent.b;
+    if !dark || brightness < 140.0 / 255.0 {
+        iced::Color::WHITE
+    } else {
+        iced::Color::from_rgb8(17, 17, 17)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn accent_foreground_matches_original_theme_and_brightness_rules() {
+        use iced::Color;
+        for (accent, dark_foreground) in [
+            (Color::from_rgb8(76, 194, 255), Color::from_rgb8(17, 17, 17)),
+            (Color::from_rgb8(62, 96, 55), Color::WHITE),
+            (Color::from_rgb8(139, 139, 139), Color::WHITE),
+            (
+                Color::from_rgb8(141, 141, 141),
+                Color::from_rgb8(17, 17, 17),
+            ),
+        ] {
+            assert_eq!(super::accent_foreground(accent, false), Color::WHITE);
+            assert_eq!(super::accent_foreground(accent, true), dark_foreground);
+        }
     }
 }

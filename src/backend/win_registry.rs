@@ -1,7 +1,7 @@
 use std::io;
 
 use windows_sys::Win32::System::Registry::{HKEY, KEY_READ, KEY_WRITE};
-use winreg::{enums::RegType, RegKey};
+use winreg::RegKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RegistryError {
@@ -32,12 +32,6 @@ impl std::fmt::Display for RegistryError {
 
 impl std::error::Error for RegistryError {}
 
-pub(crate) fn read_registry_dword_root(root: HKEY, sub_key: &str, value_name: &str) -> Option<u32> {
-    try_read_registry_dword_root(root, sub_key, value_name)
-        .ok()
-        .flatten()
-}
-
 pub(crate) fn try_read_registry_dword_root(
     root: HKEY,
     sub_key: &str,
@@ -53,19 +47,6 @@ pub(crate) fn try_read_registry_dword_root(
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(RegistryError::ReadValue(error.to_string())),
     }
-}
-
-pub(crate) fn read_registry_binary_root(
-    root: HKEY,
-    sub_key: &str,
-    value_name: &str,
-) -> Option<Vec<u8>> {
-    let value = RegKey::predef(root)
-        .open_subkey_with_flags(sub_key, KEY_READ)
-        .ok()?
-        .get_raw_value(value_name)
-        .ok()?;
-    (value.vtype == RegType::REG_BINARY).then(|| value.bytes.into_owned())
 }
 
 pub(crate) fn write_registry_dword_root(

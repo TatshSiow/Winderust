@@ -24,8 +24,7 @@ mod ui;
 use application::SettingsEditor;
 use backend::{
     audio_activity, automation, crash_recovery, dashboard_metrics, file_dialog, power_source,
-    privilege, process_icon, self_power, tray, update_checker, win_registry, win_util,
-    windows_events,
+    privilege, process_icon, self_power, tray, update_checker, win_util, windows_events,
 };
 use features::{
     advanced_controls::{app_suspension, timer_resolution},

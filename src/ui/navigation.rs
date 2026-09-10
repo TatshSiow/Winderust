@@ -73,14 +73,18 @@ pub(super) fn page_help(page: Page) -> String {
         .join("\n\n")
 }
 
-pub(super) fn icon<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
+pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, Message> {
     iced::widget::svg(
         crate::ui::assets::iced_icon(icon_path(page)).expect("Every UI icon is bundled"),
     )
     .width(design::ICON_SIZE)
     .height(design::ICON_SIZE)
-    .style(|theme: &Theme, _| iced::widget::svg::Style {
-        color: Some(theme.palette().primary),
+    .style(move |theme: &Theme, _| iced::widget::svg::Style {
+        color: Some(if selected {
+            theme.palette().primary
+        } else {
+            super::widgets::muted_color(theme)
+        }),
     })
     .into()
 }
@@ -90,7 +94,7 @@ pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message>
         .width(design::ICON_SIZE)
         .height(design::ICON_SIZE)
         .style(|theme: &Theme, _| iced::widget::svg::Style {
-            color: Some(theme.palette().text),
+            color: Some(super::widgets::muted_color(theme)),
         })
         .into()
 }

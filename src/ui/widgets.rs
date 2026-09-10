@@ -8,6 +8,14 @@ pub(super) const CARD_PADDING: u32 = design::space::MEDIUM;
 pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
 pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
 
+pub(super) fn muted_color(theme: &iced::Theme) -> iced::Color {
+    theme.extended_palette().secondary.base.color
+}
+
+fn control_border(theme: &iced::Theme) -> iced::Color {
+    theme.extended_palette().background.strong.color
+}
+
 pub(super) fn button<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::widget::Button<'a, M> {
     iced::widget::button(content)
         .padding(design::CONTROL_PADDING)
@@ -31,22 +39,71 @@ pub(super) fn text_input<'a, M: Clone + 'a>(
     iced::widget::text_input(placeholder, value)
         .size(design::typography::BODY)
         .padding(design::INPUT_PADDING)
+        .style(|theme, status| {
+            let mut style = iced::widget::text_input::default(theme, status);
+            style.placeholder = muted_color(theme);
+            style.background = theme.extended_palette().background.weak.color.into();
+            style.border.radius = design::CONTROL_RADIUS.into();
+            if matches!(status, iced::widget::text_input::Status::Active) {
+                style.border.color = control_border(theme);
+            }
+            style
+        })
 }
 
 pub(super) fn pick_list<'a, T, L, V, M>(
     options: L,
     selected: Option<V>,
     on_selected: impl Fn(T) -> M + 'a,
-) -> iced::widget::PickList<'a, T, L, V, M>
+) -> super::select::Select<'a, T, M>
 where
     T: ToString + PartialEq + Clone + 'a,
     L: std::borrow::Borrow<[T]> + 'a,
     V: std::borrow::Borrow<T> + 'a,
     M: Clone + 'a,
 {
-    iced::widget::pick_list(options, selected, on_selected)
-        .text_size(design::typography::BODY)
-        .padding(design::CONTROL_PADDING)
+    super::select::Select::new(
+        options.borrow().to_vec(),
+        selected.map(|value| value.borrow().clone()),
+        on_selected,
+    )
+}
+
+pub(super) fn select_field(
+    theme: &iced::Theme,
+    status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
+    use iced::widget::pick_list::{self, Status};
+    let mut style = pick_list::default(theme, status);
+    style.background = surface(theme)
+        .background
+        .unwrap_or_else(|| theme.palette().background.into());
+    style.text_color = theme.palette().text;
+    style.handle_color = muted_color(theme);
+    style.border.radius = design::CONTROL_RADIUS.into();
+    style.border.color = match status {
+        Status::Active => control_border(theme),
+        Status::Hovered => theme.palette().primary.scale_alpha(0.55),
+        Status::Opened { .. } => theme.palette().primary,
+    };
+    if matches!(status, Status::Hovered) {
+        style.background = quiet(theme, iced::widget::button::Status::Hovered)
+            .background
+            .unwrap_or(style.background);
+    }
+    style
+}
+
+pub(super) fn select_menu(theme: &iced::Theme) -> iced::widget::overlay::menu::Style {
+    let mut style = iced::widget::overlay::menu::default(theme);
+    style.background = select_field(theme, iced::widget::pick_list::Status::Active).background;
+    style.border.radius = design::CONTROL_RADIUS.into();
+    style.text_color = theme.palette().text;
+    style.selected_text_color = theme.palette().text;
+    style.selected_background = selected_control(theme, iced::widget::button::Status::Active)
+        .background
+        .unwrap_or(style.background);
+    style
 }
 
 pub(super) fn slider<'a, T, M>(
@@ -66,6 +123,25 @@ pub(super) fn checkbox<'a, M: 'a>(value: bool) -> iced::widget::Checkbox<'a, M> 
         .size(design::CHECKBOX_SIZE)
         .text_size(design::typography::BODY)
         .spacing(design::space::SMALL)
+        .style(checkbox_style)
+}
+
+fn checkbox_style(
+    theme: &iced::Theme,
+    status: iced::widget::checkbox::Status,
+) -> iced::widget::checkbox::Style {
+    use iced::widget::checkbox::Status;
+    let mut style = iced::widget::checkbox::primary(theme, status);
+    style.border.radius = design::CONTROL_RADIUS.into();
+    if matches!(
+        status,
+        Status::Active { is_checked: false } | Status::Hovered { is_checked: false }
+    ) {
+        style.border.color = control_border(theme);
+        style.background = theme.extended_palette().background.weak.color.into();
+        style.text_color = Some(muted_color(theme));
+    }
+    style
 }
 
 pub(super) fn card_button<'a, M: Clone + 'a>(
@@ -139,8 +215,15 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
             .style(quiet)
             .on_press(message),
             optional_content(
+                iced::widget::rule::horizontal(1).style(|theme| iced::widget::rule::Style {
+                    color: control_border(theme),
+                    ..iced::widget::rule::default(theme)
+                }),
+                expanded,
+            ),
+            optional_content(
                 iced::widget::container(content).padding(iced::Padding {
-                    top: 0.0,
+                    top: CARD_PADDING as f32,
                     right: CARD_PADDING as f32,
                     bottom: CARD_PADDING as f32,
                     left: CARD_PADDING as f32,
@@ -199,6 +282,7 @@ pub(super) fn switch<'a, M: Clone + 'a>(
         text(rust_i18n::t!(if value { "common.on" } else { "common.off" }).to_string()),
         iced::widget::toggler(value)
             .size(design::SWITCH_SIZE)
+            .style(toggle_style)
             .on_toggle_maybe(action)
     ]
     .spacing(design::space::SMALL)
@@ -206,20 +290,36 @@ pub(super) fn switch<'a, M: Clone + 'a>(
     .into()
 }
 
+fn toggle_style(
+    theme: &iced::Theme,
+    status: iced::widget::toggler::Status,
+) -> iced::widget::toggler::Style {
+    use iced::widget::toggler::Status;
+    let mut style = iced::widget::toggler::default(theme, status);
+    if matches!(status, Status::Hovered { is_toggled: true }) {
+        style.foreground = theme.extended_palette().primary.base.text.into();
+    } else if matches!(
+        status,
+        Status::Active { is_toggled: false } | Status::Hovered { is_toggled: false }
+    ) {
+        style.background = theme.extended_palette().background.weak.color.into();
+        style.background_border_width = 1.0;
+        style.background_border_color = control_border(theme);
+        style.foreground = muted_color(theme).into();
+    }
+    style
+}
+
 pub(super) fn control_button(
     theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let mut style = quiet(theme, status);
-    if matches!(status, iced::widget::button::Status::Active) {
-        style.background = Some(
-            if theme.extended_palette().is_dark {
-                iced::Color::from_rgb8(44, 49, 55)
-            } else {
-                iced::Color::from_rgb8(226, 230, 234)
-            }
-            .into(),
-        );
+    if matches!(
+        status,
+        iced::widget::button::Status::Active | iced::widget::button::Status::Disabled
+    ) {
+        style.background = Some(theme.extended_palette().background.neutral.color.into());
     }
     style
 }
@@ -320,28 +420,14 @@ pub(super) fn heading<'a>(label: String, size: u32) -> iced::widget::Text<'a> {
 
 pub(super) fn navigation_surface(theme: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(
-            if theme.extended_palette().is_dark {
-                iced::Color::from_rgb8(11, 13, 15)
-            } else {
-                iced::Color::from_rgb8(234, 236, 239)
-            }
-            .into(),
-        ),
+        background: Some(theme.extended_palette().background.weaker.color.into()),
         ..Default::default()
     }
 }
 
 pub(super) fn surface(theme: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(
-            if theme.extended_palette().is_dark {
-                iced::Color::from_rgb8(25, 27, 30)
-            } else {
-                iced::Color::WHITE
-            }
-            .into(),
-        ),
+        background: Some(theme.extended_palette().background.weak.color.into()),
         border: iced::border::rounded(design::CARD_RADIUS),
         ..Default::default()
     }
@@ -358,6 +444,17 @@ pub(super) fn selected(
     style
 }
 
+pub(super) fn selected_control(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let mut style = control_button(theme, status);
+    if status == iced::widget::button::Status::Active {
+        style.background = Some(theme.palette().primary.scale_alpha(0.15).into());
+    }
+    style
+}
+
 pub(super) fn quiet(
     theme: &iced::Theme,
     status: iced::widget::button::Status,
@@ -366,7 +463,8 @@ pub(super) fn quiet(
     let mut style = button::text(theme, status);
     style.border.radius = design::CONTROL_RADIUS.into();
     style.background = match status {
-        Status::Hovered | Status::Pressed => Some(theme.palette().primary.scale_alpha(0.18).into()),
+        Status::Hovered => Some(theme.palette().primary.scale_alpha(0.10).into()),
+        Status::Pressed => Some(theme.palette().primary.scale_alpha(0.20).into()),
         _ => None,
     };
     style
@@ -380,7 +478,7 @@ pub(super) fn card(
     let mut style = quiet(theme, status);
     let surface = surface(theme);
     style.border = surface.border;
-    if status == Status::Active {
+    if matches!(status, Status::Active | Status::Disabled) {
         style.background = surface.background;
     }
     style
@@ -392,7 +490,65 @@ mod tests {
     use iced::{widget::button::Status, Theme};
 
     #[test]
-    fn interactive_surfaces_share_accent_feedback_and_text_only_selection() {
+    fn neutral_surfaces_and_adaptive_marks_in_both_themes() {
+        for light in [false, true] {
+            let themes = [
+                iced::Color::from_rgb8(240, 80, 100),
+                iced::Color::from_rgb8(50, 160, 240),
+                iced::Color::BLACK,
+                iced::Color::WHITE,
+                iced::Color::from_rgb8(255, 235, 20),
+            ]
+            .map(|accent| {
+                let mut palette = design::palette(light);
+                palette.primary = accent;
+                Theme::custom_with_fn("test", palette, design::extended_palette)
+            });
+            assert_eq!(
+                themes[0].palette().background,
+                themes[1].palette().background
+            );
+            for surface in [navigation_surface, super::surface] {
+                assert_eq!(
+                    surface(&themes[0]).background,
+                    surface(&themes[1]).background
+                );
+            }
+            assert_eq!(
+                control_button(&themes[0], Status::Active).background,
+                control_button(&themes[1], Status::Active).background
+            );
+            assert_eq!(
+                select_menu(&themes[0]).background,
+                select_menu(&themes[1]).background
+            );
+            let checkbox = |theme: &Theme| {
+                checkbox_style(
+                    theme,
+                    iced::widget::checkbox::Status::Active { is_checked: true },
+                )
+            };
+            let toggle = |theme: &Theme| {
+                toggle_style(
+                    theme,
+                    iced::widget::toggler::Status::Active { is_toggled: true },
+                )
+            };
+            assert_ne!(
+                checkbox(&themes[0]).background,
+                checkbox(&themes[1]).background
+            );
+            assert_ne!(toggle(&themes[0]).background, toggle(&themes[1]).background);
+            for theme in &themes {
+                let expected = theme.extended_palette().primary.base.text;
+                assert_eq!(checkbox(theme).icon_color, expected);
+                assert_eq!(toggle(theme).foreground, iced::Background::Color(expected));
+            }
+        }
+    }
+
+    #[test]
+    fn interactive_surfaces_distinguish_hover_press_selection_and_disabled() {
         for theme in [Theme::CatppuccinLatte, Theme::CatppuccinMocha] {
             assert_eq!(selected(&theme, Status::Active).background, None);
             assert_eq!(
@@ -403,22 +559,37 @@ mod tests {
                 selected(&theme, Status::Hovered).text_color,
                 theme.palette().primary
             );
-            for style in [quiet, selected, card, control_button] {
+            for style in [quiet, selected, card, control_button, selected_control] {
                 let active = style(&theme, Status::Active);
                 let hovered = style(&theme, Status::Hovered);
                 let pressed = style(&theme, Status::Pressed);
                 assert_ne!(active.background, hovered.background);
-                assert_eq!(hovered.background, pressed.background);
+                assert_ne!(hovered.background, pressed.background);
                 assert_eq!(
                     hovered.background,
-                    Some(theme.palette().primary.scale_alpha(0.18).into())
+                    quiet(&theme, Status::Hovered).background
                 );
                 assert_eq!(active.border.width, 0.0);
                 assert_eq!(hovered.border.width, 0.0);
                 assert_eq!(pressed.border.width, 0.0);
                 assert_eq!(active.border.radius, hovered.border.radius);
-                assert_eq!(style(&theme, Status::Disabled).background, None);
+                assert_ne!(
+                    style(&theme, Status::Disabled).text_color,
+                    active.text_color
+                );
             }
+            assert_eq!(
+                card(&theme, Status::Disabled).background,
+                card(&theme, Status::Active).background
+            );
+            assert_eq!(
+                control_button(&theme, Status::Disabled).background,
+                control_button(&theme, Status::Active).background
+            );
+            assert_ne!(
+                control_button(&theme, Status::Active).background,
+                quiet(&theme, Status::Active).background
+            );
         }
     }
 }

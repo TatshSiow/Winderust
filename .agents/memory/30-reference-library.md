@@ -703,3 +703,18 @@ state.
 - Contract: GPU Engine instances are process-scoped. Strip only the `pid_<number>_` prefix, sum
   matching physical-engine instances, clamp each engine to 100%, and report the busiest engine.
   Missing or invalid samples are unavailable observations, not zero utilization.
+
+# Appearance change notifications
+
+- `src/backend/windows_events.rs` routes WM_SETTINGCHANGE, WM_THEMECHANGED, and
+  WM_DWMCOLORIZATIONCOLORCHANGED through AppearanceChanged. The runtime generation
+  makes `src/ui/app.rs` rebuild the shared Iced theme using the current preferences.
+- References: [WM_THEMECHANGED](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-themechanged),
+  [WM_DWMCOLORIZATIONCOLORCHANGED](https://learn.microsoft.com/en-us/windows/win32/dwm/wm-dwmcolorizationcolorchanged).
+- `src/platform/windows/appearance.rs` reads UISettings Foreground and AccentLight2 via
+  [GetColorValue](https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.getcolorvalue).
+  Dark system foreground indicates light mode. Each successful
+  [RoInitialize](https://learn.microsoft.com/en-us/windows/win32/api/roapi/nf-roapi-roinitialize)
+  is balanced after the UISettings object is released. Explicit theme/custom accent
+  preferences override system values. API failure is reported and uses the app default palette;
+  no undocumented appearance registry fallback is retained.

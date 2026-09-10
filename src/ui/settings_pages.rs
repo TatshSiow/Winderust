@@ -287,16 +287,27 @@ impl Editor {
             }
             Page::LanguageAndAppearance => {
                 let colors = column(ACCENT_PALETTE.chunks(8).map(|chunk| {
-                    row(chunk.iter().map(|color| color_button(*color).into()))
-                        .spacing(design::space::CONTROL)
+                    row(chunk.iter().map(|color| {
+                        color_button(
+                            *color,
+                            s.general.accent.source == AccentColorSource::Custom
+                                && s.general.accent.custom_color == *color,
+                        )
                         .into()
+                    }))
+                    .spacing(design::space::CONTROL)
+                    .into()
                 }))
                 .spacing(design::space::CONTROL);
                 let saved = column(s.general.accent.custom_colors.chunks(8).enumerate().map(
                     |(chunk_index, chunk)| {
                         row(chunk.iter().enumerate().map(|(i, color)| {
                             column![
-                                color_button(*color),
+                                color_button(
+                                    *color,
+                                    s.general.accent.source == AccentColorSource::Custom
+                                        && s.general.accent.custom_color == *color
+                                ),
                                 button(text(t!("common.remove").to_string()))
                                     .on_press(Message::RemoveColor(chunk_index * 8 + i))
                             ]
@@ -368,6 +379,7 @@ impl Editor {
                                 )),
                                 |v| Message::Language(v.0)
                             )
+                            .width(design::SELECT_WIDTH)
                         ]
                         .spacing(design::space::MEDIUM)
                         .align_y(iced::Center)
@@ -393,7 +405,8 @@ impl Editor {
                                 }
                             )),
                             |v| Message::AccentSource(v.0)
-                        ),
+                        )
+                        .width(design::SELECT_WIDTH),
                         custom
                     ),
                     super::widgets::settings_card(
@@ -410,6 +423,7 @@ impl Editor {
                                 )),
                                 |v| Message::Theme(v.0)
                             )
+                            .width(design::SELECT_WIDTH)
                         ]
                         .spacing(design::space::MEDIUM)
                         .align_y(iced::Center)
@@ -562,7 +576,7 @@ impl Editor {
         scrollable(body).height(Fill).into()
     }
 }
-fn color_button(color: u32) -> iced::widget::Button<'static, Message> {
+fn color_button(color: u32, selected: bool) -> iced::widget::Button<'static, Message> {
     button(iced::widget::Space::new())
         .width(42)
         .height(42)
@@ -570,6 +584,10 @@ fn color_button(color: u32) -> iced::widget::Button<'static, Message> {
         .style(move |theme, status| {
             let mut style = widgets::quiet(theme, status);
             style.background = Some(rgb(color).into());
+            if selected {
+                style.border.width = 2.0;
+                style.border.color = theme.palette().text;
+            }
             style
         })
 }
@@ -603,50 +621,30 @@ fn log_label(v: ActionLogMode) -> String {
 }
 
 pub(super) fn theme(s: &GeneralSettings) -> Theme {
+    let system =
+        if s.theme_mode == AppThemeMode::System || s.accent.source == AccentColorSource::Windows {
+            match crate::platform::windows::appearance::read() {
+                Ok(appearance) => Some(appearance),
+                Err(error) => {
+                    eprintln!("Unable to read Windows appearance: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
     let light = match s.theme_mode {
         AppThemeMode::Light => true,
         AppThemeMode::Dark => false,
-        AppThemeMode::System => {
-            crate::win_registry::read_registry_dword_root(
-                windows_sys::Win32::System::Registry::HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-                "AppsUseLightTheme",
-            )
-            .unwrap_or(1)
-                != 0
-        }
+        AppThemeMode::System => system.as_ref().is_none_or(|appearance| appearance.light),
     };
     let mut palette = design::palette(light);
-    // Preserve the appearance preference; Iced derives all widget colors and states.
-    if let Some(accent) = if s.accent.source == AccentColorSource::Custom {
-        Some(s.accent.custom_color)
-    } else {
-        windows_accent()
-    } {
-        palette.primary = rgb(accent);
+    if s.accent.source == AccentColorSource::Custom {
+        palette.primary = rgb(s.accent.custom_color);
+    } else if let Some(system) = system {
+        palette.primary = rgb(system.accent);
     }
-    Theme::custom("Winderust", palette)
-}
-fn windows_accent() -> Option<u32> {
-    use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
-    crate::win_registry::read_registry_binary_root(
-        HKEY_CURRENT_USER,
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
-        "AccentPalette",
-    )
-    .and_then(|palette| {
-        palette
-            .get(4..8)
-            .map(|rgb| (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2]))
-    })
-    .or_else(|| {
-        crate::win_registry::read_registry_dword_root(
-            HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\DWM",
-            "AccentColor",
-        )
-        .map(|v| ((v & 255) << 16) | (v & 0xff00) | ((v >> 16) & 255))
-    })
+    Theme::custom_with_fn("Winderust", palette, design::extended_palette)
 }
 
 fn sanitize_advanced(settings: &mut Settings) {

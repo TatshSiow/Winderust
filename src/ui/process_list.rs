@@ -1257,7 +1257,7 @@ impl ProcessList {
                 tabs = tabs.push(
                     button(text(t!(key).to_string()))
                         .style(if self.process_tab == tab {
-                            super::widgets::selected
+                            super::widgets::selected_control
                         } else {
                             super::widgets::quiet
                         })

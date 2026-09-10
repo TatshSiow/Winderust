@@ -153,7 +153,7 @@ impl Model {
                     enabled = enabled.push(
                         button(
                             row![
-                                super::navigation::icon(page),
+                                super::navigation::icon(page, false),
                                 text(page.label()).width(Fill),
                                 text(detail)
                             ]
@@ -222,7 +222,7 @@ impl Model {
                 for section in group {
                     shortcuts = shortcuts.push(
                         super::widgets::card_button(row![
-                            super::navigation::icon(section.landing_page),
+                            super::navigation::icon(section.landing_page, false),
                             super::widgets::heading(
                                 section.landing_page.label(),
                                 design::typography::BODY
