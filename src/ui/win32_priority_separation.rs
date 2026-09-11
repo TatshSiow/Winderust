@@ -134,26 +134,40 @@ impl Editor {
         }
     }
     pub(super) fn view(&self) -> Element<'_, Message> {
+        let display = |value: String| {
+            iced::widget::container(text(value))
+                .padding([8, 12])
+                .style(|theme: &iced::Theme| {
+                    let mut style = super::widgets::surface(theme);
+                    style.border.width = 1.0;
+                    style.border.color = theme.extended_palette().background.strong.color;
+                    style
+                })
+        };
         let mut body = column![
-            text(t!("settings.win32_priority_separation_warning").to_string()),
-            text(format!(
-                "{}: {}",
-                t!("settings.win32_priority_separation_current"),
-                self.current
-                    .map(format_value)
-                    .unwrap_or_else(
-                        || t!("settings.win32_priority_separation_unavailable").to_string()
+            text(t!("settings.win32_priority_separation_warning").to_string())
+                .style(text::secondary),
+            super::widgets::settings_card(
+                column![
+                    super::widgets::setting_row(
+                        "settings.win32_priority_separation_current",
+                        display(self.current.map(format_value).unwrap_or_else(|| {
+                            t!("settings.win32_priority_separation_unavailable").to_string()
+                        }))
+                    ),
+                    super::widgets::setting_row(
+                        "settings.win32_priority_separation_backup",
+                        display(self.backup.map(format_value).unwrap_or_else(|| {
+                            t!("settings.win32_priority_separation_no_backup").to_string()
+                        }))
                     )
-            )),
-            text(format!(
-                "{}: {}",
-                t!("settings.win32_priority_separation_backup"),
-                self.backup
-                    .map(format_value)
-                    .unwrap_or_else(
-                        || t!("settings.win32_priority_separation_no_backup").to_string()
-                    )
-            ))
+                ]
+                .spacing(design::space::MEDIUM)
+            ),
+            super::widgets::heading(
+                t!("settings.win32_priority_separation_scheduler_policy").to_string(),
+                design::typography::SECONDARY
+            )
         ]
         .spacing(super::widgets::CARD_GAP);
         for (field, key, mask, bits) in [
@@ -171,54 +185,37 @@ impl Editor {
                 .map(|bits| Choice(bits, field_label(field, bits)))
                 .collect::<Vec<_>>();
             let selected = normalize(self.value) & mask;
-            body = body.push(super::widgets::settings_card(
-                row![
-                    text(
-                        {
-                            let locale_key = format!("settings.win32_priority_separation_{key}");
-                            t!(&locale_key).to_string()
-                        }
-                        .to_string()
-                    )
-                    .width(Fill),
-                    pick_list(
-                        choices,
-                        Some(Choice(selected, field_label(field, selected))),
-                        move |v| Message::Field(field, v.0)
-                    )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ));
-            body = body.push(
-                text(
-                    {
-                        let locale_key = format!("settings.win32_priority_separation_{key}_help");
-                        t!(&locale_key).to_string()
-                    }
-                    .to_string(),
+            body = body.push(super::widgets::settings_card(super::widgets::setting_row(
+                &format!("settings.win32_priority_separation_{key}"),
+                pick_list(
+                    choices,
+                    Some(Choice(selected, field_label(field, selected))),
+                    move |v| Message::Field(field, v.0),
                 )
-                .size(design::typography::CAPTION),
-            );
+                .width(design::SELECT_WIDTH),
+            )));
         }
+        let value = normalize(self.value);
         body = body
-            .push(text(format!(
-                "{}: {}",
-                t!("settings.win32_priority_separation_resulting_value"),
-                format_value(normalize(self.value))
+            .push(super::widgets::settings_card(super::widgets::setting_row(
+                "settings.win32_priority_separation_resulting_value",
+                display(format!("0x{value:02X} ({value})")),
             )))
-            .push(super::widgets::settings_card(
+            .push(
                 row![
+                    iced::widget::Space::new().width(Fill),
                     button(text(t!("settings.refresh").to_string())).on_press(Message::Refresh),
                     button(text(t!("settings.save_backup").to_string())).on_press(Message::Backup),
                     button(text(t!("settings.restore_backup").to_string()))
                         .on_press_maybe(self.backup.map(|_| Message::Restore)),
-                    button(text(t!("settings.apply").to_string())).on_press(Message::Apply)
+                    button(text(t!("settings.apply").to_string()))
+                        .style(super::widgets::primary_button)
+                        .on_press(Message::Apply)
                 ]
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
-            ))
-            .push(text(&self.status));
+            )
+            .push(text(&self.status).style(text::secondary));
         scrollable(body).height(Fill).into()
     }
 }

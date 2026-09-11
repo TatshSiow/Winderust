@@ -414,6 +414,7 @@ settings:
   pause_process_population: "Pause process population"
   pause_process_population_help: "Stops filling the Process List and process pickers, and clears their current process cache. Background automation continues running."
   win32_priority_separation_warning: "Expert-only system-wide scheduler tuning. This registry value affects all apps and services, not only Winderust-managed processes."
+  win32_priority_separation_scheduler_policy: "Scheduler policy"
   win32_priority_separation_current: "Current registry value"
   win32_priority_separation_backup: "Backup value"
   win32_priority_separation_tuning: "Scheduler policy"

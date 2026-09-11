@@ -416,6 +416,7 @@ settings:
   pause_process_population: "暫停程序填入"
   pause_process_population_help: "停止填入程序清單與程序選擇器，並清除目前的程序快取。背景自動化仍會繼續執行。"
   win32_priority_separation_warning: "僅供熟悉 Windows 排程器的進階使用者調整。這個登錄值會影響所有應用程式與服務，不只 Winderust 管理的程序。"
+  win32_priority_separation_scheduler_policy: "排程器原則"
   win32_priority_separation_current: "目前登錄值"
   win32_priority_separation_backup: "備份值"
   win32_priority_separation_tuning: "排程器原則"
