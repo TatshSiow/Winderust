@@ -254,7 +254,7 @@ home:
   memory_usage: "RAM"
   memory_used: "Usage"
   memory_cache: "Cache"
-  io_usage: "I/O"
+  io_usage: "Disk I/O"
   io_total: "Total"
   io_read: "Read"
   io_write: "Write"

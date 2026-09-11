@@ -734,3 +734,8 @@ state.
   with SHOP_FILEPATH and the default page on a background STA thread. Successful
   CoInitializeEx calls are balanced with CoUninitialize; failure returns an error.
   No undocumented contract is used.
+
+## Home Disk I/O
+
+- `src/backend/dashboard_metrics.rs::DiskUsageMonitor` uses PDH English counters `\PhysicalDisk(_Total)\Disk Read Bytes/sec` and `\PhysicalDisk(_Total)\Disk Write Bytes/sec`. Home reports total physical-disk throughput across all disks; Adaptive Engine retains process I/O accounting. The worker owns and closes the PDH query, primes rate counters, and rejects invalid samples.
+- Official references: https://learn.microsoft.com/en-us/windows-server/storage/storage-spaces/performance-history-for-drives and https://learn.microsoft.com/en-us/windows/win32/perfctrs/displaying-performance-data . No undocumented contract.

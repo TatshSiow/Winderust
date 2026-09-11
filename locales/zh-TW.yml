@@ -254,7 +254,7 @@ home:
   memory_usage: "RAM"
   memory_used: "使用量"
   memory_cache: "快取"
-  io_usage: "I/O"
+  io_usage: "磁碟 I/O"
   io_total: "總計"
   io_read: "讀取"
   io_write: "寫入"

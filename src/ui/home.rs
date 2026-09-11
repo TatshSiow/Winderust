@@ -3,8 +3,8 @@ use super::navigation::dashboard_sections_in_nav_order;
 use super::widgets::button;
 use crate::automation::RuntimeFeatureStatus;
 use crate::backend::dashboard_metrics::{
-    sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot, NetworkUsageMonitor,
-    NetworkUsageSnapshot,
+    sample_memory_usage, DiskUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
+    NetworkUsageMonitor, NetworkUsageSnapshot,
 };
 use crate::config::Settings;
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
@@ -34,7 +34,7 @@ impl Default for Sampler {
             .spawn(move || {
                 // PDH handles stay owned, sampled, and dropped on this worker thread.
                 let mut cpu = CpuUsageMonitor::default();
-                let mut io = IoUsageMonitor::default();
+                let mut io = DiskUsageMonitor::default();
                 let mut network = NetworkUsageMonitor::default();
                 let mut controller = crate::activity::ControllerActivityDetector::default();
                 while requests.recv().is_ok() {
