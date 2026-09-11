@@ -10,12 +10,13 @@ use windows_sys::Win32::{
         BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
     },
     UI::{
-        Shell::ExtractIconExW,
-        WindowsAndMessaging::{
-            DestroyIcon, DrawIconEx, GetSystemMetrics, DI_NORMAL, HICON, SM_CXSMICON, SM_CYSMICON,
-        },
+        Shell::SHDefExtractIconW,
+        WindowsAndMessaging::{DestroyIcon, DrawIconEx, DI_NORMAL, HICON},
     },
 };
+
+// A shared 64px source avoids enlarging the 20px UI icons at common display scales.
+const ICON_PIXELS: i32 = 64;
 
 const BMP_FILE_HEADER_SIZE: u32 = 14;
 const BMP_INFO_HEADER_SIZE: u32 = 40;
@@ -28,16 +29,25 @@ pub fn load_process_icon(path: &Path) -> Option<Arc<Image>> {
         .collect::<Vec<_>>();
     let mut icon: HICON = null_mut();
 
-    // SAFETY: path is terminated UTF-16, icon is a writable out-pointer, and one icon slot is
-    // requested.
-    let extracted = unsafe { ExtractIconExW(path.as_ptr(), 0, null_mut(), &mut icon, 1) };
-    if extracted == 0 || icon.is_null() {
+    // SAFETY: path is terminated UTF-16 and icon is a writable out-pointer. The low word
+    // requests a 64px large icon; no small icon is requested.
+    let extracted = unsafe {
+        SHDefExtractIconW(
+            path.as_ptr(),
+            0,
+            0,
+            &mut icon,
+            null_mut(),
+            ICON_PIXELS as u32,
+        )
+    };
+    if extracted != 0 || icon.is_null() {
         return None;
     }
 
     let image = hicon_to_bmp(icon).map(|bytes| Arc::new(Image::from_bytes(bytes)));
 
-    // SAFETY: icon was returned by ExtractIconExW and is destroyed exactly once after rendering.
+    // SAFETY: icon was returned by SHDefExtractIconW and is destroyed exactly once after rendering.
     unsafe {
         DestroyIcon(icon);
     }
@@ -46,10 +56,8 @@ pub fn load_process_icon(path: &Path) -> Option<Arc<Image>> {
 }
 
 fn hicon_to_bmp(icon: HICON) -> Option<Vec<u8>> {
-    // SAFETY: GetSystemMetrics has no pointer or lifetime requirements.
-    let width = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
-    // SAFETY: GetSystemMetrics has no pointer or lifetime requirements.
-    let height = unsafe { GetSystemMetrics(SM_CYSMICON) }.max(16);
+    let width = ICON_PIXELS;
+    let height = ICON_PIXELS;
     let byte_len = width.checked_mul(height)?.checked_mul(4)? as usize;
 
     // SAFETY: A null source DC requests a memory DC compatible with the current screen.

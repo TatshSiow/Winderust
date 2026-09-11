@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fmt,
-    os::windows::ffi::OsStringExt,
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -525,6 +525,46 @@ fn ensure_process_action_target_safety_on_handle(
         return Err("Windows protected processes cannot be modified.".to_owned());
     }
     Ok(())
+}
+
+pub fn open_process_properties(executable_path: &Path) -> Result<(), String> {
+    use windows_sys::Win32::{
+        System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+        UI::Shell::{SHObjectProperties, SHOP_FILEPATH},
+    };
+    if !executable_path.is_absolute() || !executable_path.is_file() {
+        return Err("The process executable path is unavailable.".to_owned());
+    }
+    let path = executable_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: No reserved pointer is supplied; this background thread owns the COM apartment.
+    let initialized = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+    if initialized < 0 {
+        return Err(format!(
+            "Could not initialize Windows properties: {initialized:#x}."
+        ));
+    }
+    // SAFETY: path is terminated UTF-16, no parent is required, and null selects the default page.
+    let opened = unsafe {
+        SHObjectProperties(
+            std::ptr::null_mut(),
+            SHOP_FILEPATH as u32,
+            path.as_ptr(),
+            std::ptr::null(),
+        )
+    };
+    // SAFETY: Balance the successful COM initialization on this same thread.
+    unsafe {
+        CoUninitialize();
+    }
+    if opened == 0 {
+        Err("Could not open the executable properties.".to_owned())
+    } else {
+        Ok(())
+    }
 }
 
 pub fn open_process_location(executable_path: &Path) -> Result<(), String> {
@@ -1095,6 +1135,12 @@ pub(crate) fn process_handle_matches_executable_path(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn executable_properties_rejects_unavailable_paths() {
+        assert!(super::open_process_properties(std::path::Path::new("")).is_err());
+        assert!(super::open_process_properties(std::path::Path::new("relative.exe")).is_err());
+    }
+
     use super::*;
 
     #[test]

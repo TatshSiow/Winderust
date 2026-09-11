@@ -21,11 +21,12 @@ use std::{
 mod details;
 #[path = "process_viewport.rs"]
 mod viewport;
-const ROW_HEIGHT: f32 = 52.0;
+const ROW_HEIGHT: f32 = 36.0;
 #[derive(Debug, Clone)]
 pub(super) struct Population {
     processes: Vec<ProcessInfo>,
     samples: BTreeMap<u32, ProcessResourceSample>,
+    total_memory_bytes: Option<u64>,
     icons: HashMap<PathBuf, Option<Arc<image::Handle>>>,
 }
 #[derive(Debug, Clone)]
@@ -103,7 +104,8 @@ pub(super) enum ProcessTab {
     Rulesets,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum PriorityMenu {
+pub(super) enum MenuBranch {
+    Efficiency,
     #[default]
     Closed,
     Types,
@@ -115,17 +117,25 @@ pub(super) enum Message {
     Loaded(Result<Population, String>),
     Search(String),
     Scrolled(f32),
+    ResizeStart(Sort, f32),
+    ResizeMoved(f32),
+    ResizeEnd,
+    AutoSize(Sort),
     HideInaccessible(bool),
     Group(bool),
+    MemoryPercentage(bool),
     Expand(String),
     Sort(Sort),
     Column(Sort, bool),
     Select(usize, u64),
+    Focus(usize, u64),
+    ExpandFocused,
+    DeleteFocused,
     Context(usize, u64),
     PointerMoved(iced::Point),
     OpenDetails,
     ProcessTab(ProcessTab),
-    PriorityMenu(PriorityMenu),
+    MenuBranch(MenuBranch),
     Menu(Box<Message>),
     Current(Result<(Selection, Vec<Value>, Option<bool>), String>),
     CloseSelection,
@@ -136,6 +146,7 @@ pub(super) enum Message {
     TreeReady(Result<Vec<ProcessActionTarget>, String>),
     Result(String, Result<(), String>),
     OpenLocation,
+    Properties,
     Details(details::Message),
 }
 
@@ -145,7 +156,9 @@ pub(super) struct ProcessList {
     offsets: Vec<f32>,
     rows_revision: u64,
     samples: BTreeMap<u32, ProcessResourceSample>,
+    total_memory_bytes: Option<u64>,
     cpu: HashMap<u32, f32>,
+    suspended_process_ids: Vec<u32>,
     icons: HashMap<PathBuf, Option<Arc<image::Handle>>>,
     search: String,
     offset: std::cell::Cell<f32>,
@@ -153,14 +166,18 @@ pub(super) struct ProcessList {
     error: Option<String>,
     hide_inaccessible: bool,
     grouped: bool,
+    memory_percentage: bool,
     expanded: HashSet<String>,
     sort: Sort,
     descending: bool,
     columns: [bool; 6],
+    column_widths: [Option<f32>; 6],
+    resizing: Option<(Sort, f32, Option<f32>)>,
     selected: Option<Selection>,
+    focused: Option<(String, bool, Selection)>,
     pointer: iced::Point,
     context: Option<iced::Point>,
-    priority_menu: PriorityMenu,
+    menu_branch: MenuBranch,
     process_tab: ProcessTab,
     current: Vec<Value>,
     efficiency: Option<bool>,
@@ -174,7 +191,9 @@ impl Default for ProcessList {
             offsets: vec![0.0],
             rows_revision: 0,
             samples: BTreeMap::new(),
+            total_memory_bytes: None,
             cpu: HashMap::new(),
+            suspended_process_ids: Vec::new(),
             icons: HashMap::new(),
             search: String::new(),
             offset: std::cell::Cell::new(0.0),
@@ -182,14 +201,18 @@ impl Default for ProcessList {
             error: None,
             hide_inaccessible: true,
             grouped: true,
+            memory_percentage: false,
             expanded: HashSet::new(),
             sort: Sort::Name,
             descending: false,
             columns: [true; 6],
+            column_widths: [None; 6],
+            resizing: None,
             selected: None,
+            focused: None,
             pointer: iced::Point::ORIGIN,
             context: None,
-            priority_menu: PriorityMenu::Closed,
+            menu_branch: MenuBranch::Closed,
             process_tab: ProcessTab::Immediate,
             current: Vec::new(),
             efficiency: None,
@@ -217,6 +240,7 @@ impl ProcessList {
         self.cpu.clear();
         self.icons.clear();
         self.expanded.clear();
+        self.focused = None;
         self.selected = None;
         self.context = None;
         self.stopping = None;
@@ -255,6 +279,8 @@ impl ProcessList {
                             }
                         }
                         Ok(Population {
+                            total_memory_bytes: crate::dashboard_metrics::sample_memory_usage()
+                                .total_physical_bytes,
                             processes,
                             samples,
                             icons,
@@ -283,6 +309,7 @@ impl ProcessList {
                             .collect();
                         self.processes = data.processes;
                         self.samples = data.samples;
+                        self.total_memory_bytes = data.total_memory_bytes;
                         self.icons.extend(data.icons);
                         let paths = self
                             .processes
@@ -306,10 +333,18 @@ impl ProcessList {
                 );
             }
             Message::Scrolled(v) => self.offset.set(v),
+            Message::ResizeStart(col, width) => self.resizing = Some((col, width, None)),
+            Message::ResizeMoved(x) => self.resize_column(x),
+            Message::ResizeEnd => self.resizing = None,
+            Message::AutoSize(col) => {
+                self.resizing = None;
+                self.column_widths[col as usize] = Some(self.auto_width(col));
+            }
             Message::HideInaccessible(v) => {
                 self.hide_inaccessible = v;
                 self.rebuild();
             }
+            Message::MemoryPercentage(value) => self.memory_percentage = value,
             Message::Group(v) => {
                 self.grouped = v;
                 self.rebuild();
@@ -337,7 +372,7 @@ impl ProcessList {
                 return task;
             }
             Message::PointerMoved(position) => self.pointer = position,
-            Message::PriorityMenu(menu) => self.priority_menu = menu,
+            Message::MenuBranch(menu) => self.menu_branch = menu,
             Message::ProcessTab(tab) => self.process_tab = tab,
             Message::OpenDetails => {
                 self.context = None;
@@ -349,8 +384,26 @@ impl ProcessList {
                 }
                 let task = self.update(Message::Select(index, revision), settings, runtime);
                 self.context = Some(self.pointer);
-                self.priority_menu = PriorityMenu::Closed;
+                self.menu_branch = MenuBranch::Closed;
                 return task;
+            }
+            Message::Focus(index, revision) => self.focus_row(index, revision),
+            Message::ExpandFocused => {
+                if let Some((key, false, selection)) = &self.focused {
+                    if selection.processes.len() > 1 {
+                        return self.update(Message::Expand(key.clone()), settings, runtime);
+                    }
+                }
+            }
+            Message::DeleteFocused => {
+                if self.selected.is_none() && self.stopping.is_none() {
+                    if let Some((_, _, selection)) = &self.focused {
+                        if selection.processes.iter().any(|p| !inaccessible(p)) {
+                            self.selected = Some(selection.clone());
+                            return self.update(Message::Stop(false), settings, runtime);
+                        }
+                    }
+                }
             }
             Message::Select(index, revision) => {
                 let Some(entry) = self
@@ -498,8 +551,8 @@ impl ProcessList {
             }
             Message::Stop(tree) => {
                 self.context = None;
-                if let Some(selection) = &self.selected {
-                    self.stopping = Some((selection.clone(), tree));
+                if let Some(selection) = self.selected.take() {
+                    self.stopping = Some((selection, tree));
                 }
             }
             Message::CancelStop => self.stopping = None,
@@ -535,6 +588,15 @@ impl ProcessList {
                     .to_string(),
                     Err(e) => e,
                 })
+            }
+            Message::Properties => {
+                if let Some(selection) = &self.selected {
+                    let path = PathBuf::from(&selection.path);
+                    return background(
+                        move || foreground::open_process_properties(&path),
+                        self.result_message(),
+                    );
+                }
             }
             Message::OpenLocation => {
                 if let Some(selection) = &self.selected {
@@ -598,6 +660,178 @@ impl ProcessList {
             .map(|i| i as f32 * ROW_HEIGHT)
             .collect()
     }
+    pub(super) fn resizing_columns(&self) -> bool {
+        self.resizing.is_some()
+    }
+
+    fn resize_column(&mut self, x: f32) {
+        if let Some((col, width, anchor)) = &mut self.resizing {
+            let start = *anchor.get_or_insert(x);
+            let minimum = match col {
+                Sort::Name => 160.0,
+                Sort::Status => 140.0,
+                Sort::User | Sort::Memory => 100.0,
+                _ => 80.0,
+            };
+            self.column_widths[*col as usize] = Some((*width + x - start).max(minimum));
+        }
+    }
+
+    fn cell_value(&self, entry: &Entry, col: Sort) -> String {
+        let p = &self.processes[entry.indices[0]];
+        match col {
+            Sort::Name => p.name.clone(),
+            Sort::Pid => {
+                if entry.indices.len() > 1 {
+                    format!("{} x", entry.indices.len())
+                } else {
+                    p.id.to_string()
+                }
+            }
+            Sort::Cpu => {
+                if entry
+                    .indices
+                    .iter()
+                    .any(|i| self.cpu.contains_key(&self.processes[*i].id))
+                {
+                    format!("{:.1}%", self.cpu_total(entry))
+                } else {
+                    t!("common.unknown").to_string()
+                }
+            }
+            Sort::Memory => {
+                if entry.indices.iter().any(|i| {
+                    self.samples
+                        .get(&self.processes[*i].id)
+                        .is_some_and(|sample| sample.working_set_bytes.is_some())
+                }) {
+                    format_memory_usage(
+                        self.memory_total(entry),
+                        self.total_memory_bytes,
+                        self.memory_percentage,
+                    )
+                } else {
+                    t!("common.unknown").to_string()
+                }
+            }
+            Sort::User => self.user(entry),
+            Sort::Status => self.status_key(entry).to_string(),
+        }
+    }
+
+    fn auto_width(&self, col: Sort) -> f32 {
+        let mut width = measure_column_text(&col.label()) + 44.0;
+        for entry in &self.rows {
+            let value = self.cell_value(entry, col);
+            let value = if col == Sort::Status {
+                t!(&value).to_string()
+            } else {
+                value
+            };
+            let padding = match col {
+                Sort::Name => {
+                    if entry.nested {
+                        76.0
+                    } else {
+                        56.0
+                    }
+                }
+                Sort::Status => 32.0,
+                _ => 12.0,
+            };
+            width = width.max(measure_column_text(&value) + padding);
+        }
+        width.ceil()
+    }
+
+    fn layout_widths(&self, available: f32) -> [f32; 6] {
+        let mut widths = Sort::ALL.map(|col| self.column_width(col));
+        let visible = Sort::ALL
+            .into_iter()
+            .filter(|col| *col == Sort::Name || self.columns[*col as usize])
+            .collect::<Vec<_>>();
+        if let Some(last) = visible.last() {
+            let used = visible.iter().map(|col| widths[*col as usize]).sum::<f32>()
+                + (visible.len() - 1) as f32 * design::space::SMALL as f32
+                + 32.0;
+            widths[*last as usize] += (available - used).max(0.0);
+        }
+        widths
+    }
+
+    fn column_width(&self, col: Sort) -> f32 {
+        self.column_widths[col as usize].unwrap_or_else(|| column_width(col))
+    }
+
+    fn focus_row(&mut self, index: usize, revision: u64) {
+        if let Some(entry) = self
+            .rows
+            .get(index)
+            .filter(|_| revision == self.rows_revision)
+        {
+            let p = &self.processes[entry.indices[0]];
+            self.focused = Some((
+                entry.key.clone(),
+                entry.nested,
+                Selection {
+                    processes: entry
+                        .indices
+                        .iter()
+                        .map(|i| self.processes[*i].clone())
+                        .collect(),
+                    path: p
+                        .image_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    name: p.name.clone(),
+                },
+            ));
+        }
+    }
+
+    pub(super) fn sync_suspended_processes(&mut self, ids: &[u32]) {
+        if self.suspended_process_ids != ids {
+            self.suspended_process_ids.clear();
+            self.suspended_process_ids.extend_from_slice(ids);
+            if self.sort == Sort::Status {
+                self.rebuild();
+            }
+        }
+    }
+
+    fn status_key(&self, entry: &Entry) -> &'static str {
+        if entry.indices.iter().all(|i| protected(&self.processes[*i])) {
+            "process_list.status_system_protected"
+        } else if entry
+            .indices
+            .iter()
+            .all(|i| !self.processes[*i].can_set_information)
+        {
+            "process_list.status_access_denied"
+        } else if entry
+            .indices
+            .iter()
+            .all(|i| inaccessible(&self.processes[*i]))
+        {
+            "process_list.status_unavailable"
+        } else if entry
+            .indices
+            .iter()
+            .any(|i| self.suspended_process_ids.contains(&self.processes[*i].id))
+        {
+            "process_list.status_suspended"
+        } else if entry.indices.iter().any(|i| {
+            self.samples
+                .get(&self.processes[*i].id)
+                .is_some_and(|s| s.efficiency_mode == Some(true))
+        }) {
+            "process_list.status_efficiency_mode"
+        } else {
+            "process_list.status_active"
+        }
+    }
+
     fn rebuild(&mut self) {
         self.rows_revision = self.rows_revision.wrapping_add(1);
         let search = self.search.to_lowercase();
@@ -647,8 +881,7 @@ impl ProcessList {
                 Sort::Cpu => self.cpu_total(a).total_cmp(&self.cpu_total(b)),
                 Sort::Memory => self.memory_total(a).cmp(&self.memory_total(b)),
                 Sort::User => self.user(a).cmp(&self.user(b)),
-                Sort::Status => protected(&self.processes[a.indices[0]])
-                    .cmp(&protected(&self.processes[b.indices[0]])),
+                Sort::Status => self.status_key(a).cmp(self.status_key(b)),
                 Sort::Name => self.processes[a.indices[0]]
                     .name
                     .to_lowercase()
@@ -676,6 +909,13 @@ impl ProcessList {
             self.rows.extend(children);
         }
         self.offsets = self.row_offsets();
+        if !self.rows.is_empty() {
+            for col in Sort::ALL {
+                if self.column_widths[col as usize].is_none() {
+                    self.column_widths[col as usize] = Some(self.auto_width(col));
+                }
+            }
+        }
     }
     fn cpu_total(&self, e: &Entry) -> f32 {
         e.indices
@@ -756,15 +996,20 @@ impl ProcessList {
 
     pub(super) fn side_panel(&self) -> Element<'_, Message> {
         let mut filters = column![
+            super::widgets::heading(t!("nav.settings").to_string(), design::typography::SUBTITLE),
             super::widgets::heading(
-                t!("process_list.filters").to_string(),
-                design::typography::SUBTITLE
+                t!("process_list.filter").to_string(),
+                design::typography::SECONDARY
             ),
             checkbox(self.hide_inaccessible)
                 .label(t!("process_list.hide_inaccessible_processes").to_string())
                 .on_toggle(Message::HideInaccessible),
+            super::widgets::heading(
+                t!("process_list.grouping").to_string(),
+                design::typography::SECONDARY
+            ),
             checkbox(self.grouped)
-                .label(t!("process_list.app_name").to_string())
+                .label(t!("process_list.group_by_app").to_string())
                 .on_toggle(Message::Group),
             super::widgets::heading(
                 t!("process_list.columns").to_string(),
@@ -779,6 +1024,31 @@ impl ProcessList {
                     .on_toggle(move |value| Message::Column(col, value)),
             );
         }
+        let value_label = t!("process_list.metric_value").to_string();
+        let percentage_label = t!("process_list.metric_percentage").to_string();
+        let selected = if self.memory_percentage {
+            percentage_label.clone()
+        } else {
+            value_label.clone()
+        };
+        filters = filters
+            .push(super::widgets::heading(
+                t!("process_list.metrics").to_string(),
+                design::typography::SECONDARY,
+            ))
+            .push(
+                row![
+                    text(t!("process_list.memory_usage").to_string()).width(Fill),
+                    pick_list(
+                        vec![value_label, percentage_label.clone()],
+                        Some(selected),
+                        move |value| { Message::MemoryPercentage(value == percentage_label) }
+                    )
+                    .width(140),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            );
         scrollable(filters).height(Fill).into()
     }
 
@@ -811,28 +1081,42 @@ impl ProcessList {
             body = body.push(text(e));
         }
         body = body.push(responsive(move |size| {
-            let name_width = (size.width
-                - Sort::ALL
-                    .into_iter()
-                    .skip(1)
-                    .filter(|col| self.columns[*col as usize])
-                    .map(|col| column_width(col) + 8.0)
-                    .sum::<f32>()
-                - 24.0)
-                .max(230.0);
-            let mut header = row![button(text(Sort::Name.label()))
-                .on_press(Message::Sort(Sort::Name))
-                .style(super::widgets::quiet)
-                .width(name_width)]
-            .spacing(design::space::SMALL);
+            let widths = self.layout_widths(size.width);
+            let name_width = widths[Sort::Name as usize];
+            let sort_header = |col: Sort, width| {
+                let mut label = row![text(col.label())]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center);
+                if self.sort == col {
+                    label = label.push(super::navigation::glyph(if self.descending {
+                        "icons/chevron-down.svg"
+                    } else {
+                        "icons/chevron-up.svg"
+                    }));
+                }
+                row![
+                    button(label)
+                        .on_press(Message::Sort(col))
+                        .style(super::widgets::quiet)
+                        .width(Fill),
+                    mouse_area(
+                        container(iced::widget::rule::vertical(1))
+                            .width(6)
+                            .height(24)
+                            .center_x(6)
+                    )
+                    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+                    .on_press(Message::ResizeStart(col, width))
+                    .on_double_click(Message::AutoSize(col)),
+                ]
+                .width(width)
+                .align_y(iced::Center)
+            };
+            let mut header =
+                row![sort_header(Sort::Name, name_width)].spacing(design::space::SMALL);
             for col in Sort::ALL.into_iter().skip(1) {
                 if self.columns[col as usize] {
-                    header = header.push(
-                        button(text(col.label()))
-                            .on_press(Message::Sort(col))
-                            .style(super::widgets::quiet)
-                            .width(column_width(col)),
-                    );
+                    header = header.push(sort_header(col, widths[col as usize]));
                 }
             }
             let offsets = &self.offsets;
@@ -852,16 +1136,18 @@ impl ProcessList {
                 let mut name = row![].spacing(design::space::SMALL).align_y(iced::Center);
                 if entry.indices.len() > 1 {
                     name = name.push(
-                        container(super::navigation::glyph(
+                        button(super::navigation::glyph(
                             if self.expanded.contains(&entry.key) {
                                 "icons/chevron-down.svg"
                             } else {
                                 "icons/chevron-right.svg"
                             },
                         ))
+                        .padding(0)
                         .width(20)
                         .height(20)
-                        .center_y(20),
+                        .style(super::widgets::quiet)
+                        .on_press(Message::Expand(entry.key.clone())),
                     );
                 } else {
                     name = name.push(Space::new().width(if entry.nested { 40 } else { 20 }));
@@ -883,16 +1169,7 @@ impl ProcessList {
                     );
                 }
                 name = name.push(text(p.name.clone()).wrapping(iced::widget::text::Wrapping::None));
-                let name: Element<'_, Message> = if entry.indices.len() > 1 {
-                    button(name)
-                        .padding(0)
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::Expand(entry.key.clone()))
-                        .into()
-                } else {
-                    name.into()
-                };
+                let name: Element<'_, Message> = name.into();
                 let mut cells = row![container(name).width(name_width).clip(true)]
                     .spacing(design::space::SMALL)
                     .align_y(iced::Center);
@@ -900,68 +1177,7 @@ impl ProcessList {
                     if !self.columns[col as usize] {
                         continue;
                     }
-                    let value = match col {
-                        Sort::Name => p.name.clone(),
-                        Sort::Pid => {
-                            if entry.indices.len() > 1 {
-                                format!("{} x", entry.indices.len())
-                            } else {
-                                p.id.to_string()
-                            }
-                        }
-                        Sort::Cpu => {
-                            if entry
-                                .indices
-                                .iter()
-                                .any(|i| self.cpu.contains_key(&self.processes[*i].id))
-                            {
-                                format!("{:.1}%", self.cpu_total(entry))
-                            } else {
-                                t!("common.unknown").to_string()
-                            }
-                        }
-                        Sort::Memory => {
-                            if entry.indices.iter().any(|i| {
-                                self.samples
-                                    .get(&self.processes[*i].id)
-                                    .is_some_and(|sample| sample.working_set_bytes.is_some())
-                            }) {
-                                format!("{:.1} MiB", self.memory_total(entry) as f64 / 1048576.0)
-                            } else {
-                                t!("common.unknown").to_string()
-                            }
-                        }
-                        Sort::User => self.user(entry),
-                        Sort::Status => {
-                            let key =
-                                if entry.indices.iter().all(|i| protected(&self.processes[*i])) {
-                                    "process_list.status_protected_system_process"
-                                } else if entry
-                                    .indices
-                                    .iter()
-                                    .all(|i| inaccessible(&self.processes[*i]))
-                                {
-                                    "process_list.status_access_denied"
-                                } else if entry.indices.iter().any(|i| {
-                                    status
-                                        .feature_status
-                                        .app_suspension
-                                        .suspended_process_ids
-                                        .contains(&self.processes[*i].id)
-                                }) {
-                                    "process_list.status_suspended"
-                                } else if entry.indices.iter().any(|i| {
-                                    self.samples
-                                        .get(&self.processes[*i].id)
-                                        .is_some_and(|s| s.efficiency_mode == Some(true))
-                                }) {
-                                    "process_list.status_efficiency_mode"
-                                } else {
-                                    "process_list.status_active"
-                                };
-                            key.to_string()
-                        }
-                    };
+                    let value = self.cell_value(entry, col);
                     let cell = if col == Sort::Status {
                         status_cell(&value)
                     } else {
@@ -969,24 +1185,49 @@ impl ProcessList {
                             .wrapping(iced::widget::text::Wrapping::None)
                             .into()
                     };
-                    cells = cells.push(container(cell).width(column_width(col)).clip(true));
+                    cells = cells.push(container(cell).width(widths[col as usize]).clip(true));
                 }
+                let focused = self
+                    .focused
+                    .as_ref()
+                    .is_some_and(|(key, nested, selection)| {
+                        *key == entry.key
+                            && *nested == entry.nested
+                            && selection.processes.first().is_some_and(|selected| {
+                                selected.id == p.id && selected.creation_time == p.creation_time
+                            })
+                    });
                 visible_rows.push((
                     (p.id, p.creation_time, entry.nested),
                     mouse_area(
-                        container(column![
-                            container(cells)
-                                .padding([
-                                    design::space::MEDIUM as u16,
-                                    design::space::SMALL as u16
+                        button(
+                            mouse_area(
+                                container(column![
+                                    container(cells)
+                                        .padding([0, design::space::SMALL as u16])
+                                        .center_y(ROW_HEIGHT - 1.0),
+                                    iced::widget::rule::horizontal(1)
                                 ])
-                                .height(ROW_HEIGHT - 1.0),
-                            iced::widget::rule::horizontal(1)
-                        ])
-                        .height(height)
-                        .clip(true),
+                                .height(height)
+                                .clip(true),
+                            )
+                            .on_press(Message::Focus(row_index, self.rows_revision))
+                            .on_double_click(Message::ExpandFocused),
+                        )
+                        .padding(0)
+                        .width(Fill)
+                        .on_press(Message::Focus(row_index, self.rows_revision))
+                        .style(move |theme, status| {
+                            let mut style = super::widgets::quiet(theme, status);
+                            if focused && matches!(status, iced::widget::button::Status::Active) {
+                                style.background =
+                                    Some(theme.palette().primary.scale_alpha(0.15).into());
+                            }
+                            style.border.radius = 0.0.into();
+                            style.text_color = theme.palette().text;
+                            style
+                        }),
                     )
-                    .on_press(Message::Select(row_index, self.rows_revision))
                     .on_right_press(Message::Context(row_index, self.rows_revision))
                     .into(),
                 ));
@@ -1018,6 +1259,57 @@ impl ProcessList {
             )
         }));
         let body = mouse_area(body).on_move(Message::PointerMoved);
+        if let Some((stopping, tree)) = &self.stopping {
+            let dialog = container(
+                column![
+                    super::widgets::heading(
+                        t!("process_list.kill_confirm_title", name = &stopping.name).to_string(),
+                        design::typography::DIALOG_TITLE,
+                    ),
+                    text(
+                        t!(
+                            if *tree {
+                                "process_list.stop_tree_confirm"
+                            } else {
+                                "process_list.stop_confirm"
+                            },
+                            name = &stopping.name
+                        )
+                        .to_string()
+                    ),
+                    row![
+                        Space::new().width(Fill),
+                        button(text(t!("process_list.kill").to_string()))
+                            .style(iced::widget::button::danger)
+                            .on_press(Message::ConfirmStop),
+                        button(text(t!("common.cancel").to_string()))
+                            .style(iced::widget::button::secondary)
+                            .on_press(Message::CancelStop),
+                    ]
+                    .spacing(design::space::SMALL),
+                ]
+                .spacing(design::space::LARGE),
+            )
+            .padding(design::space::LARGE as u16)
+            .width(460)
+            .style(super::widgets::surface);
+            return iced::widget::stack![
+                body,
+                iced::widget::opaque(container(Space::new().width(Fill).height(Fill)).style(
+                    |_| {
+                        container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                            ..Default::default()
+                        }
+                    }
+                )),
+                container(iced::widget::opaque(dialog))
+                    .padding(design::space::MEDIUM as u16)
+                    .center_x(Fill)
+                    .center_y(Fill),
+            ]
+            .into();
+        }
         if let Some(selection) = &self.selected {
             let eligible = selection.processes.iter().any(|p| !inaccessible(p));
             let tree = selection.has_tree(&self.processes);
@@ -1048,27 +1340,37 @@ impl ProcessList {
                 return iced::widget::stack![
                     body,
                     responsive(move |_size| {
-                        let mut menu = column![mouse_area(
-                            button(
-                                row![
-                                    text(t!("nav.priority_control").to_string()),
-                                    super::navigation::glyph("icons/chevron-right.svg")
-                                ]
-                                .spacing(design::space::SMALL)
-                                .align_y(iced::Center)
-                            )
-                            .style(super::widgets::quiet)
-                            .on_press(Message::PriorityMenu(PriorityMenu::Types))
+                        let efficiency = button(
+                            row![
+                                text(t!("process_list.efficiency_mode").to_string()).width(Fill),
+                                super::navigation::glyph("icons/chevron-right.svg"),
+                            ]
+                            .spacing(design::space::SMALL)
+                            .align_y(iced::Center),
                         )
-                        .on_enter(Message::PriorityMenu(PriorityMenu::Types))]
+                        .width(Fill)
+                        .style(super::widgets::quiet)
+                        .on_press(Message::MenuBranch(MenuBranch::Efficiency));
+                        let mut menu = column![
+                            mouse_area(efficiency)
+                                .on_enter(Message::MenuBranch(MenuBranch::Efficiency)),
+                            mouse_area(
+                                button(
+                                    row![
+                                        text(t!("nav.priority_control").to_string()).width(Fill),
+                                        super::navigation::glyph("icons/chevron-right.svg")
+                                    ]
+                                    .spacing(design::space::SMALL)
+                                    .align_y(iced::Center)
+                                )
+                                .width(Fill)
+                                .style(super::widgets::quiet)
+                                .on_press(Message::MenuBranch(MenuBranch::Types))
+                            )
+                            .on_enter(Message::MenuBranch(MenuBranch::Types))
+                        ]
                         .spacing(design::space::TINY);
                         for (key, message, enabled) in [
-                            ("process_list.open_rule_details", Message::OpenDetails, true),
-                            (
-                                "process_list.open_process_location",
-                                Message::Menu(Box::new(Message::OpenLocation)),
-                                !selection.path.is_empty(),
-                            ),
                             (
                                 suspension_label,
                                 Message::Menu(Box::new(Message::Action(Action::Suspend(
@@ -1077,10 +1379,25 @@ impl ProcessList {
                                 suspendable,
                             ),
                             (stop_label, Message::Stop(tree), eligible),
+                            ("process_list.open_rule_details", Message::OpenDetails, true),
+                            (
+                                "process_list.open_process_location",
+                                Message::Menu(Box::new(Message::OpenLocation)),
+                                !selection.path.is_empty(),
+                            ),
+                            (
+                                "process_list.properties",
+                                Message::Menu(Box::new(Message::Properties)),
+                                !selection.path.is_empty(),
+                            ),
                         ] {
+                            if key == "process_list.open_rule_details" {
+                                menu = menu.push(iced::widget::rule::horizontal(1));
+                            }
                             menu = menu.push(
                                 mouse_area(
                                     button(text(t!(key).to_string()))
+                                        .width(Fill)
                                         .style(move |theme, status| {
                                             let mut style = super::widgets::quiet(theme, status);
                                             if status != iced::widget::button::Status::Disabled {
@@ -1110,45 +1427,55 @@ impl ProcessList {
                                         })
                                         .on_press_maybe(enabled.then_some(message)),
                                 )
-                                .on_enter(Message::PriorityMenu(PriorityMenu::Closed)),
+                                .on_enter(Message::MenuBranch(MenuBranch::Closed)),
                             );
                         }
-                        menu = menu.push(
-                            button(text(format!(
-                                "{}: {}",
-                                t!("process_list.efficiency_mode"),
-                                t!(match self.efficiency {
-                                    Some(true) => "common.on",
-                                    Some(false) => "common.off",
-                                    None => "common.unknown",
-                                })
-                            )))
-                            .style(move |theme, status| {
-                                let mut style = super::widgets::quiet(theme, status);
-                                if self.efficiency == Some(true)
-                                    && status != iced::widget::button::Status::Disabled
-                                {
-                                    style.text_color = theme.palette().success;
-                                }
-                                style
-                            })
-                            .on_press_maybe(
-                                self.efficiency.filter(|_| eligible).map(|enabled| {
-                                    Message::Menu(Box::new(Message::Action(Action::Efficiency(
-                                        !enabled,
-                                    ))))
-                                }),
-                            ),
-                        );
                         let panel = |content: Element<'a, Message>| {
                             iced::widget::opaque(
                                 container(content)
                                     .padding(design::space::SMALL as u16)
-                                    .style(super::widgets::surface),
+                                    .style(|theme| {
+                                        let mut style = super::widgets::surface(theme);
+                                        style.border.color =
+                                            theme.extended_palette().background.strong.color;
+                                        style.border.width = 1.0;
+                                        if theme.extended_palette().is_dark {
+                                            style.background = Some(
+                                                theme
+                                                    .extended_palette()
+                                                    .background
+                                                    .neutral
+                                                    .color
+                                                    .into(),
+                                            );
+                                        }
+                                        style
+                                    }),
                             )
                         };
-                        let mut cascade = row![panel(menu.into())].spacing(0);
-                        if self.priority_menu != PriorityMenu::Closed {
+                        let mut cascade =
+                            row![panel(menu.width(210).into())].spacing(design::space::TINY);
+                        if self.menu_branch == MenuBranch::Efficiency {
+                            let mut options = column![].spacing(design::space::TINY);
+                            for (enabled, key) in
+                                [(true, "common.enabled"), (false, "common.disabled")]
+                            {
+                                options = options.push(
+                                    button(text(t!(key).to_string()))
+                                        .width(Fill)
+                                        .style(if self.efficiency == Some(enabled) {
+                                            super::widgets::selected
+                                        } else {
+                                            super::widgets::quiet
+                                        })
+                                        .on_press_maybe(eligible.then_some(Message::Menu(
+                                            Box::new(Message::Action(Action::Efficiency(enabled))),
+                                        ))),
+                                );
+                            }
+                            cascade = cascade.push(panel(options.width(100).into()));
+                        }
+                        if matches!(self.menu_branch, MenuBranch::Types | MenuBranch::Levels(_)) {
                             let mut types = column![].spacing(design::space::TINY);
                             for kind in [
                                 Kind::Process,
@@ -1163,28 +1490,30 @@ impl ProcessList {
                                     mouse_area(
                                         button(
                                             row![
-                                                text(t!(&key).to_string()),
-                                                super::navigation::glyph("icons/chevron-right.svg")
+                                                text(t!(&key).to_string())
+                                                    .wrapping(iced::widget::text::Wrapping::None)
+                                                    .width(Fill),
+                                                container(super::navigation::glyph(
+                                                    "icons/chevron-right.svg"
+                                                ))
+                                                .width(design::ICON_SIZE)
                                             ]
                                             .spacing(design::space::SMALL)
                                             .align_y(iced::Center),
                                         )
-                                        .style(
-                                            if self.priority_menu == PriorityMenu::Levels(kind) {
-                                                super::widgets::selected
-                                            } else {
-                                                super::widgets::quiet
-                                            },
-                                        )
-                                        .on_press(
-                                            Message::PriorityMenu(PriorityMenu::Levels(kind)),
-                                        ),
+                                        .width(Fill)
+                                        .style(if self.menu_branch == MenuBranch::Levels(kind) {
+                                            super::widgets::selected
+                                        } else {
+                                            super::widgets::quiet
+                                        })
+                                        .on_press(Message::MenuBranch(MenuBranch::Levels(kind))),
                                     )
-                                    .on_enter(Message::PriorityMenu(PriorityMenu::Levels(kind))),
+                                    .on_enter(Message::MenuBranch(MenuBranch::Levels(kind))),
                                 );
                             }
-                            cascade = cascade.push(panel(types.into()));
-                            if let PriorityMenu::Levels(kind) = self.priority_menu {
+                            cascade = cascade.push(panel(types.width(210).into()));
+                            if let MenuBranch::Levels(kind) = self.menu_branch {
                                 let mut levels = column![].spacing(design::space::TINY);
                                 for value in kind
                                     .choices(settings.advanced.expose_all_priority_values)
@@ -1193,6 +1522,7 @@ impl ProcessList {
                                 {
                                     levels = levels.push(
                                         button(text(value.to_string()))
+                                            .width(Fill)
                                             .style(if self.current.contains(&value) {
                                                 super::widgets::selected
                                             } else {
@@ -1203,8 +1533,12 @@ impl ProcessList {
                                             ))),
                                     );
                                 }
-                                cascade = cascade
-                                    .push(panel(scrollable(levels).height(iced::Shrink).into()));
+                                cascade = cascade.push(panel(
+                                    scrollable(levels)
+                                        .width(if kind == Kind::DynamicBoost { 100 } else { 160 })
+                                        .height(iced::Shrink)
+                                        .into(),
+                                ));
                             }
                         }
                         iced::widget::float(cascade)
@@ -1286,7 +1620,8 @@ impl ProcessList {
                     pane = pane
                         .push(super::widgets::settings_card(super::widgets::setting_row(
                             "process_list.efficiency_mode",
-                            efficiency,
+                            mouse_area(efficiency)
+                                .on_enter(Message::MenuBranch(MenuBranch::Closed)),
                         )))
                         .push(super::widgets::heading(
                             t!("nav.priority_control").to_string(),
@@ -1313,29 +1648,6 @@ impl ProcessList {
                             .align_y(iced::Center),
                         );
                 }
-            }
-            if let Some((stopping, tree)) = &self.stopping {
-                pane = column![]
-                    .push(text(
-                        t!(
-                            if *tree {
-                                "process_list.stop_tree_confirm"
-                            } else {
-                                "process_list.stop_confirm"
-                            },
-                            name = &stopping.name
-                        )
-                        .to_string(),
-                    ))
-                    .push(
-                        row![
-                            button(text(t!("process_list.stop_process").to_string()))
-                                .on_press(Message::ConfirmStop),
-                            button(text(t!("common.cancel").to_string()))
-                                .on_press(Message::CancelStop)
-                        ]
-                        .spacing(design::space::SMALL),
-                    );
             }
             return iced::widget::stack![
                 body,
@@ -1376,7 +1688,8 @@ impl ProcessList {
             ]
             .into();
         }
-        body.into()
+        // Keep the list subtree stable when opening or closing either overlay.
+        iced::widget::stack![body].into()
     }
 }
 fn popup_position(position: iced::Point, bounds: iced::Size, popup: iced::Size) -> iced::Point {
@@ -1430,15 +1743,13 @@ fn snapshot_target(p: &ProcessInfo) -> Result<ProcessActionTarget, ProcessAction
     })
 }
 fn status_cell(key: &str) -> Element<'static, Message> {
-    let unavailable = matches!(
-        key,
-        "process_list.status_protected_system_process" | "process_list.status_access_denied"
-    );
     let (icon, dark, light) = match key {
         "process_list.status_suspended" => ("icons/pause.svg", 0xe8b45b, 0x886000),
         "process_list.status_efficiency_mode" => ("icons/leaf.svg", 0xa4db61, 0x477d23),
         "process_list.status_active" => ("icons/play.svg", 0x70b7ff, 0x0067b0),
-        _ => ("icons/ban.svg", 0x9aa0a6, 0x666666),
+        "process_list.status_system_protected" => ("icons/shield.svg", 0x9aa0a6, 0x666666),
+        "process_list.status_access_denied" => ("icons/ban.svg", 0x9aa0a6, 0x666666),
+        _ => ("icons/circle-help.svg", 0x9aa0a6, 0x666666),
     };
     let color = move |theme: &iced::Theme| {
         let rgb = if theme.extended_palette().is_dark {
@@ -1448,11 +1759,7 @@ fn status_cell(key: &str) -> Element<'static, Message> {
         };
         iced::Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
     };
-    let label = if unavailable {
-        t!("process_list.status_unavailable")
-    } else {
-        t!(key)
-    };
+    let label = t!(key);
     let cell = row![
         iced::widget::svg(crate::ui::assets::iced_icon(icon).expect("Status icon is bundled"))
             .width(design::ICON_SIZE)
@@ -1468,16 +1775,7 @@ fn status_cell(key: &str) -> Element<'static, Message> {
     ]
     .spacing(design::space::CONTROL)
     .align_y(iced::Center);
-    if unavailable {
-        iced::widget::tooltip(
-            cell,
-            text(t!(key).to_string()),
-            iced::widget::tooltip::Position::Top,
-        )
-        .into()
-    } else {
-        cell.into()
-    }
+    cell.into()
 }
 
 fn protected(p: &ProcessInfo) -> bool {
@@ -1492,6 +1790,33 @@ fn inaccessible(p: &ProcessInfo) -> bool {
         || p.is_critical.is_none()
         || protected(p)
 }
+fn format_memory_usage(bytes: u64, total: Option<u64>, percentage: bool) -> String {
+    if percentage {
+        match total.filter(|total| *total > 0) {
+            Some(total) => format!("{:.1}%", bytes as f64 / total as f64 * 100.0),
+            None => t!("common.unknown").to_string(),
+        }
+    } else {
+        format!("{:.1} MiB", bytes as f64 / 1048576.0)
+    }
+}
+
+fn measure_column_text(content: &str) -> f32 {
+    use iced::advanced::text::{Paragraph, Renderer, Text};
+    <iced::Renderer as Renderer>::Paragraph::with_text(Text {
+        content,
+        bounds: iced::Size::INFINITE,
+        size: (design::typography::BODY as f32).into(),
+        line_height: Default::default(),
+        font: design::typography::FONT,
+        align_x: Default::default(),
+        align_y: iced::alignment::Vertical::Center,
+        shaping: iced::advanced::text::Shaping::Advanced,
+        wrapping: iced::advanced::text::Wrapping::None,
+    })
+    .min_width()
+}
+
 fn column_width(c: Sort) -> f32 {
     match c {
         Sort::Name => 230.0,
@@ -1551,6 +1876,180 @@ mod tests {
         assert!(selection.has_tree(&[parent.clone(), child.clone()]));
         selection.processes.push(child);
         assert!(selection.has_tree(&[parent]));
+    }
+
+    #[test]
+    fn selection_overlays_preserve_the_list_widget_tree() {
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        let mut list = ProcessList::default();
+        let view = list.view(&settings, &status, &[]);
+        let mut tree = iced::advanced::widget::Tree::new(&view);
+        let root_tag = tree.tag;
+        let list_tag = tree.children[0].tag;
+        drop(view);
+        list.selected = Some(Selection {
+            processes: vec![process(10, 100, "app.exe")],
+            path: String::new(),
+            name: "app.exe".into(),
+        });
+        for context in [Some(iced::Point::ORIGIN), None] {
+            list.context = context;
+            let view = list.view(&settings, &status, &[]);
+            tree.diff(&view);
+            assert_eq!(tree.tag, root_tag);
+            assert_eq!(tree.children[0].tag, list_tag);
+        }
+        list.selected = None;
+        tree.diff(list.view(&settings, &status, &[]));
+        assert_eq!(tree.tag, root_tag);
+        assert_eq!(tree.children[0].tag, list_tag);
+    }
+
+    #[test]
+    fn status_sort_matches_group_labels_and_updates_when_suspension_changes() {
+        let mut list = ProcessList {
+            processes: vec![
+                process(10, 1, "a.exe"),
+                process(11, 1, "a.exe"),
+                process(12, 1, "b.exe"),
+                process(13, 1, "c.exe"),
+                process(14, 1, "d.exe"),
+                process(15, 1, "e.exe"),
+            ],
+            sort: Sort::Status,
+            hide_inaccessible: false,
+            ..ProcessList::default()
+        };
+        list.processes[4].can_set_information = false;
+        list.processes[5].is_critical = Some(true);
+        list.processes.push(process(16, 1, "f.exe"));
+        list.processes[6].image_path = None;
+        assert_eq!(
+            list.status_key(&Entry {
+                key: "pid:16".into(),
+                indices: vec![6],
+                nested: false,
+            }),
+            "process_list.status_unavailable"
+        );
+        list.processes.pop();
+        list.samples.insert(
+            12,
+            ProcessResourceSample {
+                cpu: crate::cpu::ProcessCpuSample {
+                    cpu_time_100ns: 0,
+                    sampled_at: std::time::Instant::now(),
+                },
+                creation_time: 1,
+                working_set_bytes: None,
+                efficiency_mode: Some(true),
+            },
+        );
+        list.sync_suspended_processes(&[11]);
+        let ids = |list: &ProcessList| {
+            list.rows
+                .iter()
+                .map(|row| list.processes[row.indices[0]].id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&list), vec![14, 13, 12, 10, 15]);
+        list.descending = true;
+        list.rebuild();
+        assert_eq!(ids(&list), vec![15, 10, 12, 13, 14]);
+        list.sync_suspended_processes(&[]);
+        assert_eq!(ids(&list), vec![15, 12, 10, 13, 14]);
+    }
+
+    #[test]
+    fn focusing_a_row_preserves_exact_targets_without_opening_details() {
+        let mut list = ProcessList {
+            processes: vec![process(10, 100, "app.exe"), process(11, 200, "app.exe")],
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        let revision = list.rows_revision;
+        list.focus_row(0, revision);
+        assert!(list.selected.is_none());
+        let (_, nested, selection) = list.focused.as_ref().unwrap();
+        assert!(!nested);
+        assert_eq!(selection.processes.len(), 2);
+        assert_eq!(selection.processes[0].creation_time, Some(100));
+        list.processes[0].creation_time = Some(300);
+        list.rebuild();
+        list.focus_row(0, revision);
+        assert_eq!(
+            list.focused.as_ref().unwrap().2.processes[0].creation_time,
+            Some(100)
+        );
+        list.clear();
+        assert!(list.focused.is_none());
+    }
+
+    #[test]
+    fn column_resizing_clamps_width_and_preserves_it_across_refreshes() {
+        let mut list = ProcessList {
+            resizing: Some((Sort::Status, 180.0, None)),
+            ..ProcessList::default()
+        };
+        list.resize_column(300.0);
+        list.resize_column(350.0);
+        assert_eq!(list.column_width(Sort::Status), 230.0);
+        list.resize_column(-500.0);
+        assert_eq!(list.column_width(Sort::Status), 140.0);
+        list.resize_column(320.0);
+        assert_eq!(list.column_width(Sort::Status), 200.0);
+        list.resizing = None;
+        list.resize_column(400.0);
+        list.rebuild();
+        assert_eq!(list.column_width(Sort::Status), 200.0);
+        assert_eq!(list.column_width(Sort::Memory), column_width(Sort::Memory));
+    }
+
+    #[test]
+    fn last_visible_column_fills_spare_width_and_auto_size_fits_names() {
+        let mut list = ProcessList::default();
+        let widths = list.layout_widths(1200.0);
+        assert_eq!(widths.iter().sum::<f32>() + 5.0 * 8.0 + 32.0, 1200.0);
+        list.columns[Sort::User as usize] = false;
+        let widths = list.layout_widths(1200.0);
+        assert_eq!(widths[..5].iter().sum::<f32>() + 4.0 * 8.0 + 32.0, 1200.0);
+        assert_eq!(widths[Sort::Name as usize], column_width(Sort::Name));
+        let mut app = process(10, 100, "app.exe");
+        app.name = "a_very_long_executable_name_that_must_fit_in_the_column.exe".into();
+        list.processes.push(app);
+        list.rebuild();
+        let fitted = list.auto_width(Sort::Name);
+        assert!(fitted >= measure_column_text(&list.processes[0].name) + 56.0);
+    }
+
+    #[test]
+    fn initial_population_fits_columns_and_refresh_preserves_manual_widths() {
+        let mut list = ProcessList::default();
+        list.rebuild();
+        assert_eq!(list.column_widths, [None; 6]);
+        list.processes.push(process(10, 100, "app.exe"));
+        list.rebuild();
+        for col in Sort::ALL {
+            assert_eq!(list.column_width(col), list.auto_width(col));
+        }
+        list.column_widths[Sort::Name as usize] = Some(400.0);
+        list.rebuild();
+        assert_eq!(list.column_width(Sort::Name), 400.0);
+    }
+
+    #[test]
+    fn memory_metrics_show_value_or_share_of_physical_memory() {
+        assert_eq!(
+            format_memory_usage(1048576, Some(4194304), false),
+            "1.0 MiB"
+        );
+        assert_eq!(format_memory_usage(1048576, Some(4194304), true), "25.0%");
+        assert_eq!(format_memory_usage(0, Some(4194304), true), "0.0%");
+        assert_eq!(
+            format_memory_usage(1, Some(0), true),
+            t!("common.unknown").to_string()
+        );
     }
 
     #[test]
@@ -1636,6 +2135,7 @@ mod tests {
     #[test]
     fn expanded_groups_keep_virtual_rows_bounded_and_collapse_immediately() {
         let mut list = ProcessList {
+            hide_inaccessible: false,
             processes: (10..1010)
                 .map(|id| process(id, u64::from(id), r"C:\A\app.exe"))
                 .collect(),

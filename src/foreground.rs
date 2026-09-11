@@ -8,9 +8,9 @@ pub use active_window::{
 pub use process_list::{
     contains_process_name, executable_path_key, for_each_process_id, is_foreground_process,
     list_process_candidates, list_processes, list_processes_with_paths, open_process_location,
-    process_count_label, process_executable_path, process_failure_key, process_is_critical,
-    process_matches_executable_path, process_session_id, process_tree_action_targets,
-    same_executable_path, same_process_name, sample_process_resources,
+    open_process_properties, process_count_label, process_executable_path, process_failure_key,
+    process_is_critical, process_matches_executable_path, process_session_id,
+    process_tree_action_targets, same_executable_path, same_process_name, sample_process_resources,
     should_ignore_foreground_process, unique_app_names, ProcessActionTarget,
     ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
     ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,

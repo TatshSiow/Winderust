@@ -718,3 +718,19 @@ state.
   is balanced after the UISettings object is released. Explicit theme/custom accent
   preferences override system values. API failure is reported and uses the app default palette;
   no undocumented appearance registry fallback is retained.
+
+## Process icon extraction
+
+- `src/backend/process_icon.rs` requests a 64px icon with the documented
+  [SHDefExtractIconW](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shdefextracticonw)
+  large-icon size (LOWORD), renders to a matching bitmap, and releases the HICON
+  with DestroyIcon. The shared source supports 20px UI icons at common display scales
+  without first reducing them to the system small-icon size. No undocumented contract.
+
+## Executable properties
+
+- `src/foreground/process_list.rs::open_process_properties` validates the executable path
+  and invokes [SHObjectProperties](https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shobjectproperties)
+  with SHOP_FILEPATH and the default page on a background STA thread. Successful
+  CoInitializeEx calls are balanced with CoUninitialize; failure returns an error.
+  No undocumented contract is used.

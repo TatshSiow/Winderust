@@ -116,10 +116,40 @@ pub(crate) fn run(
         ..Default::default()
     })
     .theme(|app: &WinderustApp| app.appearance.clone())
-    .subscription(|_: &WinderustApp| {
+    .subscription(|app: &WinderustApp| {
         Subscription::batch([
             iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
             iced::window::close_requests().map(|_| Message::WindowClose),
+            if app.page == Page::ProcessList && app.processes.resizing_columns() {
+                iced::event::listen_raw(|event, _, _| match event {
+                    iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(
+                        Message::Processes(process_list::Message::ResizeMoved(position.x)),
+                    ),
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left,
+                    ))
+                    | iced::Event::Window(iced::window::Event::Unfocused) => {
+                        Some(Message::Processes(process_list::Message::ResizeEnd))
+                    }
+                    _ => None,
+                })
+            } else {
+                Subscription::none()
+            },
+            if app.page == Page::ProcessList {
+                iced::event::listen_with(|event, status, _| match event {
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
+                        modifiers,
+                        ..
+                    }) if status == iced::event::Status::Ignored && modifiers.is_empty() => {
+                        Some(Message::Processes(process_list::Message::DeleteFocused))
+                    }
+                    _ => None,
+                })
+            } else {
+                Subscription::none()
+            },
         ])
     })
     .run()
@@ -707,6 +737,9 @@ impl WinderustApp {
                     {
                         self.appearance = settings_pages::theme(&self.settings.general);
                     }
+                    self.processes.sync_suspended_processes(
+                        &status.feature_status.app_suspension.suspended_process_ids,
+                    );
                     self.status = status;
                 }
                 if let Some(patch) = self
@@ -1016,7 +1049,8 @@ impl WinderustApp {
             ]
             .into()
         } else {
-            content.into()
+            // Preserve the app subtree when the context-menu dismissal layer changes.
+            iced::widget::stack![content].into()
         }
     }
 

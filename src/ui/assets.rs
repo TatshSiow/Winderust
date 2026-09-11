@@ -10,6 +10,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/chart-column.svg", icondata_lu::LuChartColumn),
     ("icons/circle-pause.svg", icondata_lu::LuCirclePause),
     ("icons/chevron-down.svg", icondata_lu::LuChevronDown),
+    ("icons/chevron-up.svg", icondata_lu::LuChevronUp),
     ("icons/chevron-right.svg", icondata_lu::LuChevronRight),
     (
         "icons/circle-fading-arrow-up.svg",
@@ -44,6 +45,8 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/play.svg", icondata_lu::LuPlay),
     ("icons/pause.svg", icondata_lu::LuPause),
     ("icons/ban.svg", icondata_lu::LuBan),
+    ("icons/shield.svg", icondata_lu::LuShield),
+    ("icons/circle-help.svg", icondata_lu::LuCircleHelp),
     ("icons/plus.svg", icondata_lu::LuPlus),
     ("icons/refresh-cw.svg", icondata_lu::LuRefreshCw),
     ("icons/rocket.svg", icondata_lu::LuRocket),
