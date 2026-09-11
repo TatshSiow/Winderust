@@ -27,6 +27,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/house.svg", icondata_lu::LuHouse),
     ("icons/info.svg", icondata_lu::LuInfo),
     ("icons/leaf.svg", icondata_lu::LuLeaf),
+    ("icons/minus.svg", icondata_lu::LuMinus),
     ("icons/life-buoy.svg", icondata_lu::LuLifeBuoy),
     ("icons/list.svg", icondata_lu::LuList),
     ("icons/memory-stick.svg", icondata_lu::LuMemoryStick),

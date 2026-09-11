@@ -139,19 +139,43 @@ pub(super) fn process_rules_table<'a, M: 'a>(
     rules_table(header, rows)
 }
 
+pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
+    iced::widget::container(iced::widget::Space::new())
+        .width(3)
+        .height(18)
+        .style(move |theme: &iced::Theme| iced::widget::container::Style {
+            background: active.then(|| theme.palette().primary.into()),
+            border: iced::border::rounded(2),
+            ..Default::default()
+        })
+        .into()
+}
+
 pub(super) fn panel_tab<'a, M: Clone + 'a>(
     label: String,
     selected: bool,
     message: M,
 ) -> iced::widget::Button<'a, M> {
     button(
-        iced::widget::container(heading(label, design::typography::BODY))
-            .center_x(Fill)
-            .center_y(Fill),
+        iced::widget::column![
+            iced::widget::container(heading(label, design::typography::BODY))
+                .center_x(Fill)
+                .center_y(Fill),
+            iced::widget::container(iced::widget::Space::new())
+                .width(Fill)
+                .height(3)
+                .style(move |theme: &iced::Theme| iced::widget::container::Style {
+                    background: selected.then(|| theme.palette().primary.into()),
+                    border: iced::border::rounded(2),
+                    ..Default::default()
+                }),
+        ]
+        .height(Fill),
     )
     .width(Fill)
     .height(design::NAVIGATION_ROW_HEIGHT)
-    .style(if selected { selected_control } else { quiet })
+    .padding([0, design::space::SMALL as u16])
+    .style(if selected { secondary_button } else { quiet })
     .on_press(message)
 }
 
@@ -481,8 +505,16 @@ pub(super) fn setting_row<'a, M: 'a>(
     key: &str,
     action: impl Into<Element<'a, M>>,
 ) -> iced::widget::Row<'a, M> {
+    setting_row_with_unit(key, "", action)
+}
+
+pub(super) fn setting_row_with_unit<'a, M: 'a>(
+    key: &str,
+    unit: &str,
+    action: impl Into<Element<'a, M>>,
+) -> iced::widget::Row<'a, M> {
     row![
-        iced::widget::container(setting_title(key)).width(Fill),
+        iced::widget::container(setting_title_with_unit(key, unit)).width(Fill),
         action.into()
     ]
     .spacing(design::space::MEDIUM)
@@ -491,13 +523,17 @@ pub(super) fn setting_row<'a, M: 'a>(
 }
 
 pub(super) fn setting_title<'a, M: 'a>(key: &str) -> Element<'a, M> {
+    setting_title_with_unit(key, "")
+}
+
+fn setting_title_with_unit<'a, M: 'a>(key: &str, unit: &str) -> Element<'a, M> {
     let help_key = key.strip_suffix(".enable").map_or_else(
         || format!("{key}_help"),
         |prefix| format!("{prefix}.intro_1"),
     );
     let help = rust_i18n::t!(&help_key).to_string();
     let mut label = row![heading(
-        rust_i18n::t!(key).to_string(),
+        label_with_unit(&rust_i18n::t!(key), unit),
         design::typography::BODY
     )]
     .spacing(design::space::SMALL)
@@ -568,12 +604,13 @@ pub(super) fn stepper<'a, M: Clone + 'a>(
     value: &str,
     range: std::ops::RangeInclusive<u64>,
     step: u64,
-    unit: &str,
     action: Option<impl Fn(String) -> M + Clone + 'a>,
 ) -> Element<'a, M> {
     let (lower, upper) = step_values(value, range, step);
     row![
-        button(text("-"))
+        button(super::navigation::glyph("icons/minus.svg"))
+            .padding(7)
+            .height(32)
             .style(control_button)
             .width(design::STEPPER_BUTTON_WIDTH)
             .on_press_maybe(lower.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))),
@@ -581,8 +618,9 @@ pub(super) fn stepper<'a, M: Clone + 'a>(
             .align_x(iced::alignment::Horizontal::Center)
             .on_input_maybe(action.clone())
             .width(design::NUMERIC_WIDTH),
-        text(unit.to_owned()).width(design::STEPPER_UNIT_WIDTH),
-        button(text("+"))
+        button(super::navigation::glyph("icons/plus.svg"))
+            .padding(7)
+            .height(32)
             .style(control_button)
             .width(design::STEPPER_BUTTON_WIDTH)
             .on_press_maybe(upper.zip(action.as_ref()).map(|(v, f)| f(v.to_string())))
@@ -867,5 +905,13 @@ mod tests {
                 quiet(&theme, Status::Active).background
             );
         }
+    }
+}
+
+pub(super) fn label_with_unit(label: &str, unit: &str) -> String {
+    if unit.is_empty() {
+        label.to_owned()
+    } else {
+        format!("{label} ({unit})")
     }
 }

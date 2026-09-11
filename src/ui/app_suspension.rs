@@ -359,13 +359,13 @@ fn delay_row(field: Delay, label: &str, value: u64, enabled: bool) -> Element<'s
         Delay::Background | Delay::ThawInterval => 86400,
         _ => 3600,
     };
-    super::widgets::setting_row(
+    super::widgets::setting_row_with_unit(
         label,
+        "s",
         super::widgets::stepper(
             &value.to_string(),
             1..=max,
             1,
-            "s",
             enabled.then_some(move |v| Message::Delay(field, v)),
         ),
     )

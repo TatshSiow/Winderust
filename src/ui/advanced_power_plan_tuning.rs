@@ -357,14 +357,13 @@ impl Editor {
                 for (field, label, value) in fields(values) {
                     controls = controls.push(
                         row![
-                            text(t!(label).to_string()).width(Fill),
+                            text(super::widgets::label_with_unit(&t!(label), "%")).width(Fill),
                             slider(0..=100, value, move |v| Message::Value(source, field, v))
                                 .width(180),
                             super::widgets::stepper(
                                 &value.to_string(),
                                 0..=100,
                                 1,
-                                "%",
                                 Some(move |v| Message::ValueText(source, field, v))
                             )
                         ]

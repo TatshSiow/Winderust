@@ -319,8 +319,8 @@ impl Editor {
             let key=stringify!($($field).+);
             let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
             let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if $max==100 {"%"} else {""};
-            row![setting_label($key).width(Fill),
-                super::widgets::stepper(&value, $min..=$max, 1, unit,
+            row![setting_label_with_unit($key, unit).width(Fill),
+                super::widgets::stepper(&value, $min..=$max, 1,
                     editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
             ].spacing(design::space::SMALL).height(46).align_y(iced::Center)
         }};}
@@ -383,19 +383,12 @@ impl Editor {
             .filter(|tab| self.draft.is_none() || *tab != TuningTab::CustomRules)
         {
             tabs = tabs.push(
-                button(
-                    iced::widget::container(text(t!(next.key()).to_string()))
-                        .center_x(Fill)
-                        .center_y(Fill),
+                super::widgets::panel_tab(
+                    t!(next.key()).to_string(),
+                    next == tab,
+                    Message::TuningTab(next),
                 )
-                .style(if next == tab {
-                    super::widgets::selected_control
-                } else {
-                    super::widgets::quiet
-                })
-                .width(Fill)
-                .height(36)
-                .on_press(Message::TuningTab(next)),
+                .height(36),
             );
         }
         body = body.push(
@@ -1762,6 +1755,10 @@ fn priority_option_row<'a>(key: &str, cells: [Element<'a, Message>; 3]) -> Eleme
 }
 
 fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
+    setting_label_with_unit(key, "")
+}
+
+fn setting_label_with_unit(key: &str, unit: &str) -> iced::widget::Row<'static, Message> {
     let help_key = match key {
         "adaptive_engine.enable" => "adaptive_engine.intro_1".to_string(),
         "processor_power.core_parking_min" => "adaptive_engine.core_parking_min_help".to_string(),
@@ -1771,7 +1768,7 @@ fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
         _ => format!("{key}_help"),
     };
     let mut label = row![super::widgets::heading(
-        t!(key).to_string(),
+        super::widgets::label_with_unit(&t!(key), unit),
         design::typography::BODY
     )]
     .spacing(design::space::SMALL)

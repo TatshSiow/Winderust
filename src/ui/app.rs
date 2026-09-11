@@ -1058,7 +1058,7 @@ impl WinderustApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let content = iced::widget::responsive(|size| self.view_at_width(size.width));
+        let content = self.view_content();
         if self.page == Page::ProcessList && self.processes.context_open() {
             iced::widget::stack![
                 content,
@@ -1076,7 +1076,7 @@ impl WinderustApp {
         }
     }
 
-    fn view_at_width(&self, width: f32) -> Element<'_, Message> {
+    fn view_content(&self) -> Element<'_, Message> {
         if self.preferences.show_update && !self.closing {
             return container(
                 column![
@@ -1172,14 +1172,7 @@ impl WinderustApp {
                 continue;
             }
             let mut label = row![
-                container(iced::widget::Space::new())
-                    .width(3)
-                    .height(20)
-                    .style(move |theme: &Theme| container::Style {
-                        background: (self.page == section.landing_page)
-                            .then_some(theme.palette().primary.into()),
-                        ..Default::default()
-                    }),
+                widgets::active_indicator(self.page == section.landing_page),
                 navigation::icon(section.landing_page, self.page == section.landing_page)
             ]
             .spacing(design::space::SMALL)
@@ -1244,6 +1237,7 @@ impl WinderustApp {
                 children.push(
                     button(
                         row![
+                            widgets::active_indicator(self.page == *page),
                             navigation::icon(*page, self.page == *page),
                             navigation::label(*page)
                         ]
@@ -1317,6 +1311,7 @@ impl WinderustApp {
             header = header
                 .push(
                     button(widgets::heading(Page::Home.label(), BREADCRUMB_TEXT_SIZE))
+                        .padding(0)
                         .style(widgets::quiet)
                         .on_press(Message::Page(Page::Home)),
                 )
@@ -1327,15 +1322,21 @@ impl WinderustApp {
             header = header
                 .push(
                     button(widgets::heading(parent.label(), BREADCRUMB_TEXT_SIZE))
+                        .padding(0)
                         .style(widgets::quiet)
                         .on_press(Message::Page(parent)),
                 )
                 .push(navigation::glyph("icons/chevron-right.svg"));
         }
         header = header.push(widgets::heading(self.page.label(), BREADCRUMB_TEXT_SIZE));
-        if width >= design::SIDE_PANEL_BREAKPOINT {
-            header = header.push(iced::widget::Space::new().width(Fill));
-        }
+        let breadcrumb = scrollable(header)
+            .direction(iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::default(),
+            ))
+            .width(Fill);
+        let mut header = row![breadcrumb]
+            .spacing(design::space::COMPACT)
+            .align_y(iced::Center);
         if self.page.supports_power_source_profiles() {
             let plugged_in = crate::backend::power_source::is_plugged_in();
             let mut tabs = row![].spacing(design::space::TIGHT);
@@ -1354,17 +1355,16 @@ impl WinderustApp {
                 let mut label = row![text(t!(key).to_string()).size(design::typography::BODY)]
                     .spacing(design::space::TIGHT)
                     .align_y(iced::Center);
-                if live {
-                    label = label.push(
-                        container(iced::widget::Space::new().width(6).height(6)).style(
-                            |theme: &Theme| container::Style {
-                                background: Some(theme.palette().success.into()),
-                                border: iced::border::rounded(3),
-                                ..Default::default()
-                            },
-                        ),
-                    );
-                }
+                label = label.push(
+                    container(iced::widget::Space::new())
+                        .width(6)
+                        .height(6)
+                        .style(move |theme: &Theme| container::Style {
+                            background: live.then(|| theme.palette().primary.into()),
+                            border: iced::border::rounded(3),
+                            ..Default::default()
+                        }),
+                );
                 tabs = tabs.push(
                     button(container(label).center_y(Fill))
                         .height(32)
@@ -1402,11 +1402,10 @@ impl WinderustApp {
                 .on_press(Message::ToggleDescription),
             );
         }
-        let header: Element<'_, Message> = if width >= design::SIDE_PANEL_BREAKPOINT {
-            header.into()
-        } else {
-            header.wrap().into()
-        };
+        let header: Element<'_, Message> = header
+            .width(Fill)
+            .height(32 + 2 * design::space::TIGHT)
+            .into();
         let mut body = column![container(header)
             .padding([design::space::SMALL as u16, 0])
             .width(Fill)]
@@ -1461,7 +1460,16 @@ impl WinderustApp {
             status_rail::view(self.page, &self.settings, &self.status, &self.power_plans)
                 .map(|panel| panel.map(Message::Status))
         };
-        body = body.push(content);
+        body = body.push(
+            container(
+                container(content)
+                    .max_width(design::CONTENT_WIDTH)
+                    .width(Fill)
+                    .height(Fill),
+            )
+            .center_x(Fill)
+            .height(Fill),
+        );
         if let Some(error) = &self.status.worker_error {
             body = body.push(text(error));
         }
@@ -1480,15 +1488,10 @@ impl WinderustApp {
             } else {
                 design::SIDEBAR_COLLAPSED_WIDTH
             }),
-            container(
-                container(body)
-                    .max_width(design::CONTENT_WIDTH)
-                    .width(Fill)
-                    .height(Fill)
-            )
-            .padding([design::space::SECTION as u16, design::space::WIDE as u16])
-            .center_x(Fill)
-            .height(Fill)
+            container(body)
+                .padding([design::space::SECTION as u16, design::space::WIDE as u16])
+                .center_x(Fill)
+                .height(Fill)
         ]
         .spacing(design::space::SMALL)
         .height(Fill);

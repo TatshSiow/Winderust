@@ -112,8 +112,9 @@ pub(super) fn view<'a>(
                   step: u64,
                   unit: &str,
                   action: fn(String) -> Message| {
-        super::widgets::settings_card(super::widgets::setting_row(
+        super::widgets::settings_card(super::widgets::setting_row_with_unit(
             key,
+            unit,
             row![
                 slider(
                     *range.start() as u32..=*range.end() as u32,
@@ -122,7 +123,7 @@ pub(super) fn view<'a>(
                 )
                 .step(step as u32)
                 .width(180),
-                super::widgets::stepper(&value, range, step, unit, Some(action))
+                super::widgets::stepper(&value, range, step, Some(action))
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center),

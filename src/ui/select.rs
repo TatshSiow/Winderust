@@ -67,14 +67,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
         let mut items = column![].spacing(2);
         for (index, option) in self.options.iter().enumerate() {
             let selected = self.selected == Some(index);
-            let marker = container(iced::widget::Space::new())
-                .width(3)
-                .height(18)
-                .style(move |theme: &Theme| iced::widget::container::Style {
-                    background: selected.then(|| theme.palette().primary.into()),
-                    border: iced::border::rounded(2),
-                    ..Default::default()
-                });
+            let marker = widgets::active_indicator(selected);
             items = items.push(
                 widgets::button(
                     row![

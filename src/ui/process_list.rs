@@ -1588,15 +1588,11 @@ impl ProcessList {
                 (ProcessTab::Immediate, "process_list.immediate_actions"),
                 (ProcessTab::Rulesets, "process_list.rulesets"),
             ] {
-                tabs = tabs.push(
-                    button(text(t!(key).to_string()))
-                        .style(if self.process_tab == tab {
-                            super::widgets::selected_control
-                        } else {
-                            super::widgets::quiet
-                        })
-                        .on_press(Message::ProcessTab(tab)),
-                );
+                tabs = tabs.push(super::widgets::panel_tab(
+                    t!(key).to_string(),
+                    self.process_tab == tab,
+                    Message::ProcessTab(tab),
+                ));
             }
             let mut pane = column![].spacing(super::widgets::CARD_GAP);
             match self.process_tab {

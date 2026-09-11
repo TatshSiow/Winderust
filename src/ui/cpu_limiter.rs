@@ -166,21 +166,25 @@ impl CpuLimiter {
         enabled: bool,
     ) -> Element<'_, Message> {
         if !enabled {
-            return text(format!("{value}%")).into();
+            return text(value.to_string()).into();
         }
         let change = move |value| match index {
             Some(index) => Message::RuleLimit(index, tier, value),
             None => Message::Default(tier, value),
         };
         row![
-            button(text("- ")).on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
+            button(super::navigation::glyph("icons/minus.svg"))
+                .padding(7)
+                .height(32)
+                .on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
             slider(1..=100, value, change),
-            button(text("+"))
+            button(super::navigation::glyph("icons/plus.svg"))
+                .padding(7)
+                .height(32)
                 .on_press_maybe((value < 100).then(|| change(value.saturating_add(1)))),
             text_input("1-100", &self.number(path, tier, value))
                 .on_input(move |raw| Message::Number(index, tier, raw))
-                .width(65),
-            text("%")
+                .width(65)
         ]
         .spacing(design::space::SMALL)
         .into()
@@ -207,7 +211,7 @@ impl CpuLimiter {
         ]) {
             defaults = defaults.push(
                 column![
-                    text(tier.label()),
+                    text(super::widgets::label_with_unit(&tier.label(), "%")),
                     self.limit_control(None, tier, "", value, settings.enabled)
                 ]
                 .spacing(design::space::CONTROL),
@@ -294,7 +298,7 @@ impl CpuLimiter {
             ));
         }
         body = body.push(super::widgets::process_rules_table(
-            Tier::ALL.map(|tier| tier.label()),
+            Tier::ALL.map(|tier| super::widgets::label_with_unit(&tier.label(), "%")),
             cards,
             t!("cpu_limiter.no_rules").to_string(),
         ));
