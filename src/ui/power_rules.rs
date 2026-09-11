@@ -5,7 +5,7 @@ use crate::{
     config::{ByCpuLoadRule, ByTimeRule, CpuUsageComparison, Settings, WeekdaySetting},
     power::PowerPlan,
 };
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, container, row, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
@@ -298,9 +298,6 @@ impl Editor {
                 .collect::<Vec<_>>(),
         };
 
-        if rules.is_empty() {
-            body = body.push(text(t!("common.no_custom_rules").to_string()));
-        }
         let mut cards = Vec::new();
         for (id, index, rule) in rules {
             let (rule_enabled, name, guid) = match &rule {
@@ -308,20 +305,34 @@ impl Editor {
                 RuleRef::Cpu(r) => (r.enabled, &r.name, &r.power_plan_guid),
             };
             let header = row![
-                checkbox(rule_enabled)
-                    .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v))),
-                text_input(&t!("common.rule_name"), name)
-                    .on_input_maybe(enabled.then_some(move |v| Message::Name(index, v))),
-                button(text(if self.collapsed.contains(&id) {
-                    "+"
-                } else {
-                    "-"
-                }))
-                .on_press(Message::Toggle(index)),
-                button(text(t!("common.remove").to_string()))
-                    .on_press_maybe(enabled.then_some(Message::Remove(index)))
+                container(
+                    checkbox(rule_enabled).on_toggle_maybe(
+                        enabled.then_some(move |v| Message::RuleEnabled(index, v))
+                    )
+                )
+                .width(48),
+                row![
+                    widgets::button(super::navigation::glyph(if self.collapsed.contains(&id) {
+                        "icons/chevron-right.svg"
+                    } else {
+                        "icons/chevron-down.svg"
+                    }))
+                    .style(widgets::quiet)
+                    .on_press(Message::Toggle(index)),
+                    text_input(&t!("common.rule_name"), name)
+                        .on_input_maybe(enabled.then_some(move |v| Message::Name(index, v))),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center)
+                .width(Fill),
+                container(widgets::plan(guid.clone(), plans, move |v| Message::Plan(
+                    index, v
+                )))
+                .width(240),
+                widgets::rule_delete_button(enabled.then_some(Message::Remove(index))),
             ]
-            .spacing(design::space::SMALL);
+            .spacing(design::space::MEDIUM)
+            .align_y(iced::Center);
             let mut controls = column![].spacing(design::space::COMPACT);
             match rule {
                 RuleRef::Time(r) => {
@@ -425,18 +436,35 @@ impl Editor {
                         ));
                 }
             }
-            controls = controls.push(widgets::plan(guid.clone(), plans, move |v| {
-                Message::Plan(index, v)
-            }));
-            let card = column![
+            let content = column![
                 header,
-                super::widgets::optional_content(controls, !self.collapsed.contains(&id))
+                widgets::optional_content(controls, !self.collapsed.contains(&id))
             ]
-            .spacing(design::space::COMPACT);
-
-            cards.push((id, super::widgets::settings_card(card).into()));
+            .spacing(design::space::MEDIUM);
+            cards.push((
+                id,
+                column![
+                    container(content).padding(widgets::CARD_PADDING as u16),
+                    iced::widget::rule::horizontal(1)
+                ]
+                .into(),
+            ));
         }
-        body = body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
+        let header = row![
+            text(t!("common.active").to_string()).width(48),
+            text(t!("common.rule_name").to_string()).width(Fill),
+            text(t!("by_running_app.power_plan").to_string()).width(240),
+            text(t!("common.actions").to_string()).width(40),
+        ]
+        .spacing(design::space::MEDIUM);
+        let rows = if cards.is_empty() {
+            container(text(t!("common.no_custom_rules").to_string()).style(text::secondary))
+                .padding(design::space::LARGE as u16)
+                .into()
+        } else {
+            iced::widget::keyed_column(cards).into()
+        };
+        body = body.push(widgets::rules_table(header, rows));
         scrollable(body).height(Fill).into()
     }
     fn input(&self, id: u64, field: Field, current: String) -> String {

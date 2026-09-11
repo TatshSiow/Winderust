@@ -59,16 +59,55 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
     for control in controls {
         cells = cells.push(container(control).width(iced::Length::FillPortion(2)));
     }
-    cells = cells.push(
-        button(super::navigation::glyph("icons/trash-2.svg"))
-            .width(40)
-            .style(iced::widget::button::danger)
-            .on_press_maybe(remove),
-    );
+    cells = cells.push(rule_delete_button(remove));
     column![
         container(cells).padding(CARD_PADDING as u16),
         iced::widget::rule::horizontal(1)
     ]
+    .into()
+}
+
+pub(super) fn rule_delete_button<'a, M: Clone + 'a>(remove: Option<M>) -> Element<'a, M> {
+    use iced::widget::container;
+    let removable = remove.is_some();
+    let delete = button(
+        iced::widget::svg(
+            super::assets::iced_icon("icons/trash-2.svg").expect("Trash icon is bundled"),
+        )
+        .width(design::ICON_SIZE)
+        .height(design::ICON_SIZE)
+        .style(move |theme: &iced::Theme, _| iced::widget::svg::Style {
+            color: Some(if removable {
+                theme.palette().danger
+            } else {
+                muted_color(theme)
+            }),
+        }),
+    )
+    .padding(7)
+    .width(32)
+    .height(32)
+    .style(|theme, status| {
+        let mut style = quiet(theme, status);
+        style.background = match status {
+            iced::widget::button::Status::Hovered => {
+                Some(theme.palette().danger.scale_alpha(0.12).into())
+            }
+            iced::widget::button::Status::Pressed => {
+                Some(theme.palette().danger.scale_alpha(0.20).into())
+            }
+            _ => None,
+        };
+        style
+    })
+    .on_press_maybe(remove);
+
+    container(iced::widget::tooltip(
+        delete,
+        text(rust_i18n::t!("common.remove").to_string()),
+        iced::widget::tooltip::Position::Top,
+    ))
+    .center_x(40)
     .into()
 }
 

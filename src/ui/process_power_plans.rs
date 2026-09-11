@@ -1,7 +1,7 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{self, checkbox, pick_list};
 use crate::{config::Settings, power::PowerPlan, ui::process_rules::*};
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -18,7 +18,6 @@ pub(super) enum Message {
     Browse,
     Add,
     RuleEnabled(usize, bool),
-    Name(usize, String),
     Plan(usize, Option<String>),
     Remove(usize),
 }
@@ -68,11 +67,6 @@ impl Editor {
                     Message::RuleEnabled(index, value) => {
                         if let Some(rule) = settings.rules.get_mut(index) {
                             rule.enabled = value;
-                        }
-                    }
-                    Message::Name(index, value) => {
-                        if let Some(rule) = settings.rules.get_mut(index) {
-                            rule.name = value;
                         }
                     }
                     Message::Plan(index, value) => {
@@ -153,38 +147,33 @@ impl Editor {
                         pick_list(choices, Some(selected), move |choice| {
                             Message::Plan(index, choice.0)
                         })
+                        .width(Fill)
                         .into()
                     } else {
                         text(selected.1).into()
                     };
-                    let card = column![
-                        row![
-                            checkbox(rule.enabled).on_toggle_maybe(
-                                settings
-                                    .enabled
-                                    .then_some(move |value| Message::RuleEnabled(index, value))
-                            ),
-                            text_input(&t!("process_list.app_name"), &rule.name).on_input_maybe(
-                                settings
-                                    .enabled
-                                    .then_some(move |value| Message::Name(index, value))
-                            ),
-                            button(text(t!("common.remove").to_string()))
-                                .on_press_maybe(settings.enabled.then_some(Message::Remove(index)))
-                        ]
-                        .spacing(design::space::SMALL),
-                        text(&rule.executable_path),
-                        selector,
-                    ]
-                    .spacing(design::space::SMALL);
-
                     cards.push((
-                        super::widgets::stable_key(&rule.executable_path),
-                        super::widgets::settings_card(card).into(),
+                        widgets::stable_key(&rule.executable_path),
+                        widgets::process_rule_row(
+                            &rule.executable_path,
+                            candidates,
+                            checkbox(rule.enabled)
+                                .on_toggle_maybe(
+                                    settings
+                                        .enabled
+                                        .then_some(move |value| Message::RuleEnabled(index, value)),
+                                )
+                                .into(),
+                            vec![selector],
+                            settings.enabled.then_some(Message::Remove(index)),
+                        ),
                     ));
                 }
-                rules_body = rules_body
-                    .push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
+                rules_body = rules_body.push(widgets::process_rules_table(
+                    [t!("by_running_app.power_plan").to_string()],
+                    cards,
+                    t!("common.no_custom_rules").to_string(),
+                ));
                 body = body
                     .push(text(t!("common.rules").to_string()).size(design::typography::SECTION))
                     .push(rules_body);
