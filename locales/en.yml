@@ -986,6 +986,8 @@ processor_affinity_hard:
   warning: "Hard affinity can reduce performance or responsiveness. On multi-group systems it applies only to the process primary group."
 
 cpu_allocation:
+  custom_rules: "Custom Rules"
+  selected_logical_cpus: "Selected logical CPUs"
   e_cores_no_smt: "E-cores no SMT"
   focus: "Focus"
   p_core: "P-core"

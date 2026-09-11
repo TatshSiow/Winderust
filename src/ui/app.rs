@@ -1596,6 +1596,14 @@ impl WinderustApp {
             layout.into()
         };
         let modal = match self.page {
+            Page::CpuSetsSoft => self
+                .soft_allocation
+                .modal(&self.settings)
+                .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m))),
+            Page::ProcessorAffinityHard => self
+                .hard_allocation
+                .modal(&self.settings)
+                .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m))),
             Page::CpuLimiter => self
                 .cpu_limiter
                 .modal(&self.candidates, &self.status.feature_status.cpu_limiter)

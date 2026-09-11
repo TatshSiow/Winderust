@@ -989,6 +989,8 @@ processor_affinity_hard:
   warning: "硬式親和性可能降低效能或回應速度。在多處理器群組系統上，它只會套用至程序的主要群組。"
 
 cpu_allocation:
+  custom_rules: "自訂規則"
+  selected_logical_cpus: "已選取的邏輯 CPU"
   e_cores_no_smt: "E 核心（無 SMT）"
   focus: "焦點"
   p_core: "P 核心"
