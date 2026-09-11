@@ -1,9 +1,9 @@
 use super::design;
-use super::widgets::{button, checkbox, text_input};
+use super::widgets::{checkbox, text_input};
 use crate::config::TimerResolutionSettings;
 use crate::timer_resolution::TimerResolutionSnapshot;
 use crate::ui::process_rules::{can_add_timer_resolution_process, new_timer_resolution_rule};
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]
@@ -43,7 +43,11 @@ impl Editor {
                     r.enabled = v;
                 }
             }
-            Message::Resolution(i, v) => self.editing = Some((i, v)),
+            Message::Resolution(i, v) => {
+                self.editing = Some((i, v.clone()));
+                self.update(s, status, Message::Commit(i));
+                self.editing = Some((i, v));
+            }
             Message::Commit(i) => {
                 if let Some((index, value)) = &self.editing {
                     if *index == i {
@@ -82,7 +86,8 @@ impl Editor {
                 "timer_resolution.enable",
                 super::widgets::switch(s.enabled, Some(Message::Enabled))
             )),
-            text(t!("timer_resolution.warning").to_string()),
+            text(t!("timer_resolution.warning").to_string()).style(text::secondary),
+            super::widgets::setting_title("common.rules"),
             super::app_picker::view(
                 &self.path,
                 candidates,
@@ -102,20 +107,16 @@ impl Editor {
                 .as_ref()
                 .filter(|(index, _)| *index == i)
                 .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| format!("{}", f64::from(r.desired_100ns) / 10_000.0));
-            let controls = column![
-                row![
-                    text_input(&t!("timer_resolution.requested"), &value)
-                        .on_input(move |v| Message::Resolution(i, v))
-                        .on_submit(Message::Commit(i))
-                        .width(100),
-                    text("ms")
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-                button(text(t!("settings.apply").to_string())).on_press(Message::Commit(i)),
-            ]
-            .spacing(design::space::SMALL);
+                .unwrap_or_else(|| {
+                    crate::timer_resolution::format_resolution_ms(r.desired_100ns)
+                        .trim_end_matches(" ms")
+                        .to_owned()
+                });
+            let controls = text_input("", &value)
+                .align_x(iced::alignment::Horizontal::Center)
+                .on_input_maybe(s.enabled.then_some(move |v| Message::Resolution(i, v)))
+                .on_submit(Message::Commit(i))
+                .width(design::STANDALONE_NUMERIC_WIDTH);
             cards.push((
                 super::widgets::stable_key(&r.executable_path),
                 super::widgets::process_rule_row(
@@ -130,7 +131,10 @@ impl Editor {
             ));
         }
         body = body.push(super::widgets::process_rules_table(
-            [t!("timer_resolution.requested").to_string()],
+            [super::widgets::label_with_unit(
+                &t!("timer_resolution.requested"),
+                "ms",
+            )],
             cards,
             t!("timer_resolution.no_rules").to_string(),
         ));
@@ -171,6 +175,23 @@ fn parse_resolution(value: &str, min: u32, max: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn valid_edits_update_the_draft_without_an_apply_button() {
+        let mut editor = Editor::default();
+        let mut settings = TimerResolutionSettings::default();
+        settings
+            .rules
+            .push(new_timer_resolution_rule(r"C:\Apps\test.exe", 10_000));
+        let status = TimerResolutionSnapshot::default();
+        editor.update(
+            &mut settings,
+            &status,
+            Message::Resolution(0, "2.00".into()),
+        );
+        assert_eq!(settings.rules[0].desired_100ns, 20_000);
+        editor.update(&mut settings, &status, Message::Resolution(0, "".into()));
+        assert_eq!(settings.rules[0].desired_100ns, 20_000);
+    }
     #[test]
     fn timer_input_is_bounded_and_rejects_nonfinite() {
         assert_eq!(parse_resolution("0.5 ms", 10_000, 160_000), Some(10_000));
