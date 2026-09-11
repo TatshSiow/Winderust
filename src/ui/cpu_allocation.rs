@@ -217,29 +217,35 @@ impl Editor {
         }
         let mut rules = Vec::new();
         for (i, r) in feature.rules.iter().enumerate() {
-            let mut rule = column![row![
-                checkbox(r.enabled)
-                    .label(r.executable_path.clone())
-                    .on_toggle(move |v| Message::RuleEnabled(i, v)),
-                button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
-            ]
-            .spacing(design::space::SMALL)]
-            .spacing(design::space::SMALL);
-            for tier in [Tier::Focus, Tier::Visible, Tier::Background] {
-                let mask = tier.mask(r);
-                rule = rule.push(text(tier.label())).push(mask_selector(
-                    mask,
-                    &processors,
-                    &s.cpu_allocation_presets,
-                    move |v| Message::Mask(i, tier, v),
-                ));
-            }
+            let controls = [Tier::Focus, Tier::Visible, Tier::Background]
+                .into_iter()
+                .map(|tier| {
+                    mask_selector(
+                        tier.mask(r),
+                        &processors,
+                        &s.cpu_allocation_presets,
+                        move |v| Message::Mask(i, tier, v),
+                    )
+                })
+                .collect();
             rules.push((
                 super::widgets::stable_key(&r.executable_path),
-                super::widgets::settings_card(rule).into(),
+                super::widgets::process_rule_row(
+                    &r.executable_path,
+                    candidates,
+                    checkbox(r.enabled)
+                        .on_toggle(move |v| Message::RuleEnabled(i, v))
+                        .into(),
+                    controls,
+                    Some(Message::Remove(i)),
+                ),
             ));
         }
-        body = body.push(iced::widget::keyed_column(rules).spacing(super::widgets::CARD_GAP));
+        body = body.push(super::widgets::process_rules_table(
+            [Tier::Focus, Tier::Visible, Tier::Background].map(|tier| tier.label()),
+            rules,
+            t!("common.no_custom_rules").to_string(),
+        ));
 
         scrollable(body).width(Fill).height(Fill).into()
     }

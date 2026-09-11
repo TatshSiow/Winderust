@@ -1,12 +1,12 @@
 use super::design;
 use super::priority_control::Tier;
-use super::widgets::{button, checkbox, pick_list};
+use super::widgets::{checkbox, pick_list};
 use crate::config::{
     BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
     ProcessRuleMode, Settings,
 };
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{column, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -178,25 +178,7 @@ impl Editor {
         ));
         let mut rule_cards = Vec::new();
         for (index, rule) in settings.custom_rules.iter().enumerate() {
-            let mut card = row![
-                checkbox(rule.enabled)
-                    .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
-                    .width(48),
-                container(super::app_picker::app_name(
-                    &rule.executable_path,
-                    candidates
-                ))
-                .width(iced::Length::FillPortion(2)),
-                container(
-                    text(rule.executable_path.clone())
-                        .style(text::secondary)
-                        .wrapping(text::Wrapping::None)
-                )
-                .clip(true)
-                .width(iced::Length::FillPortion(3)),
-            ]
-            .spacing(design::space::MEDIUM)
-            .align_y(iced::Center);
+            let mut controls = Vec::new();
             for (tier, mode) in Tier::ALL.into_iter().zip([
                 rule.focus_efficiency_mode,
                 rule.visible_window_efficiency_mode,
@@ -213,48 +195,26 @@ impl Editor {
                 } else {
                     text(Mode(mode).to_string()).into()
                 };
-                card = card.push(container(control).width(iced::Length::FillPortion(2)));
+                controls.push(control);
             }
-            card = card.push(
-                button(super::navigation::glyph("icons/trash-2.svg"))
-                    .width(40)
-                    .style(iced::widget::button::danger)
-                    .on_press_maybe(
-                        enabled.then_some(Message::Remove(rule.executable_path.clone())),
-                    ),
-            );
-
             rule_cards.push((
                 super::widgets::stable_key(&rule.executable_path),
-                column![
-                    container(card).padding(super::widgets::CARD_PADDING as u16),
-                    iced::widget::rule::horizontal(1)
-                ]
-                .into(),
+                super::widgets::process_rule_row(
+                    &rule.executable_path,
+                    candidates,
+                    checkbox(rule.enabled)
+                        .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
+                        .into(),
+                    controls,
+                    enabled.then_some(Message::Remove(rule.executable_path.clone())),
+                ),
             ));
         }
-        let header = row![
-            text(t!("common.active").to_string()).width(48),
-            text(t!("process_list.app_name").to_string()).width(iced::Length::FillPortion(2)),
-            text(t!("process_list.executable_path").to_string())
-                .width(iced::Length::FillPortion(3)),
-            text(Tier::Focus.label()).width(iced::Length::FillPortion(2)),
-            text(Tier::VisibleWindow.label()).width(iced::Length::FillPortion(2)),
-            text(Tier::Background.label()).width(iced::Length::FillPortion(2)),
-            text(t!("common.actions").to_string()).width(40),
-        ]
-        .spacing(design::space::MEDIUM);
-        let rows: Element<'_, Message> = if settings.custom_rules.is_empty() {
-            container(
-                text(t!("background_efficiency.no_custom_rules").to_string())
-                    .style(text::secondary),
-            )
-            .padding(design::space::LARGE as u16)
-            .into()
-        } else {
-            iced::widget::keyed_column(rule_cards).into()
-        };
-        body = body.push(super::widgets::rules_table(header, rows));
+        body = body.push(super::widgets::process_rules_table(
+            Tier::ALL.map(|tier| tier.label()),
+            rule_cards,
+            t!("background_efficiency.no_custom_rules").to_string(),
+        ));
         scrollable(body).height(Fill).into()
     }
 }

@@ -103,33 +103,37 @@ impl Editor {
                 .filter(|(index, _)| *index == i)
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| format!("{}", f64::from(r.desired_100ns) / 10_000.0));
+            let controls = column![
+                row![
+                    text_input(&t!("timer_resolution.requested"), &value)
+                        .on_input(move |v| Message::Resolution(i, v))
+                        .on_submit(Message::Commit(i))
+                        .width(100),
+                    text("ms")
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+                button(text(t!("settings.apply").to_string())).on_press(Message::Commit(i)),
+            ]
+            .spacing(design::space::SMALL);
             cards.push((
                 super::widgets::stable_key(&r.executable_path),
-                super::widgets::settings_card(
-                    row![
-                        checkbox(r.enabled)
-                            .label(r.executable_path.clone())
-                            .on_toggle_maybe(
-                                s.enabled.then_some(move |v| Message::RuleEnabled(i, v))
-                            ),
-                        text_input(&t!("timer_resolution.requested"), &value)
-                            .on_input(move |v| Message::Resolution(i, v))
-                            .on_submit(Message::Commit(i))
-                            .width(100),
-                        text("ms"),
-                        button(text(t!("settings.apply").to_string())).on_press(Message::Commit(i)),
-                        button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                )
-                .into(),
+                super::widgets::process_rule_row(
+                    &r.executable_path,
+                    candidates,
+                    checkbox(r.enabled)
+                        .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleEnabled(i, v)))
+                        .into(),
+                    vec![controls.into()],
+                    Some(Message::Remove(i)),
+                ),
             ));
         }
-        body = body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
-        if s.rules.is_empty() {
-            body = body.push(text(t!("timer_resolution.no_rules").to_string()));
-        }
+        body = body.push(super::widgets::process_rules_table(
+            [t!("timer_resolution.requested").to_string()],
+            cards,
+            t!("timer_resolution.no_rules").to_string(),
+        ));
 
         if let Some(value) = status.requested_100ns {
             body = body.push(text(format!(

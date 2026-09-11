@@ -33,6 +33,73 @@ pub(super) fn rules_table<'a, M: 'a>(
     .into()
 }
 
+pub(super) fn process_rule_row<'a, M: Clone + 'a>(
+    path: &str,
+    candidates: &[super::app_picker::Candidate],
+    active: Element<'a, M>,
+    controls: Vec<Element<'a, M>>,
+    remove: Option<M>,
+) -> Element<'a, M> {
+    use iced::widget::{column, container};
+    let mut cells = row![
+        container(active).width(48),
+        container(super::app_picker::app_name(path, candidates))
+            .width(iced::Length::FillPortion(2))
+            .clip(true),
+        container(
+            text(path.to_owned())
+                .style(text::secondary)
+                .wrapping(text::Wrapping::None)
+        )
+        .width(iced::Length::FillPortion(3))
+        .clip(true),
+    ]
+    .spacing(design::space::MEDIUM)
+    .align_y(iced::Center);
+    for control in controls {
+        cells = cells.push(container(control).width(iced::Length::FillPortion(2)));
+    }
+    cells = cells.push(
+        button(super::navigation::glyph("icons/trash-2.svg"))
+            .width(40)
+            .style(iced::widget::button::danger)
+            .on_press_maybe(remove),
+    );
+    column![
+        container(cells).padding(CARD_PADDING as u16),
+        iced::widget::rule::horizontal(1)
+    ]
+    .into()
+}
+
+pub(super) fn process_rules_table<'a, M: 'a>(
+    tiers: impl IntoIterator<Item = String>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    empty: String,
+) -> Element<'a, M> {
+    use iced::widget::container;
+    let mut header = row![
+        text(rust_i18n::t!("common.active").to_string()).width(48),
+        text(rust_i18n::t!("process_list.app_name").to_string())
+            .width(iced::Length::FillPortion(2)),
+        text(rust_i18n::t!("process_list.executable_path").to_string())
+            .width(iced::Length::FillPortion(3)),
+    ]
+    .spacing(design::space::MEDIUM);
+    for tier in tiers {
+        header = header.push(text(tier).width(iced::Length::FillPortion(2)));
+    }
+    header = header.push(text(rust_i18n::t!("common.actions").to_string()).width(40));
+    let rows = if rows.is_empty() {
+        container(text(empty).style(text::secondary))
+            .padding(design::space::LARGE as u16)
+            .into()
+    } else {
+        iced::widget::keyed_column(rows).into()
+    };
+    rules_table(header, rows)
+}
+
 pub(super) fn panel_tab<'a, M: Clone + 'a>(
     label: String,
     selected: bool,

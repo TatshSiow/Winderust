@@ -1583,66 +1583,31 @@ impl Editor {
                         .then_some(true)
                     },
                 ));
-            let mut rules = column![
-                row![
-                    text(t!("common.active").to_string()).width(48),
-                    text(t!("process_list.app_name").to_string()).width(Fill),
-                    text(t!("process_list.executable_path").to_string())
-                        .width(iced::Length::FillPortion(2)),
-                    text(t!("common.actions").to_string()).width(64),
-                ]
-                .spacing(design::space::SMALL)
-                .padding(super::widgets::CARD_PADDING as u16),
-                iced::widget::rule::horizontal(1)
-            ];
-            for (i, rule) in s.cpu_scheduler.custom_rules.iter().enumerate() {
-                rules = rules.push(
-                    row![
-                        checkbox(rule.enabled)
-                            .on_toggle(move |value| Message::ExclusionEnabled(i, value))
-                            .width(48),
-                        iced::widget::container(super::app_picker::app_name(
+            let rules = s
+                .cpu_scheduler
+                .custom_rules
+                .iter()
+                .enumerate()
+                .map(|(i, rule)| {
+                    (
+                        super::widgets::stable_key(&rule.executable_path),
+                        super::widgets::process_rule_row(
                             &rule.executable_path,
-                            candidates
-                        ))
-                        .width(Fill)
-                        .clip(true),
-                        text(rule.executable_path.clone())
-                            .style(text::secondary)
-                            .wrapping(iced::widget::text::Wrapping::None)
-                            .width(iced::Length::FillPortion(2)),
-                        iced::widget::container(iced::widget::tooltip(
-                            button(super::navigation::glyph("icons/trash-2.svg"))
-                                .style(iced::widget::button::danger)
-                                .on_press(Message::RemoveExclusion(i)),
-                            text(t!("common.remove").to_string()),
-                            iced::widget::tooltip::Position::Top
-                        ))
-                        .width(64)
-                        .center_x(64),
-                    ]
-                    .height(super::widgets::CARD_HEIGHT)
-                    .padding(super::widgets::CARD_PADDING as u16)
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                );
-            }
-            if s.cpu_scheduler.custom_rules.is_empty() {
-                rules = rules.push(
-                    iced::widget::container(
-                        text(t!("common.no_custom_rules").to_string()).style(text::secondary),
+                            candidates,
+                            checkbox(rule.enabled)
+                                .on_toggle(move |value| Message::ExclusionEnabled(i, value))
+                                .into(),
+                            vec![],
+                            Some(Message::RemoveExclusion(i)),
+                        ),
                     )
-                    .height(super::widgets::CARD_HEIGHT)
-                    .center_y(super::widgets::CARD_HEIGHT)
-                    .padding(super::widgets::CARD_PADDING as u16),
-                );
-            }
-            body = body.push(
-                iced::widget::container(rules)
-                    .width(Fill)
-                    .style(super::widgets::surface)
-                    .clip(true),
-            );
+                })
+                .collect();
+            body = body.push(super::widgets::process_rules_table(
+                [],
+                rules,
+                t!("common.no_custom_rules").to_string(),
+            ));
         }
 
         if let Some(error) = self.validation_error() {

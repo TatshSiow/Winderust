@@ -149,31 +149,34 @@ impl Editor {
             )
         ]
         .spacing(design::space::MEDIUM);
-        let mut cards = Vec::new();
-        for (i, r) in settings.exclusions.iter().enumerate() {
-            cards.push((
-                super::widgets::stable_key(&r.executable_path),
-                super::widgets::settings_card(
-                    row![
+        let cards = settings
+            .exclusions
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    super::widgets::stable_key(&r.executable_path),
+                    super::widgets::process_rule_row(
+                        &r.executable_path,
+                        candidates,
                         checkbox(r.enabled)
-                            .label(r.executable_path.clone())
                             .on_toggle_maybe(
                                 settings
                                     .enabled
-                                    .then_some(move |v| Message::RuleEnabled(i, v))
-                            ),
-                        button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
+                                    .then_some(move |v| Message::RuleEnabled(i, v)),
+                            )
+                            .into(),
+                        vec![],
+                        Some(Message::Remove(i)),
+                    ),
                 )
-                .into(),
-            ));
-        }
-        safety = safety.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
-        if settings.exclusions.is_empty() {
-            safety = safety.push(text(t!("memory_trim.no_exclusions").to_string()));
-        }
+            })
+            .collect();
+        safety = safety.push(super::widgets::process_rules_table(
+            [],
+            cards,
+            t!("memory_trim.no_exclusions").to_string(),
+        ));
 
         body = body.push(super::widgets::setting_group(
             "memory_trim.category_safety".to_string(),

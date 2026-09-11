@@ -5,7 +5,7 @@ use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
     can_add_app_suspension_process, new_app_suspension_rule, process_setting_matches,
 };
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]
@@ -253,21 +253,31 @@ impl Editor {
             let blocked = unavailable
                 .iter()
                 .any(|p| process_setting_matches(p, &r.executable_path));
-            let mut card = row![
-                checkbox(r.enabled)
-                    .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleEnabled(i, v)))
-                    .width(32),
-                text(indicator(status, &r.executable_path, blocked)).width(110),
-                text(r.executable_path.clone()).width(280),
+            let state = column![
+                text(indicator(status, &r.executable_path, blocked)),
+                button(text(
+                    t!(if frozen {
+                        "app_suspension.thaw"
+                    } else {
+                        "app_suspension.freeze"
+                    })
+                    .to_string()
+                ))
+                .on_press_maybe(
+                    (frozen || (status.enabled && r.enabled && !blocked))
+                        .then_some(Message::Toggle(i))
+                ),
+            ]
+            .spacing(design::space::SMALL);
+            let mut controls: Vec<Element<'_, Message>> = vec![
+                state.into(),
                 checkbox(r.audio_wake_enabled)
                     .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleAudio(i, v)))
-                    .width(40),
+                    .into(),
                 checkbox(r.network_wake_enabled)
                     .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleNetwork(i, v)))
-                    .width(40),
-            ]
-            .spacing(design::space::MEDIUM)
-            .align_y(iced::Center);
+                    .into(),
+            ];
             for (upload, bytes, unit, _label) in [
                 (
                     false,
@@ -283,8 +293,8 @@ impl Editor {
                 ),
             ] {
                 let value = unit.threshold_value_from_bytes(bytes).to_string();
-                card = card.push(
-                    row![
+                controls.push(
+                    column![
                         text_input("", &value)
                             .on_input_maybe(
                                 (s.enabled
@@ -300,59 +310,43 @@ impl Editor {
                             move |v| Message::Unit(i, upload, v.0)
                         )
                     ]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::SMALL)
+                    .into(),
                 );
             }
-            card = card
-                .push(
-                    button(text(
-                        t!(if frozen {
-                            "app_suspension.thaw"
-                        } else {
-                            "app_suspension.freeze"
-                        })
-                        .to_string(),
-                    ))
-                    .on_press_maybe(
-                        (frozen || (status.enabled && r.enabled && !blocked))
-                            .then_some(Message::Toggle(i)),
-                    ),
-                )
-                .push(
-                    button(text(t!("common.remove").to_string()))
-                        .style(super::widgets::quiet)
-                        .on_press(Message::Remove(i)),
-                );
             cards.push((
                 super::widgets::stable_key(&r.executable_path),
-                super::widgets::settings_card(card).into(),
+                super::widgets::process_rule_row(
+                    &r.executable_path,
+                    candidates,
+                    checkbox(r.enabled)
+                        .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleEnabled(i, v)))
+                        .into(),
+                    controls,
+                    Some(Message::Remove(i)),
+                ),
             ));
         }
         body = body.push(
             scrollable(
-                column![
-                    row![
-                        text(t!("common.active").to_string()).width(32),
-                        text(t!("common.status").to_string()).width(110),
-                        text(t!("process_list.executable_path").to_string()).width(280),
-                        text(t!("app_suspension.audio").to_string()).width(40),
-                        text(t!("app_suspension.network").to_string()).width(40),
-                        text(t!("app_suspension.download").to_string()).width(170),
-                        text(t!("app_suspension.upload").to_string()).width(170)
+                iced::widget::container(super::widgets::process_rules_table(
+                    [
+                        "common.status",
+                        "app_suspension.audio",
+                        "app_suspension.network",
+                        "app_suspension.download",
+                        "app_suspension.upload",
                     ]
-                    .spacing(design::space::MEDIUM),
-                    iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP)
-                ]
-                .spacing(design::space::SMALL)
+                    .map(|key| t!(key).to_string()),
+                    cards,
+                    t!("app_suspension.no_suspendable").to_string(),
+                ))
                 .width(1240),
             )
             .direction(iced::widget::scrollable::Direction::Horizontal(
                 iced::widget::scrollable::Scrollbar::new(),
             )),
         );
-        if s.suspendable_apps.is_empty() {
-            body = body.push(text(t!("app_suspension.no_suspendable").to_string()));
-        }
 
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));

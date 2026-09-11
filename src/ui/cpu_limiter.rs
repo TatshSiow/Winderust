@@ -238,19 +238,7 @@ impl CpuLimiter {
             ));
         let mut cards = Vec::new();
         for (index, rule) in settings.rules.iter().enumerate() {
-            let mut card = column![row![
-                checkbox(rule.enabled)
-                    .label(rule.executable_path.clone())
-                    .on_toggle_maybe(
-                        settings
-                            .enabled
-                            .then_some(move |value| Message::RuleEnabled(index, value))
-                    ),
-                button(text(t!("common.remove").to_string()))
-                    .on_press_maybe(settings.enabled.then_some(Message::Remove(index))),
-            ]
-            .spacing(design::space::SMALL)]
-            .spacing(design::space::SMALL);
+            let mut cells = Vec::new();
             for (tier, (mode, value)) in Tier::ALL.into_iter().zip([
                 (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
                 (
@@ -270,12 +258,12 @@ impl CpuLimiter {
                     pick_list(choices, Some(Mode(mode, mode_label(mode))), move |mode| {
                         Message::RuleMode(index, tier, mode.0)
                     })
+                    .width(Fill)
                     .into()
                 } else {
                     text(mode_label(mode)).into()
                 };
-                let mut controls =
-                    row![text(tier.label()).width(210), selector].spacing(design::space::SMALL);
+                let mut controls = column![selector].spacing(design::space::SMALL);
                 if mode == ProcessRuleMode::Enabled {
                     controls = controls.push(self.limit_control(
                         Some(index),
@@ -285,18 +273,31 @@ impl CpuLimiter {
                         settings.enabled,
                     ));
                 }
-                card = card.push(controls);
+                cells.push(controls.into());
             }
 
             cards.push((
                 super::widgets::stable_key(&rule.executable_path),
-                super::widgets::settings_card(card).into(),
+                super::widgets::process_rule_row(
+                    &rule.executable_path,
+                    candidates,
+                    checkbox(rule.enabled)
+                        .on_toggle_maybe(
+                            settings
+                                .enabled
+                                .then_some(move |v| Message::RuleEnabled(index, v)),
+                        )
+                        .into(),
+                    cells,
+                    settings.enabled.then_some(Message::Remove(index)),
+                ),
             ));
         }
-        body = body.push(iced::widget::keyed_column(cards).spacing(super::widgets::CARD_GAP));
-        if settings.rules.is_empty() {
-            body = body.push(text(t!("cpu_limiter.no_rules").to_string()));
-        }
+        body = body.push(super::widgets::process_rules_table(
+            Tier::ALL.map(|tier| tier.label()),
+            cards,
+            t!("cpu_limiter.no_rules").to_string(),
+        ));
         scrollable(body).height(Fill).into()
     }
 }

@@ -1,8 +1,8 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list};
+use super::widgets::{checkbox, pick_list};
 use crate::config::*;
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -600,18 +600,7 @@ impl Editor {
         ));
         let mut rule_cards = Vec::new();
         for (index, rule) in kind.rules(settings).iter().enumerate() {
-            let mut card = column![row![
-                checkbox(rule.enabled)
-                    .label(rule.executable_path.clone())
-                    .on_toggle_maybe(
-                        enabled.then_some(move |value| Message::RuleEnabled(index, value))
-                    ),
-                button(text(t!("common.remove").to_string())).on_press_maybe(
-                    enabled.then_some(Message::Remove(rule.executable_path.clone()))
-                )
-            ]
-            .spacing(design::space::SMALL)]
-            .spacing(design::space::SMALL);
+            let mut controls = Vec::new();
             for tier in Tier::ALL {
                 let control: Element<'_, Message> = if enabled {
                     pick_list(
@@ -619,24 +608,32 @@ impl Editor {
                         Some(kind.rule_value(rule, tier)),
                         move |value| Message::RuleValue(index, tier, value),
                     )
+                    .width(Fill)
                     .into()
                 } else {
                     text(kind.rule_value(rule, tier).to_string()).into()
                 };
-                card = card.push(
-                    row![text(tier.label()).width(180), control].spacing(design::space::SMALL),
-                );
+                controls.push(control);
             }
-
             rule_cards.push((
                 super::widgets::stable_key(&rule.executable_path),
-                super::widgets::settings_card(card).into(),
+                super::widgets::process_rule_row(
+                    &rule.executable_path,
+                    candidates,
+                    checkbox(rule.enabled)
+                        .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
+                        .into(),
+                    controls,
+                    enabled.then_some(Message::Remove(rule.executable_path.clone())),
+                ),
             ));
         }
-        body = body.push(iced::widget::keyed_column(rule_cards).spacing(super::widgets::CARD_GAP));
-        if kind.rules(settings).is_empty() {
-            body = body.push(text(localized(key, "no_exclusions")));
-        }
+        body = body.push(super::widgets::process_rules_table(
+            Tier::ALL.map(|tier| tier.label()),
+            rule_cards,
+            localized(key, "no_exclusions"),
+        ));
+
         scrollable(body).height(Fill).into()
     }
 }
