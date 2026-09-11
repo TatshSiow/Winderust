@@ -449,12 +449,19 @@ impl Editor {
                         t!("processor_power.duplicate_preset_name").to_string(),
                     ));
                 }
-                form = form.push(button(text(t!("common.save").to_string())).on_press_maybe(
-                    valid_name(presets, index, &p.name).then_some(Message::SavePreset),
-                ));
+                form = form.push(
+                    button(text(t!("common.save").to_string()))
+                        .style(crate::ui::widgets::primary_button)
+                        .on_press_maybe(
+                            valid_name(presets, index, &p.name).then_some(Message::SavePreset),
+                        ),
+                );
             }
-            form = form
-                .push(button(text(t!("common.cancel").to_string())).on_press(Message::ClosePreset));
+            form = form.push(
+                button(text(t!("common.cancel").to_string()))
+                    .style(crate::ui::widgets::tertiary_button)
+                    .on_press(Message::ClosePreset),
+            );
             body = body.push(form);
         }
         scrollable(body).height(Fill).width(Fill).into()

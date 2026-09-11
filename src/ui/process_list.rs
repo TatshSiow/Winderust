@@ -1280,10 +1280,10 @@ impl ProcessList {
                     row![
                         Space::new().width(Fill),
                         button(text(t!("process_list.kill").to_string()))
-                            .style(iced::widget::button::danger)
+                            .style(super::widgets::danger_button)
                             .on_press(Message::ConfirmStop),
                         button(text(t!("common.cancel").to_string()))
-                            .style(iced::widget::button::secondary)
+                            .style(crate::ui::widgets::tertiary_button)
                             .on_press(Message::CancelStop),
                     ]
                     .spacing(design::space::SMALL),
@@ -1641,7 +1641,7 @@ impl ProcessList {
                                     ),
                                 Space::new().width(Fill),
                                 button(text(t!(stop_label).to_string()))
-                                    .style(iced::widget::button::danger)
+                                    .style(super::widgets::danger_button)
                                     .on_press_maybe(eligible.then_some(Message::Stop(tree))),
                             ]
                             .spacing(design::space::SMALL)

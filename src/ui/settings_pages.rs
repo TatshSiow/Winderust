@@ -274,10 +274,8 @@ impl Editor {
                     ),
                     row![
                         button(text(t!("settings.export_settings").to_string()))
-                            .style(widgets::control_button)
                             .on_press(Message::Export),
                         button(text(t!("settings.import_settings").to_string()))
-                            .style(widgets::control_button)
                             .on_press(Message::Import),
                     ]
                     .spacing(design::space::SMALL)
@@ -354,12 +352,14 @@ impl Editor {
                             )
                             .on_input(Message::AccentHex)
                             .width(130),
-                            button(text(t!("common.save").to_string())).on_press_maybe(
-                                self.color
-                                    .as_deref()
-                                    .is_none_or(|v| parse_color(v).is_some())
-                                    .then_some(Message::SaveColor)
-                            )
+                            button(text(t!("common.save").to_string()))
+                                .style(crate::ui::widgets::primary_button)
+                                .on_press_maybe(
+                                    self.color
+                                        .as_deref()
+                                        .is_none_or(|v| parse_color(v).is_some())
+                                        .then_some(Message::SaveColor)
+                                )
                         ]
                         .spacing(design::space::SMALL),
                     );

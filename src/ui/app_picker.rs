@@ -75,7 +75,9 @@ pub(super) fn view<'a, M: Clone + 'static>(
             enabled,
             menu: None,
         }),
-        widgets::button(text(t!("common.add").to_string())).on_press_maybe(add),
+        widgets::button(text(t!("common.add").to_string()))
+            .style(crate::ui::widgets::primary_button)
+            .on_press_maybe(add),
     ]
     .spacing(design::space::SMALL)
     .align_y(iced::Center)

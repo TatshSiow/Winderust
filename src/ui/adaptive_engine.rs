@@ -1669,10 +1669,18 @@ impl Editor {
                     text_input(&t!("adaptive_engine.preset_name"), &self.name)
                         .on_input(Message::Name),
                 )
-                .push(button(text(t!("common.cancel").to_string())).on_press(Message::Cancel));
+                .push(
+                    button(text(t!("common.cancel").to_string()))
+                        .style(crate::ui::widgets::tertiary_button)
+                        .on_press(Message::Cancel),
+                );
             if !self.read_only {
                 rail = rail
-                    .push(button(text(t!("common.save").to_string())).on_press(Message::Save))
+                    .push(
+                        button(text(t!("common.save").to_string()))
+                            .style(crate::ui::widgets::primary_button)
+                            .on_press(Message::Save),
+                    )
                     .push(
                         button(text(t!("adaptive_engine.use_current_settings").to_string()))
                             .on_press(Message::UseCurrent),

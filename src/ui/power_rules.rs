@@ -261,6 +261,7 @@ impl Editor {
             text(t!("common.power_plan_priority").to_string()),
             text(t!("common.power_plan_pause_priority").to_string()),
             button(text(t!("common.create").to_string()))
+                .style(crate::ui::widgets::primary_button)
                 .on_press_maybe(enabled.then_some(Message::Add))
         ]
         .spacing(super::widgets::CARD_GAP);

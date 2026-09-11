@@ -1064,6 +1064,7 @@ impl WinderustApp {
                             .map(|url| Message::Preferences(settings_pages::Message::Open(url)))
                     ),
                     button(text(t!("common.cancel").to_string()))
+                        .style(crate::ui::widgets::tertiary_button)
                         .on_press(Message::Preferences(settings_pages::Message::DismissUpdate))
                 ]
                 .spacing(design::space::LARGE),
@@ -1078,10 +1079,15 @@ impl WinderustApp {
                     text(t!("unsaved.message").to_string()),
                     text(&self.message),
                     row![
-                        button(text(t!("common.save").to_string())).on_press(Message::Save),
+                        button(text(t!("common.save").to_string()))
+                            .style(crate::ui::widgets::primary_button)
+                            .on_press(Message::Save),
                         button(text(t!("common.discard").to_string()))
+                            .style(crate::ui::widgets::tertiary_button)
                             .on_press(Message::DiscardAndClose),
-                        button(text(t!("common.cancel").to_string())).on_press(Message::Stay),
+                        button(text(t!("common.cancel").to_string()))
+                            .style(crate::ui::widgets::tertiary_button)
+                            .on_press(Message::Stay),
                     ]
                     .spacing(design::space::SMALL),
                 ]
@@ -1508,9 +1514,11 @@ impl WinderustApp {
                             text(t!("unsaved.message").to_string()),
                             row![
                                 button(text(t!("common.discard").to_string()))
-                                    .style(widgets::quiet)
+                                    .style(crate::ui::widgets::tertiary_button)
                                     .on_press(Message::Cancel),
-                                button(text(t!("common.save").to_string())).on_press(Message::Save)
+                                button(text(t!("common.save").to_string()))
+                                    .style(crate::ui::widgets::primary_button)
+                                    .on_press(Message::Save)
                             ]
                             .spacing(design::space::SMALL)
                         ]

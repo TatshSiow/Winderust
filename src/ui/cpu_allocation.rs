@@ -286,8 +286,11 @@ impl Editor {
                 ))
                 .push(
                     row![
-                        button(text(t!("common.save").to_string())).on_press(Message::SavePreset),
+                        button(text(t!("common.save").to_string()))
+                            .style(crate::ui::widgets::primary_button)
+                            .on_press(Message::SavePreset),
                         button(text(t!("common.cancel").to_string()))
+                            .style(crate::ui::widgets::tertiary_button)
                             .on_press(Message::ClosePreset)
                     ]
                     .spacing(design::space::SMALL),

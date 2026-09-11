@@ -223,7 +223,50 @@ fn control_border(theme: &iced::Theme) -> iced::Color {
 pub(super) fn button<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::widget::Button<'a, M> {
     iced::widget::button(content)
         .padding(design::CONTROL_PADDING)
-        .style(control_button)
+        .style(secondary_button)
+}
+
+pub(super) fn primary_button(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let mut style = iced::widget::button::primary(theme, status);
+    style.border.radius = design::CONTROL_RADIUS.into();
+    style
+}
+
+pub(super) fn secondary_button(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    use iced::widget::button::Status;
+    let mut style = quiet(theme, status);
+    let alpha = match status {
+        Status::Active => 0.15,
+        Status::Hovered => 0.23,
+        Status::Pressed => 0.30,
+        Status::Disabled => 0.06,
+    };
+    style.background = Some(theme.palette().primary.scale_alpha(alpha).into());
+    style
+}
+
+pub(super) fn tertiary_button(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let mut style = iced::widget::button::secondary(theme, status);
+    style.border.radius = design::CONTROL_RADIUS.into();
+    style
+}
+
+pub(super) fn danger_button(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let mut style = iced::widget::button::danger(theme, status);
+    style.border.radius = design::CONTROL_RADIUS.into();
+    style
 }
 
 pub(super) fn sidebar_toggle<'a, M: 'a>(
@@ -685,6 +728,42 @@ pub(super) fn card(
 mod tests {
     use super::*;
     use iced::{widget::button::Status, Theme};
+
+    #[test]
+    fn button_hierarchy_tracks_accent_and_keeps_tertiary_neutral() {
+        for light in [false, true] {
+            let theme = |accent| {
+                let mut palette = design::palette(light);
+                palette.primary = accent;
+                Theme::custom_with_fn("buttons", palette, design::extended_palette)
+            };
+            let red = theme(iced::Color::from_rgb8(220, 70, 70));
+            let blue = theme(iced::Color::from_rgb8(40, 150, 220));
+            for status in [
+                Status::Active,
+                Status::Hovered,
+                Status::Pressed,
+                Status::Disabled,
+            ] {
+                assert_ne!(
+                    primary_button(&red, status).background,
+                    primary_button(&blue, status).background
+                );
+                assert_ne!(
+                    secondary_button(&red, status).background,
+                    secondary_button(&blue, status).background
+                );
+                assert_eq!(
+                    tertiary_button(&red, status).background,
+                    tertiary_button(&blue, status).background
+                );
+            }
+            assert_eq!(
+                primary_button(&red, Status::Active).text_color,
+                red.extended_palette().primary.base.text
+            );
+        }
+    }
 
     #[test]
     fn neutral_surfaces_and_adaptive_marks_in_both_themes() {
