@@ -1022,6 +1022,8 @@ cpu_allocation:
     off: "Off"
 
 action_log:
+  check_all: "Check All"
+  clear_all: "Clear All"
   intro_1: "Log shows recent process-control changes and why Winderust made them."
   intro_2: "Entries are kept in memory and reset when Winderust exits."
   clear: "Clear Log"
@@ -1034,10 +1036,6 @@ action_log:
   recent_entries: "Recent entries"
   empty: "No process-control actions recorded yet."
   no_filter_matches: "No Log entries match the selected filter."
-  previous: "Previous"
-  next: "Next"
-  pagination: "Showing %{start}-%{end} of %{total} - Page %{current} of %{pages}"
-  pagination_empty: "No entries to show"
   sequence: "#"
   feature: "Feature"
   action: "Action"

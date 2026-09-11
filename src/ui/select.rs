@@ -13,6 +13,12 @@ use std::rc::Rc;
 
 type Field<'a, T, M> = PickList<'a, T, Vec<T>, T, M>;
 
+#[derive(Default)]
+struct State {
+    keyboard: Option<usize>,
+    open: bool,
+}
+
 pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
     field: Field<'a, T, M>,
     options: Vec<T>,
@@ -120,10 +126,10 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         self.field.size()
     }
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Option<usize>>()
+        tree::Tag::of::<State>()
     }
     fn state(&self) -> tree::State {
-        tree::State::new(None::<usize>)
+        tree::State::new(State::default())
     }
     fn children(&self) -> Vec<Tree> {
         vec![
@@ -241,14 +247,16 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             )
             .is_none()
         {
-            *tree.state.downcast_mut::<Option<usize>>() = None;
+            *tree.state.downcast_mut::<State>() = State::default();
             self.menu = None;
             self.open = false;
             return None;
         }
-        let reveal = self.menu.is_none();
+        let state = tree.state.downcast_mut::<State>();
+        let reveal = !state.open;
+        state.open = true;
         self.open = true;
-        let keyboard = *tree.state.downcast_ref::<Option<usize>>();
+        let keyboard = tree.state.downcast_ref::<State>().keyboard;
         if self.menu.as_ref().is_none_or(|(old, _)| *old != keyboard) {
             self.menu = Some((keyboard, self.menu(keyboard)));
         }
@@ -260,7 +268,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             field_tree: &mut field_tree[0],
             tree: &mut menu_tree[0],
             content,
-            keyboard: tree.state.downcast_mut(),
+            keyboard: &mut tree.state.downcast_mut::<State>().keyboard,
             selected: self.selected,
             options: &self.options,
             choose: &*self.choose,
@@ -499,6 +507,21 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
 mod tests {
     use super::*;
     use iced::advanced::Overlay;
+
+    #[test]
+    fn rebuilding_an_open_select_preserves_its_menu_state() {
+        let make = || Select::new((0..30).collect(), Some(0), |value| value);
+        let select = make();
+        let mut tree = Tree::new(&select as &dyn Widget<i32, Theme, Renderer>);
+        let state = tree.state.downcast_mut::<State>();
+        state.open = true;
+        state.keyboard = Some(20);
+        let rebuilt = make();
+        tree.diff(&rebuilt as &dyn Widget<i32, Theme, Renderer>);
+        assert!(tree.state.downcast_ref::<State>().open);
+        assert_eq!(tree.state.downcast_ref::<State>().keyboard, Some(20));
+        assert!(rebuilt.menu.is_none());
+    }
 
     #[test]
     fn menu_selection_and_dismissal_preserve_the_selected_value() {

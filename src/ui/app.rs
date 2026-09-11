@@ -344,6 +344,13 @@ impl WinderustApp {
                 self.status.action_log_entries = Default::default();
                 self.status.action_log_summaries = Default::default();
                 self.action_log.update(action_log::Message::Clear);
+                return iced::widget::operation::scroll_to(
+                    "action-log",
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: None,
+                        y: Some(0.0),
+                    },
+                );
             }
             Message::ActionLog(action_log::Message::Export) => {
                 return Task::perform(
@@ -353,7 +360,25 @@ impl WinderustApp {
                     Message::ExportLog,
                 )
             }
-            Message::ActionLog(message) => self.action_log.update(message),
+            Message::ActionLog(message) => {
+                let reset = matches!(
+                    message,
+                    action_log::Message::Result(..)
+                        | action_log::Message::Feature(..)
+                        | action_log::Message::AllResults(_)
+                        | action_log::Message::AllFeatures(_)
+                );
+                self.action_log.update(message);
+                if reset {
+                    return iced::widget::operation::scroll_to(
+                        "action-log",
+                        iced::widget::scrollable::AbsoluteOffset {
+                            x: None,
+                            y: Some(0.0),
+                        },
+                    );
+                }
+            }
             Message::ExportLog(path) => {
                 self.message = match path {
                     Some(path) => match crate::config::storage::write_bytes_atomically(
@@ -1399,6 +1424,15 @@ impl WinderustApp {
         let content = self.page_view();
         let side_panel = if self.page == Page::ProcessList {
             Some(self.processes.side_panel().map(Message::Processes))
+        } else if self.page == Page::ActionLog {
+            Some(
+                self.action_log
+                    .side_panel(
+                        !self.status.action_log_entries.is_empty(),
+                        !self.status.action_log_summaries.is_empty(),
+                    )
+                    .map(Message::ActionLog),
+            )
         } else if self.page == Page::AdaptiveEngine {
             Some(
                 self.adaptive
@@ -1715,10 +1749,7 @@ impl WinderustApp {
             .into(),
             Page::ActionLog => self
                 .action_log
-                .view(
-                    &self.status.action_log_entries,
-                    !self.status.action_log_summaries.is_empty(),
-                )
+                .view(&self.status.action_log_entries)
                 .map(Message::ActionLog),
             Page::WinderustFeatures
             | Page::CpuControl

@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, pick_list};
+use super::widgets::{button, checkbox};
 use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
 use chrono::{Local, TimeZone};
 use iced::widget::{column, container, row, scrollable, text};
@@ -7,107 +7,180 @@ use iced::{Element, Fill};
 use rust_i18n::t;
 
 pub(super) struct Editor {
-    result: ActionLogResultFilter,
-    feature: ActionLogFeatureFilter,
-    page: usize,
+    result: Vec<ActionLogResult>,
+    feature: Vec<ActionLogFeature>,
+    offset: f32,
+    hovered: Option<u64>,
 }
 impl Default for Editor {
     fn default() -> Self {
         Self {
-            result: ActionLogResultFilter::All,
-            feature: ActionLogFeatureFilter::All,
-            page: 0,
+            result: RESULTS.to_vec(),
+            feature: FEATURES.to_vec(),
+            offset: 0.0,
+            hovered: None,
         }
     }
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
-    Result(ActionLogResultFilter),
-    Feature(ActionLogFeatureFilter),
-    Page(usize),
+    Result(ActionLogResult, bool),
+    Feature(ActionLogFeature, bool),
+    AllResults(bool),
+    AllFeatures(bool),
+    Scrolled(f32),
+    Hover(Option<u64>),
     Clear,
     Export,
 }
 impl Editor {
     pub(super) fn update(&mut self, message: Message) {
         match message {
-            Message::Result(result) => {
-                self.result = result;
-                self.page = 0;
+            Message::Result(result, checked) => {
+                self.result.retain(|value| *value != result);
+                if checked {
+                    self.result.push(result);
+                }
+                self.offset = 0.0;
             }
-            Message::Feature(feature) => {
-                self.feature = feature;
-                self.page = 0;
+            Message::Feature(feature, checked) => {
+                self.feature.retain(|value| *value != feature);
+                if checked {
+                    self.feature.push(feature);
+                }
+                self.offset = 0.0;
             }
-            Message::Page(page) => self.page = page,
-            Message::Clear => self.page = 0,
+            Message::AllResults(checked) => {
+                self.result = if checked {
+                    RESULTS.to_vec()
+                } else {
+                    Vec::new()
+                };
+                self.offset = 0.0;
+            }
+            Message::AllFeatures(checked) => {
+                self.feature = if checked {
+                    FEATURES.to_vec()
+                } else {
+                    Vec::new()
+                };
+                self.offset = 0.0;
+            }
+            Message::Scrolled(offset) => self.offset = offset,
+            Message::Hover(sequence) => self.hovered = sequence,
+            Message::Clear => {
+                self.offset = 0.0;
+                self.hovered = None;
+            }
             Message::Export => {} // The application owns the native CSV destination picker.
         }
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        entries: &'a [ActionLogEntry],
+    pub(super) fn side_panel(
+        &self,
+        has_entries: bool,
         has_summaries: bool,
-    ) -> Element<'a, Message> {
-        let entries_filtered = action_log_filtered_entries(entries, self.result, self.feature);
-        let count = entries_filtered.len();
-        let pages = action_log_page_count(count);
-        let page = self.page.min(pages.saturating_sub(1));
-        let start = page * ACTION_LOG_PAGE_SIZE;
-        let end = (start + ACTION_LOG_PAGE_SIZE).min(count);
-        let mut body = column![
-            super::widgets::settings_card(
-                row![
-                    text(t!("action_log.feature_filter").to_string()).width(Fill),
-                    pick_list(
-                        ActionLogFeatureFilter::ALL,
-                        Some(self.feature),
-                        Message::Feature
-                    )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center)
-            ),
-            super::widgets::settings_card(
-                row![
-                    text(t!("action_log.result_filter").to_string()).width(Fill),
-                    pick_list(
-                        ActionLogResultFilter::ALL,
-                        Some(self.result),
-                        Message::Result
-                    )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center)
+    ) -> Element<'_, Message> {
+        let mut results = column![
+            super::widgets::heading(
+                t!("action_log.result_filter").to_string(),
+                design::typography::SECONDARY
             ),
             row![
-                button(text(t!("action_log.clear").to_string())).on_press_maybe(
-                    (!entries.is_empty() || has_summaries).then_some(Message::Clear)
-                ),
-                button(text(t!("action_log.export_csv").to_string()))
-                    .on_press_maybe((!entries.is_empty()).then_some(Message::Export)),
-                iced::widget::Space::new().width(Fill),
-                button(text(t!("action_log.previous").to_string()))
-                    .on_press_maybe((page > 0).then_some(Message::Page(page.saturating_sub(1)))),
-                button(text(t!("action_log.next").to_string()))
-                    .on_press_maybe((page + 1 < pages).then_some(Message::Page(page + 1)))
+                button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
+                    .width(Fill)
+                    .height(32)
+                    .on_press(Message::AllResults(true)),
+                button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
+                    .width(Fill)
+                    .height(32)
+                    .on_press(Message::AllResults(false)),
             ]
             .spacing(design::space::SMALL),
-            text(t!("action_log.recent_entries").to_string()).size(design::typography::SUBTITLE),
-            text(action_log_pagination_label(count, page, pages, start, end)),
         ]
-        .spacing(super::widgets::CARD_GAP);
-        if count == 0 {
-            body = body.push(text(
-                if entries.is_empty() {
-                    t!("action_log.empty")
-                } else {
-                    t!("action_log.no_filter_matches")
-                }
-                .to_string(),
-            ));
+        .spacing(design::space::SMALL);
+        for result in RESULTS {
+            results = results.push(
+                checkbox(self.result.contains(&result))
+                    .label(action_log_result_label(result))
+                    .on_toggle(move |checked| Message::Result(result, checked)),
+            );
         }
-        let mut entries_table = column![row![
+        let mut features = column![
+            super::widgets::heading(
+                t!("action_log.feature_filter").to_string(),
+                design::typography::SECONDARY
+            ),
+            row![
+                button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
+                    .width(Fill)
+                    .height(32)
+                    .on_press(Message::AllFeatures(true)),
+                button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
+                    .width(Fill)
+                    .height(32)
+                    .on_press(Message::AllFeatures(false)),
+            ]
+            .spacing(design::space::SMALL),
+        ]
+        .spacing(design::space::SMALL);
+        for feature in FEATURES {
+            features = features.push(
+                checkbox(self.feature.contains(&feature))
+                    .label(action_log_feature_label(feature))
+                    .on_toggle(move |checked| Message::Feature(feature, checked)),
+            );
+        }
+        let filters = scrollable(
+            column![
+                super::widgets::heading(
+                    t!("nav.settings").to_string(),
+                    design::typography::SUBTITLE
+                ),
+                super::widgets::heading(
+                    t!("process_list.filter").to_string(),
+                    design::typography::SECONDARY
+                ),
+                super::widgets::settings_card(results),
+                super::widgets::settings_card(features),
+            ]
+            .spacing(design::space::MEDIUM),
+        )
+        .height(Fill);
+        column![
+            filters,
+            iced::widget::rule::horizontal(1),
+            container(
+                row![
+                    button(container(text(t!("action_log.clear").to_string())).center_x(Fill))
+                        .width(Fill)
+                        .height(32)
+                        .on_press_maybe((has_entries || has_summaries).then_some(Message::Clear)),
+                    button(container(text(t!("action_log.export_csv").to_string())).center_x(Fill))
+                        .width(Fill)
+                        .height(32)
+                        .on_press_maybe(has_entries.then_some(Message::Export)),
+                ]
+                .spacing(design::space::SMALL)
+            )
+            .padding([design::space::MEDIUM as u16, 0]),
+        ]
+        .height(Fill)
+        .into()
+    }
+
+    pub(super) fn view<'a>(&'a self, entries: &'a [ActionLogEntry]) -> Element<'a, Message> {
+        iced::widget::responsive(move |size| self.view_at_size(entries, size)).into()
+    }
+
+    fn view_at_size<'a>(
+        &'a self,
+        entries: &'a [ActionLogEntry],
+        size: iced::Size,
+    ) -> Element<'a, Message> {
+        let entries_filtered = action_log_filtered_entries(entries, &self.result, &self.feature);
+        let count = entries_filtered.len();
+        let range = visible_log_range(count, self.offset, size.height);
+        let header = row![
             text("#").width(48),
             text(t!("action_log.time").to_string()).width(80),
             text(t!("action_log.feature").to_string()).width(140),
@@ -115,73 +188,111 @@ impl Editor {
             text(t!("action_log.process").to_string()).width(160),
             text(t!("action_log.reason").to_string()).width(Fill)
         ]
-        .spacing(design::space::SMALL)
-        .padding(design::space::MEDIUM as u16)]
-        .spacing(0);
-        for entry in entries_filtered
-            .iter()
-            .skip(start)
-            .take(ACTION_LOG_PAGE_SIZE)
-        {
+        .spacing(design::space::SMALL);
+        let mut entries_table =
+            column![iced::widget::Space::new().height(range.start as f32 * ACTION_LOG_ROW_HEIGHT)]
+                .spacing(0);
+        if count == 0 {
+            entries_table = entries_table.push(
+                container(
+                    text(if entries.is_empty() {
+                        t!("action_log.empty").to_string()
+                    } else {
+                        t!("action_log.no_filter_matches").to_string()
+                    })
+                    .style(text::secondary),
+                )
+                .padding(design::space::LARGE as u16),
+            );
+        }
+        for entry in entries_filtered[range.clone()].iter() {
             let result_style: fn(&iced::Theme) -> iced::widget::text::Style = match entry.result {
                 ActionLogResult::Applied | ActionLogResult::Restored => text::success,
                 ActionLogResult::Skipped => text::warning,
                 ActionLogResult::Failed => text::danger,
             };
+            let hovered = self.hovered == Some(entry.sequence);
             entries_table = entries_table.push(
-                container(
-                    row![
-                        text(format!("#{}", entry.sequence))
-                            .size(design::typography::CAPTION)
-                            .width(48),
-                        text(action_log_time_label(entry.timestamp_epoch_ms))
-                            .size(design::typography::CAPTION)
-                            .width(80),
-                        text(action_log_feature_label(entry.feature))
-                            .size(design::typography::CAPTION)
-                            .width(140),
-                        text(action_log_result_text(entry.result))
-                            .size(design::typography::CAPTION)
-                            .style(result_style)
-                            .width(90),
-                        container(
-                            text(action_log_process_label(entry))
+                iced::widget::mouse_area(
+                    container(
+                        row![
+                            text(format!("#{}", entry.sequence))
                                 .size(design::typography::CAPTION)
-                                .wrapping(text::Wrapping::None)
-                        )
-                        .width(160)
-                        .clip(true),
-                        iced::widget::tooltip(
+                                .width(48),
+                            text(action_log_time_label(entry.timestamp_epoch_ms))
+                                .size(design::typography::CAPTION)
+                                .width(80),
+                            text(action_log_feature_label(entry.feature))
+                                .size(design::typography::CAPTION)
+                                .width(140),
+                            text(action_log_result_text(entry.result))
+                                .size(design::typography::CAPTION)
+                                .style(result_style)
+                                .width(90),
                             container(
-                                text(entry.reason.clone())
+                                text(action_log_process_label(entry))
                                     .size(design::typography::CAPTION)
                                     .wrapping(text::Wrapping::None)
                             )
-                            .width(Fill)
+                            .width(160)
                             .clip(true),
-                            text(entry.reason.clone()),
-                            iced::widget::tooltip::Position::Top
-                        )
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
+                            iced::widget::tooltip(
+                                container(
+                                    text(entry.reason.clone())
+                                        .size(design::typography::CAPTION)
+                                        .wrapping(text::Wrapping::None)
+                                )
+                                .width(Fill)
+                                .clip(true),
+                                text(entry.reason.clone()),
+                                iced::widget::tooltip::Position::Top
+                            )
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                    )
+                    .padding([0, design::space::MEDIUM as u16])
+                    .center_y(ACTION_LOG_ROW_HEIGHT - 1.0)
+                    .width(Fill)
+                    .style(move |theme: &iced::Theme| {
+                        iced::widget::container::Style {
+                            background: hovered
+                                .then(|| theme.palette().primary.scale_alpha(0.10).into()),
+                            ..Default::default()
+                        }
+                    }),
                 )
-                .padding(design::space::MEDIUM as u16)
-                .width(Fill),
+                .on_enter(Message::Hover(Some(entry.sequence)))
+                .on_exit(Message::Hover(None)),
             );
             entries_table = entries_table.push(iced::widget::rule::horizontal(1));
         }
-        body = body.push(
-            scrollable(
-                container(entries_table)
-                    .width(960)
-                    .style(super::widgets::surface),
-            )
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::default(),
-            )),
+        entries_table = entries_table.push(
+            iced::widget::Space::new().height((count - range.end) as f32 * ACTION_LOG_ROW_HEIGHT),
         );
-        scrollable(body).height(Fill).into()
+        let table = column![
+            container(header)
+                .padding([0, design::space::MEDIUM as u16])
+                .center_y(32),
+            iced::widget::rule::horizontal(1),
+            scrollable(entries_table)
+                .id("action-log")
+                .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
+                .height(Fill),
+        ]
+        .height(Fill);
+        let table = scrollable(
+            container(table)
+                .width(size.width.max(960.0))
+                .height(Fill)
+                .style(super::widgets::surface),
+        )
+        .direction(iced::widget::scrollable::Direction::Horizontal(
+            iced::widget::scrollable::Scrollbar::default(),
+        ))
+        .width(Fill)
+        .height(Fill);
+        table.into()
     }
 }
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
@@ -221,139 +332,56 @@ pub(super) fn action_log_result_text(result: ActionLogResult) -> &'static str {
     }
 }
 
-pub(super) fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
-    match filter {
-        ActionLogResultFilter::All => t!("action_log.filter_all").to_string(),
-        ActionLogResultFilter::Applied => {
-            action_log_result_label(ActionLogResult::Applied).to_string()
-        }
-        ActionLogResultFilter::Restored => {
-            action_log_result_label(ActionLogResult::Restored).to_string()
-        }
-        ActionLogResultFilter::Skipped => {
-            action_log_result_label(ActionLogResult::Skipped).to_string()
-        }
-        ActionLogResultFilter::Failed => {
-            action_log_result_label(ActionLogResult::Failed).to_string()
-        }
-    }
-}
-
-pub(super) fn action_log_feature_filter_label(filter: ActionLogFeatureFilter) -> String {
-    match filter {
-        ActionLogFeatureFilter::All => t!("action_log.filter_all").to_string(),
-        ActionLogFeatureFilter::Feature(feature) => action_log_feature_label(feature),
-    }
-}
-
-pub(super) fn action_log_filtered_entries(
-    entries: &[ActionLogEntry],
-    result_filter: ActionLogResultFilter,
-    feature_filter: ActionLogFeatureFilter,
-) -> Vec<&ActionLogEntry> {
+pub(super) fn action_log_filtered_entries<'a>(
+    entries: &'a [ActionLogEntry],
+    result_filter: &[ActionLogResult],
+    feature_filter: &[ActionLogFeature],
+) -> Vec<&'a ActionLogEntry> {
     entries
         .iter()
         .rev()
         .filter(|entry| {
-            result_filter.matches(entry.result) && feature_filter.matches(entry.feature)
+            result_filter.contains(&entry.result) && feature_filter.contains(&entry.feature)
         })
         .collect()
 }
 
-pub(super) fn action_log_page_count(total_entries: usize) -> usize {
-    total_entries.div_ceil(ACTION_LOG_PAGE_SIZE)
+const RESULTS: [ActionLogResult; 4] = [
+    ActionLogResult::Applied,
+    ActionLogResult::Restored,
+    ActionLogResult::Skipped,
+    ActionLogResult::Failed,
+];
+const FEATURES: [ActionLogFeature; 19] = [
+    ActionLogFeature::AppSuspension,
+    ActionLogFeature::CpuSetsSoft,
+    ActionLogFeature::ProcessorAffinityHard,
+    ActionLogFeature::BackgroundEfficiency,
+    ActionLogFeature::CpuLimiter,
+    ActionLogFeature::ByForeground,
+    ActionLogFeature::ByRunningApp,
+    ActionLogFeature::ByCpuLoad,
+    ActionLogFeature::ByActivity,
+    ActionLogFeature::ByTime,
+    ActionLogFeature::CpuScheduler,
+    ActionLogFeature::ProcessPriority,
+    ActionLogFeature::ThreadPriority,
+    ActionLogFeature::DynamicPriorityBoost,
+    ActionLogFeature::IoPriority,
+    ActionLogFeature::GpuPriority,
+    ActionLogFeature::MemoryPriority,
+    ActionLogFeature::MemoryTrim,
+    ActionLogFeature::TimerResolution,
+];
+
+const ACTION_LOG_ROW_HEIGHT: f32 = 36.0;
+
+fn visible_log_range(count: usize, offset: f32, height: f32) -> std::ops::Range<usize> {
+    let first = ((offset.max(0.0) / ACTION_LOG_ROW_HEIGHT).floor() as usize).min(count);
+    let start = first.saturating_sub(8);
+    let end = (first + (height.max(0.0) / ACTION_LOG_ROW_HEIGHT).ceil() as usize + 8).min(count);
+    start..end
 }
-
-pub(super) fn action_log_pagination_label(
-    total_entries: usize,
-    current_page: usize,
-    page_count: usize,
-    page_start: usize,
-    page_end: usize,
-) -> String {
-    if total_entries == 0 {
-        t!("action_log.pagination_empty").to_string()
-    } else {
-        t!(
-            "action_log.pagination",
-            start = page_start + 1,
-            end = page_end,
-            total = total_entries,
-            current = current_page + 1,
-            pages = page_count.max(1)
-        )
-        .to_string()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ActionLogResultFilter {
-    All,
-    Applied,
-    Restored,
-    Skipped,
-    Failed,
-}
-
-impl ActionLogResultFilter {
-    const ALL: [Self; 5] = [
-        Self::All,
-        Self::Applied,
-        Self::Restored,
-        Self::Skipped,
-        Self::Failed,
-    ];
-
-    fn matches(self, result: ActionLogResult) -> bool {
-        match self {
-            Self::All => true,
-            Self::Applied => result == ActionLogResult::Applied,
-            Self::Restored => result == ActionLogResult::Restored,
-            Self::Skipped => result == ActionLogResult::Skipped,
-            Self::Failed => result == ActionLogResult::Failed,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ActionLogFeatureFilter {
-    All,
-    Feature(ActionLogFeature),
-}
-
-impl ActionLogFeatureFilter {
-    const ALL: [Self; 20] = [
-        Self::All,
-        Self::Feature(ActionLogFeature::AppSuspension),
-        Self::Feature(ActionLogFeature::CpuSetsSoft),
-        Self::Feature(ActionLogFeature::ProcessorAffinityHard),
-        Self::Feature(ActionLogFeature::BackgroundEfficiency),
-        Self::Feature(ActionLogFeature::CpuLimiter),
-        Self::Feature(ActionLogFeature::ByForeground),
-        Self::Feature(ActionLogFeature::ByRunningApp),
-        Self::Feature(ActionLogFeature::ByCpuLoad),
-        Self::Feature(ActionLogFeature::ByActivity),
-        Self::Feature(ActionLogFeature::ByTime),
-        Self::Feature(ActionLogFeature::CpuScheduler),
-        Self::Feature(ActionLogFeature::ProcessPriority),
-        Self::Feature(ActionLogFeature::ThreadPriority),
-        Self::Feature(ActionLogFeature::DynamicPriorityBoost),
-        Self::Feature(ActionLogFeature::IoPriority),
-        Self::Feature(ActionLogFeature::GpuPriority),
-        Self::Feature(ActionLogFeature::MemoryPriority),
-        Self::Feature(ActionLogFeature::MemoryTrim),
-        Self::Feature(ActionLogFeature::TimerResolution),
-    ];
-
-    fn matches(self, feature: ActionLogFeature) -> bool {
-        match self {
-            Self::All => true,
-            Self::Feature(filter_feature) => filter_feature == feature,
-        }
-    }
-}
-
-const ACTION_LOG_PAGE_SIZE: usize = 15;
 pub(super) fn action_log_action_label(result: ActionLogResult) -> &'static str {
     match result {
         ActionLogResult::Applied => "Apply",
@@ -436,19 +464,21 @@ pub(super) fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
         .unwrap_or_else(|| "--:--:--".to_owned())
 }
 
-impl std::fmt::Display for ActionLogFeatureFilter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&action_log_feature_filter_label(*self))
-    }
-}
-impl std::fmt::Display for ActionLogResultFilter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&action_log_filter_label(*self))
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn virtual_log_rows_are_bounded_and_reach_the_end() {
+        assert_eq!(visible_log_range(0, 0.0, 900.0), 0..0);
+        let range = visible_log_range(10000, 3600.0, 900.0);
+        assert_eq!(range, 92..133);
+        assert_eq!(visible_log_range(52, 1500.0, 900.0).end, 52);
+        let mut editor = Editor::default();
+        editor.update(Message::Scrolled(3600.0));
+        editor.update(Message::Result(ActionLogResult::Failed, false));
+        assert_eq!(editor.offset, 0.0);
+    }
+
     #[test]
     fn combined_filters_reverse_order_and_csv_preserves_quoted_unicode() {
         let mut entries = vec![ActionLogEntry {
@@ -468,21 +498,40 @@ mod tests {
         assert_eq!(
             action_log_filtered_entries(
                 &entries,
-                ActionLogResultFilter::Failed,
-                ActionLogFeatureFilter::Feature(ActionLogFeature::CpuLimiter)
+                &[ActionLogResult::Failed],
+                &[ActionLogFeature::CpuLimiter]
             )[0]
             .sequence,
             2
         );
         assert_eq!(
-            action_log_filtered_entries(
-                &entries,
-                ActionLogResultFilter::All,
-                ActionLogFeatureFilter::All
-            )[0]
-            .sequence,
+            action_log_filtered_entries(&entries, &RESULTS, &FEATURES)[0].sequence,
             2
         );
+        let mut editor = Editor::default();
+        assert_eq!(
+            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            2
+        );
+        editor.update(Message::AllResults(false));
+        assert!(action_log_filtered_entries(&entries, &editor.result, &editor.feature).is_empty());
+        editor.update(Message::Result(ActionLogResult::Applied, true));
+        editor.update(Message::Result(ActionLogResult::Failed, true));
+        assert_eq!(
+            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            2
+        );
+        editor.update(Message::AllFeatures(false));
+        assert!(action_log_filtered_entries(&entries, &editor.result, &editor.feature).is_empty());
+        editor.update(Message::Feature(ActionLogFeature::CpuLimiter, true));
+        assert_eq!(
+            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            2
+        );
+        editor.update(Message::AllResults(true));
+        editor.update(Message::AllFeatures(true));
+        assert_eq!(editor.result.len(), RESULTS.len());
+        assert_eq!(editor.feature.len(), FEATURES.len());
         let csv = action_log_entries_to_csv(&entries);
         let records = csv::Reader::from_reader(csv.as_bytes())
             .records()
@@ -490,6 +539,5 @@ mod tests {
             .unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(&records[0][7], entries[0].reason);
-        assert_eq!(action_log_page_count(16), 2);
     }
 }
