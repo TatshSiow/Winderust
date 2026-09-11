@@ -127,7 +127,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::ProcessorAffinityHard => "icons/monitor-x.svg",
         Page::ByForeground => "icons/bring-to-front.svg",
         Page::ByTime => "icons/calendar-days.svg",
-        Page::ActionLog => "icons/info.svg",
+        Page::ActionLog => "icons/square-menu.svg",
         Page::WinderustBehaviour => "icons/settings.svg",
         Page::LanguageAndAppearance => "icons/palette.svg",
         Page::ExperimentalFeatures => "icons/flask-conical.svg",
