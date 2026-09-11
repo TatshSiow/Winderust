@@ -739,7 +739,6 @@ impl Editor {
                     .align_y(iced::Center)
                     .width(iced::Length::FillPortion(3)),
                     column![
-                        iced::widget::rule::horizontal(1),
                         priority_option_row(
                             "adaptive_engine.detection",
                             [
@@ -906,43 +905,38 @@ impl Editor {
                     .spacing(design::space::SMALL)
                     .align_y(iced::Center)
                     .width(iced::Length::FillPortion(3)),
-                    column![
-                        iced::widget::rule::horizontal(1),
-                        priority_option_row(
-                            "adaptive_engine.detection",
-                            [
-                                checkbox(
+                    column![priority_option_row(
+                        "adaptive_engine.detection",
+                        [
+                            checkbox(
+                                s.cpu_scheduler
+                                    .focus_process_background_efficiency_override_enabled
+                            )
+                            .label(t!("common.enabled").to_string())
+                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                |s, v| {
                                     s.cpu_scheduler
-                                        .focus_process_background_efficiency_override_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.cpu_scheduler
-                                            .focus_process_background_efficiency_override_enabled =
-                                            v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
+                                        .focus_process_background_efficiency_override_enabled = v
+                                },
+                                v
+                            )))
+                            .into(),
+                            checkbox(
+                                s.cpu_scheduler
+                                    .visible_window_background_efficiency_override_enabled
+                            )
+                            .label(t!("common.enabled").to_string())
+                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                |s, v| {
                                     s.cpu_scheduler
-                                        .visible_window_background_efficiency_override_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.cpu_scheduler
-                                            .visible_window_background_efficiency_override_enabled =
-                                            v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                text("\u{2014}").style(iced::widget::text::secondary).into()
-                            ]
-                        )
-                    ]
+                                        .visible_window_background_efficiency_override_enabled = v
+                                },
+                                v
+                            )))
+                            .into(),
+                            text("\u{2014}").style(iced::widget::text::secondary).into()
+                        ]
+                    )]
                     .spacing(design::space::SMALL),
                 ));
                 table = table.push(super::widgets::setting_group(
@@ -1004,7 +998,6 @@ impl Editor {
                     .align_y(iced::Center)
                     .width(iced::Length::FillPortion(3)),
                     column![
-                        iced::widget::rule::horizontal(1),
                         priority_option_row(
                             "adaptive_engine.detection",
                             [
@@ -1134,45 +1127,42 @@ impl Editor {
                     .spacing(design::space::SMALL)
                     .align_y(iced::Center)
                     .width(iced::Length::FillPortion(3)),
-                    column![
-                        iced::widget::rule::horizontal(1),
-                        priority_option_row(
-                            "adaptive_engine.detection",
-                            [
-                                checkbox(
+                    column![priority_option_row(
+                        "adaptive_engine.detection",
+                        [
+                            checkbox(
+                                s.cpu_scheduler
+                                    .dynamic_priority_boost
+                                    .foreground_detection_enabled
+                            )
+                            .label(t!("common.enabled").to_string())
+                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                |s, v| {
                                     s.cpu_scheduler
                                         .dynamic_priority_boost
-                                        .foreground_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.cpu_scheduler
-                                            .dynamic_priority_boost
-                                            .foreground_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
+                                        .foreground_detection_enabled = v
+                                },
+                                v
+                            )))
+                            .into(),
+                            checkbox(
+                                s.cpu_scheduler
+                                    .dynamic_priority_boost
+                                    .visible_window_detection_enabled
+                            )
+                            .label(t!("common.enabled").to_string())
+                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                |s, v| {
                                     s.cpu_scheduler
                                         .dynamic_priority_boost
-                                        .visible_window_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.cpu_scheduler
-                                            .dynamic_priority_boost
-                                            .visible_window_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                text("\u{2014}").style(iced::widget::text::secondary).into()
-                            ]
-                        )
-                    ]
+                                        .visible_window_detection_enabled = v
+                                },
+                                v
+                            )))
+                            .into(),
+                            text("\u{2014}").style(iced::widget::text::secondary).into()
+                        ]
+                    )]
                     .spacing(design::space::SMALL),
                 ));
                 table = table.push(super::widgets::setting_group(
@@ -1231,7 +1221,6 @@ impl Editor {
                     .align_y(iced::Center)
                     .width(iced::Length::FillPortion(3)),
                     column![
-                        iced::widget::rule::horizontal(1),
                         priority_option_row(
                             "adaptive_engine.detection",
                             [
@@ -1361,7 +1350,6 @@ impl Editor {
                     .align_y(iced::Center)
                     .width(iced::Length::FillPortion(3)),
                     column![
-                        iced::widget::rule::horizontal(1),
                         priority_option_row(
                             "adaptive_engine.detection",
                             [
@@ -1486,7 +1474,6 @@ impl Editor {
                     .align_y(iced::Center)
                     .width(iced::Length::FillPortion(3)),
                     column![
-                        iced::widget::rule::horizontal(1),
                         priority_option_row(
                             "adaptive_engine.detection",
                             [
