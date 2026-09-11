@@ -406,64 +406,90 @@ impl Editor {
                 .align_y(iced::Center),
             ))
             .push(text(&self.status));
-        if let Some(p) = &self.preset {
-            let editable = matches!(p.target, PresetTarget::Custom(_));
-            let mut form = column![text_input(&t!("processor_power.preset_name"), &p.name)
-                .on_input_maybe(editable.then_some(Message::PresetName))]
-            .spacing(design::space::SMALL);
-            for (field, label, value) in fields(p.values) {
-                form = form.push(
-                    row![
-                        text(t!(label).to_string()).width(180),
-                        text_input("", &value.to_string())
-                            .on_input_maybe(
-                                editable.then_some(move |v| Message::PresetValueText(field, v))
-                            )
-                            .width(design::NUMERIC_WIDTH)
-                    ]
-                    .spacing(design::space::SMALL),
-                );
-            }
-            form = if editable {
-                form.push(pick_list(
-                    ProcessorBoostMode::ALL.map(BoostChoice),
-                    Some(BoostChoice(p.values.boost_mode)),
-                    |v| Message::PresetBoost(v.0),
-                ))
-            } else {
-                form.push(text(format!(
-                    "{}: {}",
-                    t!("processor_power.boost_mode"),
-                    BoostChoice(p.values.boost_mode)
-                )))
-            };
-            if let PresetTarget::Custom(index) = p.target {
-                form = form.push(
-                    text(t!("processor_power.preset_name_help").to_string())
-                        .width(Fill)
-                        .style(text::secondary),
-                );
-                if !p.name.trim().is_empty() && !valid_name(presets, index, &p.name) {
-                    form = form.push(text(
-                        t!("processor_power.duplicate_preset_name").to_string(),
-                    ));
-                }
-                form = form.push(
-                    button(text(t!("common.save").to_string()))
-                        .style(crate::ui::widgets::primary_button)
-                        .on_press_maybe(
-                            valid_name(presets, index, &p.name).then_some(Message::SavePreset),
-                        ),
-                );
-            }
-            form = form.push(
-                button(text(t!("common.cancel").to_string()))
-                    .style(crate::ui::widgets::tertiary_button)
-                    .on_press(Message::ClosePreset),
-            );
-            body = body.push(form);
-        }
         scrollable(body).height(Fill).width(Fill).into()
+    }
+    pub(super) fn preset_modal<'a>(
+        &'a self,
+        presets: &'a [AdvancedPowerPlanTuningPreset],
+    ) -> Option<Element<'a, Message>> {
+        use super::widgets;
+        let p = self.preset.as_ref()?;
+        let editable = matches!(p.target, PresetTarget::Custom(_));
+        let title = match p.target {
+            PresetTarget::BuiltIn(_) => p.name.clone(),
+            PresetTarget::Custom(None) => t!("processor_power.add_preset").to_string(),
+            PresetTarget::Custom(Some(_)) => t!("common.edit").to_string(),
+        };
+        let header = row![
+            text(title).width(Fill),
+            button(super::navigation::glyph("icons/x.svg")).on_press(Message::ClosePreset)
+        ]
+        .align_y(iced::Center);
+        let mut form = column![widgets::settings_card(
+            column![
+                text(t!("processor_power.preset_name").to_string()),
+                text_input(&t!("processor_power.preset_name_placeholder"), &p.name)
+                    .on_input_maybe(editable.then_some(Message::PresetName)),
+                text(t!("processor_power.preset_name_help").to_string()).style(text::secondary)
+            ]
+            .spacing(design::space::SMALL)
+        )]
+        .spacing(widgets::CARD_GAP);
+        for (field, label, value) in fields(p.values) {
+            form = form.push(widgets::settings_card(widgets::setting_row_with_unit(
+                label,
+                "%",
+                widgets::stepper(
+                    &value.to_string(),
+                    0..=100,
+                    1,
+                    editable.then_some(move |v| Message::PresetValueText(field, v)),
+                ),
+            )));
+        }
+        let boost: Element<'_, Message> = if editable {
+            pick_list(
+                ProcessorBoostMode::ALL.map(BoostChoice),
+                Some(BoostChoice(p.values.boost_mode)),
+                |v| Message::PresetBoost(v.0),
+            )
+            .width(design::SELECT_WIDTH)
+            .into()
+        } else {
+            text(BoostChoice(p.values.boost_mode).to_string()).into()
+        };
+        form = form.push(widgets::settings_card(widgets::setting_row(
+            "processor_power.boost_mode",
+            boost,
+        )));
+        let mut footer = row![
+            iced::widget::Space::new().width(Fill),
+            button(text(t!("common.cancel").to_string()))
+                .style(widgets::tertiary_button)
+                .on_press(Message::ClosePreset)
+        ]
+        .spacing(design::space::SMALL);
+        if let PresetTarget::Custom(index) = p.target {
+            if !p.name.trim().is_empty() && !valid_name(presets, index, &p.name) {
+                form = form.push(
+                    text(t!("processor_power.duplicate_preset_name").to_string())
+                        .style(text::danger),
+                );
+            }
+            footer = footer.push(
+                button(text(t!("common.save").to_string()))
+                    .style(widgets::primary_button)
+                    .on_press_maybe(
+                        valid_name(presets, index, &p.name).then_some(Message::SavePreset),
+                    ),
+            );
+        }
+        Some(widgets::modal_frame(
+            header,
+            scrollable(form).height(Fill),
+            footer,
+            (800, 680),
+        ))
     }
     pub(super) fn side_panel<'a>(
         &'a self,
@@ -482,30 +508,49 @@ impl Editor {
         .spacing(design::space::MEDIUM);
         for p in BUILT_INS {
             rail = rail.push(
-                button(text(preset_label(p)))
+                row![
+                    button(
+                        iced::widget::container(text(preset_label(p)))
+                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
+                    )
                     .width(Fill)
                     .style(super::widgets::quiet)
                     .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p))),
+                    button(super::navigation::glyph("icons/info.svg"))
+                        .style(super::widgets::quiet)
+                        .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p)))
+                ]
+                .spacing(design::space::TIGHT)
+                .align_y(iced::Center),
             );
         }
         rail = rail.push(super::widgets::heading(
             t!("processor_power.custom_presets").to_string(),
             design::typography::SECONDARY,
         ));
-        let mut preset_rows = Vec::new();
         for (i, p) in presets.iter().enumerate() {
-            let card = row![
-                button(text(p.name.clone()))
-                    .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
-                button(text(t!("common.remove").to_string())).on_press(Message::Remove(i))
-            ]
-            .spacing(design::space::SMALL);
-            preset_rows.push((
-                super::widgets::stable_key(&p.name),
-                super::widgets::settings_card(card).into(),
-            ));
+            rail = rail.push(
+                row![
+                    button(text(p.name.clone()))
+                        .width(Fill)
+                        .style(super::widgets::quiet)
+                        .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
+                    iced::widget::tooltip(
+                        button(super::navigation::glyph("icons/pencil.svg"))
+                            .padding(7)
+                            .width(32)
+                            .height(32)
+                            .style(super::widgets::quiet)
+                            .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
+                        text(t!("common.edit").to_string()),
+                        iced::widget::tooltip::Position::Top
+                    ),
+                    super::widgets::rule_delete_button(Some(Message::Remove(i)))
+                ]
+                .spacing(design::space::TIGHT)
+                .align_y(iced::Center),
+            );
         }
-        rail = rail.push(iced::widget::keyed_column(preset_rows).spacing(super::widgets::CARD_GAP));
         column![
             scrollable(rail).height(Fill).width(Fill),
             super::widgets::preset_footer(

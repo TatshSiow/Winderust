@@ -1595,7 +1595,16 @@ impl WinderustApp {
         } else {
             layout.into()
         };
-        let rule_modal = match self.page {
+        let modal = match self.page {
+            Page::AdvancedPowerPlanTuning => self
+                .power_tuning
+                .preset_modal(&self.settings.advanced_power_plan_tuning_presets)
+                .map(|modal| modal.map(Message::PowerTuning)),
+            Page::AdaptiveEngine if self.adaptive.has_pending_editor() => Some(
+                self.adaptive
+                    .preset_modal(&self.settings, &self.candidates)
+                    .map(Message::Adaptive),
+            ),
             Page::ByTime => self
                 .time_rules
                 .modal(power_rules::Kind::Time, &self.power_plans)
@@ -1606,7 +1615,7 @@ impl WinderustApp {
                 .map(|modal| modal.map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m))),
             _ => None,
         };
-        if let Some(modal) = rule_modal {
+        if let Some(modal) = modal {
             return iced::widget::stack![
                 layout,
                 iced::widget::opaque(
@@ -1622,29 +1631,6 @@ impl WinderustApp {
                     .padding(16)
                     .center_x(Fill)
                     .center_y(Fill)
-            ]
-            .into();
-        }
-        if self.page == Page::AdaptiveEngine && self.adaptive.has_pending_editor() {
-            return iced::widget::stack![
-                layout,
-                iced::widget::opaque(
-                    container(iced::widget::Space::new())
-                        .width(Fill)
-                        .height(Fill)
-                        .style(|_| container::Style {
-                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
-                            ..Default::default()
-                        })
-                ),
-                container(iced::widget::opaque(
-                    self.adaptive
-                        .preset_modal(&self.settings, &self.candidates)
-                        .map(Message::Adaptive)
-                ))
-                .padding(16)
-                .center_x(Fill)
-                .center_y(Fill)
             ]
             .into();
         }

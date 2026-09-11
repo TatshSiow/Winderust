@@ -312,7 +312,7 @@ impl Editor {
         live: &'a Settings,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        use iced::widget::{container, Space};
+        use iced::widget::Space;
         let title = if self.read_only {
             self.name.clone()
         } else {
@@ -373,27 +373,7 @@ impl Editor {
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
-        container(column![
-            container(header).padding(16),
-            iced::widget::rule::horizontal(1),
-            container(body).padding(16).height(Fill),
-            iced::widget::rule::horizontal(1),
-            container(footer).padding(16)
-        ])
-        .width(Fill)
-        .max_width(1200)
-        .height(Fill)
-        .max_height(850)
-        .style(|theme: &iced::Theme| container::Style {
-            background: Some(theme.palette().background.into()),
-            border: iced::Border {
-                color: theme.extended_palette().background.strong.color,
-                width: 1.0,
-                radius: design::CARD_RADIUS.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+        super::widgets::modal_frame(header, body, footer, (1200, 850))
     }
 
     fn tuning_view<'a>(

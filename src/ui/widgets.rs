@@ -908,6 +908,36 @@ mod tests {
     }
 }
 
+pub(super) fn modal_frame<'a, M: 'a>(
+    header: impl Into<Element<'a, M>>,
+    body: impl Into<Element<'a, M>>,
+    footer: impl Into<Element<'a, M>>,
+    size: (u32, u32),
+) -> Element<'a, M> {
+    use iced::widget::{column, container, rule};
+    container(column![
+        container(header).padding(16),
+        rule::horizontal(1),
+        container(body).padding(16).height(Fill),
+        rule::horizontal(1),
+        container(footer).padding(16)
+    ])
+    .width(Fill)
+    .max_width(size.0)
+    .height(Fill)
+    .max_height(size.1)
+    .style(|theme: &iced::Theme| container::Style {
+        background: Some(theme.palette().background.into()),
+        border: iced::Border {
+            color: theme.extended_palette().background.strong.color,
+            width: 1.0,
+            radius: design::CARD_RADIUS.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
 pub(super) fn label_with_unit(label: &str, unit: &str) -> String {
     if unit.is_empty() {
         label.to_owned()

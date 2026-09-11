@@ -589,59 +589,37 @@ impl Editor {
             controls
         ]
         .spacing(design::space::MEDIUM);
-        Some(
-            container(column![
-                container(
-                    row![
-                        text(
-                            t!(if self.creating {
-                                "common.create"
-                            } else {
-                                "common.edit"
-                            })
-                            .to_string()
-                        )
-                        .width(Fill),
-                        button(super::navigation::glyph("icons/x.svg")).on_press(Message::Cancel)
-                    ]
-                    .align_y(iced::Center)
-                )
-                .padding(16),
-                iced::widget::rule::horizontal(1),
-                scrollable(container(content).padding(16)).height(Fill),
-                iced::widget::rule::horizontal(1),
-                container(
-                    row![
-                        iced::widget::Space::new().width(Fill),
-                        button(text(t!("common.cancel").to_string()))
-                            .style(widgets::tertiary_button)
-                            .on_press(Message::Cancel),
-                        button(text(t!("common.save").to_string()))
-                            .style(widgets::primary_button)
-                            .on_press_maybe(
-                                (self.valid() && !name.trim().is_empty()).then_some(Message::Save)
-                            )
-                    ]
-                    .spacing(design::space::SMALL)
-                )
-                .padding(16)
-            ])
-            .width(Fill)
-            .max_width(800)
-            .height(Fill)
-            .max_height(760)
-            .style(|theme: &iced::Theme| iced::widget::container::Style {
-                background: Some(theme.palette().background.into()),
-                border: iced::Border {
-                    color: theme.extended_palette().background.strong.color,
-                    width: 1.0,
-                    radius: design::CARD_RADIUS.into(),
-                },
-                ..Default::default()
-            })
-            .into(),
-        )
+        let header = row![
+            text(
+                t!(if self.creating {
+                    "common.create"
+                } else {
+                    "common.edit"
+                })
+                .to_string()
+            )
+            .width(Fill),
+            button(super::navigation::glyph("icons/x.svg")).on_press(Message::Cancel)
+        ]
+        .align_y(iced::Center);
+        let footer = row![
+            iced::widget::Space::new().width(Fill),
+            button(text(t!("common.cancel").to_string()))
+                .style(widgets::tertiary_button)
+                .on_press(Message::Cancel),
+            button(text(t!("common.save").to_string()))
+                .style(widgets::primary_button)
+                .on_press_maybe((self.valid() && !name.trim().is_empty()).then_some(Message::Save))
+        ]
+        .spacing(design::space::SMALL);
+        Some(widgets::modal_frame(
+            header,
+            scrollable(content).height(Fill),
+            footer,
+            (800, 760),
+        ))
     }
+
     fn input(&self, id: u64, field: Field, current: String) -> String {
         self.inputs.get(&(id, field)).cloned().unwrap_or(current)
     }
