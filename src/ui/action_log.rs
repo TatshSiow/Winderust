@@ -80,23 +80,17 @@ impl Editor {
         has_entries: bool,
         has_summaries: bool,
     ) -> Element<'_, Message> {
-        let mut results = column![
-            super::widgets::heading(
-                t!("action_log.result_filter").to_string(),
-                design::typography::SECONDARY
-            ),
-            row![
-                button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
-                    .width(Fill)
-                    .height(32)
-                    .on_press(Message::AllResults(true)),
-                button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
-                    .width(Fill)
-                    .height(32)
-                    .on_press(Message::AllResults(false)),
-            ]
-            .spacing(design::space::SMALL),
+        let mut results = column![row![
+            button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllResults(true)),
+            button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllResults(false)),
         ]
+        .spacing(design::space::SMALL),]
         .spacing(design::space::SMALL);
         for result in RESULTS {
             results = results.push(
@@ -105,23 +99,17 @@ impl Editor {
                     .on_toggle(move |checked| Message::Result(result, checked)),
             );
         }
-        let mut features = column![
-            super::widgets::heading(
-                t!("action_log.feature_filter").to_string(),
-                design::typography::SECONDARY
-            ),
-            row![
-                button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
-                    .width(Fill)
-                    .height(32)
-                    .on_press(Message::AllFeatures(true)),
-                button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
-                    .width(Fill)
-                    .height(32)
-                    .on_press(Message::AllFeatures(false)),
-            ]
-            .spacing(design::space::SMALL),
+        let mut features = column![row![
+            button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllFeatures(true)),
+            button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllFeatures(false)),
         ]
+        .spacing(design::space::SMALL),]
         .spacing(design::space::SMALL);
         for feature in FEATURES {
             features = features.push(
@@ -140,8 +128,22 @@ impl Editor {
                     t!("process_list.filter").to_string(),
                     design::typography::SECONDARY
                 ),
-                super::widgets::settings_card(results),
-                super::widgets::settings_card(features),
+                column![
+                    super::widgets::heading(
+                        t!("action_log.result_filter").to_string(),
+                        design::typography::SECONDARY
+                    ),
+                    super::widgets::settings_card(results),
+                ]
+                .spacing(design::space::SMALL),
+                column![
+                    super::widgets::heading(
+                        t!("action_log.feature_filter").to_string(),
+                        design::typography::SECONDARY
+                    ),
+                    super::widgets::settings_card(features),
+                ]
+                .spacing(design::space::SMALL),
             ]
             .spacing(design::space::MEDIUM),
         )

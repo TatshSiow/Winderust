@@ -87,7 +87,10 @@ pub(super) fn view<'a>(
         FeatureRunState::Unknown => "common.unknown",
     };
     let mut body = column![
-        text(t!("common.status").to_string()).size(design::typography::SUBTITLE),
+        super::widgets::heading(
+            t!("common.status").to_string(),
+            design::typography::SUBTITLE
+        ),
         text(t!(state_label).to_string())
             .size(design::typography::SECONDARY)
             .style(match summary.state {
@@ -95,7 +98,7 @@ pub(super) fn view<'a>(
                 FeatureRunState::NotRunning | FeatureRunState::Unknown => text::secondary,
             })
     ]
-    .spacing(super::widgets::CARD_GAP);
+    .spacing(design::space::MEDIUM);
     if power_feature.is_some() {
         let plan = runtime
             .power_plan_status
@@ -249,15 +252,14 @@ fn metric(label: &str, value: String) -> Element<'static, Message> {
     .into()
 }
 fn section<'a>(title: &str, body: iced::widget::Column<'a, Message>) -> Element<'a, Message> {
-    super::widgets::settings_card(
-        column![
-            super::widgets::heading(t!(title).to_string(), design::typography::SECONDARY),
-            body
-        ]
-        .spacing(design::space::MEDIUM),
-    )
+    column![
+        super::widgets::heading(t!(title).to_string(), design::typography::SECONDARY),
+        super::widgets::settings_card(body),
+    ]
+    .spacing(design::space::SMALL)
     .into()
 }
+
 fn log(
     label: &str,
     entry: Option<&ActionLogEntry>,

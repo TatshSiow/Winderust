@@ -207,7 +207,7 @@ impl Editor {
                 };
                 column![
                     column![
-                        check("settings.master_switch", s.general.enabled, Flag::Enabled),
+                        flag("settings.master_switch", s.general.enabled, Flag::Enabled),
                         check(
                             "settings.startup_windows",
                             s.general.startup_with_windows,

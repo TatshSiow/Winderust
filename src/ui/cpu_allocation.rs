@@ -185,17 +185,13 @@ impl Editor {
         let processors = cpu_allocation::logical_processors();
         let feature = settings(s, k);
         let mut body = column![
-            super::widgets::settings_card(
-                checkbox(feature.enabled)
-                    .label(
-                        t!(match k {
-                            Kind::Soft => "cpu_sets_soft.enable",
-                            Kind::Hard => "processor_affinity_hard.enable",
-                        })
-                        .to_string()
-                    )
-                    .on_toggle(Message::Enabled)
-            ),
+            super::widgets::settings_card(super::widgets::setting_row(
+                match k {
+                    Kind::Soft => "cpu_sets_soft.enable",
+                    Kind::Hard => "processor_affinity_hard.enable",
+                },
+                super::widgets::switch(feature.enabled, Some(Message::Enabled)),
+            )),
             text(t!("cpu_allocation.rules_help").to_string())
                 .width(Fill)
                 .style(text::secondary),
@@ -257,9 +253,17 @@ impl Editor {
         status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
-        let mut rail =
-            column![text(t!("cpu_allocation.presets").to_string()).style(text::secondary)]
-                .spacing(design::space::SMALL);
+        let mut rail = column![
+            super::widgets::heading(
+                t!("cpu_allocation.presets").to_string(),
+                design::typography::SUBTITLE
+            ),
+            super::widgets::heading(
+                t!("adaptive_engine.custom_presets").to_string(),
+                design::typography::SECONDARY
+            ),
+        ]
+        .spacing(design::space::MEDIUM);
         for (i, p) in s.cpu_allocation_presets.iter().enumerate() {
             rail = rail.push(button(text(p.name.clone())).on_press(Message::EditPreset(i)));
         }

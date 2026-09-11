@@ -1621,9 +1621,16 @@ impl Editor {
         status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let mut rail = column![
-            text(t!("adaptive_engine.built_in_presets").to_string()).style(text::secondary)
+            super::widgets::heading(
+                t!("adaptive_engine.presets").to_string(),
+                design::typography::SUBTITLE
+            ),
+            super::widgets::heading(
+                t!("adaptive_engine.built_in_presets").to_string(),
+                design::typography::SECONDARY
+            )
         ]
-        .spacing(design::space::SMALL);
+        .spacing(design::space::MEDIUM);
         for p in BuiltInAdaptiveEnginePreset::ALL {
             rail = rail.push(
                 row![
@@ -1642,8 +1649,10 @@ impl Editor {
                 .align_y(iced::Center),
             );
         }
-        rail = rail
-            .push(text(t!("adaptive_engine.custom_presets").to_string()).style(text::secondary));
+        rail = rail.push(super::widgets::heading(
+            t!("adaptive_engine.custom_presets").to_string(),
+            design::typography::SECONDARY,
+        ));
         if live.adaptive_engine_presets.is_empty() {
             rail = rail.push(
                 text(t!("adaptive_engine.no_custom_presets").to_string()).style(text::secondary),

@@ -471,10 +471,16 @@ impl Editor {
         presets: &'a [AdvancedPowerPlanTuningPreset],
     ) -> Element<'a, Message> {
         let mut rail = column![
-            text(t!("processor_power.presets").to_string()).size(design::typography::SUBTITLE),
-            text(t!("processor_power.built_in_presets").to_string())
+            super::widgets::heading(
+                t!("processor_power.presets").to_string(),
+                design::typography::SUBTITLE
+            ),
+            super::widgets::heading(
+                t!("processor_power.built_in_presets").to_string(),
+                design::typography::SECONDARY
+            )
         ]
-        .spacing(design::space::SMALL);
+        .spacing(design::space::MEDIUM);
         for p in BUILT_INS {
             rail = rail.push(
                 button(text(preset_label(p)))
@@ -483,7 +489,10 @@ impl Editor {
                     .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p))),
             );
         }
-        rail = rail.push(text(t!("processor_power.custom_presets").to_string()));
+        rail = rail.push(super::widgets::heading(
+            t!("processor_power.custom_presets").to_string(),
+            design::typography::SECONDARY,
+        ));
         let mut preset_rows = Vec::new();
         for (i, p) in presets.iter().enumerate() {
             let card = row![
