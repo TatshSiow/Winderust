@@ -1,8 +1,8 @@
 use super::design;
-use super::widgets::{button, checkbox, text_input};
+use super::widgets::{checkbox, text_input};
 use crate::config::MemoryTrimSettings;
 use crate::ui::process_rules::{can_add_memory_trim_exclusion, new_process_exclusion_rule};
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, scrollable, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -89,15 +89,14 @@ impl Editor {
             super::widgets::switch(settings.enabled, Some(Message::Enabled))
         )),]
         .spacing(super::widgets::CARD_GAP);
-        let field = |label: &str, value: String, change: fn(String) -> Message| {
-            row![
-                text(t!(label).to_string()).width(Fill),
+        let field = |label: &str, unit: &str, value: String, change: fn(String) -> Message| {
+            super::widgets::setting_row_with_unit(
+                label,
+                unit,
                 text_input("", &value)
                     .on_input_maybe(settings.enabled.then_some(change))
-                    .width(140)
-            ]
-            .spacing(design::space::MEDIUM)
-            .align_y(iced::Center)
+                    .width(design::STANDALONE_NUMERIC_WIDTH),
+            )
         };
         for (index, label, content) in [
             (
@@ -106,11 +105,13 @@ impl Editor {
                 column![
                     field(
                         "memory_trim.memory_threshold",
+                        "%",
                         settings.system_memory_load_threshold_percent.to_string(),
                         Message::Load
                     ),
                     field(
                         "memory_trim.working_set_threshold",
+                        "MiB",
                         settings.process_working_set_threshold_mb.to_string(),
                         Message::WorkingSet
                     )
@@ -122,6 +123,7 @@ impl Editor {
                 "memory_trim.category_when_to_trim",
                 column![field(
                     "memory_trim.idle_time",
+                    "s",
                     settings.process_idle_seconds.to_string(),
                     Message::Idle
                 )],
@@ -185,10 +187,6 @@ impl Editor {
             iced::widget::Space::new(),
             safety,
         ));
-        body = body.push(
-            button(text(t!("memory_trim.trim_now").to_string()))
-                .on_press_maybe(settings.enabled.then_some(Message::TrimNow)),
-        );
         scrollable(body).height(Fill).into()
     }
 }

@@ -1457,8 +1457,37 @@ impl WinderustApp {
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
-            status_rail::view(self.page, &self.settings, &self.status, &self.power_plans)
-                .map(|panel| panel.map(Message::Status))
+            status_rail::view(self.page, &self.settings, &self.status, &self.power_plans).map(
+                |panel| {
+                    let panel = panel.map(Message::Status);
+                    if self.page == Page::MemoryTrim {
+                        column![
+                            panel,
+                            iced::widget::rule::horizontal(1),
+                            container(
+                                button(
+                                    container(text(t!("memory_trim.trim_now").to_string()))
+                                        .center_x(Fill)
+                                )
+                                .width(Fill)
+                                .height(32)
+                                .style(widgets::primary_button)
+                                .on_press_maybe(
+                                    self.settings
+                                        .memory_trim
+                                        .enabled
+                                        .then_some(Message::Trim(memory_trim::Message::TrimNow))
+                                )
+                            )
+                            .padding([design::space::MEDIUM as u16, 0])
+                        ]
+                        .height(Fill)
+                        .into()
+                    } else {
+                        panel
+                    }
+                },
+            )
         };
         body = body.push(
             container(
