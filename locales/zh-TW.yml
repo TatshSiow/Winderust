@@ -652,7 +652,7 @@ adaptive_engine:
   view_preset: "檢視預設"
   preset_name: "預設名稱"
   preset_name_placeholder: "輸入預設名稱..."
-  preset_name_help: "預設名稱不可重複。預設不包含啟用開關、自訂規則、排除項目與獨立的背景效率功能。"
+  preset_name_help: "預設名稱不可重複。預設不包含自適應引擎總開關、自訂規則、排除項目與獨立的背景效率功能。"
   duplicate_preset_name: "已有相同名稱的預設。"
   unnamed_preset: "未命名預設"
   use_current_settings: "使用目前設定"

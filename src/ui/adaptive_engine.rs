@@ -516,19 +516,15 @@ impl Editor {
                     )
                 ]
                 .spacing(design::space::MEDIUM);
-                let action: Element<'_, Message> = if !preset {
-                    super::widgets::switch(
-                        s.cpu_scheduler.cpu_pressure_restraint_enabled,
-                        Some(|v| {
-                            Message::Toggle(
-                                |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
-                                v,
-                            )
-                        }),
-                    )
-                } else {
-                    iced::widget::Space::new().into()
-                };
+                let action = super::widgets::switch(
+                    s.cpu_scheduler.cpu_pressure_restraint_enabled,
+                    editable.then_some(|v| {
+                        Message::Toggle(
+                            |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
+                            v,
+                        )
+                    }),
+                );
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine.cpu_pressure".to_string(),
                     !self.collapsed[usize::from(preset)][0],
@@ -1990,11 +1986,19 @@ mod tests {
             Message::Toggle(|s, v| s.cpu_scheduler.process_priority_enabled = v, false),
         );
         assert!(settings.cpu_scheduler.process_priority_enabled);
+        editor.update(
+            &mut settings,
+            Message::Toggle(
+                |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
+                true,
+            ),
+        );
+        assert!(!settings.cpu_scheduler.cpu_pressure_restraint_enabled);
         editor.update(&mut settings, Message::Name("Saved".into()));
         editor.update(&mut settings, Message::Save);
         editor.update(&mut settings, Message::Apply(0));
         assert!(!settings.adaptive_engine.enabled);
-        assert!(!settings.cpu_scheduler.cpu_pressure_restraint_enabled);
+        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
         assert_eq!(settings.cpu_scheduler.custom_rules, vec![exclusion]);
         assert!(!settings.cpu_scheduler.process_priority_enabled);
         editor.update(&mut settings, Message::RemoveExclusion(0));

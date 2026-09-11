@@ -103,7 +103,6 @@ pub(super) fn apply_adaptive_engine_preset(settings: &mut Settings, preset: &Ada
     settings.adaptive_engine.focus_and_launch_profile =
         preset.focus_and_launch_profile.normalized();
 
-    let cpu_pressure_restraint_enabled = settings.cpu_scheduler.cpu_pressure_restraint_enabled;
     let exclusions = std::mem::take(&mut settings.cpu_scheduler.custom_rules);
     let io_exclusions = std::mem::take(&mut settings.cpu_scheduler.io_priority.exclusions);
     let thread_exclusions = std::mem::take(&mut settings.cpu_scheduler.thread_priority.exclusions);
@@ -111,7 +110,6 @@ pub(super) fn apply_adaptive_engine_preset(settings: &mut Settings, preset: &Ada
         std::mem::take(&mut settings.cpu_scheduler.dynamic_priority_boost.exclusions);
     let gpu_exclusions = std::mem::take(&mut settings.cpu_scheduler.gpu_priority.exclusions);
     settings.cpu_scheduler = preset.cpu_scheduler.clone();
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = cpu_pressure_restraint_enabled;
     settings.cpu_scheduler.custom_rules = exclusions;
     settings.cpu_scheduler.io_priority.exclusions = io_exclusions;
     settings.cpu_scheduler.thread_priority.exclusions = thread_exclusions;
@@ -121,7 +119,6 @@ pub(super) fn apply_adaptive_engine_preset(settings: &mut Settings, preset: &Ada
 
 fn comparable_cpu_scheduler_tuning(settings: &CpuSchedulerSettings) -> CpuSchedulerSettings {
     let mut settings = settings.clone();
-    settings.cpu_pressure_restraint_enabled = false;
     settings.custom_rules.clear();
     settings.io_priority.exclusions.clear();
     settings.thread_priority.exclusions.clear();

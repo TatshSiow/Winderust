@@ -650,7 +650,7 @@ adaptive_engine:
   view_preset: "View preset"
   preset_name: "Preset name"
   preset_name_placeholder: "Enter a preset name..."
-  preset_name_help: "Preset names must be unique. Presets exclude enable switches, custom rules, exclusions, and the separate Background Efficiency feature."
+  preset_name_help: "Preset names must be unique. Presets exclude the Adaptive Engine master switch, custom rules, exclusions, and the separate Background Efficiency feature."
   duplicate_preset_name: "A preset with this name already exists."
   unnamed_preset: "Unnamed preset"
   use_current_settings: "Use current settings"
