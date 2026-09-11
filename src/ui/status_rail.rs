@@ -38,7 +38,6 @@ fn feature_run_state(enabled: bool, unknown: bool) -> FeatureRunState {
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
-    ActionLog,
     RelaunchAdmin,
 }
 
@@ -214,11 +213,6 @@ pub(super) fn view<'a>(
             button(text(t!("admin_rights.relaunch").to_string())).on_press(Message::RelaunchAdmin),
         );
     }
-    body = body.push(
-        button(text(Page::ActionLog.label()))
-            .on_press(Message::ActionLog)
-            .style(super::widgets::quiet),
-    );
     Some(
         scrollable(
             container(body.width(Fill))

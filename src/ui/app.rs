@@ -284,9 +284,6 @@ impl WinderustApp {
                 self.expanded_section = (self.expanded_section != Some(page)).then_some(page);
             }
             Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
-            Message::Status(status_rail::Message::ActionLog) => {
-                return self.update(Message::Page(Page::ActionLog))
-            }
             Message::Status(status_rail::Message::RelaunchAdmin) => {
                 if crate::privilege::relaunch_as_admin() {
                     return self.update(Message::Close);
