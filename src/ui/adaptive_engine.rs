@@ -48,7 +48,7 @@ pub(super) struct Editor {
     read_only: bool,
     presets_tab: bool,
     tuning_tabs: [TuningTab; 2],
-    collapsed: [[bool; 2]; 2],
+    expanded: [[bool; 2]; 2],
     priority_expanded: [[bool; 7]; 2],
     path: String,
     error: String,
@@ -120,8 +120,7 @@ impl Editor {
                 }
             }
             Message::Collapse(index) => {
-                if let Some(value) =
-                    self.collapsed[usize::from(self.draft.is_some())].get_mut(index)
+                if let Some(value) = self.expanded[usize::from(self.draft.is_some())].get_mut(index)
                 {
                     *value = !*value;
                 }
@@ -527,7 +526,7 @@ impl Editor {
                 );
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine.cpu_pressure".to_string(),
-                    !self.collapsed[usize::from(preset)][0],
+                    self.expanded[usize::from(preset)][0],
                     Message::Collapse(0),
                     action,
                     pressure,
@@ -609,7 +608,7 @@ impl Editor {
                 }
                 body = body.push(super::widgets::setting_group(
                     "cpu_scheduler.limit_background_processors".to_string(),
-                    !self.collapsed[usize::from(preset)][1],
+                    self.expanded[usize::from(preset)][1],
                     Message::Collapse(1),
                     super::widgets::switch(
                         s.cpu_scheduler.limit_background_processors_enabled,
@@ -1948,7 +1947,7 @@ mod tests {
             Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Balanced),
         );
         assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
-        assert_eq!(editor.collapsed[1], [false; 2]);
+        assert_eq!(editor.expanded[1], [false; 2]);
         editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
         assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
         editor.update(
@@ -1958,7 +1957,7 @@ mod tests {
         editor.update(&mut settings, Message::Collapse(1));
         editor.update(&mut settings, Message::Cancel);
         assert_eq!(editor.tuning_tabs[0], TuningTab::CustomRules);
-        assert_eq!(editor.collapsed[0], [true, false]);
+        assert_eq!(editor.expanded[0], [true, false]);
         assert_eq!(settings, before);
     }
 

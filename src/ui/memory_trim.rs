@@ -9,7 +9,7 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    collapsed: [bool; 3],
+    expanded: [bool; 3],
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -30,15 +30,13 @@ impl Editor {
     pub(super) fn update(&mut self, settings: &mut MemoryTrimSettings, message: Message) {
         match message {
             Message::Collapse(i) => {
-                if let Some(value) = self.collapsed.get_mut(i) {
+                if let Some(value) = self.expanded.get_mut(i) {
                     *value = !*value;
                 }
             }
             Message::Enabled(v) => settings.enabled = v,
             Message::Path(v) => self.path = v,
-            Message::Add
-                if settings.enabled && can_add_memory_trim_exclusion(settings, &self.path) =>
-            {
+            Message::Add if can_add_memory_trim_exclusion(settings, &self.path) => {
                 settings
                     .exclusions
                     .push(new_process_exclusion_rule(&self.path));
@@ -94,7 +92,7 @@ impl Editor {
                 label,
                 unit,
                 text_input("", &value)
-                    .on_input_maybe(settings.enabled.then_some(change))
+                    .on_input_maybe(Some(change))
                     .width(design::STANDALONE_NUMERIC_WIDTH),
             )
         };
@@ -131,7 +129,7 @@ impl Editor {
         ] {
             body = body.push(super::widgets::setting_group(
                 label.to_string(),
-                !self.collapsed[index],
+                self.expanded[index],
                 Message::Collapse(index),
                 iced::widget::Space::new(),
                 content,
@@ -142,11 +140,10 @@ impl Editor {
             super::app_picker::view(
                 &self.path,
                 candidates,
-                settings.enabled,
+                true,
                 Message::Path,
                 Message::Browse,
-                (settings.enabled && can_add_memory_trim_exclusion(settings, &self.path))
-                    .then_some(Message::Add),
+                (can_add_memory_trim_exclusion(settings, &self.path)).then_some(Message::Add),
                 |path| can_add_memory_trim_exclusion(settings, path).then_some(true)
             )
         ]
@@ -162,11 +159,7 @@ impl Editor {
                         &r.executable_path,
                         candidates,
                         checkbox(r.enabled)
-                            .on_toggle_maybe(
-                                settings
-                                    .enabled
-                                    .then_some(move |v| Message::RuleEnabled(i, v)),
-                            )
+                            .on_toggle_maybe(Some(move |v| Message::RuleEnabled(i, v)))
                             .into(),
                         vec![],
                         Some(Message::Remove(i)),
@@ -182,7 +175,7 @@ impl Editor {
 
         body = body.push(super::widgets::setting_group(
             "memory_trim.category_safety".to_string(),
-            !self.collapsed[2],
+            self.expanded[2],
             Message::Collapse(2),
             iced::widget::Space::new(),
             safety,
@@ -194,15 +187,16 @@ impl Editor {
 mod tests {
     use super::*;
     #[test]
-    fn groups_collapse_independently_without_changing_settings() {
+    fn groups_start_collapsed_and_toggle_without_changing_settings() {
         let mut editor = Editor::default();
         let mut settings = MemoryTrimSettings::default();
         let before = settings.clone();
+        assert_eq!(editor.expanded, [false; 3]);
         editor.update(&mut settings, Message::Collapse(0));
         editor.update(&mut settings, Message::Collapse(2));
-        assert_eq!(editor.collapsed, [true, false, true]);
+        assert_eq!(editor.expanded, [true, false, true]);
         editor.update(&mut settings, Message::Collapse(0));
-        assert_eq!(editor.collapsed, [false, false, true]);
+        assert_eq!(editor.expanded, [false, false, true]);
         assert_eq!(settings, before);
     }
     #[test]

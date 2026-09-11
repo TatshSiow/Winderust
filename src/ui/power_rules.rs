@@ -182,7 +182,7 @@ impl Editor {
                 Kind::CpuLoad => s.by_cpu_load.enabled = v,
             },
             Message::Add => match kind {
-                Kind::Time if s.by_time.enabled => s.by_time.rules.push(ByTimeRule {
+                Kind::Time => s.by_time.rules.push(ByTimeRule {
                     enabled: true,
                     name: t!("by_time.new_rule").to_string(),
                     days: WeekdaySetting::all().to_vec(),
@@ -190,7 +190,7 @@ impl Editor {
                     end_time: "08:00".into(),
                     power_plan_guid: active(),
                 }),
-                Kind::CpuLoad if s.by_cpu_load.enabled => s.by_cpu_load.rules.push(ByCpuLoadRule {
+                Kind::CpuLoad => s.by_cpu_load.rules.push(ByCpuLoadRule {
                     enabled: true,
                     name: t!("by_cpu_load.new_rule").to_string(),
                     comparison: CpuUsageComparison::AtOrBelow,
@@ -201,7 +201,6 @@ impl Editor {
                     else_enabled: false,
                     else_power_plan_guid: active(),
                 }),
-                _ => {}
             },
             Message::Remove(i) => {
                 if i < self.ids.len() {
@@ -372,31 +371,31 @@ impl Editor {
                 RuleRef::Time(r) => (r.enabled, &r.name),
                 RuleRef::Cpu(r) => (r.enabled, &r.name),
             };
-            let header =
+            let header = row![
+                container(
+                    checkbox(rule_enabled)
+                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
+                )
+                .width(48),
+                text(name.clone()).width(Fill),
                 row![
-                    container(checkbox(rule_enabled).on_toggle_maybe(
-                        enabled.then_some(move |v| Message::RuleEnabled(index, v))
-                    ))
-                    .width(48),
-                    text(name.clone()).width(Fill),
-                    row![
-                        iced::widget::tooltip(
-                            button(super::navigation::glyph("icons/pencil.svg"))
-                                .padding(7)
-                                .width(32)
-                                .height(32)
-                                .style(widgets::quiet)
-                                .on_press(Message::Edit(index)),
-                            text(t!("common.edit").to_string()),
-                            iced::widget::tooltip::Position::Top
-                        ),
-                        widgets::rule_delete_button(enabled.then_some(Message::Remove(index)))
-                    ]
-                    .width(80)
-                    .align_y(iced::Center),
+                    iced::widget::tooltip(
+                        button(super::navigation::glyph("icons/pencil.svg"))
+                            .padding(7)
+                            .width(32)
+                            .height(32)
+                            .style(widgets::quiet)
+                            .on_press(Message::Edit(index)),
+                        text(t!("common.edit").to_string()),
+                        iced::widget::tooltip::Position::Top
+                    ),
+                    widgets::rule_delete_button(Some(Message::Remove(index)))
                 ]
-                .spacing(design::space::MEDIUM)
-                .align_y(iced::Center);
+                .width(80)
+                .align_y(iced::Center),
+            ]
+            .spacing(design::space::MEDIUM)
+            .align_y(iced::Center);
             cards.push((
                 id,
                 column![

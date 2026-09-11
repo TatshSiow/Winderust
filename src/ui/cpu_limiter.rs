@@ -11,7 +11,7 @@ use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule
 #[derive(Default)]
 pub(super) struct CpuLimiter {
     path: String,
-    collapsed: bool,
+    expanded: bool,
     draft: Option<(usize, CpuLimiterSettings)>,
     numbers: HashMap<(String, Tier), String>,
 }
@@ -119,7 +119,7 @@ impl CpuLimiter {
             }
             Message::Path(path) => self.path = path,
             Message::Browse => {}
-            Message::Collapse => self.collapsed = !self.collapsed,
+            Message::Collapse => self.expanded = !self.expanded,
             Message::Edit(_) | Message::SaveRule | Message::CancelRule => {}
             Message::Number(index, tier, raw) => {
                 let path = match index {
@@ -145,7 +145,7 @@ impl CpuLimiter {
                 self.numbers.insert((path, tier), raw);
             }
             Message::Add => {
-                if settings.enabled && can_add_cpu_limiter_process(settings, &self.path) {
+                if can_add_cpu_limiter_process(settings, &self.path) {
                     settings.rules.push(new_cpu_limiter_rule(&self.path));
                     self.path.clear();
                 }
@@ -205,7 +205,6 @@ impl CpuLimiter {
         tier: Tier,
         path: &str,
         value: u8,
-        enabled: bool,
     ) -> Element<'_, Message> {
         let change = move |value| match index {
             Some(index) => Message::RuleLimit(index, tier, value),
@@ -215,28 +214,14 @@ impl CpuLimiter {
             button(super::navigation::glyph("icons/minus.svg"))
                 .padding(7)
                 .height(32)
-                .on_press_maybe((enabled && value > 1).then(|| change(value.saturating_sub(1)))),
-            {
-                let control: Element<'_, Message> =
-                    slider(1..=100, value, change).width(Fill).into();
-                if enabled {
-                    control
-                } else {
-                    iced::widget::stack![
-                        control,
-                        iced::widget::opaque(iced::widget::Space::new().width(Fill).height(Fill))
-                    ]
-                    .width(Fill)
-                    .height(design::SLIDER_HEIGHT)
-                    .into()
-                }
-            },
+                .on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
+            slider(1..=100, value, change).width(Fill),
             button(super::navigation::glyph("icons/plus.svg"))
                 .padding(7)
                 .height(32)
-                .on_press_maybe((enabled && value < 100).then(|| change(value.saturating_add(1)))),
+                .on_press_maybe((value < 100).then(|| change(value.saturating_add(1)))),
             text_input("1-100", &self.number(path, tier, value))
-                .on_input_maybe(enabled.then_some(move |raw| Message::Number(index, tier, raw)))
+                .on_input(move |raw| Message::Number(index, tier, raw))
                 .width(design::NUMERIC_WIDTH)
         ]
         .spacing(design::space::SMALL)
@@ -249,12 +234,10 @@ impl CpuLimiter {
         tier: Tier,
         path: &str,
         value: u8,
-        enabled: bool,
     ) -> Element<'_, Message> {
         row![
             text(super::widgets::label_with_unit(&tier.label(), "%")).width(Fill),
-            iced::widget::container(self.limit_control(index, tier, path, value, enabled))
-                .width(420)
+            iced::widget::container(self.limit_control(index, tier, path, value)).width(420)
         ]
         .spacing(design::space::MEDIUM)
         .height(super::widgets::SETTING_ROW_HEIGHT)
@@ -281,11 +264,11 @@ impl CpuLimiter {
             settings.visible_window_allowed_cpu_time_percent,
             settings.background_allowed_cpu_time_percent,
         ]) {
-            defaults = defaults.push(self.limit_row(None, tier, "", value, settings.enabled));
+            defaults = defaults.push(self.limit_row(None, tier, "", value));
         }
         body = body.push(super::widgets::setting_group(
             "cpu_limiter.enable".to_string(),
-            !self.collapsed,
+            self.expanded,
             Message::Collapse,
             super::widgets::switch(settings.enabled, Some(Message::Enabled)),
             defaults,
@@ -300,11 +283,10 @@ impl CpuLimiter {
             .push(super::app_picker::view(
                 &self.path,
                 candidates,
-                settings.enabled,
+                true,
                 Message::Path,
                 Message::Browse,
-                (settings.enabled && can_add_cpu_limiter_process(settings, &self.path))
-                    .then_some(Message::Add),
+                (can_add_cpu_limiter_process(settings, &self.path)).then_some(Message::Add),
                 |path| can_add_cpu_limiter_process(settings, path).then_some(true),
             ));
         let mut cards = Vec::new();
@@ -325,14 +307,12 @@ impl CpuLimiter {
                     .into_iter()
                     .map(|mode| Mode(mode, mode_label(mode)))
                     .collect();
-                let selector: Element<'_, Message> = if settings.enabled {
+                let selector: Element<'_, Message> = {
                     pick_list(choices, Some(Mode(mode, mode_label(mode))), move |mode| {
                         Message::RuleMode(index, tier, mode.0)
                     })
                     .width(Fill)
                     .into()
-                } else {
-                    text(mode_label(mode)).into()
                 };
                 cells.push(selector);
             }
@@ -341,11 +321,7 @@ impl CpuLimiter {
                 &rule.executable_path,
                 candidates,
                 checkbox(rule.enabled)
-                    .on_toggle_maybe(
-                        settings
-                            .enabled
-                            .then_some(move |v| Message::RuleEnabled(index, v)),
-                    )
+                    .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
                     .into(),
                 cells,
                 row![
@@ -359,9 +335,7 @@ impl CpuLimiter {
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top
                     ),
-                    super::widgets::rule_delete_button(
-                        settings.enabled.then_some(Message::Remove(index))
-                    )
+                    super::widgets::rule_delete_button(Some(Message::Remove(index)))
                 ]
                 .width(80)
                 .align_y(iced::Center)
@@ -446,13 +420,7 @@ impl CpuLimiter {
             )]
             .spacing(design::space::MEDIUM);
             if mode == ProcessRuleMode::Enabled {
-                card = card.push(self.limit_row(
-                    Some(index),
-                    tier,
-                    &rule.executable_path,
-                    value,
-                    true,
-                ));
+                card = card.push(self.limit_row(Some(index), tier, &rule.executable_path, value));
             }
             details = details.push(super::widgets::settings_card(card));
         }

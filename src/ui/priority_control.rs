@@ -10,7 +10,7 @@ use std::path::Path;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    collapsed: [[bool; 3]; 6],
+    expanded: [[bool; 3]; 6],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -299,7 +299,7 @@ impl Editor {
             Message::Path(path) => self.path = path,
             Message::Browse => {} // The application opens the native executable picker.
             Message::Add => {
-                if kind.enabled(settings) && kind.can_add(settings, &self.path) {
+                if kind.can_add(settings, &self.path) {
                     kind.rules_mut(settings).push(ProcessExclusionRule {
                         executable_path: crate::foreground::executable_path_key(Path::new(
                             self.path.trim(),
@@ -314,8 +314,8 @@ impl Editor {
                     .retain(|rule| rule.executable_path != path);
             }
             Message::Collapse(tier) => {
-                let collapsed = &mut self.collapsed[kind as usize][tier as usize];
-                *collapsed = !*collapsed;
+                let expanded = &mut self.expanded[kind as usize][tier as usize];
+                *expanded = !*expanded;
             }
 
             Message::RuleEnabled(index, value) => {
@@ -551,18 +551,16 @@ impl Editor {
             } else {
                 super::widgets::switch(
                     detection,
-                    enabled.then_some(move |value| Message::Detection(tier, value)),
+                    Some(move |value| Message::Detection(tier, value)),
                 )
             };
-            let control: Element<'_, Message> = if enabled && detection {
+            let control: Element<'_, Message> = {
                 pick_list(
                     choices.clone(),
                     Some(kind.value(settings, tier)),
                     move |value| Message::Default(tier, value),
                 )
                 .into()
-            } else {
-                text(kind.value(settings, tier).to_string()).into()
             };
             group = group.push(super::widgets::setting_row(
                 "common.default",
@@ -574,13 +572,15 @@ impl Editor {
                     Tier::VisibleWindow => t!("common.preserve_visible_window_priority"),
                     Tier::Background => t!("common.preserve_background_priority"),
                 };
-                group = group.push(checkbox(preserve).label(label.to_string()).on_toggle_maybe(
-                    (enabled && detection).then_some(move |value| Message::Preserve(tier, value)),
-                ));
+                group = group.push(
+                    checkbox(preserve)
+                        .label(label.to_string())
+                        .on_toggle_maybe(Some(move |value| Message::Preserve(tier, value))),
+                );
             }
             body = body.push(super::widgets::setting_group(
                 label,
-                !self.collapsed[kind as usize][tier as usize],
+                self.expanded[kind as usize][tier as usize],
                 Message::Collapse(tier),
                 action,
                 group,
@@ -592,17 +592,17 @@ impl Editor {
         body = body.push(super::app_picker::view(
             &self.path,
             candidates,
-            enabled,
+            true,
             Message::Path,
             Message::Browse,
-            (enabled && kind.can_add(settings, &self.path)).then_some(Message::Add),
+            (kind.can_add(settings, &self.path)).then_some(Message::Add),
             |path| kind.can_add(settings, path).then_some(true),
         ));
         let mut rule_cards = Vec::new();
         for (index, rule) in kind.rules(settings).iter().enumerate() {
             let mut controls = Vec::new();
             for tier in Tier::ALL {
-                let control: Element<'_, Message> = if enabled {
+                let control: Element<'_, Message> = {
                     pick_list(
                         choices.clone(),
                         Some(kind.rule_value(rule, tier)),
@@ -610,8 +610,6 @@ impl Editor {
                     )
                     .width(Fill)
                     .into()
-                } else {
-                    text(kind.rule_value(rule, tier).to_string()).into()
                 };
                 controls.push(control);
             }
@@ -621,10 +619,10 @@ impl Editor {
                     &rule.executable_path,
                     candidates,
                     checkbox(rule.enabled)
-                        .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
+                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
                         .into(),
                     controls,
-                    enabled.then_some(Message::Remove(rule.executable_path.clone())),
+                    Some(Message::Remove(rule.executable_path.clone())),
                 ),
             ));
         }

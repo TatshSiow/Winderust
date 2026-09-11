@@ -100,10 +100,10 @@ pub(super) fn view<'a>(
     let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
         super::widgets::plan(guid.clone(), plans, action)
     };
-    let flag = |key: &str, value, action: fn(bool) -> Message, enabled: bool| {
+    let flag = |key: &str, value, action: fn(bool) -> Message| {
         super::widgets::settings_card(super::widgets::setting_row(
             key,
-            super::widgets::switch(value, enabled.then_some(action)),
+            super::widgets::switch(value, Some(action)),
         ))
     };
     let number = |key: &str,
@@ -131,12 +131,7 @@ pub(super) fn view<'a>(
     };
     scrollable(
         column![
-            flag(
-                "by_activity.enable",
-                activity.enabled,
-                Message::Enabled,
-                true
-            ),
+            flag("by_activity.enable", activity.enabled, Message::Enabled),
             super::widgets::settings_card(super::widgets::setting_row(
                 "by_activity.idle_plan",
                 iced::widget::container(plan_picker(
@@ -156,20 +151,17 @@ pub(super) fn view<'a>(
             flag(
                 "by_activity.keyboard_input",
                 activity.input_detection.keyboard,
-                Message::Keyboard,
-                activity.enabled
+                Message::Keyboard
             ),
             flag(
                 "by_activity.mouse_input",
                 activity.input_detection.mouse,
-                Message::Mouse,
-                activity.enabled
+                Message::Mouse
             ),
             flag(
                 "by_activity.controller_input",
                 activity.input_detection.controller,
-                Message::Controller,
-                activity.enabled
+                Message::Controller
             ),
             number(
                 "by_activity.idle_timeout",

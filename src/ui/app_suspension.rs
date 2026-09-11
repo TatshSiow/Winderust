@@ -11,7 +11,7 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    collapsed: [bool; 3],
+    expanded: [bool; 3],
 }
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Delay {
@@ -51,12 +51,12 @@ impl Editor {
         match m {
             Message::Enabled(v) => s.enabled = v,
             Message::Group(i) => {
-                if let Some(v) = self.collapsed.get_mut(i) {
+                if let Some(v) = self.expanded.get_mut(i) {
                     *v = !*v;
                 }
             }
             Message::Path(v) => self.path = v,
-            Message::Add if s.enabled && self.can_add(s, unavailable) => {
+            Message::Add if self.can_add(s, unavailable) => {
                 s.suspendable_apps.push(new_app_suspension_rule(&self.path));
                 self.path.clear();
             }
@@ -168,7 +168,6 @@ impl Editor {
             Delay::Background,
             "app_suspension.background_delay",
             s.background_delay_seconds,
-            s.enabled,
         )));
         for (i, key, enabled, toggle, rows) in [
             (
@@ -212,16 +211,16 @@ impl Editor {
                 )],
             ),
         ] {
-            let controls =
-                iced::widget::Column::with_children(rows.into_iter().map(
-                    |(field, label, value)| delay_row(field, label, value, s.enabled && enabled),
-                ))
-                .spacing(design::space::SMALL);
+            let controls = iced::widget::Column::with_children(
+                rows.into_iter()
+                    .map(|(field, label, value)| delay_row(field, label, value)),
+            )
+            .spacing(design::space::SMALL);
             body = body.push(super::widgets::setting_group(
                 key.to_string(),
-                !self.collapsed[i],
+                self.expanded[i],
                 Message::Group(i),
-                super::widgets::switch(enabled, s.enabled.then_some(toggle)),
+                super::widgets::switch(enabled, Some(toggle)),
                 controls,
             ));
         }
@@ -234,10 +233,10 @@ impl Editor {
             .push(super::app_picker::view(
                 &self.path,
                 candidates,
-                s.enabled,
+                true,
                 Message::Path,
                 Message::Browse,
-                (s.enabled && self.can_add(s, unavailable)).then_some(Message::Add),
+                (self.can_add(s, unavailable)).then_some(Message::Add),
                 |path| {
                     Some(
                         !unavailable
@@ -272,10 +271,10 @@ impl Editor {
             let mut controls: Vec<Element<'_, Message>> = vec![
                 state.into(),
                 checkbox(r.audio_wake_enabled)
-                    .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleAudio(i, v)))
+                    .on_toggle_maybe(Some(move |v| Message::RuleAudio(i, v)))
                     .into(),
                 checkbox(r.network_wake_enabled)
-                    .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleNetwork(i, v)))
+                    .on_toggle_maybe(Some(move |v| Message::RuleNetwork(i, v)))
                     .into(),
             ];
             for (upload, bytes, unit, _label) in [
@@ -296,13 +295,7 @@ impl Editor {
                 controls.push(
                     column![
                         text_input("", &value)
-                            .on_input_maybe(
-                                (s.enabled
-                                    && r.enabled
-                                    && s.network_wake_enabled
-                                    && r.network_wake_enabled)
-                                    .then_some(move |v| Message::Threshold(i, upload, v))
-                            )
+                            .on_input_maybe(Some(move |v| Message::Threshold(i, upload, v)))
                             .width(65),
                         pick_list(
                             NetworkThresholdUnit::ALL.map(Unit),
@@ -320,7 +313,7 @@ impl Editor {
                     &r.executable_path,
                     candidates,
                     checkbox(r.enabled)
-                        .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleEnabled(i, v)))
+                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(i, v)))
                         .into(),
                     controls,
                     Some(Message::Remove(i)),
@@ -354,7 +347,7 @@ impl Editor {
         scrollable(body).height(Fill).into()
     }
 }
-fn delay_row(field: Delay, label: &str, value: u64, enabled: bool) -> Element<'static, Message> {
+fn delay_row(field: Delay, label: &str, value: u64) -> Element<'static, Message> {
     let max = match field {
         Delay::Background | Delay::ThawInterval => 86400,
         _ => 3600,
@@ -366,7 +359,7 @@ fn delay_row(field: Delay, label: &str, value: u64, enabled: bool) -> Element<'s
             &value.to_string(),
             1..=max,
             1,
-            enabled.then_some(move |v| Message::Delay(field, v)),
+            Some(move |v| Message::Delay(field, v)),
         ),
     )
     .into()

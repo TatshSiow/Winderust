@@ -33,7 +33,7 @@ impl Editor {
         match m {
             Message::Enabled(v) => s.enabled = v,
             Message::Path(v) => self.path = v,
-            Message::Add if s.enabled && can_add_timer_resolution_process(s, &self.path) => {
+            Message::Add if can_add_timer_resolution_process(s, &self.path) => {
                 s.rules
                     .push(new_timer_resolution_rule(&self.path, s.desired_100ns));
                 self.path.clear();
@@ -91,11 +91,10 @@ impl Editor {
             super::app_picker::view(
                 &self.path,
                 candidates,
-                s.enabled,
+                true,
                 Message::Path,
                 Message::Browse,
-                (s.enabled && can_add_timer_resolution_process(s, &self.path))
-                    .then_some(Message::Add),
+                (can_add_timer_resolution_process(s, &self.path)).then_some(Message::Add),
                 |path| can_add_timer_resolution_process(s, path).then_some(true)
             )
         ]
@@ -114,7 +113,7 @@ impl Editor {
                 });
             let controls = text_input("", &value)
                 .align_x(iced::alignment::Horizontal::Center)
-                .on_input_maybe(s.enabled.then_some(move |v| Message::Resolution(i, v)))
+                .on_input_maybe(Some(move |v| Message::Resolution(i, v)))
                 .on_submit(Message::Commit(i))
                 .width(design::STANDALONE_NUMERIC_WIDTH);
             cards.push((
@@ -123,7 +122,7 @@ impl Editor {
                     &r.executable_path,
                     candidates,
                     checkbox(r.enabled)
-                        .on_toggle_maybe(s.enabled.then_some(move |v| Message::RuleEnabled(i, v)))
+                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(i, v)))
                         .into(),
                     vec![controls.into()],
                     Some(Message::Remove(i)),

@@ -53,7 +53,7 @@ impl Editor {
                     Message::Path(path) => self.path = path,
                     Message::Browse => {}
                     Message::Add => {
-                        if settings.enabled && $can_add(settings, &self.path) {
+                        if $can_add(settings, &self.path) {
                             settings.rules.push($new_rule(
                                 &self.path,
                                 plans
@@ -118,10 +118,10 @@ impl Editor {
                 let mut rules_body = column![super::app_picker::view(
                     &self.path,
                     candidates,
-                    settings.enabled,
+                    true,
                     Message::Path,
                     Message::Browse,
-                    (settings.enabled && $can_add(settings, &self.path)).then_some(Message::Add),
+                    ($can_add(settings, &self.path)).then_some(Message::Add),
                     |path| $can_add(settings, path).then_some(true)
                 )]
                 .spacing(super::widgets::CARD_GAP);
@@ -143,14 +143,12 @@ impl Editor {
                                 rule.power_plan_guid.clone().unwrap_or_default(),
                             )
                         });
-                    let selector: Element<'_, Message> = if settings.enabled {
+                    let selector: Element<'_, Message> = {
                         pick_list(choices, Some(selected), move |choice| {
                             Message::Plan(index, choice.0)
                         })
                         .width(Fill)
                         .into()
-                    } else {
-                        text(selected.1).into()
                     };
                     cards.push((
                         widgets::stable_key(&rule.executable_path),
@@ -158,14 +156,12 @@ impl Editor {
                             &rule.executable_path,
                             candidates,
                             checkbox(rule.enabled)
-                                .on_toggle_maybe(
-                                    settings
-                                        .enabled
-                                        .then_some(move |value| Message::RuleEnabled(index, value)),
-                                )
+                                .on_toggle_maybe(Some(move |value| {
+                                    Message::RuleEnabled(index, value)
+                                }))
                                 .into(),
                             vec![selector],
-                            settings.enabled.then_some(Message::Remove(index)),
+                            Some(Message::Remove(index)),
                         ),
                     ));
                 }

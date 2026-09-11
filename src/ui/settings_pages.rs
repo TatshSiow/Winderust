@@ -10,7 +10,7 @@ use rust_i18n::t;
 pub(super) struct Editor {
     color: Option<String>,
     failure_threshold: Option<String>,
-    accent_collapsed: bool,
+    accent_expanded: bool,
     custom_color_open: bool,
     pub(super) checking: bool,
     notify_on_update: bool,
@@ -106,10 +106,10 @@ impl Editor {
             Message::Theme(value) => s.general.theme_mode = value,
             Message::AccentSource(value) => {
                 s.general.accent.source = value;
-                self.accent_collapsed = value == AccentColorSource::Windows;
+                self.accent_expanded = value != AccentColorSource::Windows;
             }
             Message::ToggleCustomColor => self.custom_color_open = !self.custom_color_open,
-            Message::ToggleAccent => self.accent_collapsed = !self.accent_collapsed,
+            Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
             Message::ColorChannel(shift, value) => {
                 if [0, 8, 16].contains(&shift) {
                     s.general.accent.custom_color = (s.general.accent.custom_color
@@ -386,7 +386,7 @@ impl Editor {
                     ),
                     super::widgets::setting_group(
                         "accent.source".to_string(),
-                        !self.accent_collapsed,
+                        self.accent_expanded,
                         Message::ToggleAccent,
                         pick_list(
                             vec![

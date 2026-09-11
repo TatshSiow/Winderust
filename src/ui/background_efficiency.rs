@@ -6,7 +6,7 @@ use crate::config::{
     ProcessRuleMode, Settings,
 };
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{column, scrollable, text};
+use iced::widget::{column, scrollable};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -14,7 +14,7 @@ use std::path::Path;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    collapsed: [bool; 3],
+    expanded: [bool; 3],
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -52,7 +52,7 @@ impl Editor {
             Message::Path(value) => self.path = value,
             Message::Browse => {} // The application owns the native executable picker.
             Message::Add => {
-                if settings.enabled && can_add(settings, &self.path) {
+                if can_add(settings, &self.path) {
                     settings.custom_rules.push(BackgroundEfficiencyRule {
                         enabled: true,
                         executable_path: crate::foreground::executable_path_key(Path::new(
@@ -85,8 +85,8 @@ impl Editor {
                     .retain(|rule| rule.executable_path != path);
             }
             Message::Collapse(tier) => {
-                let collapsed = &mut self.collapsed[tier as usize];
-                *collapsed = !*collapsed;
+                let expanded = &mut self.expanded[tier as usize];
+                *expanded = !*expanded;
             }
         }
     }
@@ -123,7 +123,7 @@ impl Editor {
             } else {
                 super::widgets::switch(
                     detection,
-                    enabled.then_some(move |value| Message::Detection(tier, value)),
+                    Some(move |value| Message::Detection(tier, value)),
                 )
             };
             let choices = [
@@ -134,7 +134,7 @@ impl Editor {
             group = group.push(super::widgets::setting_row(
                 "process_list.efficiency_mode",
                 pick_list(choices, Some(selected), move |v| {
-                    Message::Default(tier, if enabled && detection { v.0 } else { value })
+                    Message::Default(tier, v.0)
                 })
                 .width(design::SELECT_WIDTH),
             ));
@@ -142,13 +142,7 @@ impl Editor {
                 let aggressiveness = pick_list(
                     BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
                     Some(Aggressiveness(settings.aggressiveness)),
-                    move |value| {
-                        Message::Aggressiveness(if enabled {
-                            value.0
-                        } else {
-                            settings.aggressiveness
-                        })
-                    },
+                    move |value| Message::Aggressiveness(value.0),
                 )
                 .width(design::SELECT_WIDTH);
                 group = group.push(super::widgets::setting_row(
@@ -158,7 +152,7 @@ impl Editor {
             }
             body = body.push(super::widgets::setting_group(
                 label,
-                !self.collapsed[tier as usize],
+                self.expanded[tier as usize],
                 Message::Collapse(tier),
                 action,
                 group,
@@ -170,10 +164,10 @@ impl Editor {
         body = body.push(super::app_picker::view(
             &self.path,
             candidates,
-            enabled,
+            true,
             Message::Path,
             Message::Browse,
-            (enabled && can_add(settings, &self.path)).then_some(Message::Add),
+            (can_add(settings, &self.path)).then_some(Message::Add),
             |path| can_add(settings, path).then_some(true),
         ));
         let mut rule_cards = Vec::new();
@@ -184,7 +178,7 @@ impl Editor {
                 rule.visible_window_efficiency_mode,
                 rule.background_efficiency_mode,
             ]) {
-                let control: Element<'_, Message> = if enabled {
+                let control: Element<'_, Message> = {
                     pick_list(
                         ProcessRuleMode::ALL.map(Mode),
                         Some(Mode(mode)),
@@ -192,8 +186,6 @@ impl Editor {
                     )
                     .width(Fill)
                     .into()
-                } else {
-                    text(Mode(mode).to_string()).into()
                 };
                 controls.push(control);
             }
@@ -203,10 +195,10 @@ impl Editor {
                     &rule.executable_path,
                     candidates,
                     checkbox(rule.enabled)
-                        .on_toggle_maybe(enabled.then_some(move |v| Message::RuleEnabled(index, v)))
+                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
                         .into(),
                     controls,
-                    enabled.then_some(Message::Remove(rule.executable_path.clone())),
+                    Some(Message::Remove(rule.executable_path.clone())),
                 ),
             ));
         }
@@ -257,10 +249,11 @@ impl std::fmt::Display for Aggressiveness {
 mod tests {
     use super::*;
     #[test]
-    fn rules_inherit_defaults_and_edit_tiers_independently() {
+    fn disabled_feature_rules_remain_editable_and_validate_candidates() {
         let mut settings = Settings::default();
         let mut editor = Editor::default();
-        editor.update(&mut settings, Message::Enabled(true));
+        editor.update(&mut settings, Message::Enabled(false));
+        assert_eq!(editor.expanded, [false; 3]);
         editor.update(&mut settings, Message::Path(r"C:\Apps\editor.exe".into()));
         editor.update(&mut settings, Message::Add);
         assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
@@ -286,5 +279,6 @@ mod tests {
         editor.update(&mut settings, Message::Path("relative.exe".into()));
         editor.update(&mut settings, Message::Add);
         assert_eq!(settings.background_efficiency.custom_rules.len(), 1);
+        assert!(!settings.background_efficiency.enabled);
     }
 }

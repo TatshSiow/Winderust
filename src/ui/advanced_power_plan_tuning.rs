@@ -19,7 +19,7 @@ pub(super) struct Editor {
     pub(super) dirty: bool,
     pub(super) status: String,
     preset: Option<PresetEditor>,
-    collapsed: [bool; 2],
+    expanded: [bool; 2],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
@@ -141,7 +141,7 @@ impl Editor {
     ) {
         match message {
             Message::Group(source) => {
-                self.collapsed[source as usize] = !self.collapsed[source as usize];
+                self.expanded[source as usize] = !self.expanded[source as usize];
             }
             Message::Plan(guid) => {
                 if self.target.as_ref() == Some(&guid) {
@@ -386,7 +386,7 @@ impl Editor {
                 );
                 body = body.push(super::widgets::setting_group(
                     title.to_string(),
-                    !self.collapsed[source as usize],
+                    self.expanded[source as usize],
                     Message::Group(source),
                     action,
                     controls,

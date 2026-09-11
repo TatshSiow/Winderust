@@ -98,7 +98,7 @@ impl Editor {
             Message::Path(v) => self.path = v,
             Message::Browse => {}
             Message::Add => {
-                if settings(s, k).enabled && can_add(s, &self.path) {
+                if can_add(s, &self.path) {
                     settings_mut(s, k).rules.push(CpuAllocationRule {
                         enabled: true,
                         executable_path: executable_path_key(Path::new(&self.path)),
@@ -211,10 +211,10 @@ impl Editor {
             super::app_picker::view(
                 &self.path,
                 candidates,
-                feature.enabled,
+                true,
                 Message::Path,
                 Message::Browse,
-                (feature.enabled && can_add(s, &self.path)).then_some(Message::Add),
+                (can_add(s, &self.path)).then_some(Message::Add),
                 |path| can_add(s, path).then_some(true)
             )
         ]

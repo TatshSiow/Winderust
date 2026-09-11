@@ -1484,13 +1484,10 @@ impl WinderustApp {
                         .height(Fill)
                         .into()
                     } else if matches!(self.page, Page::ByTime | Page::ByCpuLoad) {
-                        let (kind, enabled) = if self.page == Page::ByTime {
-                            (power_rules::Kind::Time, self.settings.by_time.enabled)
+                        let kind = if self.page == Page::ByTime {
+                            power_rules::Kind::Time
                         } else {
-                            (
-                                power_rules::Kind::CpuLoad,
-                                self.settings.by_cpu_load.enabled,
-                            )
+                            power_rules::Kind::CpuLoad
                         };
                         column![
                             panel,
@@ -1502,10 +1499,7 @@ impl WinderustApp {
                                 .width(Fill)
                                 .height(32)
                                 .style(widgets::primary_button)
-                                .on_press_maybe(enabled.then_some(Message::PowerRules(
-                                    kind,
-                                    power_rules::Message::Add
-                                )))
+                                .on_press(Message::PowerRules(kind, power_rules::Message::Add))
                             )
                             .padding([design::space::MEDIUM as u16, 0])
                         ]
