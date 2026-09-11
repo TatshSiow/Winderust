@@ -1483,6 +1483,34 @@ impl WinderustApp {
                         ]
                         .height(Fill)
                         .into()
+                    } else if matches!(self.page, Page::ByTime | Page::ByCpuLoad) {
+                        let (kind, enabled) = if self.page == Page::ByTime {
+                            (power_rules::Kind::Time, self.settings.by_time.enabled)
+                        } else {
+                            (
+                                power_rules::Kind::CpuLoad,
+                                self.settings.by_cpu_load.enabled,
+                            )
+                        };
+                        column![
+                            panel,
+                            iced::widget::rule::horizontal(1),
+                            container(
+                                button(
+                                    container(text(t!("common.create").to_string())).center_x(Fill)
+                                )
+                                .width(Fill)
+                                .height(32)
+                                .style(widgets::primary_button)
+                                .on_press_maybe(enabled.then_some(Message::PowerRules(
+                                    kind,
+                                    power_rules::Message::Add
+                                )))
+                            )
+                            .padding([design::space::MEDIUM as u16, 0])
+                        ]
+                        .height(Fill)
+                        .into()
                     } else {
                         panel
                     }
@@ -1567,6 +1595,36 @@ impl WinderustApp {
         } else {
             layout.into()
         };
+        let rule_modal = match self.page {
+            Page::ByTime => self
+                .time_rules
+                .modal(power_rules::Kind::Time, &self.power_plans)
+                .map(|modal| modal.map(|m| Message::PowerRules(power_rules::Kind::Time, m))),
+            Page::ByCpuLoad => self
+                .cpu_rules
+                .modal(power_rules::Kind::CpuLoad, &self.power_plans)
+                .map(|modal| modal.map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m))),
+            _ => None,
+        };
+        if let Some(modal) = rule_modal {
+            return iced::widget::stack![
+                layout,
+                iced::widget::opaque(
+                    container(iced::widget::Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(|_| container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                            ..Default::default()
+                        })
+                ),
+                container(iced::widget::opaque(modal))
+                    .padding(16)
+                    .center_x(Fill)
+                    .center_y(Fill)
+            ]
+            .into();
+        }
         if self.page == Page::AdaptiveEngine && self.adaptive.has_pending_editor() {
             return iced::widget::stack![
                 layout,

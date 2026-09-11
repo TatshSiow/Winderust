@@ -129,8 +129,6 @@ common:
   all: "全部"
   rule_count: "%{count} 個規則"
   pid_count: "%{count} 個 PID"
-  seconds_short: "%{count} 秒"
-  minutes_seconds_short: "%{minutes} 分 %{seconds} 秒"
   minutes_long: "%{count} 分鐘"
   latest_sample: "最新樣本"
   seconds_ago: "%{count} 秒前"
@@ -579,6 +577,7 @@ weekday:
   sun: "週日"
 
 by_cpu_load:
+  if: "如果"
   intro_1: "CPU 負載計畫會在整體處理器使用率超過門檻並持續一段時間後切換全系統電源計畫。"
   intro_2: "這裡用於電源計畫自動化；特定程序需要處理器上限時，請使用 CPU 上限規則。"
   enable: "啟用 CPU 負載計畫"

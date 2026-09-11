@@ -129,8 +129,6 @@ common:
   all: "All"
   rule_count: "%{count} rules"
   pid_count: "%{count} PIDs"
-  seconds_short: "%{count}s"
-  minutes_seconds_short: "%{minutes}m %{seconds}s"
   minutes_long: "%{count} mins"
   latest_sample: "Latest sample"
   seconds_ago: "%{count}s ago"
@@ -577,6 +575,7 @@ weekday:
   sun: "Sun"
 
 by_cpu_load:
+  if: "If"
   intro_1: "By CPU Load switches the whole system power plan when total processor usage crosses a threshold for a duration."
   intro_2: "Use these for plan automation; use CPU Limiter when a specific process needs a processor limit."
   enable: "Enable By CPU Load"
