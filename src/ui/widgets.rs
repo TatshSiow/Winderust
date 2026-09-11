@@ -40,7 +40,27 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
     controls: Vec<Element<'a, M>>,
     remove: Option<M>,
 ) -> Element<'a, M> {
-    use iced::widget::{column, container};
+    iced::widget::column![
+        process_rule_header(
+            path,
+            candidates,
+            active,
+            controls,
+            rule_delete_button(remove)
+        ),
+        iced::widget::rule::horizontal(1)
+    ]
+    .into()
+}
+
+pub(super) fn process_rule_header<'a, M: 'a>(
+    path: &str,
+    candidates: &[super::app_picker::Candidate],
+    active: Element<'a, M>,
+    controls: Vec<Element<'a, M>>,
+    action: Element<'a, M>,
+) -> Element<'a, M> {
+    use iced::widget::container;
     let mut cells = row![
         container(active).width(48),
         container(super::app_picker::app_name(path, candidates))
@@ -59,12 +79,8 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
     for control in controls {
         cells = cells.push(container(control).width(iced::Length::FillPortion(2)));
     }
-    cells = cells.push(rule_delete_button(remove));
-    column![
-        container(cells).padding(CARD_PADDING as u16),
-        iced::widget::rule::horizontal(1)
-    ]
-    .into()
+    cells = cells.push(action);
+    container(cells).padding(CARD_PADDING as u16).into()
 }
 
 pub(super) fn rule_delete_button<'a, M: Clone + 'a>(remove: Option<M>) -> Element<'a, M> {
@@ -116,6 +132,15 @@ pub(super) fn process_rules_table<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     empty: String,
 ) -> Element<'a, M> {
+    process_rules_table_with_actions(tiers, rows, empty, 40)
+}
+
+pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
+    tiers: impl IntoIterator<Item = String>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    empty: String,
+    actions_width: u32,
+) -> Element<'a, M> {
     use iced::widget::container;
     let mut header = row![
         text(rust_i18n::t!("common.active").to_string()).width(48),
@@ -128,7 +153,7 @@ pub(super) fn process_rules_table<'a, M: 'a>(
     for tier in tiers {
         header = header.push(text(tier).width(iced::Length::FillPortion(2)));
     }
-    header = header.push(text(rust_i18n::t!("common.actions").to_string()).width(40));
+    header = header.push(text(rust_i18n::t!("common.actions").to_string()).width(actions_width));
     let rows = if rows.is_empty() {
         container(text(empty).style(text::secondary))
             .padding(design::space::LARGE as u16)

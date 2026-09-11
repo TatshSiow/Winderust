@@ -1596,6 +1596,10 @@ impl WinderustApp {
             layout.into()
         };
         let modal = match self.page {
+            Page::CpuLimiter => self
+                .cpu_limiter
+                .modal(&self.candidates, &self.status.feature_status.cpu_limiter)
+                .map(|modal| modal.map(Message::CpuLimiter)),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
                 .preset_modal(&self.settings.advanced_power_plan_tuning_presets)
