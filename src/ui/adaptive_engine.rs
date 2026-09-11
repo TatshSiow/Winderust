@@ -80,7 +80,7 @@ pub(super) enum Message {
     New,
     Name(String),
     Save,
-    Delete,
+    Delete(usize),
     Cancel,
     UseCurrent,
     Path(String),
@@ -102,6 +102,7 @@ impl Editor {
                 | Message::Cancel
                 | Message::UseCurrent
         ) {
+            self.error.clear();
             self.numbers.clear();
             self.invalid_numbers.clear();
         }
@@ -189,15 +190,11 @@ impl Editor {
                     }
                 }
             }
-            Message::Delete => {
-                if !self.read_only {
-                    if let Some(i) = self.editing {
-                        if i < s.adaptive_engine_presets.len() {
-                            s.adaptive_engine_presets.remove(i);
-                        }
-                    }
-                    self.draft = None;
+            Message::Delete(index) => {
+                if index < s.adaptive_engine_presets.len() {
+                    s.adaptive_engine_presets.remove(index);
                 }
+                self.draft = None;
             }
             Message::Cancel => {
                 self.draft = None;
@@ -305,11 +302,112 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         live: &'a Settings,
-        _status: &'a RuntimeStatusSnapshot,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let s = self.draft.as_ref().unwrap_or(live);
-        let editable = self.draft.is_none() || !self.read_only;
+        self.tuning_view(live, false, candidates)
+    }
+
+    pub(super) fn preset_modal<'a>(
+        &'a self,
+        live: &'a Settings,
+        candidates: &'a [super::app_picker::Candidate],
+    ) -> Element<'a, Message> {
+        use iced::widget::{container, Space};
+        let title = if self.read_only {
+            self.name.clone()
+        } else {
+            t!(if self.editing.is_some() {
+                "adaptive_engine.edit_preset"
+            } else {
+                "adaptive_engine.add_preset"
+            })
+            .to_string()
+        };
+        let header = row![
+            text(title).width(Fill),
+            button(super::navigation::glyph("icons/x.svg")).on_press(Message::Cancel)
+        ]
+        .align_y(iced::Center);
+        let name = super::widgets::settings_card(
+            column![
+                text(t!("adaptive_engine.preset_name").to_string()),
+                text_input(&t!("adaptive_engine.preset_name_placeholder"), &self.name)
+                    .on_input_maybe((!self.read_only).then_some(Message::Name)),
+                text(t!("adaptive_engine.preset_name_help").to_string()).style(text::secondary)
+            ]
+            .spacing(design::space::SMALL),
+        );
+        let mut footer = row![].spacing(design::space::SMALL).align_y(iced::Center);
+        if let Some(index) = self.editing.filter(|_| !self.read_only) {
+            footer = footer.push(
+                button(text(t!("common.remove").to_string()))
+                    .style(super::widgets::danger_button)
+                    .on_press(Message::Delete(index)),
+            );
+        }
+        footer = footer.push(Space::new().width(Fill));
+        if !self.read_only {
+            footer = footer.push(
+                button(text(t!("adaptive_engine.use_current_settings").to_string()))
+                    .on_press(Message::UseCurrent),
+            );
+        }
+        footer = footer.push(
+            button(text(t!("common.cancel").to_string()))
+                .style(super::widgets::tertiary_button)
+                .on_press(Message::Cancel),
+        );
+        if !self.read_only {
+            footer = footer.push(
+                button(text(t!("common.save").to_string()))
+                    .style(super::widgets::primary_button)
+                    .on_press_maybe(
+                        (!self.name.trim().is_empty() && self.invalid_numbers.is_empty())
+                            .then_some(Message::Save),
+                    ),
+            );
+        }
+        let mut body = column![name, self.tuning_view(live, true, candidates)]
+            .spacing(design::space::MEDIUM)
+            .height(Fill);
+        if !self.error.is_empty() {
+            body = body.push(text(self.error.clone()).style(text::danger));
+        }
+        container(column![
+            container(header).padding(16),
+            iced::widget::rule::horizontal(1),
+            container(body).padding(16).height(Fill),
+            iced::widget::rule::horizontal(1),
+            container(footer).padding(16)
+        ])
+        .width(Fill)
+        .max_width(1200)
+        .height(Fill)
+        .max_height(850)
+        .style(|theme: &iced::Theme| container::Style {
+            background: Some(theme.palette().background.into()),
+            border: iced::Border {
+                color: theme.extended_palette().background.strong.color,
+                width: 1.0,
+                radius: design::CARD_RADIUS.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+    }
+
+    fn tuning_view<'a>(
+        &'a self,
+        live: &'a Settings,
+        preset: bool,
+        candidates: &'a [super::app_picker::Candidate],
+    ) -> Element<'a, Message> {
+        let s = if preset {
+            self.draft.as_ref().unwrap_or(live)
+        } else {
+            live
+        };
+        let editable = !preset || !self.read_only;
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         macro_rules! toggle {($key:expr,$($field:ident).+) => {row![
             setting_label($key).width(Fill),
@@ -326,7 +424,7 @@ impl Editor {
         }};}
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).width(Fill).into()}else{text($label(selected)).into()};control}};}
         macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).height(46).align_y(iced::Center)};}
-        if self.draft.is_none() {
+        if !preset {
             body = body.push(super::widgets::settings_card(toggle!(
                 "adaptive_engine.enable",
                 adaptive_engine.enabled
@@ -376,11 +474,11 @@ impl Editor {
                 .align_y(iced::Center),
             ));
         }
-        let tab = self.tuning_tabs[usize::from(self.draft.is_some())];
+        let tab = self.tuning_tabs[usize::from(preset)];
         let mut tabs = row![].spacing(design::space::TIGHT);
         for next in TuningTab::ALL
             .into_iter()
-            .filter(|tab| self.draft.is_none() || *tab != TuningTab::CustomRules)
+            .filter(|tab| !preset || *tab != TuningTab::CustomRules)
         {
             tabs = tabs.push(
                 super::widgets::panel_tab(
@@ -438,7 +536,7 @@ impl Editor {
                     )
                 ]
                 .spacing(design::space::MEDIUM);
-                let action: Element<'_, Message> = if self.draft.is_none() {
+                let action: Element<'_, Message> = if !preset {
                     super::widgets::switch(
                         s.cpu_scheduler.cpu_pressure_restraint_enabled,
                         Some(|v| {
@@ -453,7 +551,7 @@ impl Editor {
                 };
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine.cpu_pressure".to_string(),
-                    !self.collapsed[usize::from(self.draft.is_some())][0],
+                    !self.collapsed[usize::from(preset)][0],
                     Message::Collapse(0),
                     action,
                     pressure,
@@ -535,7 +633,7 @@ impl Editor {
                 }
                 body = body.push(super::widgets::setting_group(
                     "cpu_scheduler.limit_background_processors".to_string(),
-                    !self.collapsed[usize::from(self.draft.is_some())][1],
+                    !self.collapsed[usize::from(preset)][1],
                     Message::Collapse(1),
                     super::widgets::switch(
                         s.cpu_scheduler.limit_background_processors_enabled,
@@ -675,7 +773,7 @@ impl Editor {
                 .spacing(super::widgets::CARD_GAP);
                 table = table.push(super::widgets::setting_group(
                     "nav.process_priority".to_string(),
-                    self.priority_expanded[usize::from(self.draft.is_some())][0],
+                    self.priority_expanded[usize::from(preset)][0],
                     Message::TogglePriority(0),
                     row![
                         iced::widget::container(super::widgets::switch(
@@ -802,7 +900,7 @@ impl Editor {
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.background_efficiency".to_string(),
-                    self.priority_expanded[usize::from(self.draft.is_some())][1],
+                    self.priority_expanded[usize::from(preset)][1],
                     Message::TogglePriority(1),
                     row![
                         iced::widget::container(super::widgets::switch(
@@ -934,7 +1032,7 @@ impl Editor {
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.thread_priority".to_string(),
-                    self.priority_expanded[usize::from(self.draft.is_some())][2],
+                    self.priority_expanded[usize::from(preset)][2],
                     Message::TogglePriority(2),
                     row![
                         iced::widget::container(super::widgets::switch(
@@ -1076,7 +1174,7 @@ impl Editor {
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.dynamic_priority_boost".to_string(),
-                    self.priority_expanded[usize::from(self.draft.is_some())][3],
+                    self.priority_expanded[usize::from(preset)][3],
                     Message::TogglePriority(3),
                     row![
                         iced::widget::container(super::widgets::switch(
@@ -1160,7 +1258,7 @@ impl Editor {
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.io_priority".to_string(),
-                    self.priority_expanded[usize::from(self.draft.is_some())][4],
+                    self.priority_expanded[usize::from(preset)][4],
                     Message::TogglePriority(4),
                     row![
                         iced::widget::container(super::widgets::switch(
@@ -1289,7 +1387,7 @@ impl Editor {
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.gpu_priority".to_string(),
-                    self.priority_expanded[usize::from(self.draft.is_some())][5],
+                    self.priority_expanded[usize::from(preset)][5],
                     Message::TogglePriority(5),
                     row![
                         iced::widget::container(super::widgets::switch(
@@ -1422,7 +1520,7 @@ impl Editor {
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.memory_priority".to_string(),
-                    self.priority_expanded[usize::from(self.draft.is_some())][6],
+                    self.priority_expanded[usize::from(preset)][6],
                     Message::TogglePriority(6),
                     row![
                         iced::widget::container(super::widgets::switch(
@@ -1538,7 +1636,7 @@ impl Editor {
             }
             TuningTab::CustomRules => {}
         }
-        if self.draft.is_none() && tab == TuningTab::CustomRules {
+        if !preset && tab == TuningTab::CustomRules {
             body = body
                 .push(text(t!("cpu_scheduler.custom_rules").to_string()))
                 .push(super::app_picker::view(
@@ -1658,44 +1756,21 @@ impl Editor {
                         .width(Fill)
                         .style(super::widgets::quiet)
                         .on_press(Message::Apply(i)),
-                    button(text(t!("adaptive_engine.edit_preset").to_string()))
-                        .on_press(Message::Edit(i))
+                    iced::widget::tooltip(
+                        button(super::navigation::glyph("icons/pencil.svg"))
+                            .padding(7)
+                            .width(32)
+                            .height(32)
+                            .style(super::widgets::quiet)
+                            .on_press(Message::Edit(i)),
+                        text(t!("adaptive_engine.edit_preset").to_string()),
+                        iced::widget::tooltip::Position::Top,
+                    ),
+                    super::widgets::rule_delete_button(Some(Message::Delete(i)))
                 ]
                 .spacing(design::space::TIGHT)
                 .align_y(iced::Center),
             );
-        }
-        if self.draft.is_some() {
-            rail = rail
-                .push(
-                    text_input(&t!("adaptive_engine.preset_name"), &self.name)
-                        .on_input(Message::Name),
-                )
-                .push(
-                    button(text(t!("common.cancel").to_string()))
-                        .style(crate::ui::widgets::tertiary_button)
-                        .on_press(Message::Cancel),
-                );
-            if !self.read_only {
-                rail = rail
-                    .push(
-                        button(text(t!("common.save").to_string()))
-                            .style(crate::ui::widgets::primary_button)
-                            .on_press(Message::Save),
-                    )
-                    .push(
-                        button(text(t!("adaptive_engine.use_current_settings").to_string()))
-                            .on_press(Message::UseCurrent),
-                    );
-                if self.editing.is_some() {
-                    rail = rail.push(
-                        button(text(t!("common.remove").to_string())).on_press(Message::Delete),
-                    );
-                }
-            }
-        }
-        if !self.error.is_empty() {
-            rail = rail.push(text(self.error.clone()).style(text::danger));
         }
         if !self.presets_tab {
             rail = column![];
@@ -1821,6 +1896,22 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_delete_removes_only_the_selected_preset() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        for name in ["First", "Second"] {
+            editor.update(&mut settings, Message::New);
+            editor.update(&mut settings, Message::Name(name.into()));
+            editor.update(&mut settings, Message::Save);
+        }
+        editor.update(&mut settings, Message::Delete(0));
+        assert_eq!(settings.adaptive_engine_presets.len(), 1);
+        assert_eq!(settings.adaptive_engine_presets[0].name, "Second");
+        editor.update(&mut settings, Message::Delete(10));
+        assert_eq!(settings.adaptive_engine_presets.len(), 1);
+    }
+
     #[test]
     fn remove_updates_only_the_draft_and_discard_restores_the_rule() {
         let mut original = Settings::default();

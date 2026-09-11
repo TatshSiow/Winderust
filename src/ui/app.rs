@@ -1538,6 +1538,29 @@ impl WinderustApp {
         } else {
             layout.into()
         };
+        if self.page == Page::AdaptiveEngine && self.adaptive.has_pending_editor() {
+            return iced::widget::stack![
+                layout,
+                iced::widget::opaque(
+                    container(iced::widget::Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(|_| container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                            ..Default::default()
+                        })
+                ),
+                container(iced::widget::opaque(
+                    self.adaptive
+                        .preset_modal(&self.settings, &self.candidates)
+                        .map(Message::Adaptive)
+                ))
+                .padding(16)
+                .center_x(Fill)
+                .center_y(Fill)
+            ]
+            .into();
+        }
         if self.pending_changes() {
             iced::widget::stack![
                 layout,
@@ -1648,7 +1671,7 @@ impl WinderustApp {
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             Page::AdaptiveEngine => self
                 .adaptive
-                .view(&self.settings, &self.status, &self.candidates)
+                .view(&self.settings, &self.candidates)
                 .map(Message::Adaptive),
             Page::ProcessPriority => self
                 .priority
