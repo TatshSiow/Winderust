@@ -1810,7 +1810,6 @@ fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
 
 fn setting_label_with_unit(key: &str, unit: &str) -> iced::widget::Row<'static, Message> {
     let help_key = match key {
-        "adaptive_engine.enable" => "adaptive_engine.intro_1".to_string(),
         "processor_power.core_parking_min" => "adaptive_engine.core_parking_min_help".to_string(),
         "processor_power.processor_min" => "adaptive_engine.processor_min_help".to_string(),
         "processor_power.processor_max" => "adaptive_engine.processor_max_help".to_string(),

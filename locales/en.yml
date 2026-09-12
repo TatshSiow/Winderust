@@ -1066,6 +1066,7 @@ by_running_app:
   indicator_active: "Active"
 
 cpu_limiter:
+  invalid_limit: "Enter a CPU time value from 1 to 100."
   enable: "Enable CPU Limiter"
   intro_1: "CPU Limiter briefly freezes and resumes selected app groups to target a chosen share of CPU time."
   intro_2: "Focus, Visible Window, and Background defaults set the intended share of each 100 ms cycle that an app can run, from 1% to 100%. A 100% target means Unlimited."

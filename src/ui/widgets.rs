@@ -552,10 +552,7 @@ pub(super) fn setting_title<'a, M: 'a>(key: &str) -> Element<'a, M> {
 }
 
 fn setting_title_with_unit<'a, M: 'a>(key: &str, unit: &str) -> Element<'a, M> {
-    let help_key = key.strip_suffix(".enable").map_or_else(
-        || format!("{key}_help"),
-        |prefix| format!("{prefix}.intro_1"),
-    );
+    let help_key = format!("{key}_help");
     let help = rust_i18n::t!(&help_key).to_string();
     let mut label = row![heading(
         label_with_unit(&rust_i18n::t!(key), unit),

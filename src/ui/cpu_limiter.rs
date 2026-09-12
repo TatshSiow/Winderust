@@ -253,7 +253,7 @@ impl CpuLimiter {
         body = body.push(text(t!("cpu_limiter.intro_4").to_string()).style(text::warning));
         if self.has_invalid_inputs() {
             body = body.push(
-                text(t!("cpu_limiter.intro_2").to_string())
+                text(t!("cpu_limiter.invalid_limit").to_string())
                     .width(Fill)
                     .style(text::danger),
             );
@@ -275,11 +275,6 @@ impl CpuLimiter {
         ));
         body = body
             .push(super::widgets::setting_title("cpu_limiter.rules"))
-            .push(
-                text(t!("cpu_limiter.rules_help").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
-            )
             .push(super::app_picker::view(
                 &self.path,
                 candidates,

@@ -2,7 +2,7 @@ use super::design;
 use super::widgets::{checkbox, text_input};
 use crate::config::MemoryTrimSettings;
 use crate::ui::process_rules::{can_add_memory_trim_exclusion, new_process_exclusion_rule};
-use iced::widget::{column, scrollable, text};
+use iced::widget::{column, scrollable};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -135,18 +135,15 @@ impl Editor {
                 content,
             ));
         }
-        let mut safety = column![
-            text(t!("memory_trim.category_safety_help").to_string()).style(text::secondary),
-            super::app_picker::view(
-                &self.path,
-                candidates,
-                true,
-                Message::Path,
-                Message::Browse,
-                (can_add_memory_trim_exclusion(settings, &self.path)).then_some(Message::Add),
-                |path| can_add_memory_trim_exclusion(settings, path).then_some(true)
-            )
-        ]
+        let mut safety = column![super::app_picker::view(
+            &self.path,
+            candidates,
+            true,
+            Message::Path,
+            Message::Browse,
+            (can_add_memory_trim_exclusion(settings, &self.path)).then_some(Message::Add),
+            |path| can_add_memory_trim_exclusion(settings, path).then_some(true)
+        )]
         .spacing(design::space::MEDIUM);
         let cards = settings
             .exclusions

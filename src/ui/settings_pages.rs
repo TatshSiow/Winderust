@@ -414,17 +414,11 @@ impl Editor {
                     s.advanced.expose_all_priority_values,
                     Flag::AdvancedValues
                 ),
-                text(t!("settings.expose_all_priority_values_help").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
                 flag(
                     "settings.show_advanced_controls",
                     s.advanced.show_advanced_controls,
                     Flag::AdvancedControls
                 ),
-                text(t!("settings.show_advanced_controls_help").to_string())
-                    .width(Fill)
-                    .style(text::secondary)
             ]
             .spacing(super::widgets::CARD_GAP),
             Page::About => {

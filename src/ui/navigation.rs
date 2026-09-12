@@ -65,6 +65,8 @@ pub(super) fn page_help(page: Page) -> String {
         _ => return String::new(),
     };
     (1..=paragraphs)
+        // CPU Limiter keeps its warning visible beside the controls.
+        .filter(|index| page != Page::CpuLimiter || *index != 4)
         .map(|index| {
             let key = format!("{prefix}.intro_{index}");
             t!(&key).to_string()
@@ -438,6 +440,14 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cpu_limiter_help_does_not_repeat_the_visible_warning() {
+        let help = super::page_help(crate::ui::Page::CpuLimiter);
+        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_1").to_string()));
+        assert!(!help.contains(&rust_i18n::t!("cpu_limiter.intro_4").to_string()));
+        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_5").to_string()));
+    }
+
     use super::*;
     #[test]
     fn leaf_navigation_keeps_one_layout_child_after_first_visit() {

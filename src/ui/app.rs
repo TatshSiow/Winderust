@@ -856,7 +856,7 @@ impl WinderustApp {
                 self.message = self.adaptive.validation_error().unwrap_or_default();
             }
             Message::Save if self.cpu_limiter.has_invalid_inputs() => {
-                self.message = t!("cpu_limiter.intro_2").to_string();
+                self.message = t!("cpu_limiter.invalid_limit").to_string();
             }
             Message::Save if !self.time_rules.valid() || !self.cpu_rules.valid() => {
                 self.message = t!("unsaved.message").to_string();

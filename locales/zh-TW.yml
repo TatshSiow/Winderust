@@ -1069,6 +1069,7 @@ by_running_app:
   indicator_active: "作用中"
 
 cpu_limiter:
+  invalid_limit: "??? 1 ? 100 ??? CPU ?????"
   enable: "啟用 CPU 限制器"
   intro_1: "CPU 限制器會短暫凍結與恢復選取的應用程式群組，以達到所選的 CPU 時間目標。"
   intro_2: "焦點、可見視窗與背景的預設值可設定應用程式在每個 100 毫秒週期中預計可執行的比例，範圍為 1% 到 100%；100% 代表不限制。"
