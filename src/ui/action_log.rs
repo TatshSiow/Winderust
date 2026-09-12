@@ -1,6 +1,7 @@
 use super::design;
-use super::widgets::{button, checkbox};
+use super::widgets::{button, checkbox, pick_list, Choice};
 use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
+use crate::config::ActionLogMode;
 use chrono::{Local, TimeZone};
 use iced::widget::{column, container, row, scrollable, text};
 use iced::{Element, Fill};
@@ -32,6 +33,7 @@ pub(super) enum Message {
     Hover(Option<u64>),
     Clear,
     Export,
+    LogMode(ActionLogMode),
 }
 impl Editor {
     pub(super) fn update(&mut self, message: Message) {
@@ -72,11 +74,12 @@ impl Editor {
                 self.offset = 0.0;
                 self.hovered = None;
             }
-            Message::Export => {} // The application owns the native CSV destination picker.
+            Message::Export | Message::LogMode(_) => {} // The application owns CSV export and persisted log settings.
         }
     }
     pub(super) fn side_panel(
         &self,
+        log_mode: ActionLogMode,
         has_entries: bool,
         has_summaries: bool,
     ) -> Element<'_, Message> {
@@ -123,6 +126,18 @@ impl Editor {
                 super::widgets::heading(
                     t!("nav.settings").to_string(),
                     design::typography::SUBTITLE
+                ),
+                super::widgets::heading(
+                    t!("settings.action_log_mode").to_string(),
+                    design::typography::SECONDARY
+                ),
+                super::widgets::settings_card(
+                    pick_list(
+                        ActionLogMode::ALL.map(|v| Choice(v, log_label(v))).to_vec(),
+                        Some(Choice(log_mode, log_label(log_mode))),
+                        |v| Message::LogMode(v.0),
+                    )
+                    .width(Fill)
                 ),
                 super::widgets::heading(
                     t!("process_list.filter").to_string(),
@@ -464,6 +479,16 @@ pub(super) fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
         .single()
         .map(|time| time.format("%H:%M:%S").to_string())
         .unwrap_or_else(|| "--:--:--".to_owned())
+}
+
+fn log_label(v: ActionLogMode) -> String {
+    match v {
+        ActionLogMode::Full => t!("settings.action_log_mode_full"),
+        ActionLogMode::Warning => t!("settings.action_log_mode_warning"),
+        ActionLogMode::Error => t!("settings.action_log_mode_error"),
+        ActionLogMode::Off => t!("settings.action_log_mode_off"),
+    }
+    .to_string()
 }
 
 #[cfg(test)]

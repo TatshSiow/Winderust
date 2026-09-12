@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{self, checkbox, Choice};
+use super::widgets::{self, Choice};
 use super::widgets::{button, pick_list, slider, text_input};
 use crate::{config::*, ui::Page};
 use iced::widget::{column, row, scrollable, text};
@@ -26,8 +26,6 @@ pub(super) enum Flag {
     Minimized,
     Tray,
     CrossSession,
-    PauseDashboard,
-    PauseProcesses,
     FeatureCounts,
     CardStatus,
     AdvancedValues,
@@ -48,7 +46,6 @@ pub(super) enum Message {
     SaveColor,
     RemoveColor(usize),
     FailureThreshold(String),
-    LogMode(ActionLogMode),
     Channel(UpdateChannel),
     Check,
     CheckStartup,
@@ -86,8 +83,6 @@ impl Editor {
                 Flag::Minimized => s.general.start_minimized = value,
                 Flag::Tray => s.general.hide_to_tray = value,
                 Flag::CrossSession => s.general.allow_cross_session_process_control = value,
-                Flag::PauseDashboard => s.advanced.pause_dashboard_metrics = value,
-                Flag::PauseProcesses => s.advanced.pause_process_population = value,
                 Flag::FeatureCounts => s.general.show_enabled_feature_counts_in_sidebar = value,
                 Flag::CardStatus => s.general.show_feature_status_on_cards = value,
                 Flag::AdvancedControls => s.advanced.show_advanced_controls = value,
@@ -158,7 +153,6 @@ impl Editor {
                     }
                 }
             }
-            Message::LogMode(value) => s.advanced.action_log_mode = value,
             Message::Channel(value) => {
                 s.general.update_channel = value;
                 self.latest = None;
@@ -195,94 +189,67 @@ impl Editor {
             ))
         };
         let body = match page {
-            Page::WinderustBehaviour => {
-                let check = |key: &str, value, flag| {
-                    iced::widget::container(
-                        checkbox(value)
-                            .label(t!(key).to_string())
-                            .on_toggle(move |value| Message::Flag(flag, value)),
-                    )
-                    .height(36)
-                    .center_y(36)
-                };
+            Page::WinderustBehaviour => column![
+                widgets::heading(
+                    t!("settings.functionality").to_string(),
+                    design::typography::BODY
+                ),
+                flag("settings.master_switch", s.general.enabled, Flag::Enabled),
+                widgets::heading(
+                    t!("settings.launch_settings").to_string(),
+                    design::typography::BODY
+                ),
                 column![
-                    column![
-                        flag("settings.master_switch", s.general.enabled, Flag::Enabled),
-                        check(
-                            "settings.startup_windows",
-                            s.general.startup_with_windows,
-                            Flag::Startup
-                        ),
-                        check(
-                            "settings.start_minimized",
-                            s.general.start_minimized,
-                            Flag::Minimized
-                        ),
-                        check("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
-                    ],
-                    widgets::heading(
-                        t!("settings.advanced").to_string(),
-                        design::typography::BODY
+                    flag(
+                        "settings.startup_windows",
+                        s.general.startup_with_windows,
+                        Flag::Startup
                     ),
                     flag(
-                        "settings.allow_cross_session_process_control",
-                        s.general.allow_cross_session_process_control,
-                        Flag::CrossSession
+                        "settings.start_minimized",
+                        s.general.start_minimized,
+                        Flag::Minimized
                     ),
-                    flag(
-                        "settings.pause_dashboard_metrics",
-                        s.advanced.pause_dashboard_metrics,
-                        Flag::PauseDashboard
-                    ),
-                    flag(
-                        "settings.pause_process_population",
-                        s.advanced.pause_process_population,
-                        Flag::PauseProcesses
-                    ),
-                    widgets::settings_card(widgets::setting_row(
-                        "settings.failure_suppression_threshold",
-                        text_input(
-                            "",
-                            self.failure_threshold.as_deref().unwrap_or(
-                                &s.advanced
-                                    .execution_failure_suppression_threshold
-                                    .to_string()
-                            )
-                        )
-                        .on_input(Message::FailureThreshold)
-                        .align_x(iced::Center)
-                        .width(design::STANDALONE_NUMERIC_WIDTH),
-                    )),
-                    widgets::settings_card(widgets::setting_row(
-                        "settings.action_log_mode",
-                        pick_list(
-                            ActionLogMode::ALL
-                                .into_iter()
-                                .map(|value| Choice(value, log_label(value)))
-                                .collect::<Vec<_>>(),
-                            Some(Choice(
-                                s.advanced.action_log_mode,
-                                log_label(s.advanced.action_log_mode)
-                            )),
-                            |value| Message::LogMode(value.0),
-                        )
-                        .width(design::SELECT_WIDTH),
-                    )),
-                    widgets::heading(
-                        t!("settings.settings_files").to_string(),
-                        design::typography::BODY
-                    ),
-                    row![
-                        button(text(t!("settings.export_settings").to_string()))
-                            .on_press(Message::Export),
-                        button(text(t!("settings.import_settings").to_string()))
-                            .on_press(Message::Import),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
+                    flag("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
                 ]
-                .spacing(super::widgets::CARD_GAP)
-            }
+                .spacing(widgets::CARD_GAP),
+                widgets::heading(
+                    t!("settings.advanced").to_string(),
+                    design::typography::BODY
+                ),
+                flag(
+                    "settings.allow_cross_session_process_control",
+                    s.general.allow_cross_session_process_control,
+                    Flag::CrossSession
+                ),
+                widgets::settings_card(widgets::setting_row(
+                    "settings.failure_suppression_threshold",
+                    text_input(
+                        "",
+                        self.failure_threshold.as_deref().unwrap_or(
+                            &s.advanced
+                                .execution_failure_suppression_threshold
+                                .to_string()
+                        )
+                    )
+                    .on_input(Message::FailureThreshold)
+                    .align_x(iced::Center)
+                    .width(design::STANDALONE_NUMERIC_WIDTH),
+                )),
+                widgets::heading(
+                    t!("settings.settings_files").to_string(),
+                    design::typography::BODY
+                ),
+                row![
+                    button(text(t!("settings.export_settings").to_string()))
+                        .on_press(Message::Export),
+                    button(text(t!("settings.import_settings").to_string()))
+                        .on_press(Message::Import),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            ]
+            .spacing(super::widgets::CARD_GAP),
             Page::LanguageAndAppearance => {
                 let colors = column(ACCENT_PALETTE.chunks(8).map(|chunk| {
                     row(chunk.iter().map(|color| {
@@ -610,16 +577,6 @@ fn channel_label(v: UpdateChannel) -> String {
     }
     .to_string()
 }
-fn log_label(v: ActionLogMode) -> String {
-    match v {
-        ActionLogMode::Full => t!("settings.action_log_mode_full"),
-        ActionLogMode::Warning => t!("settings.action_log_mode_warning"),
-        ActionLogMode::Error => t!("settings.action_log_mode_error"),
-        ActionLogMode::Off => t!("settings.action_log_mode_off"),
-    }
-    .to_string()
-}
-
 pub(super) fn theme(s: &GeneralSettings) -> Theme {
     let system =
         if s.theme_mode == AppThemeMode::System || s.accent.source == AccentColorSource::Windows {

@@ -237,6 +237,8 @@ runtime_status:
   processor_affinity_hard_active: "處理器親和性（硬式）作用中。"
 
 home:
+  pause_metrics: ??????
+  resume_metrics: ??????
   home: "總覽"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
@@ -284,6 +286,8 @@ home:
   focus_and_launch_profile: "焦點與啟動"
 
 process_list:
+  pause_population: ????????
+  resume_population: ????????
   filter: "篩選"
   grouping: "分組"
   metrics: "指標"
@@ -372,6 +376,8 @@ process_list:
   adaptive_engine: "自適應引擎"
 
 settings:
+  functionality: "??"
+  launch_settings: "????"
   allow_cross_session_process_control: "允許跨工作階段處理程序控制"
   allow_cross_session_process_control_help: "允許 Winderust 控制目前 Windows 工作階段以外符合條件的服務與處理程序。Windows 存取檢查與受保護處理程序排除仍然適用。"
   intro_1: "一般設定會控制啟動行為、系統匣行為與主要自動化開關。"
@@ -411,10 +417,6 @@ settings:
   show_enabled_feature_counts_in_sidebar_help: "顯示 Winderust 功能、電源計畫控制、優先權控制與 CPU 控制中已啟用的功能數量。"
   show_feature_status_on_cards: "在卡片上顯示功能狀態"
   show_feature_status_on_cards_help: "在功能卡片上顯示已啟用或已停用標籤。"
-  pause_dashboard_metrics: "暫停儀表板指標"
-  pause_dashboard_metrics_help: "停止更新儀表板的 CPU、記憶體、磁碟與網路指標。背景自動化仍會繼續執行。"
-  pause_process_population: "暫停程序填入"
-  pause_process_population_help: "停止填入程序清單與程序選擇器，並清除目前的程序快取。背景自動化仍會繼續執行。"
   win32_priority_separation_warning: "僅供熟悉 Windows 排程器的進階使用者調整。這個登錄值會影響所有應用程式與服務，不只 Winderust 管理的程序。"
   win32_priority_separation_scheduler_policy: "排程器原則"
   win32_priority_separation_current: "目前登錄值"

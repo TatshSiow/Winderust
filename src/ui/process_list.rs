@@ -113,6 +113,7 @@ pub(super) enum MenuBranch {
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
+    PausePopulation(bool),
     Refresh,
     Loaded(Result<Population, String>),
     Search(String),
@@ -253,6 +254,7 @@ impl ProcessList {
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
         match message {
+            Message::PausePopulation(value) => settings.advanced.pause_process_population = value,
             Message::Refresh if !self.refreshing => {
                 self.refreshing = true;
                 let cached = self.icons.keys().cloned().collect::<HashSet<_>>();
@@ -1064,6 +1066,17 @@ impl ProcessList {
                 .width(280),
             Space::new().width(Fill),
             text(t!("process_list.count", count = self.processes.len()).to_string()),
+            button(text(
+                if settings.advanced.pause_process_population {
+                    t!("process_list.resume_population")
+                } else {
+                    t!("process_list.pause_population")
+                }
+                .to_string()
+            ))
+            .on_press(Message::PausePopulation(
+                !settings.advanced.pause_process_population
+            )),
             iced::widget::tooltip(
                 button(super::navigation::glyph("icons/refresh-cw.svg"))
                     .style(super::widgets::quiet)

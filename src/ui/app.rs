@@ -297,6 +297,9 @@ impl WinderustApp {
             Message::Home(home::Message::Navigate(page)) => {
                 return self.update(Message::Page(page))
             }
+            Message::Home(home::Message::PauseMetrics(value)) => {
+                self.settings.advanced.pause_dashboard_metrics = value;
+            }
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {
@@ -333,11 +336,9 @@ impl WinderustApp {
             Message::Preferences(message) => {
                 self.preferences.update(&mut self.settings, message);
                 self.appearance = settings_pages::theme(&self.settings.general);
-                if self.settings.advanced.pause_process_population {
-                    self.processes.clear();
-                    self.candidates.clear();
-                    self.unavailable_candidates.clear();
-                }
+            }
+            Message::ActionLog(action_log::Message::LogMode(value)) => {
+                self.settings.advanced.action_log_mode = value;
             }
             Message::ActionLog(action_log::Message::Clear) => {
                 self.runtime.clear_action_log();
@@ -1427,6 +1428,7 @@ impl WinderustApp {
             Some(
                 self.action_log
                     .side_panel(
+                        self.settings.advanced.action_log_mode,
                         !self.status.action_log_entries.is_empty(),
                         !self.status.action_log_summaries.is_empty(),
                     )

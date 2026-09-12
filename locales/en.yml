@@ -237,6 +237,8 @@ runtime_status:
   processor_affinity_hard_active: "Processor Affinity (Hard) active."
 
 home:
+  pause_metrics: Pause metrics
+  resume_metrics: Resume metrics
   home: "Overview"
   intro_1: "Dashboard summarizes the current automation decision, detected state, and active power plan."
   intro_2: "Use it to verify what Winderust is doing before changing page settings."
@@ -284,6 +286,8 @@ home:
   focus_and_launch_profile: "Focus and Launch"
 
 process_list:
+  pause_population: Pause population
+  resume_population: Resume population
   filter: "Filter"
   grouping: "Grouping"
   metrics: "Metrics"
@@ -370,6 +374,8 @@ process_list:
   adaptive_engine: "Adaptive Engine"
 
 settings:
+  functionality: "Functionality"
+  launch_settings: "Launch settings"
   intro_1: "General settings control startup behavior, tray behavior, and the master automation switch."
   intro_2: "Export or import the settings file from this page."
   winderust_behaviour: "Winderust Behaviour"
@@ -409,10 +415,6 @@ settings:
   show_enabled_feature_counts_in_sidebar_help: "Shows how many features are enabled in Winderust Features, Power Plan Control, Priority Control, and CPU Control."
   show_feature_status_on_cards: "Show feature status on cards"
   show_feature_status_on_cards_help: "Shows Enabled or Disabled pills on feature cards."
-  pause_dashboard_metrics: "Pause Dashboard metrics"
-  pause_dashboard_metrics_help: "Stops updating CPU, memory, disk, and network metrics on the Dashboard. Background automation continues running."
-  pause_process_population: "Pause process population"
-  pause_process_population_help: "Stops filling the Process List and process pickers, and clears their current process cache. Background automation continues running."
   win32_priority_separation_warning: "Expert-only system-wide scheduler tuning. This registry value affects all apps and services, not only Winderust-managed processes."
   win32_priority_separation_scheduler_policy: "Scheduler policy"
   win32_priority_separation_current: "Current registry value"

@@ -89,6 +89,7 @@ pub(super) struct Model {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Navigate(Page),
+    PauseMetrics(bool),
 }
 impl Model {
     pub(super) fn record(&mut self, sample: Sample) {
@@ -113,10 +114,22 @@ impl Model {
     ) -> Element<'a, Message> {
         responsive(move |size| {
             let wide = size.width >= 760.0;
-            let mut body = column![super::widgets::heading(
-                t!("home.home").to_string(),
-                design::typography::BODY
-            )]
+            let mut body = column![row![
+                super::widgets::heading(t!("home.home").to_string(), design::typography::BODY)
+                    .width(Fill),
+                button(text(
+                    if settings.advanced.pause_dashboard_metrics {
+                        t!("home.resume_metrics")
+                    } else {
+                        t!("home.pause_metrics")
+                    }
+                    .to_string()
+                ))
+                .on_press(Message::PauseMetrics(
+                    !settings.advanced.pause_dashboard_metrics
+                )),
+            ]
+            .align_y(iced::Center)]
             .spacing(super::widgets::CARD_GAP);
             let mut enabled = column![row![
                 super::widgets::heading(
