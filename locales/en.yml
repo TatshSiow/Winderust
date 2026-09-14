@@ -374,6 +374,7 @@ process_list:
   adaptive_engine: "Adaptive Engine"
 
 settings:
+  animation_mode: "Animation"
   functionality: "Functionality"
   launch_settings: "Launch settings"
   intro_1: "General settings control startup behavior, tray behavior, and the master automation switch."
@@ -1126,3 +1127,10 @@ settings_io_toast:
   imported: "Settings imported"
   export_failed: "Settings export failed"
   import_failed: "Settings import failed"
+
+quit_prompt:
+  title: "Quit Winderust?"
+  message: "Are you sure you want to quit Winderust?"
+  unsaved: "You have unsaved changes. Save them before quitting, or quit without saving."
+  save_and_quit: "Save and quit"
+  without_saving: "Quit without saving"

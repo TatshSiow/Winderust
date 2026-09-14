@@ -8,7 +8,8 @@ use super::widgets::{button, checkbox, pick_list, text_input};
 use crate::automation::RuntimeStatusSnapshot;
 use crate::config::*;
 use crate::power::ProcessorBoostMode;
-use iced::widget::{column, row, scrollable, text};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[path = "adaptive_presets.rs"]
@@ -474,6 +475,8 @@ impl Editor {
                 .width(Fill)
                 .style(super::widgets::surface),
         );
+        let header = body;
+        let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
             TuningTab::CpuBehaviour => {
                 let pressure = column![
@@ -1679,7 +1682,14 @@ impl Editor {
         if let Some(error) = self.validation_error() {
             body = body.push(text(error));
         }
-        scrollable(body).width(Fill).height(Fill).into()
+        scrollable(header.push(super::motion::wrap(
+            body,
+            true,
+            super::motion::Effect::Content(tab as u64),
+        )))
+        .width(Fill)
+        .height(Fill)
+        .into()
     }
     pub(super) fn side_panel<'a>(
         &'a self,
@@ -1768,9 +1778,16 @@ impl Editor {
             )
         ]
         .spacing(design::space::SMALL);
-        let mut panel = column![tabs, scrollable(rail).width(Fill).height(Fill)]
-            .spacing(design::space::MEDIUM)
-            .height(Fill);
+        let mut panel = column![
+            tabs,
+            super::motion::wrap(
+                scrollable(rail).width(Fill).height(Fill),
+                true,
+                super::motion::Effect::Content(u64::from(self.presets_tab))
+            )
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill);
         if self.presets_tab {
             panel = panel.push(super::widgets::preset_footer(
                 t!("adaptive_engine.add_preset").to_string(),

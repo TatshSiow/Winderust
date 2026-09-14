@@ -244,6 +244,7 @@ mod tests {
                 navigation_collapsed: true,
                 show_enabled_feature_counts_in_sidebar: false,
                 show_feature_status_on_cards: false,
+                animation_mode: crate::config::AnimationMode::Off,
                 pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,
             },

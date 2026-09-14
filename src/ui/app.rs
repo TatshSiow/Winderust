@@ -4,10 +4,11 @@ use super::{
     priority_control, process_list, process_power_plans, settings_pages, status_rail, tasks,
     timer_resolution, widgets, win32_priority_separation,
 };
+use crate::ui::scrolling::scrollable;
 use std::{cell::RefCell, path::PathBuf, time::Duration};
 use widgets::{button, text_input};
 
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{column, container, row, text};
 use iced::{Element, Fill, Subscription, Task, Theme};
 use rust_i18n::t;
 
@@ -79,6 +80,7 @@ pub(crate) fn run(
                         .or_else(crate::crash_recovery::startup_error)
                         .unwrap_or_default(),
                     page: Page::Home,
+                    breadcrumb: vec![Page::Home],
                     restore_event,
                     window: None,
                     auto_exclusion_generation: 0,
@@ -192,6 +194,7 @@ struct WinderustApp {
     status: RuntimeStatusSnapshot,
     message: String,
     page: Page,
+    breadcrumb: Vec<Page>,
     restore_event: Option<SingleInstanceRestoreEvent>,
     window: Option<iced::window::Id>,
     auto_exclusion_generation: u64,
@@ -672,6 +675,8 @@ impl WinderustApp {
             }
             Message::Page(page) => {
                 self.description_expanded = false;
+                let path = navigation::breadcrumb_path(page);
+                self.breadcrumb = path;
                 self.page = page;
                 self.expanded_section = Some(page.section_landing_page());
                 if page == Page::Win32PrioritySeparation {
@@ -842,12 +847,11 @@ impl WinderustApp {
                 }
             }
             Message::Close => {
-                if self.pending_changes() {
-                    self.closing = true;
-                    return self.show_window();
-                } else {
-                    return self.shutdown();
+                if !self.closing {
+                    self.message.clear();
                 }
+                self.closing = true;
+                return self.show_window();
             }
             Message::Save if self.pending_preset() => {
                 self.message = t!("unsaved.message").to_string();
@@ -1060,6 +1064,74 @@ impl WinderustApp {
 
     fn view(&self) -> Element<'_, Message> {
         let content = self.view_content();
+        if self.closing {
+            let mut actions = row![button(text(t!("common.cancel").to_string()))
+                .style(widgets::tertiary_button)
+                .on_press(Message::Stay),]
+            .spacing(design::space::SMALL);
+            if self.pending_changes() {
+                actions = actions
+                    .push(
+                        button(text(t!("quit_prompt.save_and_quit").to_string()))
+                            .style(widgets::primary_button)
+                            .on_press(Message::Save),
+                    )
+                    .push(
+                        button(text(t!("quit_prompt.without_saving").to_string()))
+                            .style(widgets::danger_button)
+                            .on_press(Message::DiscardAndClose),
+                    );
+            } else {
+                actions = actions.push(
+                    button(text(t!("tray.quit").to_string()))
+                        .style(widgets::danger_button)
+                        .on_press(Message::DiscardAndClose),
+                );
+            }
+            let mut body = column![
+                widgets::heading(
+                    t!("quit_prompt.title").to_string(),
+                    design::typography::DIALOG_TITLE
+                ),
+                text(
+                    t!(if self.pending_changes() {
+                        "quit_prompt.unsaved"
+                    } else {
+                        "quit_prompt.message"
+                    })
+                    .to_string()
+                ),
+            ]
+            .spacing(design::space::LARGE);
+            if !self.message.is_empty() {
+                body = body.push(text(&self.message));
+            }
+            let dialog = container(body.push(actions))
+                .padding(design::space::LARGE as u16)
+                .max_width(640)
+                .style(widgets::surface);
+            return iced::widget::stack![
+                content,
+                iced::widget::opaque(iced::widget::stack![
+                    iced::widget::opaque(
+                        container(iced::widget::Space::new())
+                            .width(Fill)
+                            .height(Fill)
+                            .style(|_| container::Style {
+                                background: Some(
+                                    iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()
+                                ),
+                                ..Default::default()
+                            })
+                    ),
+                    container(iced::widget::opaque(dialog))
+                        .padding(16)
+                        .center_x(Fill)
+                        .center_y(Fill),
+                ]),
+            ]
+            .into();
+        }
         if self.page == Page::ProcessList && self.processes.context_open() {
             iced::widget::stack![
                 content,
@@ -1077,9 +1149,99 @@ impl WinderustApp {
         }
     }
 
+    fn side_panel(&self, page: Page) -> Option<Element<'_, Message>> {
+        if page == Page::ProcessList {
+            Some(self.processes.side_panel().map(Message::Processes))
+        } else if page == Page::ActionLog {
+            Some(
+                self.action_log
+                    .side_panel(
+                        self.settings.advanced.action_log_mode,
+                        !self.status.action_log_entries.is_empty(),
+                        !self.status.action_log_summaries.is_empty(),
+                    )
+                    .map(Message::ActionLog),
+            )
+        } else if page == Page::AdaptiveEngine {
+            Some(
+                self.adaptive
+                    .side_panel(&self.settings, &self.status)
+                    .map(Message::Adaptive),
+            )
+        } else if page == Page::AdvancedPowerPlanTuning {
+            Some(
+                self.power_tuning
+                    .side_panel(&self.settings.advanced_power_plan_tuning_presets)
+                    .map(Message::PowerTuning),
+            )
+        } else if page == Page::CpuSetsSoft {
+            Some(
+                self.soft_allocation
+                    .side_panel(&self.settings, cpu_allocation::Kind::Soft, &self.status)
+                    .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
+            )
+        } else if page == Page::ProcessorAffinityHard {
+            Some(
+                self.hard_allocation
+                    .side_panel(&self.settings, cpu_allocation::Kind::Hard, &self.status)
+                    .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
+            )
+        } else {
+            status_rail::view(page, &self.settings, &self.status, &self.power_plans).map(|panel| {
+                let panel = panel.map(Message::Status);
+                if page == Page::MemoryTrim {
+                    column![
+                        panel,
+                        iced::widget::rule::horizontal(1),
+                        container(
+                            button(
+                                container(text(t!("memory_trim.trim_now").to_string()))
+                                    .center_x(Fill)
+                            )
+                            .width(Fill)
+                            .height(32)
+                            .style(widgets::primary_button)
+                            .on_press_maybe(
+                                self.settings
+                                    .memory_trim
+                                    .enabled
+                                    .then_some(Message::Trim(memory_trim::Message::TrimNow))
+                            )
+                        )
+                        .padding([design::space::MEDIUM as u16, 0])
+                    ]
+                    .height(Fill)
+                    .into()
+                } else if matches!(page, Page::ByTime | Page::ByCpuLoad) {
+                    let kind = if page == Page::ByTime {
+                        power_rules::Kind::Time
+                    } else {
+                        power_rules::Kind::CpuLoad
+                    };
+                    column![
+                        panel,
+                        iced::widget::rule::horizontal(1),
+                        container(
+                            button(container(text(t!("common.create").to_string())).center_x(Fill))
+                                .width(Fill)
+                                .height(32)
+                                .style(widgets::primary_button)
+                                .on_press(Message::PowerRules(kind, power_rules::Message::Add))
+                        )
+                        .padding([design::space::MEDIUM as u16, 0])
+                    ]
+                    .height(Fill)
+                    .into()
+                } else {
+                    panel
+                }
+            })
+        }
+    }
+
     fn view_content(&self) -> Element<'_, Message> {
         if self.preferences.show_update && !self.closing {
-            return container(
+            return (container(
                 column![
                     text(t!("about.updates").to_string()).size(design::typography::DIALOG_TITLE),
                     text(self.preferences.latest.clone().unwrap_or_default()),
@@ -1095,31 +1257,7 @@ impl WinderustApp {
                 ]
                 .spacing(design::space::LARGE),
             )
-            .padding(design::space::SECTION as u16)
-            .into();
-        }
-        if self.closing {
-            return container(
-                column![
-                    text(t!("unsaved.title").to_string()).size(design::typography::DIALOG_TITLE),
-                    text(t!("unsaved.message").to_string()),
-                    text(&self.message),
-                    row![
-                        button(text(t!("common.save").to_string()))
-                            .style(crate::ui::widgets::primary_button)
-                            .on_press(Message::Save),
-                        button(text(t!("common.discard").to_string()))
-                            .style(crate::ui::widgets::tertiary_button)
-                            .on_press(Message::DiscardAndClose),
-                        button(text(t!("common.cancel").to_string()))
-                            .style(crate::ui::widgets::tertiary_button)
-                            .on_press(Message::Stay),
-                    ]
-                    .spacing(design::space::SMALL),
-                ]
-                .spacing(design::space::LARGE),
-            )
-            .padding(design::space::SECTION as u16)
+            .padding(design::space::SECTION as u16))
             .into();
         }
         let collapsed = self.settings.general.navigation_collapsed;
@@ -1169,9 +1307,8 @@ impl WinderustApp {
                         .to_lowercase()
                         .contains(&self.navigation_search.to_lowercase())
             };
-            if !matches(section.landing_page) && !section.pages.iter().copied().any(matches) {
-                continue;
-            }
+            let visible =
+                matches(section.landing_page) || section.pages.iter().copied().any(matches);
             let mut label = row![
                 widgets::active_indicator(self.page == section.landing_page),
                 navigation::icon(section.landing_page, self.page == section.landing_page)
@@ -1201,12 +1338,10 @@ impl WinderustApp {
             }
             let expandable = !collapsed && section.pages.iter().any(|p| *p != section.landing_page);
             if expandable {
-                label = label.push(navigation::glyph(
-                    if self.expanded_section != Some(section.landing_page) {
-                        "icons/chevron-right.svg"
-                    } else {
-                        "icons/chevron-down.svg"
-                    },
+                label = label.push(super::motion::wrap(
+                    navigation::glyph("icons/chevron-right.svg"),
+                    self.expanded_section == Some(section.landing_page),
+                    super::motion::Effect::Chevron,
                 ));
             }
             let section_header = button(container(label.height(Fill)).width(Fill).align_x(
@@ -1224,18 +1359,10 @@ impl WinderustApp {
             } else {
                 Message::Page(section.landing_page)
             })
-            .style(if self.page == section.landing_page {
-                widgets::selected
-            } else {
-                widgets::quiet
-            });
+            .selected(self.page == section.landing_page, widgets::selected);
             let mut children = Vec::new();
-            for page in section
-                .pages
-                .iter()
-                .filter(|p| **p != section.landing_page && matches(**p))
-            {
-                children.push(
+            for page in section.pages.iter().filter(|p| **p != section.landing_page) {
+                children.push(super::motion::wrap(
                     button(
                         row![
                             widgets::active_indicator(self.page == *page),
@@ -1250,18 +1377,21 @@ impl WinderustApp {
                     .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
                     .on_press(Message::Page(*page))
                     .padding([design::space::SMALL as u16, design::space::MEDIUM as u16])
-                    .style(if self.page == *page {
-                        widgets::selected
-                    } else {
-                        widgets::quiet
-                    })
-                    .into(),
-                );
+                    .selected(self.page == *page, widgets::selected),
+                    matches(*page),
+                    super::motion::Effect::Visible,
+                ));
             }
-            let section_content = navigation::section(
-                section_header,
-                children,
-                !collapsed && self.expanded_section == Some(section.landing_page),
+            let section_content = super::motion::wrap(
+                navigation::section(
+                    section_header,
+                    children,
+                    !collapsed
+                        && (self.expanded_section == Some(section.landing_page)
+                            || !self.navigation_search.is_empty()),
+                ),
+                visible,
+                super::motion::Effect::Visible,
             );
             if matches!(
                 section.landing_page,
@@ -1307,29 +1437,35 @@ impl WinderustApp {
                 iced::widget::tooltip::Position::Right,
             ));
         const BREADCRUMB_TEXT_SIZE: u32 = design::typography::TITLE;
-        let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
-        if self.page != Page::Home {
-            header = header
-                .push(
-                    button(widgets::heading(Page::Home.label(), BREADCRUMB_TEXT_SIZE))
-                        .padding(0)
-                        .style(widgets::quiet)
-                        .on_press(Message::Page(Page::Home)),
-                )
-                .push(navigation::glyph("icons/chevron-right.svg"));
+        let mut header = row![].align_y(iced::Center);
+        for (index, page) in self.breadcrumb.iter().copied().enumerate() {
+            let mut item = row![].spacing(design::space::COMPACT).align_y(iced::Center);
+            if index > 0 {
+                item = item.push(navigation::glyph("icons/chevron-right.svg"));
+            }
+            let label: Element<'_, Message> = if index + 1 < self.breadcrumb.len() {
+                button(widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE))
+                    .padding(0)
+                    .style(widgets::quiet)
+                    .on_press(Message::Page(page))
+                    .into()
+            } else {
+                widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE).into()
+            };
+            item = item.push(label);
+            header = header.push(super::motion::wrap(
+                container(item).padding(iced::Padding {
+                    left: if index > 0 {
+                        design::space::COMPACT as f32
+                    } else {
+                        0.0
+                    },
+                    ..Default::default()
+                }),
+                index < self.breadcrumb.len(),
+                super::motion::Effect::Visible,
+            ));
         }
-        let parent = self.page.section_landing_page();
-        if parent != self.page && parent != Page::Home {
-            header = header
-                .push(
-                    button(widgets::heading(parent.label(), BREADCRUMB_TEXT_SIZE))
-                        .padding(0)
-                        .style(widgets::quiet)
-                        .on_press(Message::Page(parent)),
-                )
-                .push(navigation::glyph("icons/chevron-right.svg"));
-        }
-        header = header.push(widgets::heading(self.page.label(), BREADCRUMB_TEXT_SIZE));
         let breadcrumb = scrollable(header)
             .direction(iced::widget::scrollable::Direction::Horizontal(
                 iced::widget::scrollable::Scrollbar::default(),
@@ -1407,118 +1543,37 @@ impl WinderustApp {
             .width(Fill)
             .height(32 + 2 * design::space::TIGHT)
             .into();
-        let mut body = column![container(header)
+        let mut heading = column![container(header)
             .padding([design::space::SMALL as u16, 0])
             .width(Fill)]
-        .spacing(design::space::MEDIUM)
-        .height(Fill);
-        if self.description_expanded && !description.is_empty() {
-            body = body.push(
+        .spacing(0);
+        if !description.is_empty() {
+            heading = heading.push(widgets::optional_content(
                 container(scrollable(text(description).width(Fill)).height(iced::Length::Shrink))
                     .max_height(160)
                     .padding(design::space::MEDIUM as u16)
                     .width(Fill)
                     .style(widgets::surface),
-            );
+                self.description_expanded,
+            ));
         }
+        let mut body = column![heading].spacing(design::space::MEDIUM).height(Fill);
         let content = self.page_view();
-        let side_panel = if self.page == Page::ProcessList {
-            Some(self.processes.side_panel().map(Message::Processes))
-        } else if self.page == Page::ActionLog {
-            Some(
-                self.action_log
-                    .side_panel(
-                        self.settings.advanced.action_log_mode,
-                        !self.status.action_log_entries.is_empty(),
-                        !self.status.action_log_summaries.is_empty(),
-                    )
-                    .map(Message::ActionLog),
-            )
-        } else if self.page == Page::AdaptiveEngine {
-            Some(
-                self.adaptive
-                    .side_panel(&self.settings, &self.status)
-                    .map(Message::Adaptive),
-            )
-        } else if self.page == Page::AdvancedPowerPlanTuning {
-            Some(
-                self.power_tuning
-                    .side_panel(&self.settings.advanced_power_plan_tuning_presets)
-                    .map(Message::PowerTuning),
-            )
-        } else if self.page == Page::CpuSetsSoft {
-            Some(
-                self.soft_allocation
-                    .side_panel(&self.settings, cpu_allocation::Kind::Soft, &self.status)
-                    .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
-            )
-        } else if self.page == Page::ProcessorAffinityHard {
-            Some(
-                self.hard_allocation
-                    .side_panel(&self.settings, cpu_allocation::Kind::Hard, &self.status)
-                    .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
-            )
-        } else {
-            status_rail::view(self.page, &self.settings, &self.status, &self.power_plans).map(
-                |panel| {
-                    let panel = panel.map(Message::Status);
-                    if self.page == Page::MemoryTrim {
-                        column![
-                            panel,
-                            iced::widget::rule::horizontal(1),
-                            container(
-                                button(
-                                    container(text(t!("memory_trim.trim_now").to_string()))
-                                        .center_x(Fill)
-                                )
-                                .width(Fill)
-                                .height(32)
-                                .style(widgets::primary_button)
-                                .on_press_maybe(
-                                    self.settings
-                                        .memory_trim
-                                        .enabled
-                                        .then_some(Message::Trim(memory_trim::Message::TrimNow))
-                                )
-                            )
-                            .padding([design::space::MEDIUM as u16, 0])
-                        ]
-                        .height(Fill)
-                        .into()
-                    } else if matches!(self.page, Page::ByTime | Page::ByCpuLoad) {
-                        let kind = if self.page == Page::ByTime {
-                            power_rules::Kind::Time
-                        } else {
-                            power_rules::Kind::CpuLoad
-                        };
-                        column![
-                            panel,
-                            iced::widget::rule::horizontal(1),
-                            container(
-                                button(
-                                    container(text(t!("common.create").to_string())).center_x(Fill)
-                                )
-                                .width(Fill)
-                                .height(32)
-                                .style(widgets::primary_button)
-                                .on_press(Message::PowerRules(kind, power_rules::Message::Add))
-                            )
-                            .padding([design::space::MEDIUM as u16, 0])
-                        ]
-                        .height(Fill)
-                        .into()
-                    } else {
-                        panel
-                    }
-                },
-            )
-        };
+        let side_panel = self.side_panel(self.page);
         body = body.push(
             container(
-                container(content)
-                    .max_width(design::CONTENT_WIDTH)
-                    .width(Fill)
-                    .height(Fill),
+                container(super::motion::wrap(
+                    super::motion::wrap(
+                        content,
+                        true,
+                        super::motion::Effect::Content(self.power_source as u64),
+                    ),
+                    true,
+                    super::motion::Effect::Content(widgets::stable_key(&self.page)),
+                ))
+                .max_width(design::CONTENT_WIDTH)
+                .width(Fill)
+                .height(Fill),
             )
             .center_x(Fill)
             .height(Fill),
@@ -1530,17 +1585,20 @@ impl WinderustApp {
             body = body.push(text(&self.message));
         }
         let layout = row![
-            container(
-                container(column![scrollable(navigation).height(Fill), utilities].height(Fill))
-                    .width(Fill)
-                    .height(Fill)
-                    .style(widgets::navigation_surface)
-            )
-            .width(if !collapsed {
-                design::NAVIGATION_WIDTH
-            } else {
-                design::SIDEBAR_COLLAPSED_WIDTH
-            }),
+            super::motion::wrap(
+                container(
+                    container(column![scrollable(navigation).height(Fill), utilities].height(Fill))
+                        .width(Fill)
+                        .height(Fill)
+                        .style(widgets::navigation_surface)
+                )
+                .width(Fill),
+                !collapsed,
+                super::motion::Effect::Width {
+                    min: design::SIDEBAR_COLLAPSED_WIDTH,
+                    max: design::NAVIGATION_WIDTH
+                }
+            ),
             container(body)
                 .padding([design::space::SECTION as u16, design::space::WIDE as u16])
                 .center_x(Fill)
@@ -1548,49 +1606,56 @@ impl WinderustApp {
         ]
         .spacing(design::space::SMALL)
         .height(Fill);
-        let layout: Element<'_, Message> = if let Some(panel) = side_panel {
-            layout
-                .push(
-                    container(
-                        column![
-                            container(widgets::optional_content(panel, !self.status_collapsed))
-                                .height(Fill)
-                                .padding([0, design::space::CONTROL as u16]),
-                            iced::widget::rule::horizontal(1),
-                            widgets::sidebar_toggle(
-                                row![
-                                    text(if self.status_collapsed {
-                                        String::new()
-                                    } else {
-                                        t!("nav.collapse_side_panel").to_string()
-                                    })
-                                    .size(design::typography::SECONDARY)
-                                    .width(Fill),
-                                    navigation::glyph(if self.status_collapsed {
-                                        "icons/panel-right-open.svg"
-                                    } else {
-                                        "icons/panel-right-close.svg"
-                                    }),
-                                ]
-                                .height(Fill)
-                                .align_y(iced::Center)
-                            )
-                            .on_press(Message::ToggleStatus)
-                        ]
-                        .spacing(design::space::TINY)
-                        .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
-                        .height(Fill),
-                    )
-                    .width(if !self.status_collapsed {
-                        design::SIDE_PANEL_WIDTH
-                    } else {
-                        design::SIDEBAR_COLLAPSED_WIDTH
-                    }),
+        let has_side_panel = side_panel.is_some();
+        let panel: Element<'_, Message> = if let Some(panel) = side_panel {
+            super::motion::wrap(
+                container(
+                    column![
+                        container(widgets::optional_content(panel, !self.status_collapsed))
+                            .height(Fill)
+                            .padding([0, design::space::CONTROL as u16]),
+                        iced::widget::rule::horizontal(1),
+                        widgets::sidebar_toggle(
+                            row![
+                                text(if self.status_collapsed {
+                                    String::new()
+                                } else {
+                                    t!("nav.collapse_side_panel").to_string()
+                                })
+                                .size(design::typography::SECONDARY)
+                                .width(Fill),
+                                navigation::glyph(if self.status_collapsed {
+                                    "icons/panel-right-open.svg"
+                                } else {
+                                    "icons/panel-right-close.svg"
+                                }),
+                            ]
+                            .height(Fill)
+                            .align_y(iced::Center)
+                        )
+                        .on_press(Message::ToggleStatus)
+                    ]
+                    .spacing(design::space::TINY)
+                    .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
+                    .height(Fill),
                 )
-                .into()
+                .width(Fill),
+                !self.status_collapsed,
+                super::motion::Effect::Width {
+                    min: design::SIDEBAR_COLLAPSED_WIDTH,
+                    max: design::SIDE_PANEL_WIDTH,
+                },
+            )
         } else {
-            layout.into()
+            iced::widget::Space::new().into()
         };
+        let layout: Element<'_, Message> = layout
+            .push(super::motion::wrap(
+                panel,
+                has_side_panel,
+                super::motion::Effect::Visible,
+            ))
+            .into();
         let modal = match self.page {
             Page::CpuSetsSoft => self
                 .soft_allocation
@@ -1642,41 +1707,36 @@ impl WinderustApp {
             ]
             .into();
         }
-        if self.pending_changes() {
-            iced::widget::stack![
-                layout,
-                container(
-                    widgets::settings_card(
-                        column![
-                            widgets::heading(
-                                t!("unsaved.title").to_string(),
-                                design::typography::BODY
-                            ),
-                            text(t!("unsaved.message").to_string()),
-                            row![
-                                button(text(t!("common.discard").to_string()))
-                                    .style(crate::ui::widgets::tertiary_button)
-                                    .on_press(Message::Cancel),
-                                button(text(t!("common.save").to_string()))
-                                    .style(crate::ui::widgets::primary_button)
-                                    .on_press(Message::Save)
-                            ]
-                            .spacing(design::space::SMALL)
+        iced::widget::stack![
+            layout,
+            container(super::motion::wrap(
+                widgets::settings_card(
+                    column![
+                        widgets::heading(t!("unsaved.title").to_string(), design::typography::BODY),
+                        text(t!("unsaved.message").to_string()),
+                        row![
+                            button(text(t!("common.discard").to_string()))
+                                .style(crate::ui::widgets::tertiary_button)
+                                .on_press(Message::Cancel),
+                            button(text(t!("common.save").to_string()))
+                                .style(crate::ui::widgets::primary_button)
+                                .on_press(Message::Save)
                         ]
-                        .spacing(design::space::MEDIUM)
-                    )
-                    .width(360)
+                        .spacing(design::space::SMALL)
+                    ]
+                    .spacing(design::space::MEDIUM)
                 )
-                .padding(design::space::LARGE as u16)
-                .width(Fill)
-                .height(Fill)
-                .align_x(iced::Right)
-                .align_y(iced::Bottom)
-            ]
-            .into()
-        } else {
-            layout
-        }
+                .width(360),
+                self.pending_changes(),
+                super::motion::Effect::Visible
+            ))
+            .padding(design::space::LARGE as u16)
+            .width(Fill)
+            .height(Fill)
+            .align_x(iced::Right)
+            .align_y(iced::Bottom)
+        ]
+        .into()
     }
 
     fn page_view(&self) -> Element<'_, Message> {

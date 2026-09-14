@@ -1,6 +1,7 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
 use super::design;
 use super::widgets::button;
+use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
     automation::RuntimeStatusSnapshot,
@@ -8,7 +9,7 @@ use crate::{
     power::PowerPlan,
     ui::Page,
 };
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 

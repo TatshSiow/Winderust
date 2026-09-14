@@ -3,7 +3,8 @@ use super::widgets::{checkbox, text_input};
 use crate::config::TimerResolutionSettings;
 use crate::timer_resolution::TimerResolutionSnapshot;
 use crate::ui::process_rules::{can_add_timer_resolution_process, new_timer_resolution_rule};
-use iced::widget::{column, scrollable, text};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]

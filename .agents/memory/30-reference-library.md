@@ -739,3 +739,8 @@ state.
 
 - `src/backend/dashboard_metrics.rs::DiskUsageMonitor` uses PDH English counters `\PhysicalDisk(_Total)\Disk Read Bytes/sec` and `\PhysicalDisk(_Total)\Disk Write Bytes/sec`. Home reports total physical-disk throughput across all disks; Adaptive Engine retains process I/O accounting. The worker owns and closes the PDH query, primes rate counters, and rejects invalid samples.
 - Official references: https://learn.microsoft.com/en-us/windows-server/storage/storage-spaces/performance-history-for-drives and https://learn.microsoft.com/en-us/windows/win32/perfctrs/displaying-performance-data . No undocumented contract.
+
+## UI animation preference
+
+- src/platform/windows/appearance.rs::read reads UISettings.AnimationsEnabled alongside theme/accent values. src/ui/settings_pages.rs::theme passes this preference to shared Iced transitions in src/ui/motion.rs; failed reads disable motion. Existing Windows appearance-change notifications refresh it. No undocumented contract or new dependency is used.
+- Official reference: https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.animationsenabled

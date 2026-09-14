@@ -1,11 +1,12 @@
 //! Shared running-app search with a native input and an anchored, scrollable menu.
 use super::{design, navigation, widgets};
+use crate::ui::scrolling::scrollable;
 use iced::advanced::{
     layout, renderer,
     widget::{tree, Operation, Tree},
     Clipboard, Layout, Shell, Widget,
 };
-use iced::widget::{column, container, image, row, scrollable, text};
+use iced::widget::{column, container, image, row, text};
 use iced::{
     keyboard, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
@@ -210,7 +211,7 @@ impl<M: Clone> Picker<'_, M> {
         })
         .height(32)
         .on_press(self.browse.clone());
-        container(
+        (container(
             column![
                 scrollable(items)
                     .id("running-app-options")
@@ -227,7 +228,7 @@ impl<M: Clone> Picker<'_, M> {
             style.border.width = 1.0;
             style.border.color = theme.extended_palette().background.strong.color;
             style
-        })
+        }))
         .into()
     }
 }
@@ -308,6 +309,9 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
             )
             && cursor.is_over(layout.bounds())
         {
+            if !state.open {
+                tree.children[1] = Tree::empty();
+            }
             state.open = true;
             state.selected = None;
             shell.invalidate_layout();
@@ -342,6 +346,9 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
                     })
                 ))
         {
+            if !state.open {
+                tree.children[1] = Tree::empty();
+            }
             state.open = true;
             state.selected = None;
             shell.invalidate_layout();

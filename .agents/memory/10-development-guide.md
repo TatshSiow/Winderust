@@ -6,7 +6,7 @@ This is the working guide for code changes. Product scope and future goals live 
 
 - Windows-only Rust desktop app.
 - UI stack: Iced 0.14 with tiny-skia only and rust-i18n locales.
-- `vendor/iced_tiny_skia` pins a small repaint-region coalescing fix; its provenance and removal criteria are in `README.winderust.md`. Validate it with `cargo test --locked -p iced_tiny_skia --lib` when changing rendering dependencies.
+- Use the unmodified crates.io `iced_tiny_skia` renderer; do not add local renderer patches. Validate rendering dependency changes with `cargo test --locked -p iced_tiny_skia --lib`.
 - Settings format: TOML through `serde` and `toml`.
 - Localization: `rust-i18n` with files in `locales/`.
 - Windows integration: direct Win32 APIs through `windows` and `windows-sys`.

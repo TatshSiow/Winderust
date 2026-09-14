@@ -1,11 +1,12 @@
 //! Native pick-list field with a menu that distinguishes selection from hover.
 use super::{design, widgets};
+use crate::ui::scrolling::scrollable;
 use iced::advanced::{
     layout, renderer,
     widget::{tree, Operation, Tree},
     Clipboard, Layout, Shell, Widget,
 };
-use iced::widget::{column, container, row, scrollable, text, PickList};
+use iced::widget::{column, container, row, text, PickList};
 use iced::{
     keyboard, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
@@ -13,10 +14,20 @@ use std::rc::Rc;
 
 type Field<'a, T, M> = PickList<'a, T, Vec<T>, T, M>;
 
-#[derive(Default)]
 struct State {
+    chevron: iced_anim::Transition<f32>,
     keyboard: Option<usize>,
     open: bool,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            keyboard: None,
+            open: false,
+            chevron: super::motion::animation(false),
+        }
+    }
 }
 
 pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
@@ -25,7 +36,6 @@ pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
     selected: Option<usize>,
     choose: Rc<dyn Fn(T) -> M + 'a>,
     menu: Option<(Option<usize>, Element<'a, usize>)>,
-    open: bool,
 }
 
 impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
@@ -52,7 +62,6 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
             selected: index,
             choose,
             menu: None,
-            open: false,
         }
     }
     pub(super) fn width(mut self, width: impl Into<Length>) -> Self {
@@ -96,7 +105,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                 .on_press(index),
             );
         }
-        container(scrollable(items).id("select-options").height(Length::Fill))
+        (container(scrollable(items).id("select-options").height(Length::Fill))
             .padding(8)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -107,8 +116,8 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                     border: menu.border,
                     ..Default::default()
                 }
-            })
-            .into()
+            }))
+        .into()
     }
 }
 
@@ -163,12 +172,10 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         use iced::advanced::svg::Renderer as _;
         let bounds = layout.bounds();
         let size = design::ICON_SIZE as f32;
-        let icon = crate::ui::assets::iced_icon("icons/chevron-down.svg")
-            .expect("Every UI icon is bundled");
+        let state = tree.state.downcast_ref::<State>();
+        let icon = super::assets::chevron_frame(*state.chevron.value());
         renderer.draw_svg(
-            iced::advanced::svg::Svg::new(icon)
-                .color(widgets::muted_color(theme))
-                .rotation(if self.open { std::f32::consts::PI } else { 0.0 }),
+            iced::advanced::svg::Svg::new(icon).color(widgets::muted_color(theme)),
             Rectangle {
                 x: bounds.x + bounds.width - design::SELECT_PADDING[1] as f32 - size,
                 y: bounds.center_y() - size / 2.0,
@@ -209,6 +216,28 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             shell,
             viewport,
         );
+        let open = self
+            .field
+            .overlay(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                viewport,
+                Vector::ZERO,
+            )
+            .is_some();
+        let state = tree.state.downcast_mut::<State>();
+        if let Event::Window(iced::window::Event::RedrawRequested(now)) = event {
+            state.chevron.tick(*now);
+        }
+        if super::motion::enabled() {
+            state.chevron.set_target(f32::from(open));
+        } else {
+            state.chevron.settle_at(f32::from(open));
+        }
+        if state.chevron.is_animating() {
+            shell.request_redraw();
+        }
     }
     fn mouse_interaction(
         &self,
@@ -240,15 +269,19 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             )
             .is_none()
         {
-            *tree.state.downcast_mut::<State>() = State::default();
+            let state = tree.state.downcast_mut::<State>();
+            state.keyboard = None;
+            state.open = false;
             self.menu = None;
-            self.open = false;
             return None;
         }
         let state = tree.state.downcast_mut::<State>();
         let reveal = !state.open;
+        if reveal {
+            tree.children[1] = Tree::empty();
+        }
+        let state = tree.state.downcast_mut::<State>();
         state.open = true;
-        self.open = true;
         let keyboard = tree.state.downcast_ref::<State>().keyboard;
         if self.menu.as_ref().is_none_or(|(old, _)| *old != keyboard) {
             self.menu = Some((keyboard, self.menu(keyboard)));

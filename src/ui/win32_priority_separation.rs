@@ -1,7 +1,8 @@
 use super::design;
 use super::widgets::{button, pick_list};
 use crate::application::{Win32PrioritySeparationError, Win32PrioritySeparationService};
-use iced::widget::{column, row, scrollable, text};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]

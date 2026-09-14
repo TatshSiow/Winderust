@@ -11,6 +11,7 @@ use windows::{
 pub(crate) struct Appearance {
     pub light: bool,
     pub accent: u32,
+    pub animations: bool,
 }
 
 pub(crate) fn read() -> windows::core::Result<Appearance> {
@@ -31,6 +32,7 @@ pub(crate) fn read() -> windows::core::Result<Appearance> {
         // Winderust uses the second light accent shade in both app themes.
         let accent = settings.GetColorValue(UIColorType::AccentLight2)?;
         Ok(Appearance {
+            animations: settings.AnimationsEnabled()?,
             light: u32::from(foreground.R) + u32::from(foreground.G) + u32::from(foreground.B)
                 < 384,
             accent: (u32::from(accent.R) << 16) | (u32::from(accent.G) << 8) | u32::from(accent.B),

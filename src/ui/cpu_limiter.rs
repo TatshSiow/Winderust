@@ -1,6 +1,7 @@
 use super::design;
 use super::widgets::{button, checkbox, pick_list, slider, text_input};
-use iced::widget::{column, row, scrollable, text};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::HashMap;

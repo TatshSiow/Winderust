@@ -1,11 +1,12 @@
 use super::design;
 use super::widgets::{self, checkbox, Choice};
 use super::widgets::{button, pick_list, slider, text_input};
+use crate::ui::scrolling::scrollable;
 use crate::{
     config::{ByCpuLoadRule, ByTimeRule, CpuUsageComparison, Settings, WeekdaySetting},
     power::PowerPlan,
 };
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::BTreeMap;

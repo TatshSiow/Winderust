@@ -165,6 +165,8 @@ pub struct GeneralSettings {
     #[serde(default = "default_true")]
     pub show_feature_status_on_cards: bool,
     #[serde(default)]
+    pub animation_mode: AnimationMode,
+    #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
 }
@@ -192,6 +194,25 @@ pub enum AppThemeMode {
 
 impl AppThemeMode {
     pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationMode {
+    On,
+    Off,
+    #[default]
+    System,
+}
+impl AnimationMode {
+    pub const ALL: [Self; 3] = [Self::On, Self::Off, Self::System];
+    pub fn enabled(self, system: bool) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::System => system,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1538,6 +1559,7 @@ impl Default for Settings {
                 navigation_collapsed: false,
                 show_enabled_feature_counts_in_sidebar: true,
                 show_feature_status_on_cards: true,
+                animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
             },

@@ -376,6 +376,7 @@ process_list:
   adaptive_engine: "自適應引擎"
 
 settings:
+  animation_mode: "動畫"
   functionality: "??"
   launch_settings: "????"
   allow_cross_session_process_control: "允許跨工作階段處理程序控制"
@@ -1129,3 +1130,10 @@ settings_io_toast:
   imported: "設定已匯入"
   export_failed: "設定匯出失敗"
   import_failed: "設定匯入失敗"
+
+quit_prompt:
+  title: "結束 Winderust？"
+  message: "確定要結束 Winderust 嗎？"
+  unsaved: "您有尚未儲存的變更。您可以儲存後結束，或不儲存直接結束。"
+  save_and_quit: "儲存並結束"
+  without_saving: "不儲存並結束"

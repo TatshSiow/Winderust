@@ -2,7 +2,8 @@ use super::design;
 use super::widgets::{checkbox, text_input};
 use crate::config::MemoryTrimSettings;
 use crate::ui::process_rules::{can_add_memory_trim_exclusion, new_process_exclusion_rule};
-use iced::widget::{column, scrollable};
+use crate::ui::scrolling::scrollable;
+use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
 

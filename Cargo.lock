@@ -925,6 +925,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced_anim"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea7e0f5f848b041abf2907eda96a4c21cbd5c3aee4ade434bd650d898f39e95b"
+dependencies = [
+ "iced_core",
+]
+
+[[package]]
 name = "iced_core"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1029,6 +1038,8 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c267596d742714b1853cc10c3983a367762816fc4836bd3b79f76ce76787d6f8"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -3257,6 +3268,8 @@ dependencies = [
  "csv",
  "embed-resource",
  "iced",
+ "iced_anim",
+ "iced_tiny_skia",
  "icondata_core",
  "icondata_lu",
  "image",
@@ -3266,6 +3279,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tiny-skia",
  "toml 0.8.23",
  "windows",
  "windows-sys 0.61.2",

@@ -1,7 +1,8 @@
 use super::design;
 use super::widgets::{self, checkbox, pick_list};
+use crate::ui::scrolling::scrollable;
 use crate::{config::Settings, power::PowerPlan, ui::process_rules::*};
-use iced::widget::{column, scrollable, text};
+use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 

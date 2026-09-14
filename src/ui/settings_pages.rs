@@ -1,8 +1,9 @@
 use super::design;
 use super::widgets::{self, Choice};
 use super::widgets::{button, pick_list, slider, text_input};
+use crate::ui::scrolling::scrollable;
 use crate::{config::*, ui::Page};
-use iced::widget::{column, row, scrollable, text};
+use iced::widget::{column, row, text};
 use iced::{Color, Element, Fill, Theme};
 use rust_i18n::t;
 
@@ -36,6 +37,7 @@ pub(super) enum Flag {
 pub(super) enum Message {
     Flag(Flag, bool),
     Language(AppLanguage),
+    Animation(AnimationMode),
     Theme(AppThemeMode),
     AccentSource(AccentColorSource),
     AccentHex(String),
@@ -98,6 +100,7 @@ impl Editor {
                 s.general.language = value;
                 rust_i18n::set_locale(value.locale());
             }
+            Message::Animation(value) => s.general.animation_mode = value,
             Message::Theme(value) => s.general.theme_mode = value,
             Message::AccentSource(value) => {
                 s.general.accent.source = value;
@@ -395,6 +398,20 @@ impl Editor {
                         .spacing(design::space::MEDIUM)
                         .align_y(iced::Center)
                     ),
+                    widgets::settings_card(widgets::setting_row(
+                        "settings.animation_mode",
+                        pick_list(
+                            AnimationMode::ALL
+                                .map(|v| Choice(v, animation_label(v)))
+                                .to_vec(),
+                            Some(Choice(
+                                s.general.animation_mode,
+                                animation_label(s.general.animation_mode)
+                            )),
+                            |v| Message::Animation(v.0),
+                        )
+                        .width(design::SELECT_WIDTH),
+                    )),
                     flag(
                         "settings.show_enabled_feature_counts_in_sidebar",
                         s.general.show_enabled_feature_counts_in_sidebar,
@@ -537,7 +554,7 @@ impl Editor {
         scrollable(body).height(Fill).into()
     }
 }
-fn color_button(color: u32, selected: bool) -> iced::widget::Button<'static, Message> {
+fn color_button(color: u32, selected: bool) -> super::animated_controls::Button<'static, Message> {
     button(iced::widget::Space::new())
         .width(42)
         .height(42)
@@ -554,6 +571,14 @@ fn color_button(color: u32, selected: bool) -> iced::widget::Button<'static, Mes
 }
 pub(super) fn rgb(color: u32) -> Color {
     Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8)
+}
+fn animation_label(value: AnimationMode) -> String {
+    t!(match value {
+        AnimationMode::On => "common.on",
+        AnimationMode::Off => "common.off",
+        AnimationMode::System => "theme.system",
+    })
+    .to_string()
 }
 fn theme_label(v: AppThemeMode) -> String {
     match v {
@@ -572,18 +597,20 @@ fn channel_label(v: UpdateChannel) -> String {
     .to_string()
 }
 pub(super) fn theme(s: &GeneralSettings) -> Theme {
-    let system =
-        if s.theme_mode == AppThemeMode::System || s.accent.source == AccentColorSource::Windows {
-            match crate::platform::windows::appearance::read() {
-                Ok(appearance) => Some(appearance),
-                Err(error) => {
-                    eprintln!("Unable to read Windows appearance: {error}");
-                    None
-                }
-            }
-        } else {
+    let system = match crate::platform::windows::appearance::read() {
+        Ok(appearance) => Some(appearance),
+        Err(error) => {
+            eprintln!("Unable to read Windows appearance: {error}");
             None
-        };
+        }
+    };
+    super::motion::set_enabled(
+        s.animation_mode.enabled(
+            system
+                .as_ref()
+                .is_some_and(|appearance| appearance.animations),
+        ),
+    );
     let light = match s.theme_mode {
         AppThemeMode::Light => true,
         AppThemeMode::Dark => false,
@@ -793,6 +820,27 @@ fn logo() -> iced::widget::image::Handle {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn animation_modes_override_or_follow_system() {
+        let mut settings = crate::config::Settings::default();
+        let mut editor = super::Editor::default();
+        assert_eq!(settings.general.animation_mode, AnimationMode::System);
+        for mode in AnimationMode::ALL {
+            editor.update(&mut settings, super::Message::Animation(mode));
+            assert_eq!(settings.general.animation_mode, mode);
+            for system in [false, true] {
+                assert_eq!(
+                    mode.enabled(system),
+                    match mode {
+                        AnimationMode::On => true,
+                        AnimationMode::Off => false,
+                        AnimationMode::System => system,
+                    }
+                );
+            }
+        }
+    }
+
     use super::*;
     #[test]
     fn failure_threshold_retains_drafts_without_publishing_invalid_values() {

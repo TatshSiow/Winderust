@@ -6,9 +6,8 @@ use crate::config::*;
 use crate::foreground::{
     self, ProcessActionTarget, ProcessActionTargetError, ProcessInfo, ProcessResourceSample,
 };
-use iced::widget::{
-    column, container, image, mouse_area, responsive, row, scrollable, text, Space,
-};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, container, image, mouse_area, responsive, row, text, Space};
 use iced::{Element, Fill, Task};
 use rust_i18n::t;
 use std::{
@@ -19,8 +18,7 @@ use std::{
 };
 #[path = "process_details.rs"]
 mod details;
-#[path = "process_viewport.rs"]
-mod viewport;
+use super::scrolling;
 const ROW_HEIGHT: f32 = 36.0;
 #[derive(Debug, Clone)]
 pub(super) struct Population {
@@ -331,7 +329,7 @@ impl ProcessList {
                 self.rebuild();
                 return iced::widget::operation::scroll_to(
                     "process-list",
-                    scrollable::AbsoluteOffset::<f32>::default(),
+                    iced::widget::scrollable::AbsoluteOffset::<f32>::default(),
                 );
             }
             Message::Scrolled(v) => self.offset.set(v),
@@ -1149,12 +1147,10 @@ impl ProcessList {
                 let mut name = row![].spacing(design::space::SMALL).align_y(iced::Center);
                 if entry.indices.len() > 1 {
                     name = name.push(
-                        button(super::navigation::glyph(
-                            if self.expanded.contains(&entry.key) {
-                                "icons/chevron-down.svg"
-                            } else {
-                                "icons/chevron-right.svg"
-                            },
+                        button(super::motion::wrap(
+                            super::navigation::glyph("icons/chevron-right.svg"),
+                            self.expanded.contains(&entry.key),
+                            super::motion::Effect::Chevron,
                         ))
                         .padding(0)
                         .width(20)
@@ -1181,7 +1177,14 @@ impl ProcessList {
                             .center_y(20),
                     );
                 }
-                name = name.push(text(p.name.clone()).wrapping(iced::widget::text::Wrapping::None));
+                name = name.push(
+                    text(super::widgets::fitted_text(
+                        &p.name,
+                        name_width - if entry.nested { 78.0 } else { 58.0 },
+                        design::typography::BODY,
+                    ))
+                    .wrapping(iced::widget::text::Wrapping::None),
+                );
                 let name: Element<'_, Message> = name.into();
                 let mut cells = row![container(name).width(name_width).clip(true)]
                     .spacing(design::space::SMALL)
@@ -1194,9 +1197,13 @@ impl ProcessList {
                     let cell = if col == Sort::Status {
                         status_cell(&value)
                     } else {
-                        text(value)
-                            .wrapping(iced::widget::text::Wrapping::None)
-                            .into()
+                        text(super::widgets::fitted_text(
+                            &value,
+                            widths[col as usize] - 2.0,
+                            design::typography::BODY,
+                        ))
+                        .wrapping(iced::widget::text::Wrapping::None)
+                        .into()
                     };
                     cells = cells.push(container(cell).width(widths[col as usize]).clip(true));
                 }
@@ -1213,7 +1220,7 @@ impl ProcessList {
                 visible_rows.push((
                     (p.id, p.creation_time, entry.nested),
                     mouse_area(
-                        button(
+                        iced::widget::button(
                             mouse_area(
                                 container(column![
                                     container(cells)
@@ -1253,22 +1260,22 @@ impl ProcessList {
             let table = scrollable(container(rows).width(Fill))
                 .id("process-list")
                 .height(Fill)
-                .direction(scrollable::Direction::Both {
-                    vertical: scrollable::Scrollbar::default(),
-                    horizontal: scrollable::Scrollbar::default(),
+                .direction(iced::widget::scrollable::Direction::Both {
+                    vertical: iced::widget::scrollable::Scrollbar::default(),
+                    horizontal: iced::widget::scrollable::Scrollbar::default(),
                 })
                 .on_scroll(|v| Message::Scrolled(v.absolute_offset().y));
-            viewport::buffered(
-                container(table)
-                    .width(Fill)
-                    .height(Fill)
-                    .style(super::widgets::surface)
-                    .into(),
+            scrolling::buffered(
+                scrolling::table_surface(container(table).width(Fill).height(Fill)),
                 &self.offset,
                 offsets[range.start] + 32.0,
                 offsets[range.end] + 32.0,
                 range.start == 0,
                 range.end == self.rows.len(),
+                |message| match message {
+                    Message::Scrolled(offset) => Some(*offset),
+                    _ => None,
+                },
             )
         }));
         let body = mouse_area(body).on_move(Message::PointerMoved);
@@ -1674,8 +1681,15 @@ impl ProcessList {
                         iced::widget::rule::horizontal(1),
                         container(tabs)
                             .padding([design::space::SMALL as u16, design::space::LARGE as u16]),
-                        scrollable(container(pane).padding(design::space::LARGE as u16))
-                            .height(Fill),
+                        scrollable(
+                            container(super::motion::wrap(
+                                pane,
+                                true,
+                                super::motion::Effect::Content(self.process_tab as u64)
+                            ))
+                            .padding(design::space::LARGE as u16)
+                        )
+                        .height(Fill),
                     ])
                     .width(Fill)
                     .max_width(960)
@@ -1811,19 +1825,7 @@ fn format_memory_usage(bytes: u64, total: Option<u64>, percentage: bool) -> Stri
 }
 
 fn measure_column_text(content: &str) -> f32 {
-    use iced::advanced::text::{Paragraph, Renderer, Text};
-    <iced::Renderer as Renderer>::Paragraph::with_text(Text {
-        content,
-        bounds: iced::Size::INFINITE,
-        size: (design::typography::BODY as f32).into(),
-        line_height: Default::default(),
-        font: design::typography::FONT,
-        align_x: Default::default(),
-        align_y: iced::alignment::Vertical::Center,
-        shaping: iced::advanced::text::Shaping::Advanced,
-        wrapping: iced::advanced::text::Wrapping::None,
-    })
-    .min_width()
+    super::widgets::text_width(content, design::typography::BODY)
 }
 
 fn column_width(c: Sort) -> f32 {
@@ -1867,6 +1869,23 @@ fn background<T: Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_scroll_damage_stays_bounded() {
+        let mut list = ProcessList {
+            processes: (1..2001)
+                .map(|id| process(id, id as u64, &format!("application-{id}.exe")))
+                .collect(),
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        scrolling::check_scroll_damage(
+            list.view(&settings, &status, &[]),
+            iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0)),
+        );
+    }
+
     #[test]
     fn stop_action_uses_tree_for_groups_or_children_but_not_reused_parent_ids() {
         let parent = process(10, 100, "parent.exe");

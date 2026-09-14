@@ -2,9 +2,8 @@
 
 Winderust uses Iced 0.14 with only the Tiny Skia software renderer
 to prioritize a lower memory footprint.
-The local `iced_tiny_skia` patch combines heavily fragmented repaint regions to
-avoid replaying the scene for hundreds of small regions during table updates.
-See `vendor/iced_tiny_skia/README.winderust.md` for provenance and its regression test.
+The renderer is the unmodified crates.io release of `iced_tiny_skia`. `iced_anim` provides transitions for
+small controls; page, sidebar, table, and dialog changes are immediate.
 Production Cargo dependencies contain neither GPUI nor gpui-component.
 The implementation lives in `src/ui/`; `src/ui.rs` retains the canonical
 page names and sections. The unused vendored GPUI directory has been removed.
@@ -58,3 +57,14 @@ for this migrated build; earlier prototype measurements are not production data.
 
 The retired `src/ui/app.rs` and `src/ui/app/` renderer is removed. The production
 crate has no GPUI dependency or frontend switch. The unused `vendor/gpui/` directory and GPUI shader-compiler setup have been removed.
+
+### Shared scrolling
+
+All application scroll areas use `ui::scrolling::scrollable`, including page bodies,
+side panels, dialogs, search results, dropdown options, and horizontal strips.
+It retains the native Iced scrollable API and input handling, but draws moving
+content in clipped sections to bound tiny-skia repaint fragmentation. Empty or
+non-scrolling content takes the direct draw path. Virtualized lists additionally
+use `scrolling::buffered`; table backgrounds use `scrolling::table_surface`.
+Keep native `iced::widget::scrollable` construction inside this shared module.
+The renderer remains the unmodified upstream dependency.

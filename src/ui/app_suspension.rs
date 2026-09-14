@@ -5,7 +5,8 @@ use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
     can_add_app_suspension_process, new_app_suspension_rule, process_setting_matches,
 };
-use iced::widget::{column, scrollable, text};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Default)]

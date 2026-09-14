@@ -6,7 +6,8 @@ use crate::config::{
     ProcessRuleMode, Settings,
 };
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{column, scrollable};
+use crate::ui::scrolling::scrollable;
+use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;

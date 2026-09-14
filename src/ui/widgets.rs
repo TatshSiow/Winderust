@@ -12,7 +12,7 @@ pub(super) fn rules_table<'a, M: 'a>(
     header: iced::widget::Row<'a, M>,
     rows: Element<'a, M>,
 ) -> Element<'a, M> {
-    iced::widget::container(iced::widget::column![
+    (iced::widget::container(iced::widget::column![
         iced::widget::container(header)
             .padding(CARD_PADDING as u16)
             .style(|theme: &iced::Theme| iced::widget::container::Style {
@@ -29,7 +29,7 @@ pub(super) fn rules_table<'a, M: 'a>(
         style.border.width = 1.0;
         style.border.color = control_border(theme);
         style
-    })
+    }))
     .into()
 }
 
@@ -165,42 +165,51 @@ pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
 }
 
 pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
-    iced::widget::container(iced::widget::Space::new())
-        .width(3)
-        .height(18)
-        .style(move |theme: &iced::Theme| iced::widget::container::Style {
-            background: active.then(|| theme.palette().primary.into()),
-            border: iced::border::rounded(2),
-            ..Default::default()
-        })
-        .into()
+    let blend = std::rc::Rc::new(std::cell::Cell::new(f32::from(active)));
+    let progress = blend.clone();
+    super::motion::wrap(
+        iced::widget::container(iced::widget::Space::new())
+            .width(3)
+            .height(18)
+            .style(move |theme: &iced::Theme| iced::widget::container::Style {
+                background: Some(theme.palette().primary.scale_alpha(progress.get()).into()),
+                border: iced::border::rounded(2),
+                ..Default::default()
+            }),
+        active,
+        super::motion::Effect::Control(blend),
+    )
 }
 
 pub(super) fn panel_tab<'a, M: Clone + 'a>(
     label: String,
     selected: bool,
     message: M,
-) -> iced::widget::Button<'a, M> {
+) -> super::animated_controls::Button<'a, M> {
     button(
         iced::widget::column![
             iced::widget::container(heading(label, design::typography::BODY))
                 .center_x(Fill)
                 .center_y(Fill),
-            iced::widget::container(iced::widget::Space::new())
-                .width(Fill)
-                .height(3)
-                .style(move |theme: &iced::Theme| iced::widget::container::Style {
-                    background: selected.then(|| theme.palette().primary.into()),
-                    border: iced::border::rounded(2),
-                    ..Default::default()
-                }),
+            super::motion::wrap(
+                iced::widget::container(iced::widget::Space::new())
+                    .width(Fill)
+                    .height(3)
+                    .style(move |theme: &iced::Theme| iced::widget::container::Style {
+                        background: Some(theme.palette().primary.into()),
+                        border: iced::border::rounded(2),
+                        ..Default::default()
+                    }),
+                selected,
+                super::motion::Effect::Underline
+            ),
         ]
         .height(Fill),
     )
     .width(Fill)
     .height(design::NAVIGATION_ROW_HEIGHT)
     .padding([0, design::space::SMALL as u16])
-    .style(if selected { secondary_button } else { quiet })
+    .selected(selected, secondary_button)
     .on_press(message)
 }
 
@@ -269,8 +278,10 @@ fn control_border(theme: &iced::Theme) -> iced::Color {
     theme.extended_palette().background.strong.color
 }
 
-pub(super) fn button<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::widget::Button<'a, M> {
-    iced::widget::button(content)
+pub(super) fn button<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+) -> super::animated_controls::Button<'a, M> {
+    super::animated_controls::Button::new(content)
         .padding(design::CONTROL_PADDING)
         .style(secondary_button)
 }
@@ -320,7 +331,7 @@ pub(super) fn danger_button(
 
 pub(super) fn sidebar_toggle<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
-) -> iced::widget::Button<'a, M> {
+) -> super::animated_controls::Button<'a, M> {
     button(content)
         .width(Fill)
         .height(design::NAVIGATION_ROW_HEIGHT)
@@ -414,15 +425,11 @@ where
     iced::widget::slider(range, value, on_change).height(design::SLIDER_HEIGHT)
 }
 
-pub(super) fn checkbox<'a, M: 'a>(value: bool) -> iced::widget::Checkbox<'a, M> {
-    iced::widget::checkbox(value)
-        .size(design::CHECKBOX_SIZE)
-        .text_size(design::typography::BODY)
-        .spacing(design::space::SMALL)
-        .style(checkbox_style)
+pub(super) fn checkbox<'a, M: 'a>(value: bool) -> super::animated_controls::Checkbox<'a, M> {
+    super::animated_controls::Checkbox::new(value)
 }
 
-fn checkbox_style(
+pub(super) fn checkbox_style(
     theme: &iced::Theme,
     status: iced::widget::checkbox::Status,
 ) -> iced::widget::checkbox::Style {
@@ -442,7 +449,7 @@ fn checkbox_style(
 
 pub(super) fn card_button<'a, M: Clone + 'a>(
     content: iced::widget::Row<'a, M>,
-) -> iced::widget::Button<'a, M> {
+) -> super::animated_controls::Button<'a, M> {
     button(
         content
             .height(Fill)
@@ -467,11 +474,7 @@ pub(super) fn optional_content<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
     visible: bool,
 ) -> Element<'a, M> {
-    if visible {
-        content.into()
-    } else {
-        iced::widget::Space::new().height(0).into()
-    }
+    super::motion::wrap(content, visible, super::motion::Effect::Visible)
 }
 
 pub(super) fn settings_card<'a, M: 'a>(
@@ -496,11 +499,11 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
                 row![
                     iced::widget::container(setting_title(&label)).width(Fill),
                     action.into(),
-                    super::navigation::glyph(if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    })
+                    super::motion::wrap(
+                        super::navigation::glyph("icons/chevron-right.svg"),
+                        expanded,
+                        super::motion::Effect::Chevron
+                    )
                 ]
                 .spacing(design::space::SMALL)
                 .height(SETTING_ROW_HEIGHT)
@@ -510,7 +513,7 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
             .padding(CARD_PADDING as u16)
             .style(quiet)
             .on_press(message),
-            optional_content(
+            super::motion::wrap(
                 iced::widget::container(content.spacing(2 * CARD_PADDING)).padding(iced::Padding {
                     top: CARD_PADDING as f32,
                     right: CARD_PADDING as f32,
@@ -518,6 +521,7 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
                     left: CARD_PADDING as f32,
                 }),
                 expanded,
+                super::motion::Effect::Visible
             )
         ]
         .spacing(0),
@@ -576,19 +580,24 @@ pub(super) fn switch<'a, M: Clone + 'a>(
     value: bool,
     action: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
+    let interactive = action.is_some();
     row![
         text(rust_i18n::t!(if value { "common.on" } else { "common.off" }).to_string()),
-        iced::widget::toggler(value)
-            .size(design::SWITCH_SIZE)
-            .style(toggle_style)
-            .on_toggle_maybe(action)
+        super::motion::wrap(
+            iced::widget::toggler(value)
+                .size(design::SWITCH_SIZE)
+                .style(toggle_style)
+                .on_toggle_maybe(action),
+            value,
+            super::motion::Effect::Switch { interactive }
+        )
     ]
     .spacing(design::space::SMALL)
     .align_y(iced::Center)
     .into()
 }
 
-fn toggle_style(
+pub(super) fn toggle_style(
     theme: &iced::Theme,
     status: iced::widget::toggler::Status,
 ) -> iced::widget::toggler::Style {
@@ -965,5 +974,75 @@ pub(super) fn label_with_unit(label: &str, unit: &str) -> String {
         label.to_owned()
     } else {
         format!("{label} ({unit})")
+    }
+}
+
+// Fit list cells before drawing: overflowing text requires a software clip mask per cell.
+pub(super) fn fitted_text(content: &str, width: f32, size: u32) -> String {
+    if text_width(content, size) <= width {
+        return content.to_owned();
+    }
+    if text_width("\u{2026}", size) > width {
+        return String::new();
+    }
+    let boundaries: Vec<_> = content.char_indices().map(|(index, _)| index).collect();
+    let mut low = 0;
+    let mut high = boundaries.len();
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        let candidate = format!("{}\u{2026}", &content[..boundaries[middle - 1]]);
+        if text_width(&candidate, size) <= width {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    if low == 0 {
+        "\u{2026}".to_owned()
+    } else {
+        format!("{}\u{2026}", &content[..boundaries[low - 1]])
+    }
+}
+
+pub(super) fn text_width(content: &str, size: u32) -> f32 {
+    use iced::advanced::text::{Paragraph, Renderer, Text};
+    <iced::Renderer as Renderer>::Paragraph::with_text(Text {
+        content,
+        bounds: iced::Size::INFINITE,
+        size: (size as f32).into(),
+        line_height: Default::default(),
+        font: design::typography::FONT,
+        align_x: Default::default(),
+        align_y: iced::alignment::Vertical::Center,
+        shaping: iced::advanced::text::Shaping::Advanced,
+        wrapping: iced::advanced::text::Wrapping::None,
+    })
+    .min_width()
+}
+
+#[cfg(test)]
+mod fitted_text_tests {
+    use super::*;
+    #[test]
+    fn cells_fit_narrow_columns_without_losing_full_width_text() {
+        for original in [
+            "long process name.exe",
+            "\u{7a0b}\u{5e8f}\u{540d}\u{7a31}.exe",
+            "\u{1f680} application",
+            "",
+        ] {
+            for width in [0.0, 5.0, 24.0, 80.0, 400.0] {
+                let fitted = fitted_text(original, width, design::typography::BODY);
+                assert!(text_width(&fitted, design::typography::BODY) <= width);
+                if text_width(original, design::typography::BODY) <= width {
+                    assert_eq!(fitted, original);
+                } else if text_width("\u{2026}", design::typography::BODY) <= width {
+                    let prefix = fitted.strip_suffix('\u{2026}').expect("ellipsis suffix");
+                    assert!(original.starts_with(prefix));
+                } else {
+                    assert!(fitted.is_empty());
+                }
+            }
+        }
     }
 }

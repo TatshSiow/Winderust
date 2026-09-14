@@ -9,6 +9,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/calendar-days.svg", icondata_lu::LuCalendarDays),
     ("icons/chart-column.svg", icondata_lu::LuChartColumn),
     ("icons/circle-pause.svg", icondata_lu::LuCirclePause),
+    ("icons/check.svg", icondata_lu::LuCheck),
     ("icons/chevron-down.svg", icondata_lu::LuChevronDown),
     ("icons/chevron-up.svg", icondata_lu::LuChevronUp),
     ("icons/chevron-right.svg", icondata_lu::LuChevronRight),
@@ -112,6 +113,25 @@ pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
                 .collect()
         });
     HANDLES.get(path).cloned()
+}
+
+// SVG-local rotation works with the unmodified software renderer.
+pub(super) fn chevron_frame(progress: f32) -> iced::widget::svg::Handle {
+    static FRAMES: LazyLock<[iced::widget::svg::Handle; 19]> = LazyLock::new(|| {
+        std::array::from_fn(|index| {
+            let icon = icondata_lu::LuChevronRight;
+            let svg = lucide_svg(icon).replace(
+                icon.data,
+                &format!(
+                    "<g transform=\"rotate({} 12 12)\">{}</g>",
+                    index * 5,
+                    icon.data
+                ),
+            );
+            iced::widget::svg::Handle::from_memory(svg.into_bytes())
+        })
+    });
+    FRAMES[(progress.clamp(0.0, 1.0) * 18.0).round() as usize].clone()
 }
 
 #[cfg(test)]

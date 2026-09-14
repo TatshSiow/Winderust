@@ -5,19 +5,38 @@ use iced::{Element, Theme};
 use rust_i18n::t;
 use std::collections::HashSet;
 
+pub(super) fn breadcrumb_path(page: Page) -> Vec<Page> {
+    let mut path = vec![Page::Home];
+    let parent = page.section_landing_page();
+    if parent != Page::Home && parent != page {
+        path.push(parent);
+    }
+    if page != Page::Home {
+        path.push(page);
+    }
+    path
+}
+
 pub(super) fn section<'a, Message: 'a>(
     header: impl Into<Element<'a, Message>>,
     children: Vec<Element<'a, Message>>,
     expanded: bool,
 ) -> Element<'a, Message> {
-    let mut section = iced::widget::column![header.into()].spacing(design::space::TINY);
+    let mut section = iced::widget::column![header.into()];
     // An empty column still participates in spacing; leaf pages must have no child slot.
-    if expanded && !children.is_empty() {
-        section = section.push(
+    if !children.is_empty() {
+        section = section.push(super::motion::wrap(
             iced::widget::column(children)
                 .spacing(design::space::TINY)
-                .padding([0, design::space::COMPACT as u16]),
-        );
+                .padding(iced::Padding {
+                    top: design::space::TINY as f32,
+                    right: design::space::COMPACT as f32,
+                    left: design::space::COMPACT as f32,
+                    bottom: 0.0,
+                }),
+            expanded,
+            super::motion::Effect::Visible,
+        ));
     }
     section.into()
 }
@@ -441,6 +460,15 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn breadcrumb_path_keeps_ancestors_in_order() {
+        assert_eq!(breadcrumb_path(Page::Home), vec![Page::Home]);
+        assert_eq!(
+            breadcrumb_path(Page::AdaptiveEngine),
+            vec![Page::Home, Page::WinderustFeatures, Page::AdaptiveEngine]
+        );
+    }
+
+    #[test]
     fn cpu_limiter_help_does_not_repeat_the_visible_warning() {
         let help = super::page_help(crate::ui::Page::CpuLimiter);
         assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_1").to_string()));
@@ -466,7 +494,16 @@ mod tests {
                 .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
                 .into()
         };
-        assert_eq!(build(false, vec![child()]).as_widget().children().len(), 1);
+        let mut collapsed = build(false, vec![child()]);
+        assert_eq!(collapsed.as_widget().children().len(), 2);
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let mut tree = iced::advanced::widget::Tree::new(&collapsed);
+        let layout = collapsed.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &iced::advanced::layout::Limits::new(iced::Size::ZERO, iced::Size::new(300.0, 900.0)),
+        );
+        assert_eq!(layout.size().height, design::NAVIGATION_ROW_HEIGHT as f32);
         assert_eq!(build(true, vec![child()]).as_widget().children().len(), 2);
     }
     #[test]

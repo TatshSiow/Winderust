@@ -1,6 +1,7 @@
 use super::design;
 use super::widgets::slider;
-use iced::widget::{column, row, scrollable};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, row};
 use iced::{Element, Fill};
 
 use crate::config::{Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS};

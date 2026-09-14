@@ -4,7 +4,8 @@ use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSetting
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::can_add_process_candidate;
-use iced::widget::{column, row, scrollable, text};
+use crate::ui::scrolling::scrollable;
+use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -483,9 +484,16 @@ impl Editor {
             )
         ]
         .spacing(design::space::SMALL);
-        let mut panel = column![tabs, scrollable(rail).width(Fill).height(Fill)]
-            .spacing(design::space::MEDIUM)
-            .height(Fill);
+        let mut panel = column![
+            tabs,
+            super::motion::wrap(
+                scrollable(rail).width(Fill).height(Fill),
+                true,
+                super::motion::Effect::Content(u64::from(self.presets_tab))
+            )
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill);
         if self.presets_tab {
             panel = panel.push(super::widgets::preset_footer(
                 t!("cpu_allocation.add_preset").to_string(),

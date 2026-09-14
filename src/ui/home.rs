@@ -8,8 +8,9 @@ use crate::backend::dashboard_metrics::{
 };
 use crate::config::Settings;
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
+use crate::ui::scrolling::scrollable;
 use crate::ui::Page;
-use iced::widget::{canvas, column, container, responsive, row, scrollable, text};
+use iced::widget::{canvas, column, container, responsive, row, text};
 use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
 use std::collections::VecDeque;

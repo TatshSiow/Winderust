@@ -2,24 +2,23 @@ use super::design;
 use super::widgets::{button, checkbox, pick_list, Choice};
 use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
 use crate::config::ActionLogMode;
+use crate::ui::scrolling::scrollable;
 use chrono::{Local, TimeZone};
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
 pub(super) struct Editor {
     result: Vec<ActionLogResult>,
     feature: Vec<ActionLogFeature>,
-    offset: f32,
-    hovered: Option<u64>,
+    offset: std::cell::Cell<f32>,
 }
 impl Default for Editor {
     fn default() -> Self {
         Self {
             result: RESULTS.to_vec(),
             feature: FEATURES.to_vec(),
-            offset: 0.0,
-            hovered: None,
+            offset: std::cell::Cell::new(0.0),
         }
     }
 }
@@ -30,7 +29,7 @@ pub(super) enum Message {
     AllResults(bool),
     AllFeatures(bool),
     Scrolled(f32),
-    Hover(Option<u64>),
+    RowPressed,
     Clear,
     Export,
     LogMode(ActionLogMode),
@@ -43,14 +42,14 @@ impl Editor {
                 if checked {
                     self.result.push(result);
                 }
-                self.offset = 0.0;
+                self.offset.set(0.0);
             }
             Message::Feature(feature, checked) => {
                 self.feature.retain(|value| *value != feature);
                 if checked {
                     self.feature.push(feature);
                 }
-                self.offset = 0.0;
+                self.offset.set(0.0);
             }
             Message::AllResults(checked) => {
                 self.result = if checked {
@@ -58,7 +57,7 @@ impl Editor {
                 } else {
                     Vec::new()
                 };
-                self.offset = 0.0;
+                self.offset.set(0.0);
             }
             Message::AllFeatures(checked) => {
                 self.feature = if checked {
@@ -66,13 +65,12 @@ impl Editor {
                 } else {
                     Vec::new()
                 };
-                self.offset = 0.0;
+                self.offset.set(0.0);
             }
-            Message::Scrolled(offset) => self.offset = offset,
-            Message::Hover(sequence) => self.hovered = sequence,
+            Message::Scrolled(offset) => self.offset.set(offset),
+            Message::RowPressed => {}
             Message::Clear => {
-                self.offset = 0.0;
-                self.hovered = None;
+                self.offset.set(0.0);
             }
             Message::Export | Message::LogMode(_) => {} // The application owns CSV export and persisted log settings.
         }
@@ -196,7 +194,7 @@ impl Editor {
     ) -> Element<'a, Message> {
         let entries_filtered = action_log_filtered_entries(entries, &self.result, &self.feature);
         let count = entries_filtered.len();
-        let range = visible_log_range(count, self.offset, size.height);
+        let range = visible_log_range(count, self.offset.get(), size.height);
         let header = row![
             text("#").width(48),
             text(t!("action_log.time").to_string()).width(80),
@@ -228,9 +226,8 @@ impl Editor {
                 ActionLogResult::Skipped => text::warning,
                 ActionLogResult::Failed => text::danger,
             };
-            let hovered = self.hovered == Some(entry.sequence);
             entries_table = entries_table.push(
-                iced::widget::mouse_area(
+                iced::widget::button(
                     container(
                         row![
                             text(format!("#{}", entry.sequence))
@@ -247,17 +244,25 @@ impl Editor {
                                 .style(result_style)
                                 .width(90),
                             container(
-                                text(action_log_process_label(entry))
-                                    .size(design::typography::CAPTION)
-                                    .wrapping(text::Wrapping::None)
+                                text(super::widgets::fitted_text(
+                                    &action_log_process_label(entry),
+                                    158.0,
+                                    design::typography::CAPTION
+                                ))
+                                .size(design::typography::CAPTION)
+                                .wrapping(text::Wrapping::None)
                             )
                             .width(160)
                             .clip(true),
                             iced::widget::tooltip(
                                 container(
-                                    text(entry.reason.clone())
-                                        .size(design::typography::CAPTION)
-                                        .wrapping(text::Wrapping::None)
+                                    text(super::widgets::fitted_text(
+                                        &entry.reason,
+                                        size.width.max(960.0) - 600.0,
+                                        design::typography::CAPTION
+                                    ))
+                                    .size(design::typography::CAPTION)
+                                    .wrapping(text::Wrapping::None)
                                 )
                                 .width(Fill)
                                 .clip(true),
@@ -270,17 +275,17 @@ impl Editor {
                     )
                     .padding([0, design::space::MEDIUM as u16])
                     .center_y(ACTION_LOG_ROW_HEIGHT - 1.0)
-                    .width(Fill)
-                    .style(move |theme: &iced::Theme| {
-                        iced::widget::container::Style {
-                            background: hovered
-                                .then(|| theme.palette().primary.scale_alpha(0.10).into()),
-                            ..Default::default()
-                        }
-                    }),
+                    .width(Fill),
                 )
-                .on_enter(Message::Hover(Some(entry.sequence)))
-                .on_exit(Message::Hover(None)),
+                .padding(0)
+                .width(Fill)
+                .on_press(Message::RowPressed)
+                .style(|theme, status| {
+                    let mut style = super::widgets::quiet(theme, status);
+                    style.border.radius = 0.0.into();
+                    style.text_color = theme.palette().text;
+                    style
+                }),
             );
             entries_table = entries_table.push(iced::widget::rule::horizontal(1));
         }
@@ -292,18 +297,27 @@ impl Editor {
                 .padding([0, design::space::MEDIUM as u16])
                 .center_y(32),
             iced::widget::rule::horizontal(1),
-            scrollable(entries_table)
-                .id("action-log")
-                .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
-                .height(Fill),
+            super::scrolling::buffered(
+                scrollable(entries_table)
+                    .id("action-log")
+                    .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
+                    .height(Fill)
+                    .into(),
+                &self.offset,
+                range.start as f32 * ACTION_LOG_ROW_HEIGHT,
+                range.end as f32 * ACTION_LOG_ROW_HEIGHT,
+                range.start == 0,
+                range.end == count,
+                |message| match message {
+                    Message::Scrolled(offset) => Some(*offset),
+                    _ => None,
+                }
+            ),
         ]
         .height(Fill);
-        let table = scrollable(
-            container(table)
-                .width(size.width.max(960.0))
-                .height(Fill)
-                .style(super::widgets::surface),
-        )
+        let table = scrollable(super::scrolling::table_surface(
+            container(table).width(size.width.max(960.0)).height(Fill),
+        ))
         .direction(iced::widget::scrollable::Direction::Horizontal(
             iced::widget::scrollable::Scrollbar::default(),
         ))
@@ -495,6 +509,23 @@ fn log_label(v: ActionLogMode) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn log_scroll_damage_stays_bounded() {
+        let entries: Vec<_> = (0..10000).map(|sequence| ActionLogEntry {
+            sequence, timestamp_epoch_ms: 1_700_000_000_000,
+            feature: ActionLogFeature::CpuLimiter, process_id: Some(1234),
+            process_name: "long-running-application-name.exe".into(),
+            result: ActionLogResult::Applied,
+            reason: "Applied configured process policy because the foreground and background conditions changed; additional details for the log entry.".into(),
+        }).collect();
+        let editor = Editor::default();
+        let bounds = iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0));
+        crate::ui::scrolling::check_scroll_damage(
+            editor.view_at_size(&entries, bounds.size()),
+            bounds,
+        );
+    }
+
+    #[test]
     fn virtual_log_rows_are_bounded_and_reach_the_end() {
         assert_eq!(visible_log_range(0, 0.0, 900.0), 0..0);
         let range = visible_log_range(10000, 3600.0, 900.0);
@@ -503,7 +534,7 @@ mod tests {
         let mut editor = Editor::default();
         editor.update(Message::Scrolled(3600.0));
         editor.update(Message::Result(ActionLogResult::Failed, false));
-        assert_eq!(editor.offset, 0.0);
+        assert_eq!(editor.offset.get(), 0.0);
     }
 
     #[test]
