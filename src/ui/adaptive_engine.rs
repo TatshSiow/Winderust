@@ -1694,7 +1694,7 @@ impl Editor {
     }
     pub(super) fn side_panel<'a>(
         &'a self,
-        live: &'a Settings,
+        live: &'a crate::application::SettingsEditor,
         status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let mut rail = column![

@@ -1137,3 +1137,14 @@ quit_prompt:
   unsaved: "You have unsaved changes. Save them before quitting, or quit without saving."
   save_and_quit: "Save and quit"
   without_saving: "Quit without saving"
+
+sidebar_status:
+  paused: "Paused"
+  blocked: "Blocked"
+  running_help: "Runtime confirms active work or an applied policy."
+  waiting_help: "Enabled; waiting for eligible apps, matching conditions, or the next evaluation."
+  paused_help: "Enabled, but another policy or missing observation currently prevents execution."
+  blocked_help: "Unsupported or access denied; no active work is confirmed."
+  error_help: "Runtime reported a failure. Check the failure details below."
+  inactive_help: "The feature or Winderust master switch is off."
+  unknown_help: "Current runtime activity cannot be confirmed."

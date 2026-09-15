@@ -394,7 +394,7 @@ impl Editor {
     }
     pub(super) fn side_panel<'a>(
         &'a self,
-        s: &'a Settings,
+        s: &'a crate::application::SettingsEditor,
         k: Kind,
         status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {

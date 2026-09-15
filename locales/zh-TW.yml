@@ -1140,3 +1140,14 @@ quit_prompt:
   unsaved: "您有尚未儲存的變更。您可以儲存後結束，或不儲存直接結束。"
   save_and_quit: "儲存並結束"
   without_saving: "不儲存並結束"
+
+sidebar_status:
+  paused: "已暫停"
+  blocked: "受阻"
+  running_help: "執行狀態已確認正在作用或已套用原則。"
+  waiting_help: "已啟用；等待符合條件的應用程式、觸發條件或下次評估。"
+  paused_help: "已啟用，但其他原則或缺少觀測資料導致暫時無法執行。"
+  blocked_help: "不支援或存取被拒；尚未確認正在作用。"
+  error_help: "執行時發生失敗，請查看下方錯誤詳情。"
+  inactive_help: "功能或 Winderust 主開關已關閉。"
+  unknown_help: "無法確認目前的執行狀態。"

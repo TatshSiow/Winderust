@@ -16,26 +16,20 @@ use rust_i18n::t;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FeatureRunState {
     Running,
-    NotRunning,
+    Waiting,
+    Paused,
+    Blocked,
+    Error,
+    Inactive,
     Unknown,
 }
 struct FeatureStatusSummary {
-    state: FeatureRunState,
     scanned: Option<usize>,
     adjusted: Option<usize>,
     protected_or_denied: Option<usize>,
     skipped: Option<usize>,
     last_error: Option<String>,
     action_log_feature: ActionLogFeature,
-}
-fn feature_run_state(enabled: bool, unknown: bool) -> FeatureRunState {
-    if !enabled {
-        FeatureRunState::NotRunning
-    } else if unknown {
-        FeatureRunState::Unknown
-    } else {
-        FeatureRunState::Running
-    }
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -44,30 +38,21 @@ pub(super) enum Message {
 
 pub(super) fn view<'a>(
     page: Page,
-    settings: &Settings,
+    settings: &crate::application::SettingsEditor,
     runtime: &'a RuntimeStatusSnapshot,
     plans: &[PowerPlan],
 ) -> Option<Element<'a, Message>> {
+    let settings = saved_runtime_settings(settings, crate::backend::power_source::is_plugged_in());
     let power_feature = match page {
-        Page::ByActivity => Some((settings.by_activity.enabled, ActionLogFeature::ByActivity)),
-        Page::ByForeground => Some((
-            settings.by_foreground.enabled,
-            ActionLogFeature::ByForeground,
-        )),
-        Page::ByRunningApp => Some((
-            settings.by_running_app.enabled,
-            ActionLogFeature::ByRunningApp,
-        )),
-        Page::ByCpuLoad => Some((settings.by_cpu_load.enabled, ActionLogFeature::ByCpuLoad)),
-        Page::ByTime => Some((settings.by_time.enabled, ActionLogFeature::ByTime)),
+        Page::ByActivity => Some(ActionLogFeature::ByActivity),
+        Page::ByForeground => Some(ActionLogFeature::ByForeground),
+        Page::ByRunningApp => Some(ActionLogFeature::ByRunningApp),
+        Page::ByCpuLoad => Some(ActionLogFeature::ByCpuLoad),
+        Page::ByTime => Some(ActionLogFeature::ByTime),
         _ => None,
     };
-    let mut summary = if let Some((enabled, feature)) = power_feature {
+    let summary = if let Some(feature) = power_feature {
         FeatureStatusSummary {
-            state: feature_run_state(
-                settings.general.enabled && enabled,
-                runtime.power_plan_status.current_guid.is_none(),
-            ),
             scanned: None,
             adjusted: None,
             protected_or_denied: None,
@@ -76,28 +61,54 @@ pub(super) fn view<'a>(
             action_log_feature: feature,
         }
     } else {
-        feature_status_summary(page, settings, runtime)?
+        feature_status_summary(page, runtime)?
     };
     let available = runtime.generation != 0;
-    if !available || runtime.worker_error.is_some() {
-        summary.state = FeatureRunState::Unknown;
-    }
-    let state_label = match summary.state {
-        FeatureRunState::Running => "common.running",
-        FeatureRunState::NotRunning => "common.not_running",
-        FeatureRunState::Unknown => "common.unknown",
+    let state = sidebar_state(page, settings, runtime, &summary);
+    let (state_label, detail, color) = match state {
+        FeatureRunState::Running => (
+            "common.running",
+            "sidebar_status.running_help",
+            "common.applied",
+        ),
+        FeatureRunState::Waiting => (
+            "common.waiting",
+            "sidebar_status.waiting_help",
+            "common.waiting",
+        ),
+        FeatureRunState::Paused => (
+            "sidebar_status.paused",
+            "sidebar_status.paused_help",
+            "common.waiting",
+        ),
+        FeatureRunState::Blocked => (
+            "sidebar_status.blocked",
+            "sidebar_status.blocked_help",
+            "common.error",
+        ),
+        FeatureRunState::Error => ("common.error", "sidebar_status.error_help", "common.error"),
+        FeatureRunState::Inactive => (
+            "common.inactive",
+            "sidebar_status.inactive_help",
+            "common.inactive",
+        ),
+        FeatureRunState::Unknown => (
+            "common.unknown",
+            "sidebar_status.unknown_help",
+            "common.unknown",
+        ),
     };
     let mut body = column![
         super::widgets::heading(
             t!("common.status").to_string(),
             design::typography::SUBTITLE
         ),
-        text(t!(state_label).to_string())
-            .size(design::typography::SECONDARY)
-            .style(match summary.state {
-                FeatureRunState::Running => text::success,
-                FeatureRunState::NotRunning | FeatureRunState::Unknown => text::secondary,
-            })
+        container(text(t!(state_label).to_string()).size(design::typography::SECONDARY))
+            .padding([4, 8])
+            .style(move |theme| super::widgets::rule_status_chip(theme, color)),
+        text(t!(detail).to_string())
+            .size(design::typography::CAPTION)
+            .style(text::secondary)
     ]
     .spacing(design::space::MEDIUM);
     if power_feature.is_some() {
@@ -228,6 +239,107 @@ pub(super) fn view<'a>(
         .into(),
     )
 }
+fn saved_runtime_settings(
+    editor: &crate::application::SettingsEditor,
+    plugged_in: Option<bool>,
+) -> &Settings {
+    let saved = editor.persisted();
+    if plugged_in == Some(false) {
+        saved.battery_profile()
+    } else {
+        saved
+    }
+}
+
+fn sidebar_state(
+    page: Page,
+    settings: &Settings,
+    runtime: &RuntimeStatusSnapshot,
+    summary: &FeatureStatusSummary,
+) -> FeatureRunState {
+    use crate::control::power_plan::PowerPlanOwner;
+    use crate::rules::DecisionState;
+    if !settings.general.enabled
+        || super::navigation::feature_page_enabled(settings, page) == Some(false)
+    {
+        return FeatureRunState::Inactive;
+    }
+    if runtime.worker_error.is_some() {
+        return FeatureRunState::Error;
+    }
+    if runtime.generation == 0 {
+        return FeatureRunState::Unknown;
+    }
+    if summary.last_error.is_some() {
+        return FeatureRunState::Error;
+    }
+    let plan = &runtime.power_plan_status;
+    let plan_applied = plan
+        .target_guid
+        .as_deref()
+        .zip(plan.current_guid.as_deref())
+        .is_some_and(|(target, current)| target.eq_ignore_ascii_case(current));
+    let power_state = match page {
+        Page::ByActivity => Some(matches!(
+            plan.decision_state,
+            Some(DecisionState::ByActivityIdle | DecisionState::ByActivityActive)
+        )),
+        Page::ByForeground => Some(plan.decision_state == Some(DecisionState::ByForeground)),
+        Page::ByRunningApp => Some(plan.decision_state == Some(DecisionState::ByRunningApp)),
+        Page::ByCpuLoad => Some(plan.decision_state == Some(DecisionState::ByCpuLoad)),
+        Page::ByTime => Some(plan.decision_state == Some(DecisionState::ByTime)),
+        _ => None,
+    };
+    if let Some(selected) = power_state {
+        if plan.current_guid.is_none() {
+            return FeatureRunState::Unknown;
+        }
+        if plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
+            || plan.decision_state == Some(DecisionState::PausedWhilePluggedIn)
+        {
+            return FeatureRunState::Paused;
+        }
+        if selected && plan.apply_failed {
+            return FeatureRunState::Error;
+        }
+        return if selected && plan_applied && plan.owner == Some(PowerPlanOwner::OrdinaryAutomation)
+        {
+            FeatureRunState::Running
+        } else {
+            FeatureRunState::Waiting
+        };
+    }
+    let features = &runtime.feature_status;
+    if (page == Page::BackgroundEfficiency && features.background_efficiency.unsupported)
+        || (page == Page::AppSuspension && features.app_suspension.unsupported)
+    {
+        return FeatureRunState::Blocked;
+    }
+    if page == Page::AppSuspension && features.app_suspension.status_unknown {
+        return FeatureRunState::Unknown;
+    }
+    if page == Page::MemoryTrim
+        && matches!(
+            features.memory_trim.status,
+            crate::features::winderust_features::memory_trim::MemoryTrimStatus::ForegroundUnknown
+        )
+    {
+        return FeatureRunState::Paused;
+    }
+    let active = summary.adjusted.is_some_and(|count| count > 0)
+        || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some())
+        || (page == Page::AdaptiveEngine
+            && plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
+            && plan_applied);
+    if active {
+        FeatureRunState::Running
+    } else if summary.protected_or_denied.is_some_and(|count| count > 0) {
+        FeatureRunState::Blocked
+    } else {
+        FeatureRunState::Waiting
+    }
+}
+
 fn count(value: Option<usize>) -> String {
     value
         .map(|v| v.to_string())
@@ -287,17 +399,12 @@ fn log(
 }
 fn feature_status_summary(
     page: Page,
-    settings: &Settings,
     runtime: &RuntimeStatusSnapshot,
 ) -> Option<FeatureStatusSummary> {
     let summary = match page {
         Page::AdaptiveEngine => {
             let status = &runtime.feature_status.cpu_scheduler;
             FeatureStatusSummary {
-                state: feature_run_state(
-                    settings.general.enabled && settings.adaptive_engine.enabled,
-                    false,
-                ),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
@@ -309,7 +416,6 @@ fn feature_status_summary(
         Page::BackgroundEfficiency => {
             let status = &runtime.feature_status.background_efficiency;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, status.unsupported),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.throttled_processes),
                 protected_or_denied: Some(status.access_denied_processes),
@@ -321,7 +427,6 @@ fn feature_status_summary(
         Page::MemoryTrim => {
             let status = &runtime.feature_status.memory_trim;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.trimmed_processes),
                 protected_or_denied: None,
@@ -333,7 +438,6 @@ fn feature_status_summary(
         Page::ProcessPriority => {
             let status = &runtime.feature_status.process_priority;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
@@ -345,7 +449,6 @@ fn feature_status_summary(
         Page::ThreadPriority => {
             let status = &runtime.feature_status.thread_priority;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
@@ -357,7 +460,6 @@ fn feature_status_summary(
         Page::DynamicPriorityBoost => {
             let status = &runtime.feature_status.dynamic_priority_boost;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
@@ -369,7 +471,6 @@ fn feature_status_summary(
         Page::IoPriority => {
             let status = &runtime.feature_status.io_priority;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
@@ -381,7 +482,6 @@ fn feature_status_summary(
         Page::GpuPriority => {
             let status = &runtime.feature_status.gpu_priority;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: Some(status.denied_processes),
@@ -393,7 +493,6 @@ fn feature_status_summary(
         Page::MemoryPriority => {
             let status = &runtime.feature_status.memory_priority;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: None,
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
@@ -405,7 +504,6 @@ fn feature_status_summary(
         Page::CpuLimiter => {
             let status = &runtime.feature_status.cpu_limiter;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.limited_processes),
                 protected_or_denied: None,
@@ -427,7 +525,6 @@ fn feature_status_summary(
                 )
             };
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
@@ -439,10 +536,6 @@ fn feature_status_summary(
         Page::AppSuspension => {
             let status = &runtime.feature_status.app_suspension;
             FeatureStatusSummary {
-                state: feature_run_state(
-                    status.enabled,
-                    status.unsupported || status.status_unknown,
-                ),
                 scanned: None,
                 adjusted: Some(status.suspended_processes),
                 protected_or_denied: None,
@@ -454,7 +547,6 @@ fn feature_status_summary(
         Page::TimerResolution => {
             let status = &runtime.feature_status.timer_resolution;
             FeatureStatusSummary {
-                state: feature_run_state(status.enabled, false),
                 scanned: None,
                 adjusted: None,
                 protected_or_denied: None,
@@ -472,14 +564,104 @@ fn feature_status_summary(
 mod tests {
     use super::*;
     #[test]
+    fn unsaved_toggle_edits_do_not_change_sidebar_settings() {
+        let mut saved = Settings::default();
+        saved.general.enabled = true;
+        saved.process_priority.enabled = true;
+        let mut editor = crate::application::SettingsEditor::with_settings(saved);
+        editor.general.enabled = false;
+        editor.process_priority.enabled = false;
+        assert!(saved_runtime_settings(&editor, Some(true)).general.enabled);
+        assert!(
+            saved_runtime_settings(&editor, Some(true))
+                .process_priority
+                .enabled
+        );
+        editor.process_priority.enabled = true;
+        assert!(
+            saved_runtime_settings(&editor, Some(true))
+                .process_priority
+                .enabled
+        );
+    }
+
+    #[test]
+    fn sidebar_distinguishes_enabled_from_actual_work() {
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.process_priority.enabled = true;
+        let mut runtime = RuntimeStatusSnapshot::default();
+        let state = |settings: &Settings, runtime: &RuntimeStatusSnapshot| {
+            let summary = feature_status_summary(Page::ProcessPriority, runtime).unwrap();
+            sidebar_state(Page::ProcessPriority, settings, runtime, &summary)
+        };
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Unknown);
+        runtime.generation = 1;
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Waiting);
+        std::sync::Arc::get_mut(&mut runtime.feature_status)
+            .unwrap()
+            .process_priority
+            .adjusted_processes = 1;
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Running);
+        std::sync::Arc::get_mut(&mut runtime.feature_status)
+            .unwrap()
+            .process_priority
+            .last_error = Some("apply failed".into());
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Error);
+        settings.process_priority.enabled = false;
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Inactive);
+    }
+
+    #[test]
+    fn power_sidebar_requires_ownership_and_confirmed_target() {
+        use crate::{
+            control::power_plan::{PowerPlanOwner, PowerPlanStatus},
+            rules::DecisionState,
+        };
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.by_time.enabled = true;
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let summary = FeatureStatusSummary {
+            scanned: None,
+            adjusted: None,
+            protected_or_denied: None,
+            skipped: None,
+            last_error: None,
+            action_log_feature: ActionLogFeature::ByTime,
+        };
+        let state = |runtime: &RuntimeStatusSnapshot| {
+            sidebar_state(Page::ByTime, &settings, runtime, &summary)
+        };
+        let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
+        *plan = PowerPlanStatus {
+            owner: Some(PowerPlanOwner::OrdinaryAutomation),
+            decision_state: Some(DecisionState::ByTime),
+            current_guid: Some("old".into()),
+            target_guid: Some("new".into()),
+            ..Default::default()
+        };
+        assert_eq!(state(&runtime), FeatureRunState::Waiting);
+        std::sync::Arc::make_mut(&mut runtime.power_plan_status).apply_failed = true;
+        assert_eq!(state(&runtime), FeatureRunState::Error);
+        let plan = std::sync::Arc::make_mut(&mut runtime.power_plan_status);
+        plan.apply_failed = false;
+        plan.current_guid = Some("NEW".into());
+        assert_eq!(state(&runtime), FeatureRunState::Running);
+        std::sync::Arc::make_mut(&mut runtime.power_plan_status).owner =
+            Some(PowerPlanOwner::AdaptiveEngine);
+        assert_eq!(state(&runtime), FeatureRunState::Paused);
+    }
+
+    #[test]
     fn unavailable_metrics_are_not_reported_as_zero() {
         assert_eq!(count(None), "\u{2014}");
         assert_eq!(count(Some(0)), "0");
-        assert_eq!(feature_run_state(true, true), FeatureRunState::Unknown);
-        assert_eq!(feature_run_state(false, true), FeatureRunState::NotRunning);
-        let settings = Settings::default();
         let runtime = RuntimeStatusSnapshot::default();
-        let summary = feature_status_summary(Page::MemoryPriority, &settings, &runtime).unwrap();
+        let summary = feature_status_summary(Page::MemoryPriority, &runtime).unwrap();
         assert_eq!(summary.scanned, None);
         assert_eq!(summary.protected_or_denied, None);
     }
