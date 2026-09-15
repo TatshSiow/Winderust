@@ -391,16 +391,10 @@ impl Editor {
         status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
-        let mut rail = column![
-            super::widgets::heading(
-                t!("cpu_allocation.presets").to_string(),
-                design::typography::SUBTITLE
-            ),
-            super::widgets::heading(
-                t!("cpu_allocation.core_presets").to_string(),
-                design::typography::SECONDARY
-            ),
-        ]
+        let mut rail = column![super::widgets::heading(
+            t!("cpu_allocation.core_presets").to_string(),
+            design::typography::SECONDARY
+        ),]
         .spacing(design::space::MEDIUM)
         .padding([0, design::space::MEDIUM as u16]);
         for preset in core_presets(&processors).into_iter().filter(|p| p.0 != 0) {
@@ -468,12 +462,14 @@ impl Editor {
             super::widgets::panel_tab(
                 t!("common.status").to_string(),
                 !self.presets_tab,
-                Message::RailTab(false)
+                Message::RailTab(false),
+                true,
             ),
             super::widgets::panel_tab(
                 t!("cpu_allocation.presets").to_string(),
                 self.presets_tab,
-                Message::RailTab(true)
+                Message::RailTab(true),
+                true,
             )
         ]
         .spacing(design::space::SMALL);

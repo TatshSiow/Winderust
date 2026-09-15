@@ -99,10 +99,6 @@ pub(super) fn view<'a>(
         ),
     };
     let mut body = column![
-        super::widgets::heading(
-            t!("common.status").to_string(),
-            design::typography::SUBTITLE
-        ),
         container(text(t!(state_label).to_string()).size(design::typography::SECONDARY))
             .padding([4, 8])
             .style(move |theme| super::widgets::rule_status_chip(theme, color)),
@@ -228,15 +224,29 @@ pub(super) fn view<'a>(
             button(text(t!("admin_rights.relaunch").to_string())).on_press(Message::RelaunchAdmin),
         );
     }
+    let content: Element<'a, Message> = scrollable(
+        container(body.width(Fill))
+            .width(Fill)
+            .padding([0, design::space::MEDIUM as u16]),
+    )
+    .width(Fill)
+    .height(Fill)
+    .into();
     Some(
-        scrollable(
-            container(body.width(Fill))
-                .width(Fill)
-                .padding([0, design::space::MEDIUM as u16]),
-        )
-        .width(Fill)
-        .height(Fill)
-        .into(),
+        if matches!(
+            page,
+            Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard
+        ) {
+            content
+        } else {
+            column![
+                super::widgets::panel_heading(t!("common.status").to_string()),
+                content
+            ]
+            .spacing(design::space::MEDIUM)
+            .height(Fill)
+            .into()
+        },
     )
 }
 fn saved_runtime_settings(

@@ -469,6 +469,7 @@ impl Editor {
                         t!(key).to_string(),
                         r.days.contains(&day),
                         Message::Day(index, day, !r.days.contains(&day)),
+                        false,
                     ));
                 }
                 controls = controls.push(widgets::settings_card(days)).push(

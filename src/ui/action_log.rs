@@ -122,10 +122,6 @@ impl Editor {
         let filters = scrollable(
             column![
                 super::widgets::heading(
-                    t!("nav.settings").to_string(),
-                    design::typography::SUBTITLE
-                ),
-                super::widgets::heading(
                     t!("settings.action_log_mode").to_string(),
                     design::typography::SECONDARY
                 ),
@@ -158,10 +154,12 @@ impl Editor {
                 ]
                 .spacing(design::space::SMALL),
             ]
-            .spacing(design::space::MEDIUM),
+            .spacing(design::space::MEDIUM)
+            .padding([0, design::space::MEDIUM as u16]),
         )
         .height(Fill);
         column![
+            super::widgets::panel_heading(t!("nav.settings").to_string()),
             filters,
             iced::widget::rule::horizontal(1),
             container(
@@ -179,6 +177,7 @@ impl Editor {
             )
             .padding([design::space::MEDIUM as u16, 0]),
         ]
+        .spacing(design::space::MEDIUM)
         .height(Fill)
         .into()
     }

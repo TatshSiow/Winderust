@@ -466,6 +466,7 @@ impl Editor {
                     t!(next.key()).to_string(),
                     next == tab,
                     Message::TuningTab(next),
+                    false,
                 )
                 .height(36),
             );
@@ -1697,16 +1698,10 @@ impl Editor {
         live: &'a crate::application::SettingsEditor,
         status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
-        let mut rail = column![
-            super::widgets::heading(
-                t!("adaptive_engine.presets").to_string(),
-                design::typography::SUBTITLE
-            ),
-            super::widgets::heading(
-                t!("adaptive_engine.built_in_presets").to_string(),
-                design::typography::SECONDARY
-            )
-        ]
+        let mut rail = column![super::widgets::heading(
+            t!("adaptive_engine.built_in_presets").to_string(),
+            design::typography::SECONDARY
+        )]
         .spacing(design::space::MEDIUM)
         .padding([0, design::space::MEDIUM as u16]);
         for p in BuiltInAdaptiveEnginePreset::ALL {
@@ -1771,12 +1766,14 @@ impl Editor {
             super::widgets::panel_tab(
                 t!("common.status").to_string(),
                 !self.presets_tab,
-                Message::RailTab(false)
+                Message::RailTab(false),
+                true,
             ),
             super::widgets::panel_tab(
                 t!("adaptive_engine.presets").to_string(),
                 self.presets_tab,
-                Message::RailTab(true)
+                Message::RailTab(true),
+                true,
             )
         ]
         .spacing(design::space::SMALL);

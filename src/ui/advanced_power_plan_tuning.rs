@@ -496,16 +496,10 @@ impl Editor {
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
     ) -> Element<'a, Message> {
-        let mut rail = column![
-            super::widgets::heading(
-                t!("processor_power.presets").to_string(),
-                design::typography::SUBTITLE
-            ),
-            super::widgets::heading(
-                t!("processor_power.built_in_presets").to_string(),
-                design::typography::SECONDARY
-            )
-        ]
+        let mut rail = column![super::widgets::heading(
+            t!("processor_power.built_in_presets").to_string(),
+            design::typography::SECONDARY
+        )]
         .spacing(design::space::MEDIUM)
         .padding([0, design::space::MEDIUM as u16]);
         for p in BUILT_INS {
@@ -554,6 +548,7 @@ impl Editor {
             );
         }
         column![
+            super::widgets::panel_heading(t!("processor_power.presets").to_string()),
             scrollable(rail).height(Fill).width(Fill),
             super::widgets::preset_footer(
                 t!("processor_power.add_preset").to_string(),

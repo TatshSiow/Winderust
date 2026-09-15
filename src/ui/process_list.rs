@@ -1000,7 +1000,6 @@ impl ProcessList {
 
     pub(super) fn side_panel(&self) -> Element<'_, Message> {
         let mut filters = column![
-            super::widgets::heading(t!("nav.settings").to_string(), design::typography::SUBTITLE),
             super::widgets::heading(
                 t!("process_list.filter").to_string(),
                 design::typography::SECONDARY
@@ -1053,7 +1052,13 @@ impl ProcessList {
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
             );
-        scrollable(filters).height(Fill).into()
+        column![
+            super::widgets::panel_heading(t!("nav.settings").to_string()),
+            scrollable(filters.padding([0, design::space::MEDIUM as u16])).height(Fill)
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill)
+        .into()
     }
 
     pub(super) fn view<'a>(
@@ -1616,6 +1621,7 @@ impl ProcessList {
                     t!(key).to_string(),
                     self.process_tab == tab,
                     Message::ProcessTab(tab),
+                    false,
                 ));
             }
             let mut pane = column![].spacing(super::widgets::CARD_GAP);
