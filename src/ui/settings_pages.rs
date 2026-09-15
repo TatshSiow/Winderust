@@ -58,6 +58,18 @@ pub(super) enum Message {
     DismissUpdate,
 }
 impl Editor {
+    pub(super) fn has_invalid_inputs(&self) -> bool {
+        self.failure_threshold.as_ref().is_some_and(|value| {
+            value
+                .parse::<u8>()
+                .ok()
+                .is_none_or(|value| !(1..=100).contains(&value))
+        }) || self
+            .color
+            .as_ref()
+            .is_some_and(|value| parse_color(value).is_none())
+    }
+
     pub(super) fn reset_drafts(&mut self) {
         self.color = None;
         self.failure_threshold = None;
@@ -850,6 +862,7 @@ mod tests {
         for draft in ["", "0", "101", "invalid"] {
             editor.update(&mut settings, Message::FailureThreshold(draft.into()));
             assert_eq!(editor.failure_threshold.as_deref(), Some(draft));
+            assert!(editor.has_invalid_inputs());
             assert_eq!(
                 settings.advanced.execution_failure_suppression_threshold,
                 12
@@ -857,6 +870,11 @@ mod tests {
         }
         editor.reset_drafts();
         assert!(editor.failure_threshold.is_none());
+        assert!(!editor.has_invalid_inputs());
+        editor.update(&mut settings, Message::AccentHex("invalid".into()));
+        assert!(editor.has_invalid_inputs());
+        editor.update(&mut settings, Message::AccentHex("#123456".into()));
+        assert!(!editor.has_invalid_inputs());
     }
     #[test]
     fn resetting_drafts_preserves_in_flight_update_check() {

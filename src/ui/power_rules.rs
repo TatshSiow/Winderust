@@ -61,6 +61,10 @@ pub(super) struct Editor {
     creating: bool,
 }
 impl Editor {
+    pub(super) fn has_pending_editor(&self) -> bool {
+        self.draft.is_some()
+    }
+
     fn sync_ids(&mut self, kind: Kind, s: &Settings) {
         let count = match kind {
             Kind::Time => s.by_time.rules.len(),
@@ -671,10 +675,13 @@ mod tests {
             settings.by_cpu_load.enabled = true;
             let before = settings.clone();
             editor.update(kind, &mut settings, &[], Message::Add);
+            assert!(editor.has_pending_editor());
             assert_eq!(settings, before);
             editor.update(kind, &mut settings, &[], Message::Cancel);
+            assert!(!editor.has_pending_editor());
             assert_eq!(settings, before);
             editor.update(kind, &mut settings, &[], Message::Add);
+            assert!(editor.has_pending_editor());
             let index = editor.editing;
             editor.update(
                 kind,
@@ -683,6 +690,7 @@ mod tests {
                 Message::Name(index, "New rule".into()),
             );
             editor.update(kind, &mut settings, &[], Message::Save);
+            assert!(!editor.has_pending_editor());
             let saved = settings.clone();
             assert_ne!(saved, before);
             editor.update(kind, &mut settings, &[], Message::Edit(index));
@@ -694,6 +702,7 @@ mod tests {
             );
             assert_eq!(settings, saved);
             editor.update(kind, &mut settings, &[], Message::Cancel);
+            assert!(!editor.has_pending_editor());
             assert_eq!(settings, saved);
         }
     }

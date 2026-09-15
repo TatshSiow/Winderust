@@ -933,7 +933,7 @@ memory_priority:
   no_exclusions: "No custom rules are configured."
 
 timer_resolution:
-  intro_1: "Timer Resolution requests a Windows system timer resolution while a matching app is in the foreground."
+  intro_1: "Winderust requests timer resolution for its own process while a matching app is in the foreground. This does not guarantee a change to that app's timer resolution."
   intro_2: "Each foreground rule can use its own timer resolution value in milliseconds."
   intro_3: "Winderust releases its request when no foreground rule matches, this control is disabled, or the app exits."
   enable: "Enable Timer Resolution Control"

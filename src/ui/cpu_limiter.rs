@@ -75,6 +75,10 @@ pub(super) enum Message {
 }
 
 impl CpuLimiter {
+    pub(super) fn has_pending_editor(&self) -> bool {
+        self.draft.is_some()
+    }
+
     pub(super) fn update(&mut self, settings: &mut CpuLimiterSettings, message: Message) {
         match message {
             Message::Edit(index) => {
@@ -474,13 +478,17 @@ mod tests {
             .push(new_cpu_limiter_rule(r"C:\Apps\test.exe"));
         let before = settings.clone();
         editor.update(&mut settings, Message::Edit(0));
+        assert!(editor.has_pending_editor());
         editor.update(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
         assert_eq!(settings, before);
         editor.update(&mut settings, Message::CancelRule);
+        assert!(!editor.has_pending_editor());
         assert_eq!(settings, before);
         editor.update(&mut settings, Message::Edit(0));
+        assert!(editor.has_pending_editor());
         editor.update(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
         editor.update(&mut settings, Message::SaveRule);
+        assert!(!editor.has_pending_editor());
         assert_eq!(settings.rules[0].focus_allowed_cpu_time_percent, 25);
     }
     #[test]

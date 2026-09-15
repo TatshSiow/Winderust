@@ -625,14 +625,7 @@ impl WinderustApp {
             Message::CpuLimiter(message) => self
                 .cpu_limiter
                 .update(&mut self.settings.cpu_limiter, message),
-            Message::PowerSource(_)
-                if self.pending_preset()
-                    || self.adaptive.validation_error().is_some()
-                    || self.cpu_limiter.has_invalid_inputs()
-                    || !self.activity_inputs.valid()
-                    || !self.time_rules.valid()
-                    || !self.cpu_rules.valid() =>
-            {
+            Message::PowerSource(_) if self.pending_editor() || self.invalid_inputs() => {
                 self.message = t!("unsaved.message").to_string();
             }
             Message::PowerSource(source) => {
@@ -853,7 +846,7 @@ impl WinderustApp {
                 self.closing = true;
                 return self.show_window();
             }
-            Message::Save if self.pending_preset() => {
+            Message::Save if self.pending_editor() => {
                 self.message = t!("unsaved.message").to_string();
             }
             Message::Save if self.adaptive.validation_error().is_some() => {
@@ -867,6 +860,11 @@ impl WinderustApp {
             }
             Message::Save if !self.activity_inputs.valid() => {
                 self.message = t!("by_activity.invalid_timing").to_string();
+            }
+            Message::Save
+                if self.timer.has_invalid_inputs() || self.preferences.has_invalid_inputs() =>
+            {
+                self.message = t!("unsaved.message").to_string();
             }
             Message::Save => match self.settings.save() {
                 Ok(outcome) => {
@@ -915,14 +913,7 @@ impl WinderustApp {
                 }
                 return self.shutdown();
             }
-            Message::SettingsFile(_)
-                if self.pending_preset()
-                    || self.adaptive.validation_error().is_some()
-                    || self.cpu_limiter.has_invalid_inputs()
-                    || !self.activity_inputs.valid()
-                    || !self.time_rules.valid()
-                    || !self.cpu_rules.valid() =>
-            {
+            Message::SettingsFile(_) if self.pending_editor() || self.invalid_inputs() => {
                 self.message = t!("unsaved.message").to_string();
             }
             Message::SettingsFile(mode) => {
@@ -968,11 +959,13 @@ impl WinderustApp {
     fn pending_changes(&self) -> bool {
         self.settings.has_unsaved_changes()
             || self.power_tuning.dirty
-            || self.pending_preset()
+            || self.pending_editor()
             || self.invalid_inputs()
     }
     fn invalid_inputs(&self) -> bool {
         self.cpu_limiter.has_invalid_inputs()
+            || self.timer.has_invalid_inputs()
+            || self.preferences.has_invalid_inputs()
             || self.adaptive.validation_error().is_some()
             || !self.activity_inputs.valid()
             || !self.time_rules.valid()
@@ -987,11 +980,14 @@ impl WinderustApp {
             .map(|window| iced::window::set_mode(window, iced::window::Mode::Windowed))
             .unwrap_or_else(Task::none)
     }
-    fn pending_preset(&self) -> bool {
+    fn pending_editor(&self) -> bool {
         self.power_tuning.has_pending_editor()
             || self.adaptive.has_pending_editor()
             || self.soft_allocation.has_pending_editor()
             || self.hard_allocation.has_pending_editor()
+            || self.cpu_limiter.has_pending_editor()
+            || self.time_rules.has_pending_editor()
+            || self.cpu_rules.has_pending_editor()
     }
     fn reset_editors(&mut self) {
         self.preferences.reset_drafts();

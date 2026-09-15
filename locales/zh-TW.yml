@@ -936,7 +936,7 @@ memory_priority:
   no_exclusions: "尚未設定記憶體優先順序排除項目。"
 
 timer_resolution:
-  intro_1: "計時器解析度會在符合規則的 App 位於前景時要求 Windows 系統計時器解析度。"
+  intro_1: "符合規則的 App 位於前景時，Winderust 會為自己的處理程序要求計時器解析度。這不保證會改變該 App 的計時器解析度。"
   intro_2: "每個前景規則都可以使用自己的毫秒解析度值。"
   intro_3: "沒有前景規則符合、停用此控制或結束 App 時，Winderust 會釋放自己的要求。"
   enable: "啟用計時器解析度控制"

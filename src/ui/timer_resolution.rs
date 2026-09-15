@@ -25,6 +25,12 @@ pub(super) enum Message {
     Browse,
 }
 impl Editor {
+    pub(super) fn has_invalid_inputs(&self) -> bool {
+        self.editing
+            .as_ref()
+            .is_some_and(|(_, value)| parse_resolution(value, 1_000, 10_000_000).is_none())
+    }
+
     pub(super) fn update(
         &mut self,
         s: &mut TimerResolutionSettings,
@@ -189,7 +195,9 @@ mod tests {
             Message::Resolution(0, "2.00".into()),
         );
         assert_eq!(settings.rules[0].desired_100ns, 20_000);
+        assert!(!editor.has_invalid_inputs());
         editor.update(&mut settings, &status, Message::Resolution(0, "".into()));
+        assert!(editor.has_invalid_inputs());
         assert_eq!(settings.rules[0].desired_100ns, 20_000);
     }
     #[test]
