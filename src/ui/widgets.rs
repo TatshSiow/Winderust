@@ -46,7 +46,9 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
             candidates,
             active,
             controls,
-            rule_delete_button(remove)
+            iced::widget::container(rule_delete_button(remove))
+                .center_x(80)
+                .into()
         ),
         iced::widget::rule::horizontal(1)
     ]
@@ -132,7 +134,7 @@ pub(super) fn process_rules_table<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     empty: String,
 ) -> Element<'a, M> {
-    process_rules_table_with_actions(tiers, rows, empty, 40)
+    process_rules_table_with_actions(tiers, rows, empty, 80)
 }
 
 pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
@@ -153,7 +155,11 @@ pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
     for tier in tiers {
         header = header.push(text(tier).width(iced::Length::FillPortion(2)));
     }
-    header = header.push(text(rust_i18n::t!("common.actions").to_string()).width(actions_width));
+    header = header.push(
+        text(rust_i18n::t!("common.actions").to_string())
+            .width(actions_width)
+            .align_x(iced::Center),
+    );
     let rows = if rows.is_empty() {
         container(text(empty).style(text::secondary))
             .padding(design::space::LARGE as u16)

@@ -409,7 +409,9 @@ impl Editor {
         let header = row![
             text(t!("common.active").to_string()).width(48),
             text(t!("common.rule_name").to_string()).width(Fill),
-            text(t!("common.actions").to_string()).width(80),
+            text(t!("common.actions").to_string())
+                .width(80)
+                .align_x(iced::Center),
         ]
         .spacing(design::space::MEDIUM);
         let rows = if cards.is_empty() {
