@@ -80,6 +80,7 @@ pub(crate) fn run(
                         .or_else(crate::crash_recovery::startup_error)
                         .unwrap_or_default(),
                     page: Page::Home,
+                    navigation_history: navigation::History::default(),
                     breadcrumb: vec![Page::Home],
                     restore_event,
                     window: None,
@@ -122,6 +123,20 @@ pub(crate) fn run(
         Subscription::batch([
             iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
             iced::window::close_requests().map(|_| Message::WindowClose),
+            iced::event::listen_with(|event, status, _| {
+                if status != iced::event::Status::Ignored {
+                    return None;
+                }
+                match event {
+                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                        iced::mouse::Button::Back,
+                    )) => Some(Message::NavigateHistory(false)),
+                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                        iced::mouse::Button::Forward,
+                    )) => Some(Message::NavigateHistory(true)),
+                    _ => None,
+                }
+            }),
             if app.page == Page::ProcessList && app.processes.resizing_columns() {
                 iced::event::listen_raw(|event, _, _| match event {
                     iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(
@@ -194,6 +209,7 @@ struct WinderustApp {
     status: RuntimeStatusSnapshot,
     message: String,
     page: Page,
+    navigation_history: navigation::History,
     breadcrumb: Vec<Page>,
     restore_event: Option<SingleInstanceRestoreEvent>,
     window: Option<iced::window::Id>,
@@ -218,6 +234,7 @@ enum Message {
     #[cfg(feature = "render-smoke")]
     SmokeScreenshot(iced::window::Screenshot),
     NavigationSearch(String),
+    NavigateHistory(bool),
     ToggleNavigation,
     ToggleSection(Page),
     ToggleDescription,
@@ -666,7 +683,15 @@ impl WinderustApp {
                 }
                 return update;
             }
+            Message::NavigateHistory(forward) => {
+                if !self.closing && !self.pending_editor() {
+                    if let Some(page) = self.navigation_history.travel(forward) {
+                        return self.update(Message::Page(page));
+                    }
+                }
+            }
             Message::Page(page) => {
+                self.navigation_history.visit(page);
                 self.description_expanded = false;
                 let path = navigation::breadcrumb_path(page);
                 self.breadcrumb = path;

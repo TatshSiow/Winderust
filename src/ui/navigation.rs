@@ -5,6 +5,41 @@ use iced::{Element, Theme};
 use rust_i18n::t;
 use std::collections::HashSet;
 
+pub(super) struct History {
+    pages: Vec<Page>,
+    cursor: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            pages: vec![Page::Home],
+            cursor: 0,
+        }
+    }
+}
+
+impl History {
+    pub(super) fn visit(&mut self, page: Page) {
+        if self.pages[self.cursor] != page {
+            self.pages.truncate(self.cursor + 1);
+            self.pages.push(page);
+            self.cursor += 1;
+        }
+    }
+
+    pub(super) fn travel(&mut self, forward: bool) -> Option<Page> {
+        let cursor = if forward {
+            self.cursor.checked_add(1)?
+        } else {
+            self.cursor.checked_sub(1)?
+        };
+        let page = *self.pages.get(cursor)?;
+        self.cursor = cursor;
+        Some(page)
+    }
+}
+
 pub(super) fn breadcrumb_path(page: Page) -> Vec<Page> {
     let mut path = vec![Page::Home];
     let parent = page.section_landing_page();
@@ -467,6 +502,23 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_history_supports_back_forward_and_new_branches() {
+        let mut history = History::default();
+        assert_eq!(history.travel(false), None);
+        history.visit(Page::ProcessList);
+        history.visit(Page::ActionLog);
+        assert_eq!(history.travel(false), Some(Page::ProcessList));
+        history.visit(Page::ProcessList);
+        assert_eq!(history.travel(true), Some(Page::ActionLog));
+        assert_eq!(history.travel(true), None);
+        assert_eq!(history.travel(false), Some(Page::ProcessList));
+        history.visit(Page::About);
+        assert_eq!(history.travel(true), None);
+        assert_eq!(history.travel(false), Some(Page::ProcessList));
+        assert_eq!(history.travel(false), Some(Page::Home));
+    }
+
     #[test]
     fn breadcrumb_path_keeps_ancestors_in_order() {
         assert_eq!(breadcrumb_path(Page::Home), vec![Page::Home]);
