@@ -738,7 +738,7 @@ impl Editor {
                 let mut table = column![row![
                     text(t!("common.control").to_string()).width(Fill),
                     row![
-                        text(t!("common.enabled").to_string()).width(64),
+                        text(t!("common.enable").to_string()).width(64),
                         text(t!("common.focus_process").to_string()).width(Fill),
                         text(t!("common.visible_window").to_string()).width(Fill),
                         text(t!("common.background_process").to_string()).width(Fill),

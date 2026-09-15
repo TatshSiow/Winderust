@@ -1197,7 +1197,8 @@ impl RuntimeCore {
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
         let by_running_app = self.by_running_app_manager.active_decision().map(
-            |(rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
+            |(rule_index, rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
+                rule_index,
                 rule_name,
                 process_name,
                 power_plan_guid,

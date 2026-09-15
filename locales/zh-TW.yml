@@ -51,6 +51,10 @@ nav:
   about: "關於"
 
 common:
+  applied: "已套用"
+  waiting: "等待中"
+  error: "錯誤"
+  inactive: "???"
   how_it_works: "功能說明"
   caution: "注意"
   danger: "危險"
@@ -75,7 +79,7 @@ common:
   edit: "編輯"
   "on": "開啟"
   "off": "關閉"
-  active: "啟用"
+  enable: "啟用"
   actions: "操作"
   enabled: "已啟用"
   disabled: "已停用"
@@ -1088,7 +1092,6 @@ cpu_limiter:
   visible_window_allowed_cpu_time: "可見視窗允許的 CPU 時間"
   background_allowed_cpu_time: "背景程序允許的 CPU 時間"
   no_rules: "尚未設定自訂規則。"
-  indicator_limited: "已限制"
 
 about:
   inspired_by: "靈感來自"

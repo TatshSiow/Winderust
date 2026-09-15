@@ -321,7 +321,7 @@ impl Editor {
         &'a self,
         kind: Kind,
         s: &'a Settings,
-        _plans: &[PowerPlan],
+        status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
         let (enabled, label) = match kind {
             Kind::Time => (s.by_time.enabled, "by_time.enable"),
@@ -332,11 +332,6 @@ impl Editor {
             super::widgets::switch(enabled, Some(Message::Enabled))
         ))]
         .spacing(super::widgets::CARD_GAP);
-        if kind == Kind::Time {
-            body = body.push(text(
-                crate::features::power_plan_control::next_by_time_switch_label(&s.by_time),
-            ));
-        }
         let rules = match kind {
             Kind::Time => s
                 .by_time
@@ -372,13 +367,27 @@ impl Editor {
                 RuleRef::Time(r) => (r.enabled, &r.name),
                 RuleRef::Cpu(r) => (r.enabled, &r.name),
             };
+            let key = rule_status(
+                rule,
+                s.general.enabled && enabled,
+                status.rule_index == Some(index),
+                status,
+            );
             let header = row![
                 container(
                     checkbox(rule_enabled)
                         .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
                 )
                 .width(48),
+                container(text(t!(key).to_string()))
+                    .padding([4, 8])
+                    .style(move |theme| widgets::rule_status_chip(theme, key))
+                    .width(140),
                 text(name.clone()).width(Fill),
+            ]
+            .spacing(design::space::MEDIUM)
+            .align_y(iced::Center);
+            let header = header.push(
                 row![
                     iced::widget::tooltip(
                         button(super::navigation::glyph("icons/pencil.svg"))
@@ -394,9 +403,7 @@ impl Editor {
                 ]
                 .width(80)
                 .align_y(iced::Center),
-            ]
-            .spacing(design::space::MEDIUM)
-            .align_y(iced::Center);
+            );
             cards.push((
                 id,
                 column![
@@ -407,13 +414,16 @@ impl Editor {
             ));
         }
         let header = row![
-            text(t!("common.active").to_string()).width(48),
+            text(t!("common.enable").to_string()).width(48),
+            text(t!("common.status").to_string()).width(140),
             text(t!("common.rule_name").to_string()).width(Fill),
+        ]
+        .spacing(design::space::MEDIUM);
+        let header = header.push(
             text(t!("common.actions").to_string())
                 .width(80)
                 .align_x(iced::Center),
-        ]
-        .spacing(design::space::MEDIUM);
+        );
         let rows = if cards.is_empty() {
             container(text(t!("common.no_custom_rules").to_string()).style(text::secondary))
                 .padding(design::space::LARGE as u16)
@@ -663,9 +673,190 @@ fn valid_input(field: Field, value: &str) -> bool {
         Field::Duration => value.parse::<u32>().is_ok_and(|v| v <= 86400),
     }
 }
+fn rule_status(
+    rule: RuleRef<'_>,
+    enabled: bool,
+    selected: bool,
+    status: &crate::control::power_plan::PowerPlanStatus,
+) -> &'static str {
+    let (rule_enabled, configured, state, plans) = match rule {
+        RuleRef::Time(rule) => (
+            rule.enabled,
+            !rule.days.is_empty() && rule.parsed_times().is_some(),
+            crate::rules::DecisionState::ByTime,
+            [rule.power_plan_guid.as_deref(), None],
+        ),
+        RuleRef::Cpu(rule) => (
+            rule.enabled,
+            true,
+            crate::rules::DecisionState::ByCpuLoad,
+            [
+                rule.power_plan_guid.as_deref(),
+                rule.else_enabled
+                    .then_some(rule.else_power_plan_guid.as_deref())
+                    .flatten(),
+            ],
+        ),
+    };
+    power_rule_status(
+        enabled && rule_enabled,
+        configured,
+        selected,
+        state,
+        plans,
+        status,
+    )
+}
+
+pub(super) fn power_rule_status(
+    enabled: bool,
+    configured: bool,
+    selected: bool,
+    state: crate::rules::DecisionState,
+    plans: [Option<&str>; 2],
+    status: &crate::control::power_plan::PowerPlanStatus,
+) -> &'static str {
+    if !enabled {
+        "common.inactive"
+    } else if !configured || !plans.iter().flatten().any(|guid| !guid.trim().is_empty()) {
+        "common.unknown"
+    } else if selected
+        && status.owner == Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
+        && status.decision_state == Some(state)
+        && status.apply_failed
+        && plans.iter().flatten().any(|guid| {
+            status
+                .target_guid
+                .as_deref()
+                .is_some_and(|target| target.eq_ignore_ascii_case(guid))
+        })
+    {
+        "common.error"
+    } else if selected
+        && status.owner == Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
+        && status.decision_state == Some(state)
+        && plans.iter().flatten().any(|guid| {
+            status
+                .target_guid
+                .as_deref()
+                .is_some_and(|target| target.eq_ignore_ascii_case(guid))
+                && status
+                    .current_guid
+                    .as_deref()
+                    .is_some_and(|current| current.eq_ignore_ascii_case(guid))
+        })
+    {
+        "common.applied"
+    } else if status.current_guid.is_none() {
+        "common.unknown"
+    } else {
+        "common.waiting"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cpu_rule_status_tracks_selected_else_plan_and_failed_switches() {
+        use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};
+        let mut rule = ByCpuLoadRule {
+            enabled: true,
+            power_plan_guid: Some("main".into()),
+            else_enabled: true,
+            else_power_plan_guid: Some("else".into()),
+            name: "Rule".into(),
+            comparison: CpuUsageComparison::AtOrAbove,
+            threshold_percent: 75,
+            upper_threshold_percent: None,
+            duration_seconds: 0,
+        };
+        let mut status = PowerPlanStatus {
+            owner: Some(PowerPlanOwner::OrdinaryAutomation),
+            decision_state: Some(crate::rules::DecisionState::ByCpuLoad),
+            target_guid: Some("else".into()),
+            current_guid: Some("ELSE".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            rule_status(RuleRef::Cpu(&rule), true, true, &status),
+            "common.applied"
+        );
+        assert_eq!(
+            rule_status(RuleRef::Cpu(&rule), true, false, &status),
+            "common.waiting"
+        );
+        assert_eq!(
+            rule_status(RuleRef::Cpu(&rule), false, true, &status),
+            "common.inactive"
+        );
+        status.current_guid = Some("other".into());
+        assert_eq!(
+            rule_status(RuleRef::Cpu(&rule), true, true, &status),
+            "common.waiting"
+        );
+        rule.power_plan_guid = None;
+        rule.else_enabled = false;
+        assert_eq!(
+            rule_status(RuleRef::Cpu(&rule), true, true, &status),
+            "common.unknown"
+        );
+    }
+
+    #[test]
+    fn time_rule_status_requires_enabled_and_confirmed_runtime_plan() {
+        use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};
+        let rule = ByTimeRule {
+            enabled: true,
+            days: vec![WeekdaySetting::from_chrono(chrono::Weekday::Fri)],
+            start_time: "22:00".into(),
+            end_time: "08:00".into(),
+            power_plan_guid: Some("plan".into()),
+            ..Default::default()
+        };
+        let mut status = PowerPlanStatus {
+            owner: Some(PowerPlanOwner::OrdinaryAutomation),
+            decision_state: Some(crate::rules::DecisionState::ByTime),
+            target_guid: Some("plan".into()),
+            current_guid: Some("other".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            rule_status(RuleRef::Time(&rule), true, true, &status),
+            "common.waiting"
+        );
+        status.apply_failed = true;
+        assert_eq!(
+            rule_status(RuleRef::Time(&rule), true, true, &status),
+            "common.error"
+        );
+        status.apply_failed = false;
+        status.current_guid = Some("PLAN".into());
+        assert_eq!(
+            rule_status(RuleRef::Time(&rule), true, true, &status),
+            "common.applied"
+        );
+        assert_eq!(
+            rule_status(RuleRef::Time(&rule), false, true, &status),
+            "common.inactive"
+        );
+        assert_eq!(
+            rule_status(RuleRef::Time(&rule), true, false, &status),
+            "common.waiting"
+        );
+        status.owner = Some(PowerPlanOwner::AdaptiveEngine);
+        assert_eq!(
+            rule_status(RuleRef::Time(&rule), true, true, &status),
+            "common.waiting"
+        );
+        status.owner = Some(PowerPlanOwner::OrdinaryAutomation);
+        status.decision_state = Some(crate::rules::DecisionState::Disabled);
+        assert_eq!(
+            rule_status(RuleRef::Time(&rule), true, true, &status),
+            "common.waiting"
+        );
+    }
+
     #[test]
     fn rule_modal_saves_and_cancels_without_mutating_live_rules() {
         for kind in [Kind::Time, Kind::CpuLoad] {

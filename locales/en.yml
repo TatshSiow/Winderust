@@ -51,6 +51,10 @@ nav:
   about: "About"
 
 common:
+  applied: "Applied"
+  waiting: "Waiting"
+  error: "Error"
+  inactive: "Inactive"
   how_it_works: "How it works"
   caution: "Caution"
   danger: "Danger"
@@ -75,7 +79,7 @@ common:
   edit: "Edit"
   "on": "On"
   "off": "Off"
-  active: "Active"
+  enable: "Enable"
   actions: "Actions"
   enabled: "Enabled"
   disabled: "Disabled"
@@ -1085,7 +1089,6 @@ cpu_limiter:
   visible_window_allowed_cpu_time: "Visible Window Allowed CPU Time"
   background_allowed_cpu_time: "Background Allowed CPU Time"
   no_rules: "No custom rules are configured."
-  indicator_limited: "Limited"
 
 about:
   inspired_by: "Inspired by"

@@ -85,6 +85,10 @@ impl ExecutionFailureTracker {
         ExecutionSuppression::active(state.mark_suppression_logged())
     }
 
+    pub fn has_key_failure(&self, key: &str) -> bool {
+        self.states.contains_key(key)
+    }
+
     pub fn is_key_suppressed(&self, key: &str) -> bool {
         self.states
             .get(key)

@@ -12,6 +12,7 @@ const MIN_BY_TIME_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct ByTimeDecision {
+    pub rule_index: usize,
     pub rule_name: String,
     pub power_plan_guid: Option<String>,
 }
@@ -22,10 +23,16 @@ pub fn current_decision(settings: &ByTimeSettings) -> Option<ByTimeDecision> {
     }
 
     let now = Local::now();
-    active_rule(settings, now).map(|rule| ByTimeDecision {
-        rule_name: rule.name.clone(),
-        power_plan_guid: rule.power_plan_guid.clone(),
-    })
+    settings
+        .rules
+        .iter()
+        .enumerate()
+        .find(|(_, rule)| rule_applies(rule, now))
+        .map(|(rule_index, rule)| ByTimeDecision {
+            rule_index,
+            rule_name: rule.name.clone(),
+            power_plan_guid: rule.power_plan_guid.clone(),
+        })
 }
 
 pub fn next_change_delay(settings: &ByTimeSettings) -> Option<Duration> {

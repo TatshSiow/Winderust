@@ -102,7 +102,13 @@ impl Editor {
         settings: &'a Settings,
         plans: &[PowerPlan],
         candidates: &[super::app_picker::Candidate],
+        status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
+        let master_enabled = settings.general.enabled;
+        let state = match kind {
+            Kind::Foreground => crate::rules::DecisionState::ByForeground,
+            Kind::RunningApp => crate::rules::DecisionState::ByRunningApp,
+        };
         macro_rules! render_rules {
             ($field:ident, $can_add:ident, $enable:literal) => {{
                 let settings = &settings.$field;
@@ -146,25 +152,47 @@ impl Editor {
                         .width(Fill)
                         .into()
                     };
+                    let key = super::power_rules::power_rule_status(
+                        master_enabled && settings.enabled && rule.enabled,
+                        !rule.executable_path.trim().is_empty(),
+                        status.rule_index == Some(index),
+                        state,
+                        [rule.power_plan_guid.as_deref(), None],
+                        status,
+                    );
+                    let chip = iced::widget::container(iced::widget::text(t!(key).to_string()))
+                        .padding([4, 8])
+                        .style(move |theme| widgets::rule_status_chip(theme, key));
                     cards.push((
                         widgets::stable_key(&rule.executable_path),
-                        widgets::process_rule_row(
-                            &rule.executable_path,
-                            candidates,
-                            checkbox(rule.enabled)
-                                .on_toggle_maybe(Some(move |value| {
-                                    Message::RuleEnabled(index, value)
-                                }))
+                        column![
+                            widgets::process_rule_header(
+                                &rule.executable_path,
+                                candidates,
+                                checkbox(rule.enabled)
+                                    .on_toggle_maybe(Some(move |value| {
+                                        Message::RuleEnabled(index, value)
+                                    }))
+                                    .into(),
+                                Some(chip.into()),
+                                vec![selector],
+                                iced::widget::container(widgets::rule_delete_button(Some(
+                                    Message::Remove(index)
+                                )))
+                                .center_x(80)
                                 .into(),
-                            vec![selector],
-                            Some(Message::Remove(index)),
-                        ),
+                            ),
+                            iced::widget::rule::horizontal(1)
+                        ]
+                        .into(),
                     ));
                 }
-                rules_body = rules_body.push(widgets::process_rules_table(
+                rules_body = rules_body.push(widgets::process_rules_table_with_actions(
                     [t!("by_running_app.power_plan").to_string()],
                     cards,
                     t!("common.no_custom_rules").to_string(),
+                    80,
+                    true,
                 ));
                 body = body
                     .push(widgets::setting_title("common.rules"))
@@ -190,6 +218,38 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_plan_status_requires_selected_rule_and_confirmed_plan() {
+        use crate::{
+            control::power_plan::{PowerPlanOwner, PowerPlanStatus},
+            rules::DecisionState,
+        };
+        for state in [DecisionState::ByForeground, DecisionState::ByRunningApp] {
+            let mut status = PowerPlanStatus {
+                owner: Some(PowerPlanOwner::OrdinaryAutomation),
+                decision_state: Some(state),
+                current_guid: Some("PLAN".into()),
+                target_guid: Some("plan".into()),
+                ..Default::default()
+            };
+            let label = |enabled, selected, status: &PowerPlanStatus| {
+                super::super::power_rules::power_rule_status(
+                    enabled,
+                    true,
+                    selected,
+                    state,
+                    [Some("plan"), None],
+                    status,
+                )
+            };
+            assert_eq!(label(true, true, &status), "common.applied");
+            assert_eq!(label(false, true, &status), "common.inactive");
+            assert_eq!(label(true, false, &status), "common.waiting");
+            status.current_guid = Some("other".into());
+            assert_eq!(label(true, true, &status), "common.waiting");
+        }
+    }
+
     #[test]
     fn rules_stay_with_their_feature_and_duplicates_are_rejected() {
         let mut settings = Settings::default();

@@ -21,6 +21,8 @@ pub(crate) enum PowerPlanOwner {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PowerPlanStatus {
+    pub(crate) apply_failed: bool,
+    pub(crate) rule_index: Option<usize>,
     pub(crate) owner: Option<PowerPlanOwner>,
     pub(crate) current_guid: Option<String>,
     pub(crate) target_guid: Option<String>,
@@ -176,6 +178,14 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         };
 
         PowerPlanStatus {
+            apply_failed: decision_target.as_deref().is_some_and(|guid| {
+                self.switch_failures
+                    .has_key_failure(&switch_failure_key(guid))
+            }),
+            rule_index: self
+                .last_decision
+                .as_ref()
+                .and_then(|decision| decision.rule_index),
             owner,
             current_guid: self.current_guid.clone(),
             target_guid: adaptive_target.or(decision_target),
@@ -712,6 +722,7 @@ mod tests {
 
     fn decision(target: Option<&str>) -> DecisionOutcome {
         DecisionOutcome {
+            rule_index: None,
             power_plan_guid: target.map(str::to_owned),
             state: DecisionState::NoPowerPlanSelected,
             reason: "test decision".to_owned(),
@@ -728,6 +739,17 @@ mod tests {
             background_pressure_profile: AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
             focus_and_launch_profile: AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
         }
+    }
+
+    #[test]
+    fn status_reports_failure_until_target_succeeds() {
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.last_decision = Some(decision(Some("plan")));
+        assert!(!controller.status().apply_failed);
+        controller.record_switch_failure("PLAN");
+        assert!(controller.status().apply_failed);
+        controller.clear_switch_failure("plan");
+        assert!(!controller.status().apply_failed);
     }
 
     #[test]

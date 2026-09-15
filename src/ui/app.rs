@@ -1807,14 +1807,18 @@ impl WinderustApp {
 
             Page::ByTime => self
                 .time_rules
-                .view(power_rules::Kind::Time, &self.settings, &self.power_plans)
+                .view(
+                    power_rules::Kind::Time,
+                    &self.settings,
+                    &self.status.power_plan_status,
+                )
                 .map(|m| Message::PowerRules(power_rules::Kind::Time, m)),
             Page::ByCpuLoad => self
                 .cpu_rules
                 .view(
                     power_rules::Kind::CpuLoad,
                     &self.settings,
-                    &self.power_plans,
+                    &self.status.power_plan_status,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m)),
             Page::BackgroundEfficiency => self
@@ -1885,6 +1889,7 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
+                    &self.status.power_plan_status,
                 )
                 .map(|message| {
                     Message::ProcessPowerPlans(process_power_plans::Kind::Foreground, message)
@@ -1896,6 +1901,7 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
+                    &self.status.power_plan_status,
                 )
                 .map(|message| {
                     Message::ProcessPowerPlans(process_power_plans::Kind::RunningApp, message)
@@ -1906,7 +1912,12 @@ impl WinderustApp {
             }
             Page::CpuLimiter => self
                 .cpu_limiter
-                .view(&self.settings.cpu_limiter, &self.candidates)
+                .view(
+                    &self.settings.cpu_limiter,
+                    &self.candidates,
+                    self.settings.general.enabled,
+                    &self.status.feature_status.cpu_limiter,
+                )
                 .map(Message::CpuLimiter),
             Page::ProcessList => self
                 .processes

@@ -253,6 +253,8 @@ impl CpuLimiter {
         &'a self,
         settings: &'a CpuLimiterSettings,
         candidates: &[super::app_picker::Candidate],
+        master_enabled: bool,
+        status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
     ) -> Element<'a, Message> {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         body = body.push(text(t!("cpu_limiter.intro_4").to_string()).style(text::warning));
@@ -317,12 +319,17 @@ impl CpuLimiter {
                 cells.push(selector);
             }
 
+            let key = rule_status(rule, master_enabled && settings.enabled, status);
+            let chip = iced::widget::container(text(t!(key).to_string()))
+                .padding([4, 8])
+                .style(move |theme| super::widgets::rule_status_chip(theme, key));
             let header = super::widgets::process_rule_header(
                 &rule.executable_path,
                 candidates,
                 checkbox(rule.enabled)
                     .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
                     .into(),
+                Some(chip.into()),
                 cells,
                 row![
                     iced::widget::tooltip(
@@ -355,6 +362,7 @@ impl CpuLimiter {
             cards,
             t!("cpu_limiter.no_rules").to_string(),
             80,
+            true,
         ));
         scrollable(body).height(Fill).into()
     }
@@ -366,24 +374,12 @@ impl CpuLimiter {
         let (index, settings) = self.draft.as_ref()?;
         let index = *index;
         let rule = settings.rules.get(index)?;
-        let limited = status.limited_apps.iter().any(|path| {
-            crate::foreground::same_executable_path(
-                std::path::Path::new(path),
-                std::path::Path::new(&rule.executable_path),
-            )
-        });
+        let key = rule_status(rule, settings.enabled, status);
         let mut details = column![row![
             text(t!("common.status").to_string()).width(Fill),
-            iced::widget::container(text(
-                t!(if limited {
-                    "cpu_limiter.indicator_limited"
-                } else {
-                    "common.off"
-                })
-                .to_string()
-            ))
-            .padding([4, 8])
-            .style(move |theme| super::widgets::indicator_chip(theme, limited))
+            iced::widget::container(text(t!(key).to_string()))
+                .padding([4, 8])
+                .style(move |theme| super::widgets::rule_status_chip(theme, key))
         ]
         .align_y(iced::Center)]
         .spacing(24);
@@ -466,9 +462,62 @@ fn mode_label(mode: ProcessRuleMode) -> String {
     .to_string()
 }
 
+fn rule_status(
+    rule: &CpuLimiterRule,
+    enabled: bool,
+    status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
+) -> &'static str {
+    if !enabled || !rule.enabled {
+        "common.inactive"
+    } else if rule.executable_path.trim().is_empty() {
+        "common.unknown"
+    } else if status.failed_apps.iter().any(|path| {
+        crate::foreground::same_executable_path(
+            std::path::Path::new(path),
+            std::path::Path::new(&rule.executable_path),
+        )
+    }) {
+        "common.error"
+    } else if status.enabled
+        && status.limited_apps.iter().any(|path| {
+            crate::foreground::same_executable_path(
+                std::path::Path::new(path),
+                std::path::Path::new(&rule.executable_path),
+            )
+        })
+    {
+        "common.applied"
+    } else if !status.enabled {
+        "common.unknown"
+    } else {
+        "common.waiting"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rule_status_uses_confirmed_limited_apps_and_enable_switches() {
+        let mut rule = new_cpu_limiter_rule(r"C:\Apps\test.exe");
+        rule.enabled = true;
+        let mut status = crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot {
+            enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(rule_status(&rule, true, &status), "common.waiting");
+        status.limited_apps.push(r"c:\apps\TEST.exe".into());
+        assert_eq!(rule_status(&rule, true, &status), "common.applied");
+        assert_eq!(rule_status(&rule, false, &status), "common.inactive");
+        status.failed_apps.push(rule.executable_path.clone());
+        assert_eq!(rule_status(&rule, true, &status), "common.error");
+        status.failed_apps.clear();
+        status.enabled = false;
+        assert_eq!(rule_status(&rule, true, &status), "common.unknown");
+        rule.enabled = false;
+        assert_eq!(rule_status(&rule, true, &status), "common.inactive");
+    }
+
     #[test]
     fn rule_editor_cancel_and_save_are_isolated() {
         let mut editor = CpuLimiter::default();

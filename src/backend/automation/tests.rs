@@ -147,6 +147,8 @@ fn automation_worker_error_is_delivered_once() {
 fn power_plan_status_is_published_as_an_independent_runtime_segment() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let status = PowerPlanStatus {
+        apply_failed: false,
+        rule_index: None,
         owner: Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation),
         current_guid: Some("current".to_owned()),
         target_guid: Some("target".to_owned()),

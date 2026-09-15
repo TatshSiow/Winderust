@@ -45,6 +45,7 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
             path,
             candidates,
             active,
+            None,
             controls,
             iced::widget::container(rule_delete_button(remove))
                 .center_x(80)
@@ -59,25 +60,32 @@ pub(super) fn process_rule_header<'a, M: 'a>(
     path: &str,
     candidates: &[super::app_picker::Candidate],
     active: Element<'a, M>,
+    status: Option<Element<'a, M>>,
     controls: Vec<Element<'a, M>>,
     action: Element<'a, M>,
 ) -> Element<'a, M> {
     use iced::widget::container;
-    let mut cells = row![
-        container(active).width(48),
-        container(super::app_picker::app_name(path, candidates))
-            .width(iced::Length::FillPortion(2))
-            .clip(true),
-        container(
-            text(path.to_owned())
-                .style(text::secondary)
-                .wrapping(text::Wrapping::None)
+    let mut cells = row![container(active).width(48)]
+        .spacing(design::space::MEDIUM)
+        .align_y(iced::Center);
+    if let Some(status) = status {
+        cells = cells.push(container(status).width(140));
+    }
+    let mut cells = cells
+        .push(
+            container(super::app_picker::app_name(path, candidates))
+                .width(iced::Length::FillPortion(2))
+                .clip(true),
         )
-        .width(iced::Length::FillPortion(3))
-        .clip(true),
-    ]
-    .spacing(design::space::MEDIUM)
-    .align_y(iced::Center);
+        .push(
+            container(
+                text(path.to_owned())
+                    .style(text::secondary)
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(iced::Length::FillPortion(3))
+            .clip(true),
+        );
     for control in controls {
         cells = cells.push(container(control).width(iced::Length::FillPortion(2)));
     }
@@ -134,7 +142,7 @@ pub(super) fn process_rules_table<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     empty: String,
 ) -> Element<'a, M> {
-    process_rules_table_with_actions(tiers, rows, empty, 80)
+    process_rules_table_with_actions(tiers, rows, empty, 80, false)
 }
 
 pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
@@ -142,16 +150,23 @@ pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
     rows: Vec<(u64, Element<'a, M>)>,
     empty: String,
     actions_width: u32,
+    show_status: bool,
 ) -> Element<'a, M> {
     use iced::widget::container;
-    let mut header = row![
-        text(rust_i18n::t!("common.active").to_string()).width(48),
-        text(rust_i18n::t!("process_list.app_name").to_string())
-            .width(iced::Length::FillPortion(2)),
-        text(rust_i18n::t!("process_list.executable_path").to_string())
-            .width(iced::Length::FillPortion(3)),
-    ]
-    .spacing(design::space::MEDIUM);
+    let mut header = row![text(rust_i18n::t!("common.enable").to_string()).width(48)]
+        .spacing(design::space::MEDIUM);
+    if show_status {
+        header = header.push(text(rust_i18n::t!("common.status").to_string()).width(140));
+    }
+    let mut header = header
+        .push(
+            text(rust_i18n::t!("process_list.app_name").to_string())
+                .width(iced::Length::FillPortion(2)),
+        )
+        .push(
+            text(rust_i18n::t!("process_list.executable_path").to_string())
+                .width(iced::Length::FillPortion(3)),
+        );
     for tier in tiers {
         header = header.push(text(tier).width(iced::Length::FillPortion(2)));
     }
@@ -257,6 +272,34 @@ pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Ele
         .padding([design::space::MEDIUM as u16, 0])
     ]
     .into()
+}
+
+pub(super) fn rule_status_chip(theme: &iced::Theme, key: &str) -> iced::widget::container::Style {
+    let dark = theme.extended_palette().is_dark;
+    let color = match key {
+        "common.applied" => theme.palette().success,
+        "common.waiting" => {
+            if dark {
+                theme.palette().warning
+            } else {
+                iced::Color::from_rgb8(145, 101, 0)
+            }
+        }
+        "common.error" => theme.palette().danger,
+        "common.unknown" => {
+            if dark {
+                iced::Color::from_rgb8(137, 174, 210)
+            } else {
+                iced::Color::from_rgb8(65, 104, 145)
+            }
+        }
+        _ => return indicator_chip(theme, false),
+    };
+    iced::widget::container::Style {
+        text_color: Some(color),
+        background: Some(color.scale_alpha(0.15).into()),
+        ..indicator_chip(theme, false)
+    }
 }
 
 pub(super) fn indicator_chip(theme: &iced::Theme, active: bool) -> iced::widget::container::Style {
