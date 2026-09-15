@@ -506,7 +506,8 @@ impl Editor {
                 design::typography::SECONDARY
             )
         ]
-        .spacing(design::space::MEDIUM);
+        .spacing(design::space::MEDIUM)
+        .padding([0, design::space::MEDIUM as u16]);
         for p in BUILT_INS {
             rail = rail.push(
                 row![

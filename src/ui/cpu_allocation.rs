@@ -401,7 +401,8 @@ impl Editor {
                 design::typography::SECONDARY
             ),
         ]
-        .spacing(design::space::MEDIUM);
+        .spacing(design::space::MEDIUM)
+        .padding([0, design::space::MEDIUM as u16]);
         for preset in core_presets(&processors).into_iter().filter(|p| p.0 != 0) {
             let message = Message::ViewPreset(preset.1.clone(), preset.0);
             rail = rail.push(
