@@ -4,7 +4,7 @@ use crate::{
     backend::crash_recovery::{forget_thread_suspension, record_thread_suspension, RecoveryIntent},
     control::{
         cpu_limiter::{CpuLimiterTarget, CpuLimiterTargetError},
-        process::{open_process_for_thread_control, ProcessIdentity},
+        process::{open_process_for_thread_snapshot, ProcessIdentity},
     },
     platform::windows::thread_suspension::{
         self, CapturedThread, ThreadHandle, ThreadSuspensionError,
@@ -462,7 +462,7 @@ impl ThreadFallbackOperations for WindowsThreadFallbackOperations {
         &mut self,
         target: &CpuLimiterTarget,
     ) -> Result<(ProcessIdentity, Self::ProcessHandle), CpuLimiterTargetError> {
-        open_process_for_thread_control(
+        open_process_for_thread_snapshot(
             &target.suspension_target.process,
             target.allow_cross_session_process_control,
         )
@@ -536,6 +536,75 @@ mod tests {
     use crate::control::suspension::SuspensionTarget;
 
     use super::*;
+
+    #[test]
+    #[ignore = "freezes and thaws only its own disposable process; run in integration QA"]
+    fn live_thread_fallback_repeated_cycles_restore_counts() -> Result<(), String> {
+        use std::{
+            os::windows::process::CommandExt,
+            process::{Child, Command, Stdio},
+            time::Duration,
+        };
+        struct DisposableProcess(Child);
+        impl Drop for DisposableProcess {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot missing")?)
+            .join(r"System32\PING.EXE");
+        let child = DisposableProcess(
+            Command::new(&executable)
+                .args(["-t", "127.0.0.1"])
+                .creation_flags(0x0800_0000)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| e.to_string())?,
+        );
+        std::thread::sleep(Duration::from_millis(250));
+        let action =
+            crate::foreground::capture_process_action_target(child.0.id(), &executable, false)
+                .map_err(|e| e.to_string())?;
+        let target = CpuLimiterTarget {
+            suspension_target: SuspensionTarget::automatic(
+                action.id,
+                action.name,
+                action.executable_path,
+                action.creation_time,
+                action.is_service_account,
+            ),
+            allowed_cpu_time_percent: 50,
+            allow_cross_session_process_control: false,
+            ancestor_process_ids: Vec::new(),
+        };
+        let mut fallback = ThreadFallbackTarget::prepare(target).map_err(|e| e.to_string())?;
+        assert!(!fallback.threads.is_empty());
+        let counts = |fallback: &ThreadFallbackTarget| -> Result<BTreeMap<_, _>, String> {
+            Ok(
+                thread_suspension::capture_threads(fallback.process_handle.raw())
+                    .map_err(|e| format!("{e:?}"))?
+                    .into_iter()
+                    .map(|t| ((t.id, t.creation_time), t.suspend_count))
+                    .collect(),
+            )
+        };
+        let original = counts(&fallback)?;
+        for _ in 0..20 {
+            fallback.freeze_known_threads().map_err(|e| e.to_string())?;
+            let frozen = counts(&fallback)?;
+            for (key, count) in &original {
+                assert_eq!(frozen.get(key).copied(), count.checked_add(1));
+            }
+            fallback.thaw().map_err(|e| e.to_string())?;
+            assert_eq!(counts(&fallback)?, original);
+        }
+        fallback.freeze_known_threads().map_err(|e| e.to_string())?;
+        assert!(fallback.release().map_err(|e| e.to_string())?);
+        assert_eq!(counts(&fallback)?, original);
+        Ok(())
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
