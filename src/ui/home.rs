@@ -469,6 +469,12 @@ impl canvas::Program<Message> for Chart {
         _: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
+        // Repaint the canvas: stroke-only damage bounds omit flat lines and stroke edges.
+        frame.fill_rectangle(
+            Point::ORIGIN,
+            bounds.size(),
+            theme.extended_palette().background.weak.color,
+        );
         let height = (bounds.height - 28.0).max(1.0);
         let width = bounds.width.max(1.0);
         let grid = theme.extended_palette().background.strong.color;
@@ -909,6 +915,70 @@ fn activity_label(settings: &Settings, sample: &Sample) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chart_repaints_flat_lines_and_hover_without_artifacts() {
+        use canvas::Program;
+        use iced::advanced::{graphics::geometry::Renderer as _, renderer::Renderer as _};
+        let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let bounds = Rectangle::with_size(iced::Size::new(320.0, 110.0));
+        let viewport =
+            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(320, 110), 1.0);
+        let mut pixels = tiny_skia::Pixmap::new(320, 110).unwrap();
+        let mut mask = tiny_skia::Mask::new(320, 110).unwrap();
+        let mut previous = Vec::new();
+        for (value, hovered) in [(75.0, None), (74.0, Some(12)), (74.0, None)] {
+            let chart = Chart {
+                samples: (0..HISTORY_LEN)
+                    .map(|_| ChartSample {
+                        values: [value, 18.0],
+                        labels: ["RAM".into(), "Cache".into()],
+                    })
+                    .collect(),
+                maximum: 100.0,
+            };
+            renderer.reset(bounds);
+            for geometry in chart.draw(
+                &hovered,
+                &renderer,
+                &Theme::Dark,
+                bounds,
+                mouse::Cursor::Unavailable,
+            ) {
+                renderer.draw_geometry(geometry);
+            }
+            let damage = iced::advanced::graphics::damage::group(
+                iced::advanced::graphics::damage::diff(
+                    &previous,
+                    renderer.layers(),
+                    |layer| vec![layer.bounds],
+                    iced_tiny_skia::Layer::damage,
+                ),
+                bounds,
+            );
+            renderer.draw(
+                &mut pixels.as_mut(),
+                &mut mask,
+                &viewport,
+                &damage,
+                iced::Color::BLACK,
+            );
+            let mut full = tiny_skia::Pixmap::new(320, 110).unwrap();
+            renderer.draw(
+                &mut full.as_mut(),
+                &mut mask,
+                &viewport,
+                &[bounds],
+                iced::Color::BLACK,
+            );
+            assert_eq!(
+                pixels.data(),
+                full.data(),
+                "partial repaint left chart artifacts"
+            );
+            previous = renderer.layers().to_vec();
+        }
+    }
+
     #[test]
     fn chart_hover_stays_on_the_same_sample_and_clears_outside_the_plot() {
         use canvas::Program;
