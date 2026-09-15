@@ -270,7 +270,6 @@ impl Editor {
             ]
             .spacing(design::space::SMALL);
             let mut controls: Vec<Element<'_, Message>> = vec![
-                state.into(),
                 checkbox(r.audio_wake_enabled)
                     .on_toggle_maybe(Some(move |v| Message::RuleAudio(i, v)))
                     .into(),
@@ -310,22 +309,30 @@ impl Editor {
             }
             cards.push((
                 super::widgets::stable_key(&r.executable_path),
-                super::widgets::process_rule_row(
-                    &r.executable_path,
-                    candidates,
-                    checkbox(r.enabled)
-                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(i, v)))
+                column![
+                    super::widgets::process_rule_header(
+                        &r.executable_path,
+                        candidates,
+                        checkbox(r.enabled)
+                            .on_toggle_maybe(Some(move |v| Message::RuleEnabled(i, v)))
+                            .into(),
+                        Some(state.into()),
+                        controls,
+                        iced::widget::container(super::widgets::rule_delete_button(Some(
+                            Message::Remove(i)
+                        )))
+                        .center_x(80)
                         .into(),
-                    controls,
-                    Some(Message::Remove(i)),
-                ),
+                    ),
+                    iced::widget::rule::horizontal(1)
+                ]
+                .into(),
             ));
         }
         body = body.push(
             scrollable(
-                iced::widget::container(super::widgets::process_rules_table(
+                iced::widget::container(super::widgets::process_rules_table_with_actions(
                     [
-                        "common.status",
                         "app_suspension.audio",
                         "app_suspension.network",
                         "app_suspension.download",
@@ -334,6 +341,8 @@ impl Editor {
                     .map(|key| t!(key).to_string()),
                     cards,
                     t!("app_suspension.no_suspendable").to_string(),
+                    80,
+                    true,
                 ))
                 .width(1240),
             )
