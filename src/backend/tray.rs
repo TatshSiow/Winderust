@@ -17,11 +17,11 @@ use windows_sys::Win32::{
             Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
         },
         WindowsAndMessaging::{
-            AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadImageW,
-            SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu, GWLP_WNDPROC,
-            HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_STRING, SW_HIDE, SW_SHOW,
-            TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-            WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
+            AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos,
+            GetForegroundWindow, IsIconic, LoadImageW, SetForegroundWindow, SetWindowLongPtrW,
+            ShowWindow, TrackPopupMenu, GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED,
+            MF_STRING, SW_HIDE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP,
+            WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
         },
     },
 };
@@ -220,12 +220,23 @@ fn restore_window_proc(hwnd: HWND, original_wndproc: isize) -> Result<(), String
     Ok(())
 }
 
+fn close_needs_prompt(minimized: bool, foreground: bool) -> bool {
+    minimized || !foreground
+}
+
 unsafe extern "system" fn tray_wnd_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_CLOSE {
+        // SAFETY: hwnd belongs to this active window procedure callback.
+        if unsafe { close_needs_prompt(IsIconic(hwnd) != 0, GetForegroundWindow() == hwnd) } {
+            QUIT_REQUESTED.store(true, Ordering::Relaxed);
+            return 0;
+        }
+    }
     if message == WM_CLOSE && HIDE_ON_CLOSE.load(Ordering::Relaxed) {
         set_hidden_to_tray(true);
         // SAFETY: hwnd is the window associated with this active window procedure callback.
@@ -272,7 +283,14 @@ pub(crate) fn show_window(hwnd: HWND) {
     // SAFETY: hwnd is the live application window supplied by its window procedure callback or
     // captured when the single-instance restore listener starts.
     unsafe {
-        ShowWindow(hwnd, SW_SHOW);
+        ShowWindow(
+            hwnd,
+            if IsIconic(hwnd) != 0 {
+                SW_RESTORE
+            } else {
+                SW_SHOW
+            },
+        );
         SetForegroundWindow(hwnd);
     }
 }
@@ -340,6 +358,14 @@ fn set_hidden_to_tray(hidden: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_and_minimized_closes_prompt_instead_of_hiding() {
+        assert!(close_needs_prompt(false, false));
+        assert!(close_needs_prompt(true, false));
+        assert!(close_needs_prompt(true, true));
+        assert!(!close_needs_prompt(false, true));
+    }
 
     #[test]
     fn tray_requests_are_consumed_once() {
