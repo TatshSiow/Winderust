@@ -415,6 +415,38 @@ impl SettingsEditor {
         self.coordinator.runtime_settings_snapshot(&self.draft)
     }
 
+    pub(crate) fn set_dashboard_metrics_paused(&mut self, paused: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let mut changed =
+                    set_enabled_value(&mut settings.advanced.pause_dashboard_metrics, paused);
+                if let Some(battery) = settings.on_battery.as_deref_mut() {
+                    changed |=
+                        set_enabled_value(&mut battery.advanced.pause_dashboard_metrics, paused);
+                }
+                changed
+            },
+        )
+    }
+
+    pub(crate) fn set_process_population_paused(&mut self, paused: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let mut changed =
+                    set_enabled_value(&mut settings.advanced.pause_process_population, paused);
+                if let Some(battery) = settings.on_battery.as_deref_mut() {
+                    changed |=
+                        set_enabled_value(&mut battery.advanced.pause_process_population, paused);
+                }
+                changed
+            },
+        )
+    }
+
     pub(crate) fn apply_navigation_collapsed_patch(
         &mut self,
         patch: NavigationCollapsedPatch,
@@ -861,6 +893,51 @@ mod tests {
             storage_probe,
             startup_probe,
         )
+    }
+
+    #[test]
+    fn monitoring_pause_persists_only_its_own_changes_and_preserves_errors() {
+        for save_result in [Ok(()), Err("write failed".to_owned())] {
+            let storage = FakeStorage::new(
+                Settings::default(),
+                Ok(Settings::default()),
+                save_result.clone(),
+                Ok(()),
+            );
+            let (mut editor, storage, _) =
+                editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+            editor.draft.value.battery_profile_mut();
+            editor.select_power_source(PowerSourceProfile::OnBattery);
+            editor.general.check_interval_ms = 1_337;
+            assert_eq!(
+                editor.set_dashboard_metrics_paused(true).is_ok(),
+                save_result.is_ok()
+            );
+            assert_eq!(
+                editor.set_process_population_paused(true).is_ok(),
+                save_result.is_ok()
+            );
+            assert_eq!(editor.advanced.pause_dashboard_metrics, save_result.is_ok());
+            assert_eq!(
+                editor.advanced.pause_process_population,
+                save_result.is_ok()
+            );
+            assert_eq!(editor.general.check_interval_ms, 1_337);
+            assert!(editor.has_unsaved_changes());
+            for saved in storage.saved_payloads() {
+                assert_eq!(
+                    saved.general.check_interval_ms,
+                    Settings::default().general.check_interval_ms
+                );
+            }
+            editor.cancel();
+            assert_eq!(editor.advanced.pause_dashboard_metrics, save_result.is_ok());
+            assert_eq!(
+                editor.advanced.pause_process_population,
+                save_result.is_ok()
+            );
+            assert!(!editor.has_unsaved_changes());
+        }
     }
 
     #[test]

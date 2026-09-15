@@ -320,12 +320,17 @@ impl WinderustApp {
                 return self.update(Message::Page(page))
             }
             Message::Home(home::Message::PauseMetrics(value)) => {
-                self.settings.advanced.pause_dashboard_metrics = value;
+                if let Err(error) = self.settings.set_dashboard_metrics_paused(value) {
+                    self.error_message = error.to_string();
+                }
             }
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {
-                    Ok(sample) => self.home.record(sample),
+                    Ok(sample) if !self.settings.advanced.pause_dashboard_metrics => {
+                        self.home.record(sample)
+                    }
+                    Ok(_) => {}
                     Err(error) => self.error_message = error,
                 }
             }

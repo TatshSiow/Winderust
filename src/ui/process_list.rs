@@ -248,11 +248,15 @@ impl ProcessList {
     pub(super) fn update(
         &mut self,
         message: Message,
-        settings: &mut Settings,
+        settings: &mut crate::application::SettingsEditor,
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
         match message {
-            Message::PausePopulation(value) => settings.advanced.pause_process_population = value,
+            Message::PausePopulation(value) => {
+                if let Err(error) = settings.set_process_population_paused(value) {
+                    self.error = Some(error.to_string());
+                }
+            }
             Message::Refresh if !self.refreshing => {
                 self.refreshing = true;
                 let cached = self.icons.keys().cloned().collect::<HashSet<_>>();
