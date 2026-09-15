@@ -1,8 +1,7 @@
-use super::design;
 use super::widgets::{self, checkbox, pick_list};
 use crate::ui::scrolling::scrollable;
 use crate::{config::Settings, power::PowerPlan, ui::process_rules::*};
-use iced::widget::{column, text};
+use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -107,14 +106,10 @@ impl Editor {
         macro_rules! render_rules {
             ($field:ident, $can_add:ident, $enable:literal) => {{
                 let settings = &settings.$field;
-                let mut body = column![
-                    super::widgets::settings_card(super::widgets::setting_row(
-                        $enable,
-                        super::widgets::switch(settings.enabled, Some(Message::Enabled))
-                    )),
-                    text(t!("common.power_plan_priority").to_string()),
-                    text(t!("common.power_plan_pause_priority").to_string()),
-                ]
+                let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+                    $enable,
+                    super::widgets::switch(settings.enabled, Some(Message::Enabled))
+                )),]
                 .spacing(super::widgets::CARD_GAP);
                 let mut rules_body = column![super::app_picker::view(
                     &self.path,
@@ -172,7 +167,7 @@ impl Editor {
                     t!("common.no_custom_rules").to_string(),
                 ));
                 body = body
-                    .push(text(t!("common.rules").to_string()).size(design::typography::SECTION))
+                    .push(widgets::setting_title("common.rules"))
                     .push(rules_body);
                 scrollable(body).height(Fill).into()
             }};

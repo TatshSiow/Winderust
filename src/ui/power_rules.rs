@@ -327,14 +327,10 @@ impl Editor {
             Kind::Time => (s.by_time.enabled, "by_time.enable"),
             Kind::CpuLoad => (s.by_cpu_load.enabled, "by_cpu_load.enable"),
         };
-        let mut body = column![
-            super::widgets::settings_card(super::widgets::setting_row(
-                label,
-                super::widgets::switch(enabled, Some(Message::Enabled))
-            )),
-            text(t!("common.power_plan_priority").to_string()),
-            text(t!("common.power_plan_pause_priority").to_string())
-        ]
+        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+            label,
+            super::widgets::switch(enabled, Some(Message::Enabled))
+        ))]
         .spacing(super::widgets::CARD_GAP);
         if kind == Kind::Time {
             body = body.push(text(
@@ -423,7 +419,9 @@ impl Editor {
         } else {
             iced::widget::keyed_column(cards).into()
         };
-        body = body.push(widgets::rules_table(header, rows));
+        body = body
+            .push(widgets::setting_title("common.rules"))
+            .push(widgets::rules_table(header, rows));
         scrollable(body).height(Fill).into()
     }
     pub(super) fn modal<'a>(

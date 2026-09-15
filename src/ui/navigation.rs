@@ -78,7 +78,7 @@ pub(super) fn page_help(page: Page) -> String {
         Page::WinderustBehaviour => ("settings", 2),
         _ => return String::new(),
     };
-    (1..=paragraphs)
+    let mut help = (1..=paragraphs)
         // CPU Limiter keeps its warning visible beside the controls.
         .filter(|index| page != Page::CpuLimiter || *index != 4)
         .map(|index| {
@@ -86,7 +86,20 @@ pub(super) fn page_help(page: Page) -> String {
             t!(&key).to_string()
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    if matches!(
+        page,
+        Page::ByActivity | Page::ByCpuLoad | Page::ByForeground | Page::ByRunningApp | Page::ByTime
+    ) {
+        for key in [
+            "common.power_plan_priority",
+            "common.power_plan_pause_priority",
+        ] {
+            help.push_str("\n\n");
+            help.push_str(&t!(key));
+        }
+    }
+    help
 }
 
 pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, Message> {
