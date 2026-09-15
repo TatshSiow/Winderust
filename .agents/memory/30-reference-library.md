@@ -744,3 +744,8 @@ state.
 
 - src/platform/windows/appearance.rs::read reads UISettings.AnimationsEnabled alongside theme/accent values. src/ui/settings_pages.rs::theme passes this preference to shared Iced transitions in src/ui/motion.rs; failed reads disable motion. Existing Windows appearance-change notifications refresh it. No undocumented contract or new dependency is used.
 - Official reference: https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.animationsenabled
+
+### Power scheme deletion during cleanup
+
+- `src/platform/windows/power_plan.rs`: `delete_scheme` accepts `ERROR_FILE_NOT_FOUND` only after successful scheme enumeration confirms the target GUID is absent. Enumeration errors and other deletion failures remain errors. Active-plan restoration stays in `src/control/power_plan.rs`.
+- Official references: https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerdeletescheme and https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499- . The API documents nonzero failure codes; accepting verified absence is Winderust cleanup policy.
