@@ -1356,6 +1356,17 @@ impl WinderustApp {
                 Message::Page(section.landing_page)
             })
             .selected(self.page == section.landing_page, widgets::selected);
+            let section_header: Element<'_, Message> = if collapsed {
+                iced::widget::tooltip(
+                    section_header,
+                    text(section.landing_page.label()),
+                    iced::widget::tooltip::Position::Right,
+                )
+                .style(container::bordered_box)
+                .into()
+            } else {
+                section_header.into()
+            };
             let mut children = Vec::new();
             for page in section.pages.iter().filter(|p| **p != section.landing_page) {
                 children.push(super::motion::wrap(
@@ -1421,17 +1432,19 @@ impl WinderustApp {
                 },
             ))
             .on_press(Message::ToggleNavigation);
+        let navigation_toggle: Element<'_, Message> = if collapsed {
+            iced::widget::tooltip(
+                navigation_toggle,
+                text(t!("nav.expand_navigation").to_string()),
+                iced::widget::tooltip::Position::Right,
+            )
+            .into()
+        } else {
+            navigation_toggle.into()
+        };
         utilities = utilities
             .push(iced::widget::rule::horizontal(1))
-            .push(iced::widget::tooltip(
-                navigation_toggle,
-                text(if collapsed {
-                    t!("nav.expand_navigation").to_string()
-                } else {
-                    t!("nav.collapse_navigation").to_string()
-                }),
-                iced::widget::tooltip::Position::Right,
-            ));
+            .push(navigation_toggle);
         const BREADCRUMB_TEXT_SIZE: u32 = design::typography::TITLE;
         let mut header = row![].align_y(iced::Center);
         for (index, page) in self.breadcrumb.iter().copied().enumerate() {

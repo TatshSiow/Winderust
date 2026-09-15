@@ -42,20 +42,15 @@ pub(super) fn section<'a, Message: 'a>(
 }
 
 pub(super) fn label<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
-    use iced::widget::{container, text, tooltip};
-    tooltip(
-        container(
-            text(page.label())
-                .size(design::typography::SECONDARY)
-                .wrapping(text::Wrapping::None),
-        )
-        .width(iced::Fill)
-        .height(design::ICON_SIZE)
-        .clip(true),
-        text(page.label()),
-        tooltip::Position::Right,
+    use iced::widget::{container, text};
+    container(
+        text(page.label())
+            .size(design::typography::SECONDARY)
+            .wrapping(text::Wrapping::None),
     )
-    .style(container::bordered_box)
+    .width(iced::Fill)
+    .height(design::ICON_SIZE)
+    .clip(true)
     .into()
 }
 
