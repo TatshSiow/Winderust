@@ -320,16 +320,12 @@ impl WinderustApp {
                 return self.update(Message::Page(page))
             }
             Message::Home(home::Message::PauseMetrics(value)) => {
-                if let Err(error) = self.settings.set_dashboard_metrics_paused(value) {
-                    self.error_message = error.to_string();
-                }
+                self.home.metrics_paused = value;
             }
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {
-                    Ok(sample) if !self.settings.advanced.pause_dashboard_metrics => {
-                        self.home.record(sample)
-                    }
+                    Ok(sample) if !self.home.metrics_paused => self.home.record(sample),
                     Ok(_) => {}
                     Err(error) => self.error_message = error,
                 }
@@ -533,7 +529,7 @@ impl WinderustApp {
             Message::Catalog(result) => {
                 self.catalog_loading = false;
                 match result {
-                    Ok(candidates) if !self.settings.advanced.pause_process_population => {
+                    Ok(candidates) if !self.processes.population_paused => {
                         self.unavailable_candidates = candidates
                             .iter()
                             .filter(|candidate| !candidate.info.has_suspendable_instance)
@@ -719,7 +715,7 @@ impl WinderustApp {
                             .map(|result| Message::PowerPlans(result.and_then(|result| result))),
                     );
                 }
-                if !self.settings.advanced.pause_process_population {
+                if !self.processes.population_paused {
                     if page == Page::ProcessList {
                         tasks.push(
                             self.processes
@@ -745,7 +741,7 @@ impl WinderustApp {
                 return Task::batch(tasks);
             }
             Message::Processes(message) => {
-                if self.settings.advanced.pause_process_population
+                if self.processes.population_paused
                     && matches!(
                         message,
                         process_list::Message::Refresh | process_list::Message::Loaded(_)
@@ -806,7 +802,7 @@ impl WinderustApp {
                     }
                 }
                 let mut work = Vec::new();
-                if !self.hidden && !self.settings.advanced.pause_process_population {
+                if !self.hidden && !self.processes.population_paused {
                     if self.page == Page::ProcessList
                         && self.process_sampled_at.elapsed() >= Duration::from_secs(1)
                     {
@@ -838,7 +834,7 @@ impl WinderustApp {
                 }
                 if self.page == Page::Home
                     && !self.hidden
-                    && !self.settings.advanced.pause_dashboard_metrics
+                    && !self.home.metrics_paused
                     && !self.sampling
                     && self.sampled_at.elapsed() >= Duration::from_secs(1)
                 {

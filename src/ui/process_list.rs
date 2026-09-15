@@ -150,6 +150,7 @@ pub(super) enum Message {
 }
 
 pub(super) struct ProcessList {
+    pub(super) population_paused: bool,
     processes: Vec<ProcessInfo>,
     rows: Vec<Entry>,
     offsets: Vec<f32>,
@@ -197,6 +198,7 @@ impl Default for ProcessList {
             search: String::new(),
             offset: std::cell::Cell::new(0.0),
             refreshing: false,
+            population_paused: false,
             error: None,
             hide_inaccessible: true,
             grouped: true,
@@ -248,15 +250,11 @@ impl ProcessList {
     pub(super) fn update(
         &mut self,
         message: Message,
-        settings: &mut crate::application::SettingsEditor,
+        settings: &mut Settings,
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
         match message {
-            Message::PausePopulation(value) => {
-                if let Err(error) = settings.set_process_population_paused(value) {
-                    self.error = Some(error.to_string());
-                }
-            }
+            Message::PausePopulation(value) => self.population_paused = value,
             Message::Refresh if !self.refreshing => {
                 self.refreshing = true;
                 let cached = self.icons.keys().cloned().collect::<HashSet<_>>();
@@ -1074,16 +1072,14 @@ impl ProcessList {
             Space::new().width(Fill),
             text(t!("process_list.count", count = self.processes.len()).to_string()),
             button(text(
-                if settings.advanced.pause_process_population {
+                if self.population_paused {
                     t!("process_list.resume_population")
                 } else {
                     t!("process_list.pause_population")
                 }
                 .to_string()
             ))
-            .on_press(Message::PausePopulation(
-                !settings.advanced.pause_process_population
-            )),
+            .on_press(Message::PausePopulation(!self.population_paused)),
             iced::widget::tooltip(
                 button(super::navigation::glyph("icons/refresh-cw.svg"))
                     .style(super::widgets::quiet)

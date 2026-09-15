@@ -81,6 +81,7 @@ impl Sampler {
 }
 #[derive(Default)]
 pub(super) struct Model {
+    pub(super) metrics_paused: bool,
     latest: Sample,
     cpu: VecDeque<CpuUsageSnapshot>,
     memory: VecDeque<MemoryUsageSnapshot>,
@@ -119,16 +120,14 @@ impl Model {
                 super::widgets::heading(t!("home.home").to_string(), design::typography::BODY)
                     .width(Fill),
                 button(text(
-                    if settings.advanced.pause_dashboard_metrics {
+                    if self.metrics_paused {
                         t!("home.resume_metrics")
                     } else {
                         t!("home.pause_metrics")
                     }
                     .to_string()
                 ))
-                .on_press(Message::PauseMetrics(
-                    !settings.advanced.pause_dashboard_metrics
-                )),
+                .on_press(Message::PauseMetrics(!self.metrics_paused)),
             ]
             .align_y(iced::Center)]
             .spacing(super::widgets::CARD_GAP);
