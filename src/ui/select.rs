@@ -32,6 +32,7 @@ impl Default for State {
 
 pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
     field: Field<'a, T, M>,
+    width: Length,
     options: Vec<T>,
     selected: Option<usize>,
     choose: Rc<dyn Fn(T) -> M + 'a>,
@@ -58,6 +59,7 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                 .style(widgets::select_field);
         Self {
             field,
+            width: Length::Shrink,
             options,
             selected: index,
             choose,
@@ -65,7 +67,8 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
         }
     }
     pub(super) fn width(mut self, width: impl Into<Length>) -> Self {
-        self.field = self.field.width(width);
+        self.width = width.into();
+        self.field = self.field.width(self.width);
         self
     }
     pub(super) fn placeholder(mut self, label: impl Into<String>) -> Self {
@@ -148,6 +151,28 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
+        // Only shrink-to-fit fields need to shape every option to find their width.
+        if self.width != Length::Shrink {
+            let padding = iced::Padding {
+                right: (design::SELECT_PADDING[1] as u32 + design::ICON_SIZE + design::space::SMALL)
+                    as f32,
+                ..iced::Padding::from(design::SELECT_PADDING)
+            };
+            let text_size = iced::Pixels(design::typography::BODY as f32);
+            let intrinsic = Size::new(
+                text_size.0 + padding.left,
+                iced::advanced::text::LineHeight::default()
+                    .to_absolute(text_size)
+                    .0,
+            );
+            return layout::Node::new(
+                limits
+                    .width(self.width)
+                    .shrink(padding)
+                    .resolve(self.width, Length::Shrink, intrinsic)
+                    .expand(padding),
+            );
+        }
         self.field.layout(&mut tree.children[0], renderer, limits)
     }
     fn draw(
@@ -533,6 +558,32 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
 mod tests {
     use super::*;
     use iced::advanced::Overlay;
+
+    #[test]
+    fn sized_fields_match_native_layout() {
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        for width in [Length::Fill, Length::FillPortion(3), Length::Fixed(240.0)] {
+            for available in [80.0, 400.0] {
+                let mut select =
+                    Select::new(vec!["Normal", "Above normal"], Some("Normal"), |v| v).width(width);
+                let mut tree = Tree::new(&select as &dyn Widget<&str, Theme, Renderer>);
+                let limits = layout::Limits::new(Size::ZERO, Size::new(available, 100.0));
+                let start = std::time::Instant::now();
+                let actual = select.layout(&mut tree, &renderer, &limits);
+                let fast = start.elapsed();
+                let start = std::time::Instant::now();
+                let expected = select
+                    .field
+                    .layout(&mut tree.children[0], &renderer, &limits);
+                println!(
+                    "select layout: native {:?}, sized {:?}",
+                    start.elapsed(),
+                    fast
+                );
+                assert_eq!(actual.bounds(), expected.bounds());
+            }
+        }
+    }
 
     #[test]
     fn rebuilding_an_open_select_preserves_its_menu_state() {

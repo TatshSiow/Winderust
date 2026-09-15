@@ -493,41 +493,44 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     action: impl Into<Element<'a, M>>,
     content: iced::widget::Column<'a, M>,
 ) -> Element<'a, M> {
-    settings_card(
-        iced::widget::column![
-            button(
-                row![
-                    iced::widget::container(setting_title(&label)).width(Fill),
-                    action.into(),
-                    super::motion::wrap(
-                        super::navigation::glyph("icons/chevron-right.svg"),
-                        expanded,
-                        super::motion::Effect::Chevron
-                    )
-                ]
-                .spacing(design::space::SMALL)
-                .height(SETTING_ROW_HEIGHT)
-                .align_y(iced::Center)
-            )
-            .width(Fill)
-            .padding(CARD_PADDING as u16)
-            .style(quiet)
-            .on_press(message),
-            super::motion::wrap(
-                iced::widget::container(content.spacing(2 * CARD_PADDING)).padding(iced::Padding {
-                    top: CARD_PADDING as f32,
-                    right: CARD_PADDING as f32,
-                    bottom: CARD_PADDING as f32,
-                    left: CARD_PADDING as f32,
-                }),
-                expanded,
-                super::motion::Effect::Visible
-            )
-        ]
-        .spacing(0),
+    super::scrolling::repaint_group(
+        settings_card(
+            iced::widget::column![
+                button(
+                    row![
+                        iced::widget::container(setting_title(&label)).width(Fill),
+                        action.into(),
+                        super::motion::wrap(
+                            super::navigation::glyph("icons/chevron-right.svg"),
+                            expanded,
+                            super::motion::Effect::Chevron
+                        )
+                    ]
+                    .spacing(design::space::SMALL)
+                    .height(SETTING_ROW_HEIGHT)
+                    .align_y(iced::Center)
+                )
+                .width(Fill)
+                .padding(CARD_PADDING as u16)
+                .style(quiet)
+                .on_press(message),
+                super::motion::wrap(
+                    iced::widget::container(content.spacing(2 * CARD_PADDING)).padding(
+                        iced::Padding {
+                            top: CARD_PADDING as f32,
+                            right: CARD_PADDING as f32,
+                            bottom: CARD_PADDING as f32,
+                            left: CARD_PADDING as f32,
+                        }
+                    ),
+                    expanded,
+                    super::motion::Effect::Visible
+                )
+            ]
+            .spacing(0),
+        )
+        .padding(0),
     )
-    .padding(0)
-    .into()
 }
 
 pub(super) fn setting_row<'a, M: 'a>(

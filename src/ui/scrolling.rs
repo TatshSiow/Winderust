@@ -48,9 +48,19 @@ pub(super) fn table_surface<'a, Message: 'a>(
         behavior: Behavior::Surface,
     })
 }
+pub(super) fn repaint_group<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    Element::new(ScrollContent {
+        content: content.into(),
+        behavior: Behavior::Group,
+    })
+}
+
 enum Behavior<'a, Message> {
     Surface,
     Scroll,
+    Group,
     Buffer(Buffer<'a, Message>),
 }
 
@@ -105,6 +115,17 @@ impl<Message> Widget<Message, Theme, Renderer> for ScrollContent<'_, Message> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        if matches!(self.behavior, Behavior::Group) {
+            use iced::advanced::Renderer as _;
+            if let Some(clip) = layout.bounds().intersection(viewport) {
+                renderer.with_layer(clip, |renderer| {
+                    self.content
+                        .as_widget()
+                        .draw(tree, renderer, theme, style, layout, cursor, &clip);
+                });
+            }
+            return;
+        }
         if matches!(self.behavior, Behavior::Scroll) {
             use iced::advanced::Renderer as _;
             let content_bounds = layout.bounds();

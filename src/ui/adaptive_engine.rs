@@ -1951,6 +1951,91 @@ mod tests {
 
     use super::*;
     #[test]
+    fn priority_card_changes_keep_repaint_regions_bounded() {
+        use iced::advanced::Renderer as _;
+        use iced::advanced::{layout, widget::Tree};
+        let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        let bounds = iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0));
+        let mut pixels = tiny_skia::Pixmap::new(1040, 700).unwrap();
+        let mut mask = tiny_skia::Mask::new(1040, 700).unwrap();
+        let viewport =
+            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(1040, 700), 1.0);
+        for tab in TuningTab::ALL {
+            editor.update(&mut settings, Message::TuningTab(tab));
+            let mut tree = Tree::empty();
+            let mut previous = Vec::new();
+            for frame in 0..6 {
+                editor.priority_expanded[0][0] = (frame / 2) % 2 == 0;
+                settings.cpu_scheduler.process_priority_enabled = frame % 2 == 0;
+                let mut view = editor.view(&settings, &[]);
+                tree.diff(view.as_widget());
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(iced::Size::ZERO, iced::Size::new(1040.0, 700.0)),
+                );
+                renderer.reset(bounds);
+                view.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &iced::Theme::Dark,
+                    &Default::default(),
+                    iced::advanced::Layout::new(&node),
+                    iced::mouse::Cursor::Unavailable,
+                    &bounds,
+                );
+                let damage = if frame == 0 {
+                    vec![bounds]
+                } else {
+                    iced::advanced::graphics::damage::group(
+                        iced::advanced::graphics::damage::diff(
+                            &previous,
+                            renderer.layers(),
+                            |l| vec![l.bounds],
+                            iced_tiny_skia::Layer::damage,
+                        ),
+                        bounds,
+                    )
+                };
+                assert!(
+                    damage.len() <= 4,
+                    "{tab:?}: {} repaint regions",
+                    damage.len()
+                );
+                previous = renderer.layers().to_vec();
+                let start = std::time::Instant::now();
+                renderer.draw(
+                    &mut pixels.as_mut(),
+                    &mut mask,
+                    &viewport,
+                    &damage,
+                    iced::Color::BLACK,
+                );
+                println!("raster {:?}, regions {}", start.elapsed(), damage.len());
+            }
+        }
+    }
+
+    #[test]
+    fn priority_tab_scroll_damage_stays_bounded() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        editor.update(
+            &mut settings,
+            Message::TuningTab(TuningTab::PriorityControl),
+        );
+        for expanded in [false, true] {
+            editor.priority_expanded[0].fill(expanded);
+            super::super::scrolling::check_scroll_damage(
+                editor.view(&settings, &[]),
+                iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0)),
+            );
+        }
+    }
+
+    #[test]
     fn tuning_navigation_keeps_live_and_preset_state_separate() {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
