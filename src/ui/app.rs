@@ -1378,22 +1378,33 @@ impl WinderustApp {
             };
             let mut children = Vec::new();
             for page in section.pages.iter().filter(|p| **p != section.landing_page) {
+                let mut label = row![
+                    widgets::active_indicator(self.page == *page),
+                    navigation::icon(*page, self.page == *page),
+                    navigation::label(*page),
+                ]
+                .spacing(design::space::SMALL)
+                .height(Fill)
+                .align_y(iced::Center);
+                if navigation::feature_page_enabled(&self.settings, *page) == Some(true) {
+                    label = label.push(
+                        container(iced::widget::Space::new())
+                            .width(3)
+                            .height(18)
+                            .style(move |theme: &Theme| container::Style {
+                                background: Some(theme.palette().success.into()),
+                                border: iced::border::rounded(2),
+                                ..Default::default()
+                            }),
+                    );
+                }
                 children.push(super::motion::wrap(
-                    button(
-                        row![
-                            widgets::active_indicator(self.page == *page),
-                            navigation::icon(*page, self.page == *page),
-                            navigation::label(*page)
-                        ]
-                        .spacing(design::space::SMALL)
-                        .height(Fill)
-                        .align_y(iced::Center),
-                    )
-                    .width(Fill)
-                    .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
-                    .on_press(Message::Page(*page))
-                    .padding([design::space::SMALL as u16, design::space::MEDIUM as u16])
-                    .selected(self.page == *page, widgets::selected),
+                    button(label)
+                        .width(Fill)
+                        .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
+                        .on_press(Message::Page(*page))
+                        .padding([design::space::SMALL as u16, design::space::MEDIUM as u16])
+                        .selected(self.page == *page, widgets::selected),
                     matches(*page),
                     super::motion::Effect::Visible,
                 ));
