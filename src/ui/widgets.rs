@@ -960,7 +960,10 @@ pub(super) fn modal_frame<'a, M: 'a>(
         rule::horizontal(1),
         container(body).padding(16).height(Fill),
         rule::horizontal(1),
-        container(footer).padding(16)
+        container(footer)
+            .padding(16)
+            .width(Fill)
+            .align_x(iced::Right)
     ])
     .width(Fill)
     .max_width(size.0)

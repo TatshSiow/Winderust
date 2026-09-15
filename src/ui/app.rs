@@ -1061,9 +1061,12 @@ impl WinderustApp {
     fn view(&self) -> Element<'_, Message> {
         let content = self.view_content();
         if self.closing {
-            let mut actions = row![button(text(t!("common.cancel").to_string()))
-                .style(widgets::tertiary_button)
-                .on_press(Message::Stay),]
+            let mut actions = row![
+                iced::widget::Space::new().width(Fill),
+                button(text(t!("common.cancel").to_string()))
+                    .style(widgets::tertiary_button)
+                    .on_press(Message::Stay),
+            ]
             .spacing(design::space::SMALL);
             if self.pending_changes() {
                 actions = actions
@@ -1241,15 +1244,21 @@ impl WinderustApp {
                 column![
                     text(t!("about.updates").to_string()).size(design::typography::DIALOG_TITLE),
                     text(self.preferences.latest.clone().unwrap_or_default()),
-                    button(text(t!("about.download_update").to_string())).on_press_maybe(
-                        self.preferences
-                            .download
-                            .clone()
-                            .map(|url| Message::Preferences(settings_pages::Message::Open(url)))
-                    ),
-                    button(text(t!("common.cancel").to_string()))
-                        .style(crate::ui::widgets::tertiary_button)
-                        .on_press(Message::Preferences(settings_pages::Message::DismissUpdate))
+                    row![
+                        iced::widget::Space::new().width(Fill),
+                        button(text(t!("about.download_update").to_string())).on_press_maybe(
+                            self.preferences
+                                .download
+                                .clone()
+                                .map(|url| Message::Preferences(settings_pages::Message::Open(
+                                    url
+                                )))
+                        ),
+                        button(text(t!("common.cancel").to_string()))
+                            .style(crate::ui::widgets::tertiary_button)
+                            .on_press(Message::Preferences(settings_pages::Message::DismissUpdate))
+                    ]
+                    .spacing(design::space::SMALL)
                 ]
                 .spacing(design::space::LARGE),
             )
@@ -1724,6 +1733,7 @@ impl WinderustApp {
                         widgets::heading(t!("unsaved.title").to_string(), design::typography::BODY),
                         text(t!("unsaved.message").to_string()),
                         row![
+                            iced::widget::Space::new().width(Fill),
                             button(text(t!("common.discard").to_string()))
                                 .style(crate::ui::widgets::tertiary_button)
                                 .on_press(Message::Cancel),

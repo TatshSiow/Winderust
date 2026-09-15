@@ -337,7 +337,9 @@ impl Editor {
             ]
             .spacing(design::space::SMALL),
         );
-        let mut footer = row![].spacing(design::space::SMALL).align_y(iced::Center);
+        let mut footer = row![Space::new().width(Fill)]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center);
         if let Some(index) = self.editing.filter(|_| !self.read_only) {
             footer = footer.push(
                 button(text(t!("common.remove").to_string()))
@@ -345,7 +347,6 @@ impl Editor {
                     .on_press(Message::Delete(index)),
             );
         }
-        footer = footer.push(Space::new().width(Fill));
         if !self.read_only {
             footer = footer.push(
                 button(text(t!("adaptive_engine.use_current_settings").to_string()))
