@@ -6,7 +6,7 @@ This is the working guide for code changes. Product scope and future goals live 
 
 - Windows-only Rust desktop app.
 - UI stack: Iced 0.14 with tiny-skia only and rust-i18n locales.
-- Use the unmodified crates.io `iced_tiny_skia` renderer; do not add local renderer patches. Validate rendering dependency changes with `cargo test --locked -p iced_tiny_skia --lib`.
+- Use the unmodified crates.io `iced_tiny_skia` renderer; do not add local renderer patches. Rendering regressions live in the application test suite (`src/ui/scrolling.rs`, `motion.rs`, `select.rs`, and page tests).
 - Settings format: TOML through `serde` and `toml`.
 - Localization: `rust-i18n` with files in `locales/`.
 - Windows integration: direct Win32 APIs through `windows` and `windows-sys`.
@@ -34,6 +34,24 @@ If `target\release\winderust.exe` is locked because the app is running:
 ```powershell
 .\scripts\build_release.cmd -TargetDir target-next
 ```
+
+## Rendering and performance
+
+- `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.
+- `src/ui/select.rs` retains native input while avoiding option measurement for explicitly sized fields.
+- `src/ui/motion.rs` and `animated_controls.rs` own small transitions. Do not add per-page animation timers or animate large lists.
+- Renderer dev-dependencies support pixel comparisons and damage-region tests; they do not replace the production renderer.
+- `[profile.dev.package."*"] opt-level = 2` optimizes dependencies for debug use. Release settings are separate; benchmark before changing them.
+- Compare the reported interaction before and after a performance change. Scrolling benchmarks do not establish tab-switch or expansion performance; raster timings exclude layout and event handling.
+- Documentation-only changes need link/path and diff checks. Run the Rust checks above after code or dependency changes.
+
+## Research before custom implementation
+
+- Before implementing a new capability, search existing repository code, the standard library, native Windows APIs, and installed dependencies.
+- If those do not cover it, always check crates.io and the candidate crates' official documentation (docs.rs or upstream) before writing a custom implementation. Use current web references; do not rely only on recalled crate names or APIs.
+- Prefer an existing solution that reasonably meets the requirement. Check maintenance, license compatibility, Windows/Iced version support, dependency weight, and performance before adding a crate.
+- Implement custom code only when existing options do not reasonably fit; briefly record the concrete gap or tradeoff. Finding a crate does not automatically justify adding it.
+- Reuse findings while they remain applicable. Routine edits to an established implementation do not require repeating the same crate search.
 
 ## Routine Chores
 
@@ -311,7 +329,7 @@ Process-control features must keep these defaults:
 - Keep controls compact and operational.
 - Use existing Iced widgets and local `widgets.rs` helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
-- Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
+- Follow `15-design-spec.md` for current controls, panels, and motion.
 - Keep `src/ui/app.rs` for composition, messages, native integration, and teardown.
   Put complete page editors and views in sibling modules and reuse `widgets.rs`
   for shared behavior. Do not introduce another UI framework.

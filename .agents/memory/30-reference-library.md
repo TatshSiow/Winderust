@@ -106,14 +106,9 @@ User-facing behavior:
 
 ## System Tray Lifecycle
 
-The standalone Iced validation prototype uses `benchmark/gui-prototypes/src/iced_tray.rs`.
-It installs [SetWindowSubclass](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-setwindowsubclass)
-on Iced's window thread, forwards unhandled messages with `DefSubclassProc`, and removes
-the subclass and notification icon on `WM_NCDESTROY`. Tray notifications wake an Iced
-subscription, which restores visibility through Iced's window API without polling.
-This prototype does not implement Explorer-restart recovery or change the production tray.
-
 `src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live Iced window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`. `src/ui/app.rs` latches a failed install for the current Hide to tray / Start minimized configuration, preventing the visible UI tick from retrying `Shell_NotifyIconW` every second; changing that configuration permits one new attempt and the original failure remains visible when Start minimized falls back to ordinary minimization.
+
+Tray Exit publishes one quit request. `WinderustApp` restores the window and owns confirmation and shutdown; do not post a second native `WM_CLOSE`. Cancelling preserves Hide to tray behavior.
 
 
 | API | Used for | Reference |
@@ -742,7 +737,7 @@ state.
 
 ## UI animation preference
 
-- src/platform/windows/appearance.rs::read reads UISettings.AnimationsEnabled alongside theme/accent values. src/ui/settings_pages.rs::theme passes this preference to shared Iced transitions in src/ui/motion.rs; failed reads disable motion. Existing Windows appearance-change notifications refresh it. No undocumented contract or new dependency is used.
+- src/platform/windows/appearance.rs::read reads UISettings.AnimationsEnabled alongside theme/accent values. src/ui/settings_pages.rs::theme passes this preference to shared Iced transitions in src/ui/motion.rs; failed reads disable motion. Existing Windows appearance-change notifications refresh it. No undocumented Windows contract is used; UI transitions use `iced_anim`.
 - Official reference: https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.animationsenabled
 
 ### Power scheme deletion during cleanup
