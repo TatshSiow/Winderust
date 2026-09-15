@@ -1233,6 +1233,15 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Restoration can race with exit after the transition has converted its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.open(&identity.target(), true),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish_priority(identity) {
                     Ok(()) => Ok(true),
@@ -1272,6 +1281,15 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Restoration can race with exit after the transition has converted its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.open(&identity.target(), true),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish_power(identity) {
                     Ok(()) => Ok(true),
@@ -1986,6 +2004,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakePlatform {
+        exit_on_apply: bool,
         processes: BTreeMap<u32, FakeProcess>,
         events: Vec<FakeEvent>,
         fail_next_priority_begin: bool,
@@ -2091,6 +2110,11 @@ mod tests {
             process: &Self::Process,
             priority: u32,
         ) -> Result<(), ProcessControlError> {
+            if std::mem::take(&mut self.exit_on_apply) {
+                self.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
+
             if std::mem::take(&mut self.fail_next_priority_apply) {
                 return Err(ProcessControlError::Failed(
                     "injected priority apply failure".to_owned(),
@@ -2110,6 +2134,11 @@ mod tests {
             process: &Self::Process,
             power: PowerThrottlingState,
         ) -> Result<(), ProcessControlError> {
+            if std::mem::take(&mut self.exit_on_apply) {
+                self.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
+
             if std::mem::take(&mut self.fail_next_power_apply) {
                 return Err(ProcessControlError::Failed(
                     "injected power apply failure".to_owned(),
@@ -2597,6 +2626,26 @@ mod tests {
         );
         assert!(!controller.has_managed_state());
         assert!(controller.platform.events.is_empty());
+    }
+
+    #[test]
+    fn shutdown_cleans_up_exit_during_restoration() {
+        let mut controller =
+            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+        controller
+            .apply_priority_claim(
+                priority_claim(
+                    7,
+                    1,
+                    ControlOwner::ProcessPriority,
+                    PriorityClassValue::BelowNormal,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.exit_on_apply = true;
+        assert!(controller.shutdown().is_ok());
+        assert!(!controller.has_managed_state());
     }
 
     #[test]

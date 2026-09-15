@@ -422,6 +422,15 @@ impl<P: DynamicPriorityBoostPlatform> DynamicPriorityBoostController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Restoration can race with exit after the transition has converted its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.open(&identity.target(), true),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish(identity) {
                     Ok(()) => Ok(true),
@@ -646,6 +655,7 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
+        ApplyExited,
         Open,
         VerificationQuery,
         Begin,
@@ -770,6 +780,10 @@ mod tests {
             state: DynamicPriorityBoostState,
         ) -> Result<(), ProcessControlError> {
             self.events.lock().unwrap().push(format!("apply:{state:?}"));
+            if self.take_failure(FakeFailure::ApplyExited) {
+                self.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Apply) {
                 return Err(ProcessControlError::Failed("apply failed".to_owned()));
             }
@@ -1173,6 +1187,24 @@ mod tests {
             controller.platform.processes[&42].state,
             DynamicPriorityBoostState::Enabled
         );
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_cleans_up_exit_during_restoration() {
+        let platform = FakePlatform::new(DynamicPriorityBoostState::Enabled);
+        let mut controller = DynamicPriorityBoostController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::DynamicPriorityBoost,
+                    DynamicPriorityBoostState::Disabled,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::ApplyExited);
+        assert!(controller.shutdown().is_ok());
         assert!(!controller.has_managed_state());
     }
 

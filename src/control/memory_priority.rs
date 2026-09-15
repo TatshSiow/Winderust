@@ -502,6 +502,15 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Restoration can race with exit after the transition has converted its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.open(&identity.target(), true),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish(identity) {
                     Ok(()) => Ok(true),
@@ -842,6 +851,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakePlatform {
+        exit_on_apply: bool,
         processes: BTreeMap<u32, FakeProcess>,
         applied: Vec<(u32, u32)>,
         relinquished: Vec<(u32, u64)>,
@@ -912,6 +922,11 @@ mod tests {
             process: &Self::Process,
             priority: u32,
         ) -> Result<(), ProcessControlError> {
+            if std::mem::take(&mut self.exit_on_apply) {
+                self.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
+
             if std::mem::take(&mut self.fail_next_apply) {
                 return Err(ProcessControlError::Failed(
                     "injected apply failure".to_owned(),
@@ -1285,6 +1300,25 @@ mod tests {
             )
             .is_err());
         assert_eq!(controller.platform.processes[&7].value, 5);
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_cleans_up_exit_during_restoration() {
+        let mut controller = MemoryPriorityController::with_platform(platform_with(7, 1, 5));
+        controller
+            .apply_policy_claim(
+                claim(
+                    7,
+                    1,
+                    ControlOwner::MemoryPriority,
+                    ProcessMemoryPriority::Low,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.exit_on_apply = true;
+        assert!(controller.shutdown().is_ok());
         assert!(!controller.has_managed_state());
     }
 

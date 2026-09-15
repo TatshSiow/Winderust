@@ -640,6 +640,15 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // A thread can exit after opening, while the transition converts its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.query(&thread),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish(identity) {
                     Ok(()) => Ok(true),
@@ -1018,6 +1027,7 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
         OpenExited,
+        ApplyExited,
         Begin,
         Apply,
         Verify,
@@ -1177,6 +1187,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("apply:{thread}:{priority}"));
+            if self.take_failure(FakeFailure::ApplyExited) {
+                self.process.threads.remove(thread);
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Apply) {
                 return Err(ProcessControlError::Failed("apply failed".to_owned()));
             }
@@ -1719,6 +1733,33 @@ mod tests {
             controller.platform.process.threads[&100].priority,
             THREAD_PRIORITY_NORMAL
         );
+    }
+
+    #[test]
+    fn shutdown_cleans_up_threads_exiting_during_restore_and_retries_journal_failures() {
+        for fail_relinquish in [false, true] {
+            let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[
+                THREAD_PRIORITY_NORMAL,
+            ]));
+            controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::ThreadPriority,
+                        ProcessThreadPrioritySetting::BelowNormal,
+                        ThreadPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .unwrap();
+            controller.platform.fail_next(FakeFailure::ApplyExited);
+            if fail_relinquish {
+                controller.platform.fail_next(FakeFailure::Relinquish);
+            }
+            assert_eq!(controller.shutdown().is_err(), fail_relinquish);
+            assert_eq!(controller.has_managed_state(), fail_relinquish);
+            assert!(controller.shutdown().is_ok());
+            assert!(!controller.has_managed_state());
+        }
     }
 
     #[test]

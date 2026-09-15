@@ -1157,6 +1157,15 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Restoration can race with exit after the transition has converted its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.open(&identity.target(), true),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish_affinity(identity) {
                     Ok(()) => Ok(true),
@@ -1197,6 +1206,15 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Restoration can race with exit after the transition has converted its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.open(&identity.target(), true),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish_cpu_sets(identity) {
                     Ok(()) => Ok(true),
@@ -1776,6 +1794,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakeState {
+        exit_on_apply: bool,
         processes: BTreeMap<u32, FakeProcessState>,
         events: Vec<String>,
         reject_disallowed_cross_session_open: bool,
@@ -1911,6 +1930,11 @@ mod tests {
             affinity: usize,
         ) -> Result<(), ProcessControlError> {
             let mut state = self.state.borrow_mut();
+            if std::mem::take(&mut state.exit_on_apply) {
+                state.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
+
             state.events.push(format!("apply-affinity:{affinity:#x}"));
             if state.affinity_apply_failures_remaining > 0 {
                 state.affinity_apply_failures_remaining -= 1;
@@ -1932,6 +1956,11 @@ mod tests {
             ids: &[u32],
         ) -> Result<(), ProcessControlError> {
             let mut state = self.state.borrow_mut();
+            if std::mem::take(&mut state.exit_on_apply) {
+                state.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
+
             state.events.push(format!("apply-cpu-sets:{ids:?}"));
             if std::mem::take(&mut state.fail_next_cpu_sets_apply) {
                 return Err(ProcessControlError::Failed(
@@ -2802,6 +2831,26 @@ mod tests {
             .events
             .iter()
             .any(|event| event == "forget-affinity:7"));
+    }
+
+    #[test]
+    fn shutdown_cleans_up_exit_during_restoration() {
+        let mut coordinator = coordinator();
+        coordinator
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::CpuSetsSoft,
+                    CpuAllocationRequest::SoftCpuSets {
+                        logical_processor_mask: 0b0010,
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        coordinator.platform.state.borrow_mut().exit_on_apply = true;
+        assert!(coordinator.shutdown().is_ok());
+        assert!(coordinator.managed_cpu_sets.is_empty());
     }
 
     #[test]

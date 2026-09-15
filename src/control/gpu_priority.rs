@@ -404,6 +404,15 @@ impl<P: GpuPriorityPlatform> GpuPriorityController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Restoration can race with exit after the transition has converted its error to text.
+            Err(_)
+                if matches!(
+                    self.platform.open(&identity.target(), true),
+                    Err(ProcessControlError::ProcessExited)
+                ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish(identity) {
                     Ok(()) => Ok(true),
@@ -684,6 +693,7 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
+        ApplyExited,
         Open,
         Unavailable,
         Verify,
@@ -830,6 +840,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("apply:{process}:{priority}"));
+            if self.take_failure(FakeFailure::ApplyExited) {
+                self.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Apply) {
                 return Err(ProcessControlError::Failed("apply failed".to_owned()));
             }
@@ -1267,6 +1281,25 @@ mod tests {
             )
             .is_err());
         assert!(controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_cleans_up_exit_during_restoration() {
+        let platform = FakePlatform::new(2);
+        let mut controller = GpuPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::GpuPriority,
+                    ProcessGpuPriority::BelowNormal,
+                    GpuPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::ApplyExited);
+        assert!(controller.shutdown().is_ok());
+        assert!(!controller.has_managed_state());
     }
 
     #[test]
