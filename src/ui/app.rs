@@ -76,7 +76,7 @@ pub(crate) fn run(
                     settings,
                     runtime,
                     status: RuntimeStatusSnapshot::default(),
-                    message: error
+                    error_message: error
                         .or_else(crate::crash_recovery::startup_error)
                         .unwrap_or_default(),
                     page: Page::Home,
@@ -207,7 +207,7 @@ struct WinderustApp {
     settings: SettingsEditor,
     runtime: RuntimeHandle,
     status: RuntimeStatusSnapshot,
-    message: String,
+    error_message: String,
     page: Page,
     navigation_history: navigation::History,
     breadcrumb: Vec<Page>,
@@ -234,6 +234,7 @@ enum Message {
     #[cfg(feature = "render-smoke")]
     SmokeScreenshot(iced::window::Screenshot),
     NavigationSearch(String),
+    DismissError,
     NavigateHistory(bool),
     ToggleNavigation,
     ToggleSection(Page),
@@ -285,6 +286,7 @@ impl WinderustApp {
         match message {
             #[cfg(feature = "render-smoke")]
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
+            Message::DismissError => self.error_message.clear(),
             Message::NavigationSearch(value) => self.navigation_search = value,
             Message::ToggleNavigation => {
                 let patch = crate::application::NavigationCollapsedPatch {
@@ -293,7 +295,7 @@ impl WinderustApp {
                 };
                 match self.settings.apply_navigation_collapsed_patch(patch) {
                     Ok(_) => self.publish_settings(),
-                    Err(error) => self.message = error.to_string(),
+                    Err(error) => self.error_message = error.to_string(),
                 }
             }
             Message::ToggleDescription => self.description_expanded = !self.description_expanded,
@@ -311,7 +313,7 @@ impl WinderustApp {
             }
             Message::Preferences(settings_pages::Message::Open(url)) => {
                 if let Err(error) = crate::win_util::open_url(&url) {
-                    self.message = error;
+                    self.error_message = error;
                 }
             }
             Message::Home(home::Message::Navigate(page)) => {
@@ -324,7 +326,7 @@ impl WinderustApp {
                 self.sampling = false;
                 match result {
                     Ok(sample) => self.home.record(sample),
-                    Err(error) => self.message = error,
+                    Err(error) => self.error_message = error,
                 }
             }
             Message::Preferences(settings_pages::Message::Export) => {
@@ -401,27 +403,26 @@ impl WinderustApp {
                 }
             }
             Message::ExportLog(path) => {
-                self.message = match path {
-                    Some(path) => match crate::config::storage::write_bytes_atomically(
+                if let Some(path) = path {
+                    if let Err(error) = crate::config::storage::write_bytes_atomically(
                         &path,
                         action_log::action_log_entries_to_csv(&self.status.action_log_entries)
                             .as_bytes(),
                     ) {
-                        Ok(()) => {
-                            t!("status.exported_action_log", path = path.display()).to_string()
-                        }
-                        Err(error) => t!(
+                        self.error_message = t!(
                             "status.action_log_export_failed",
                             path = path.display(),
                             error = error
                         )
-                        .to_string(),
-                    },
-                    None => t!("status.action_log_export_canceled").to_string(),
-                };
+                        .to_string();
+                    }
+                }
             }
+
             Message::CommandFinished(result) => {
-                self.message = result.err().unwrap_or_default();
+                if let Err(error) = result {
+                    self.error_message = error;
+                }
             }
             Message::Suspension(app_suspension::Message::Browse) => {
                 return self.browse(Page::AppSuspension)
@@ -446,7 +447,7 @@ impl WinderustApp {
                             })
                             .map(|r| Message::CommandFinished(r.and_then(|r| r)))
                         }
-                        Err(error) => self.message = error.to_string(),
+                        Err(error) => self.error_message = error.to_string(),
                     }
                 }
             }
@@ -462,7 +463,7 @@ impl WinderustApp {
                         })
                         .map(|r| Message::CommandFinished(r.and_then(|r| r)))
                     }
-                    Err(error) => self.message = error.to_string(),
+                    Err(error) => self.error_message = error.to_string(),
                 }
             }
             Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
@@ -538,7 +539,7 @@ impl WinderustApp {
                         self.candidates = candidates;
                     }
                     Ok(_) => {}
-                    Err(error) => self.message = error,
+                    Err(error) => self.error_message = error,
                 }
             }
             Message::ExecutableChosen(page, profile, path) => {
@@ -633,7 +634,7 @@ impl WinderustApp {
                             self.power_tuning.ensure_plan(&self.power_plans);
                         }
                     }
-                    Err(error) => self.message = error,
+                    Err(error) => self.error_message = error,
                 }
             }
             Message::CpuLimiter(cpu_limiter::Message::Browse) => {
@@ -643,7 +644,7 @@ impl WinderustApp {
                 .cpu_limiter
                 .update(&mut self.settings.cpu_limiter, message),
             Message::PowerSource(_) if self.pending_editor() || self.invalid_inputs() => {
-                self.message = t!("unsaved.message").to_string();
+                self.error_message = t!("unsaved.message").to_string();
             }
             Message::PowerSource(source) => {
                 self.power_source = source;
@@ -684,7 +685,7 @@ impl WinderustApp {
                 return update;
             }
             Message::NavigateHistory(forward) => {
-                if !self.closing && !self.pending_editor() {
+                if !self.closing && self.error_message.is_empty() && !self.pending_editor() {
                     if let Some(page) = self.navigation_history.travel(forward) {
                         return self.update(Message::Page(page));
                     }
@@ -793,7 +794,7 @@ impl WinderustApp {
                     .take_auto_exclusion_patch_since(&mut self.auto_exclusion_generation)
                 {
                     if let Err(error) = self.settings.apply_auto_exclusion_patch(&patch) {
-                        self.message = error.to_string();
+                        self.error_message = error.to_string();
                         self.runtime.requeue_auto_exclusion_patch(patch);
                     } else {
                         self.publish_settings();
@@ -866,46 +867,39 @@ impl WinderustApp {
             }
             Message::Close => {
                 if !self.closing {
-                    self.message.clear();
+                    self.error_message.clear();
                 }
                 self.closing = true;
                 return self.show_window();
             }
             Message::Save if self.pending_editor() => {
-                self.message = t!("unsaved.message").to_string();
+                self.error_message = t!("unsaved.message").to_string();
             }
             Message::Save if self.adaptive.validation_error().is_some() => {
-                self.message = self.adaptive.validation_error().unwrap_or_default();
+                self.error_message = self.adaptive.validation_error().unwrap_or_default();
             }
             Message::Save if self.cpu_limiter.has_invalid_inputs() => {
-                self.message = t!("cpu_limiter.invalid_limit").to_string();
+                self.error_message = t!("cpu_limiter.invalid_limit").to_string();
             }
             Message::Save if !self.time_rules.valid() || !self.cpu_rules.valid() => {
-                self.message = t!("unsaved.message").to_string();
+                self.error_message = t!("unsaved.message").to_string();
             }
             Message::Save if !self.activity_inputs.valid() => {
-                self.message = t!("by_activity.invalid_timing").to_string();
+                self.error_message = t!("by_activity.invalid_timing").to_string();
             }
             Message::Save
                 if self.timer.has_invalid_inputs() || self.preferences.has_invalid_inputs() =>
             {
-                self.message = t!("unsaved.message").to_string();
+                self.error_message = t!("unsaved.message").to_string();
             }
             Message::Save => match self.settings.save() {
                 Ok(outcome) => {
-                    self.message = outcome.startup_registration_error().map_or_else(
-                        || {
-                            t!(
-                                "status.saved_settings",
-                                path = crate::config::storage::config_path().display()
-                            )
-                            .to_string()
-                        },
-                        ToString::to_string,
-                    );
+                    if let Some(error) = outcome.startup_registration_error() {
+                        self.error_message = error.to_string();
+                    }
                     self.publish_settings();
                     if self.power_tuning.dirty && !self.power_tuning.apply() {
-                        self.message = self.power_tuning.status.clone();
+                        self.error_message = self.power_tuning.status.clone();
                         return Task::none();
                     }
                     self.reset_editors();
@@ -913,7 +907,7 @@ impl WinderustApp {
                         return self.shutdown();
                     }
                 }
-                Err(error) => self.message = error.to_string(),
+                Err(error) => self.error_message = error.to_string(),
             },
             Message::Cancel => {
                 self.settings.cancel();
@@ -930,7 +924,10 @@ impl WinderustApp {
                     .general
                     .pause_power_plan_switching_while_plugged_in = value
             }
-            Message::Stay => self.closing = false,
+            Message::Stay => {
+                self.closing = false;
+                self.error_message.clear();
+            }
             Message::DiscardAndClose => {
                 self.settings.cancel();
                 if self.power_tuning.dirty {
@@ -939,7 +936,7 @@ impl WinderustApp {
                 return self.shutdown();
             }
             Message::SettingsFile(_) if self.pending_editor() || self.invalid_inputs() => {
-                self.message = t!("unsaved.message").to_string();
+                self.error_message = t!("unsaved.message").to_string();
             }
             Message::SettingsFile(mode) => {
                 let hwnd = self
@@ -955,24 +952,18 @@ impl WinderustApp {
                         FileDialogMode::Open => match self.settings.import_toml_from(&path) {
                             Ok(outcome) => {
                                 self.reset_editors();
-                                self.message = outcome.startup_registration_error().map_or_else(
-                                    || {
-                                        t!("status.imported_settings", path = path.display())
-                                            .to_string()
-                                    },
-                                    ToString::to_string,
-                                );
+                                if let Some(error) = outcome.startup_registration_error() {
+                                    self.error_message = error.to_string();
+                                }
                                 rust_i18n::set_locale(self.settings.general.language.locale());
                                 self.publish_settings();
                             }
-                            Err(error) => self.message = error.to_string(),
+                            Err(error) => self.error_message = error.to_string(),
                         },
                         FileDialogMode::Save => {
-                            self.message = match self.settings.export_toml_to(&path) {
-                                Ok(()) => t!("status.exported_settings", path = path.display())
-                                    .to_string(),
-                                Err(error) => error.to_string(),
-                            };
+                            if let Err(error) = self.settings.export_toml_to(&path) {
+                                self.error_message = error.to_string();
+                            }
                         }
                     }
                 }
@@ -1062,7 +1053,7 @@ impl WinderustApp {
                 self.tray_attempt = Some(intent);
                 match tray::TrayIcon::install(hwnd as windows_sys::Win32::Foundation::HWND) {
                     Ok(icon) => self.tray = Some(icon),
-                    Err(error) => self.message = error,
+                    Err(error) => self.error_message = error,
                 }
             }
         }
@@ -1077,7 +1068,7 @@ impl WinderustApp {
                 iced::exit()
             }
             Err(error) => {
-                self.message = error;
+                self.error_message = error;
                 self.show_window()
             }
         }
@@ -1085,50 +1076,61 @@ impl WinderustApp {
 
     fn view(&self) -> Element<'_, Message> {
         let content = self.view_content();
-        if self.closing {
-            let mut actions = row![
-                iced::widget::Space::new().width(Fill),
-                button(text(t!("common.cancel").to_string()))
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::Stay),
-            ]
-            .spacing(design::space::SMALL);
-            if self.pending_changes() {
-                actions = actions
-                    .push(
-                        button(text(t!("quit_prompt.save_and_quit").to_string()))
-                            .style(widgets::primary_button)
-                            .on_press(Message::Save),
-                    )
-                    .push(
-                        button(text(t!("quit_prompt.without_saving").to_string()))
-                            .style(widgets::danger_button)
-                            .on_press(Message::DiscardAndClose),
-                    );
-            } else {
-                actions = actions.push(
-                    button(text(t!("tray.quit").to_string()))
-                        .style(widgets::danger_button)
-                        .on_press(Message::DiscardAndClose),
-                );
-            }
-            let mut body = column![
-                widgets::heading(
-                    t!("quit_prompt.title").to_string(),
-                    design::typography::DIALOG_TITLE
-                ),
-                text(
+        if self.closing || !self.error_message.is_empty() {
+            let mut actions =
+                row![iced::widget::Space::new().width(Fill)].spacing(design::space::SMALL);
+            let mut body = column![widgets::heading(
+                t!(if self.closing {
+                    "quit_prompt.title"
+                } else {
+                    "common.error"
+                })
+                .to_string(),
+                design::typography::DIALOG_TITLE,
+            )]
+            .spacing(design::space::LARGE);
+            if self.closing {
+                body = body.push(text(
                     t!(if self.pending_changes() {
                         "quit_prompt.unsaved"
                     } else {
                         "quit_prompt.message"
                     })
-                    .to_string()
-                ),
-            ]
-            .spacing(design::space::LARGE);
-            if !self.message.is_empty() {
-                body = body.push(text(&self.message));
+                    .to_string(),
+                ));
+                actions = actions.push(
+                    button(text(t!("common.cancel").to_string()))
+                        .style(widgets::tertiary_button)
+                        .on_press(Message::Stay),
+                );
+                if self.pending_changes() {
+                    actions = actions
+                        .push(
+                            button(text(t!("quit_prompt.save_and_quit").to_string()))
+                                .style(widgets::primary_button)
+                                .on_press(Message::Save),
+                        )
+                        .push(
+                            button(text(t!("quit_prompt.without_saving").to_string()))
+                                .style(widgets::danger_button)
+                                .on_press(Message::DiscardAndClose),
+                        );
+                } else {
+                    actions = actions.push(
+                        button(text(t!("tray.quit").to_string()))
+                            .style(widgets::danger_button)
+                            .on_press(Message::DiscardAndClose),
+                    );
+                }
+            } else {
+                actions = actions.push(
+                    button(text(t!("common.done").to_string()))
+                        .style(widgets::tertiary_button)
+                        .on_press(Message::DismissError),
+                );
+            }
+            if !self.error_message.is_empty() {
+                body = body.push(text(&self.error_message));
             }
             let dialog = container(body.push(actions))
                 .padding(design::space::LARGE as u16)
@@ -1632,12 +1634,6 @@ impl WinderustApp {
             .center_x(Fill)
             .height(Fill),
         );
-        if let Some(error) = &self.status.worker_error {
-            body = body.push(text(error));
-        }
-        if !self.message.is_empty() {
-            body = body.push(text(&self.message));
-        }
         let layout = row![
             super::motion::wrap(
                 container(
