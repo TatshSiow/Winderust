@@ -225,27 +225,21 @@ impl Editor {
                 controls,
             ));
         }
-        body = body
-            .push(
-                text(t!("app_suspension.suspendable_help").to_string())
-                    .width(Fill)
-                    .style(text::secondary),
-            )
-            .push(super::app_picker::view(
-                &self.path,
-                candidates,
-                true,
-                Message::Path,
-                Message::Browse,
-                (self.can_add(s, unavailable)).then_some(Message::Add),
-                |path| {
-                    Some(
-                        !unavailable
-                            .iter()
-                            .any(|blocked| process_setting_matches(blocked, path)),
-                    )
-                },
-            ));
+        body = body.push(super::app_picker::view(
+            &self.path,
+            candidates,
+            true,
+            Message::Path,
+            Message::Browse,
+            (self.can_add(s, unavailable)).then_some(Message::Add),
+            |path| {
+                Some(
+                    !unavailable
+                        .iter()
+                        .any(|blocked| process_setting_matches(blocked, path)),
+                )
+            },
+        ));
         let mut cards = Vec::new();
         for (i, r) in s.suspendable_apps.iter().enumerate() {
             let frozen =

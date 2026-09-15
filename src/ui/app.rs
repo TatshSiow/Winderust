@@ -48,7 +48,7 @@ pub(crate) fn run(
                     navigation_search: String::new(),
                     expanded_section: None,
                     status_collapsed: false,
-                    description_expanded: false,
+                    feature_info_expanded: false,
                     preferences: settings_pages::Editor::default(),
                     home: home::Model::default(),
                     action_log: action_log::Editor::default(),
@@ -179,7 +179,7 @@ struct WinderustApp {
     navigation_search: String,
     expanded_section: Option<Page>,
     status_collapsed: bool,
-    description_expanded: bool,
+    feature_info_expanded: bool,
     preferences: settings_pages::Editor,
     home: home::Model,
     action_log: action_log::Editor,
@@ -238,7 +238,7 @@ enum Message {
     NavigateHistory(bool),
     ToggleNavigation,
     ToggleSection(Page),
-    ToggleDescription,
+    ToggleFeatureInfo,
     ToggleStatus,
     Preferences(settings_pages::Message),
     Status(status_rail::Message),
@@ -298,7 +298,7 @@ impl WinderustApp {
                     Err(error) => self.error_message = error.to_string(),
                 }
             }
-            Message::ToggleDescription => self.description_expanded = !self.description_expanded,
+            Message::ToggleFeatureInfo => self.feature_info_expanded = !self.feature_info_expanded,
             Message::ToggleSection(page) => {
                 if self.page != page {
                     return self.update(Message::Page(page));
@@ -698,7 +698,7 @@ impl WinderustApp {
             }
             Message::Page(page) => {
                 self.navigation_history.visit(page);
-                self.description_expanded = false;
+                self.feature_info_expanded = false;
                 let path = navigation::breadcrumb_path(page);
                 self.breadcrumb = path;
                 self.page = page;
@@ -1580,24 +1580,24 @@ impl WinderustApp {
                     .style(widgets::surface),
             );
         }
-        let description = navigation::page_help(self.page);
+        let description = navigation::page_feature_info(self.page);
         if !description.is_empty() {
             header = header.push(
                 button(
                     row![
                         navigation::glyph("icons/info.svg"),
-                        text(t!("common.how_it_works").to_string())
+                        text(t!("common.feature_info").to_string())
                             .size(design::typography::SECONDARY)
                     ]
                     .spacing(design::space::CONTROL)
                     .align_y(iced::Center),
                 )
-                .style(if self.description_expanded {
+                .style(if self.feature_info_expanded {
                     widgets::selected
                 } else {
                     widgets::quiet
                 })
-                .on_press(Message::ToggleDescription),
+                .on_press(Message::ToggleFeatureInfo),
             );
         }
         let header: Element<'_, Message> = header
@@ -1610,12 +1610,27 @@ impl WinderustApp {
         .spacing(0);
         if !description.is_empty() {
             heading = heading.push(widgets::optional_content(
-                container(scrollable(text(description).width(Fill)).height(iced::Length::Shrink))
-                    .max_height(160)
-                    .padding(design::space::MEDIUM as u16)
-                    .width(Fill)
-                    .style(widgets::surface),
-                self.description_expanded,
+                container(
+                    row![
+                        navigation::glyph("icons/info.svg"),
+                        scrollable(text(description).width(Fill))
+                            .height(iced::Length::Shrink)
+                            .width(Fill),
+                        iced::widget::tooltip(
+                            button(navigation::glyph("icons/x.svg"))
+                                .style(widgets::quiet)
+                                .on_press(Message::ToggleFeatureInfo),
+                            text(t!("common.close").to_string()),
+                            iced::widget::tooltip::Position::Left,
+                        ),
+                    ]
+                    .spacing(design::space::MEDIUM),
+                )
+                .max_height(160)
+                .padding(design::space::MEDIUM as u16)
+                .width(Fill)
+                .style(widgets::surface),
+                self.feature_info_expanded,
             ));
         }
         let mut body = column![heading].spacing(design::space::MEDIUM).height(Fill);

@@ -587,9 +587,7 @@ impl Editor {
                 group,
             ));
         }
-        body = body
-            .push(text(localized(key, "exclusions")).size(design::typography::SECTION))
-            .push(text(localized(key, "exclusions_help")));
+        body = body.push(text(localized(key, "exclusions")).size(design::typography::SECTION));
         body = body.push(super::app_picker::view(
             &self.path,
             candidates,

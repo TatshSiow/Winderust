@@ -146,8 +146,6 @@ impl Editor {
                 })
         };
         let mut body = column![
-            text(t!("settings.win32_priority_separation_warning").to_string())
-                .style(text::secondary),
             super::widgets::settings_card(
                 column![
                     super::widgets::setting_row(

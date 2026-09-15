@@ -206,9 +206,6 @@ impl Editor {
                 super::widgets::switch(feature.enabled, Some(Message::Enabled)),
             )),
             super::widgets::setting_title("cpu_allocation.custom_rules"),
-            text(t!("cpu_allocation.rules_help").to_string())
-                .width(Fill)
-                .style(text::secondary),
             super::app_picker::view(
                 &self.path,
                 candidates,
@@ -220,11 +217,6 @@ impl Editor {
             )
         ]
         .spacing(super::widgets::CARD_GAP);
-        if matches!(k, Kind::Hard) {
-            body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
-        } else if cpu_allocation::has_multiple_processor_groups() {
-            body = body.push(text(t!("cpu_sets_soft.warning").to_string()));
-        }
         let mut rules = Vec::new();
         for (i, r) in feature.rules.iter().enumerate() {
             let controls = [Tier::Focus, Tier::Visible, Tier::Background]

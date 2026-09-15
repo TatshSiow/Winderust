@@ -89,7 +89,7 @@ pub(super) fn label<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
     .into()
 }
 
-pub(super) fn page_help(page: Page) -> String {
+pub(super) fn page_feature_info(page: Page) -> String {
     let (prefix, paragraphs) = match page {
         Page::AdaptiveEngine => ("adaptive_engine", 3),
         Page::BackgroundEfficiency => ("background_efficiency", 3),
@@ -111,11 +111,10 @@ pub(super) fn page_help(page: Page) -> String {
         Page::ProcessorAffinityHard => ("processor_affinity_hard", 2),
         Page::TimerResolution => ("timer_resolution", 2),
         Page::WinderustBehaviour => ("settings", 2),
+        Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => ("", 0),
         _ => return String::new(),
     };
     let mut help = (1..=paragraphs)
-        // CPU Limiter keeps its warning visible beside the controls.
-        .filter(|index| page != Page::CpuLimiter || *index != 4)
         .map(|index| {
             let key = format!("{prefix}.intro_{index}");
             t!(&key).to_string()
@@ -133,6 +132,30 @@ pub(super) fn page_help(page: Page) -> String {
             help.push_str("\n\n");
             help.push_str(&t!(key));
         }
+    }
+    let extra: &[&str] = match page {
+        Page::CpuSetsSoft => &["cpu_allocation.rules_help", "cpu_sets_soft.warning"],
+        Page::ProcessorAffinityHard => &[
+            "cpu_allocation.rules_help",
+            "processor_affinity_hard.warning",
+        ],
+        Page::AppSuspension => &["app_suspension.suspendable_help"],
+        Page::ProcessPriority => &["process_priority.exclusions_help"],
+        Page::ThreadPriority => &["thread_priority.exclusions_help"],
+        Page::DynamicPriorityBoost => &["dynamic_priority_boost.exclusions_help"],
+        Page::IoPriority => &["io_priority.exclusions_help"],
+        Page::GpuPriority => &["gpu_priority.exclusions_help"],
+        Page::MemoryPriority => &["memory_priority.exclusions_help"],
+        Page::TimerResolution => &["timer_resolution.warning"],
+        Page::Win32PrioritySeparation => &["settings.win32_priority_separation_warning"],
+        Page::AdvancedPowerPlanTuning => &["processor_power.help"],
+        _ => &[],
+    };
+    for key in extra {
+        if !help.is_empty() {
+            help.push_str("\n\n");
+        }
+        help.push_str(&t!(*key));
     }
     help
 }
@@ -529,10 +552,10 @@ mod tests {
     }
 
     #[test]
-    fn cpu_limiter_help_does_not_repeat_the_visible_warning() {
-        let help = super::page_help(crate::ui::Page::CpuLimiter);
+    fn cpu_limiter_feature_info_includes_the_warning() {
+        let help = super::page_feature_info(crate::ui::Page::CpuLimiter);
         assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_1").to_string()));
-        assert!(!help.contains(&rust_i18n::t!("cpu_limiter.intro_4").to_string()));
+        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_4").to_string()));
         assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_5").to_string()));
     }
 

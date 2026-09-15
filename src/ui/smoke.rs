@@ -78,10 +78,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         app.appearance = settings_pages::theme(&app.settings.general);
         // Exercise disclosure messages and long/compact navigation without enabling automation.
         let navigate = app.update(Message::Page(page));
-        assert!(!app.description_expanded);
+        assert!(!app.feature_info_expanded);
         if matches!(extra, Some(0 | 1)) {
-            let _ = app.update(Message::ToggleDescription);
-            assert!(app.description_expanded);
+            let _ = app.update(Message::ToggleFeatureInfo);
+            assert!(app.feature_info_expanded);
         }
         if extra == Some(0) {
             let section = Page::SettingsHome;

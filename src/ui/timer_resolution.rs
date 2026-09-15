@@ -93,7 +93,6 @@ impl Editor {
                 "timer_resolution.enable",
                 super::widgets::switch(s.enabled, Some(Message::Enabled))
             )),
-            text(t!("timer_resolution.warning").to_string()).style(text::secondary),
             super::widgets::setting_title("common.rules"),
             super::app_picker::view(
                 &self.path,

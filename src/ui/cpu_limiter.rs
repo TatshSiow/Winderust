@@ -257,7 +257,6 @@ impl CpuLimiter {
         status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
     ) -> Element<'a, Message> {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
-        body = body.push(text(t!("cpu_limiter.intro_4").to_string()).style(text::warning));
         if self.has_invalid_inputs() {
             body = body.push(
                 text(t!("cpu_limiter.invalid_limit").to_string())

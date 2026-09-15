@@ -141,7 +141,7 @@
 - Use Windows Segoe UI typography for small-text readability in Iced, with 14px body text and 13px sidebar labels. Keep Iced's existing advanced shaping, system font fallback, and DPI-aware software text rendering; do not add a second renderer or claim ClearType support.
 - Combine Winderust's compact icon rows and inline feature status with Kraken's quiet neutral surfaces and selective accent. Hover changes the surface; pressing strengthens feedback without changing layout geometry.
 - Expanded navigation has a fixed 264px width. Long labels stay on one line inside clipped slots, with full labels available in native Iced tooltips. Chevron controls have a fixed width.
-- Page introductions start collapsed behind the localized How it works header action and reset when navigating. Keep warnings and validation beside their controls; landing cards retain a readable summary.
+- Page introductions start collapsed behind the localized Feature info header action and reset when navigating. Keep static descriptions and cautions in Feature info; retain validation and live runtime warnings beside their controls.
 - Native render checks also cover expanded English/Chinese help, long English navigation at minimum width, and the compact sidebar.
 
 ## GPUI setting-card structure target
@@ -161,7 +161,7 @@ The source-mapped hierarchy corrections are implemented. See [the design integri
 - Use 28-pixel semibold page headings with Home breadcrumbs. Retain Segoe UI and native Windows framing.
 - Home: CPU/RAM/I/O across the first row; Network and Enabled Features across the second; section shortcuts below in three columns. Narrow windows use two columns.
 - Pin Log, Settings, About, and the sidebar toggle below the scrollable main navigation.
-- Landing cards are compact, single-line navigation rows. Descriptions remain available on feature pages through How it works.
+- Landing cards are compact, single-line navigation rows. Descriptions remain available on feature pages through Feature info.
 - Process List keeps its virtualization and configurable columns, with 52-pixel rows, aligned names/icons, and internal row dividers. Action Log uses aligned table columns and hover text for truncated reasons.
 - Cards use charcoal #191b1e over #0f1011 in dark mode, white over neutral gray in light mode; keep card outlines absent.
 
