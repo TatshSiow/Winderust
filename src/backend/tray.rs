@@ -18,10 +18,10 @@ use windows_sys::Win32::{
         },
         WindowsAndMessaging::{
             AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadImageW,
-            PostMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu,
-            GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_STRING, SW_HIDE,
-            SW_SHOW, SW_SHOWNA, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK,
-            WM_LBUTTONUP, WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
+            SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu, GWLP_WNDPROC,
+            HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_STRING, SW_HIDE, SW_SHOW,
+            TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+            WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
         },
     },
 };
@@ -317,22 +317,9 @@ fn show_tray_menu(hwnd: HWND) {
 
     match command as usize {
         MENU_SHOW => show_window(hwnd),
-        MENU_QUIT => {
-            quit_window(hwnd);
-        }
+        // The app restores its window and owns confirmation and shutdown.
+        MENU_QUIT => QUIT_REQUESTED.store(true, Ordering::Relaxed),
         _ => {}
-    }
-}
-
-fn quit_window(hwnd: HWND) {
-    HIDE_ON_CLOSE.store(false, Ordering::Relaxed);
-    set_hidden_to_tray(false);
-    QUIT_REQUESTED.store(true, Ordering::Relaxed);
-
-    // SAFETY: hwnd is the live application window supplied by its window procedure callback.
-    unsafe {
-        ShowWindow(hwnd, SW_SHOWNA);
-        PostMessageW(hwnd, WM_CLOSE, 0, 0);
     }
 }
 
