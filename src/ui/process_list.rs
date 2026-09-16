@@ -17,8 +17,14 @@ use std::{
     sync::Arc,
 };
 #[path = "process_details.rs"]
-mod details;
+pub(super) mod details;
 use super::scrolling;
+#[derive(Clone, Copy)]
+pub(super) enum PlanCatalog<'a> {
+    Loading,
+    Unavailable,
+    Loaded(&'a [crate::power::PowerPlan]),
+}
 const ROW_HEIGHT: f32 = 36.0;
 #[derive(Debug, Clone)]
 pub(super) struct Population {
@@ -35,11 +41,19 @@ struct Entry {
 }
 #[derive(Debug, Clone)]
 pub(super) struct Selection {
+    nested: bool,
     processes: Vec<ProcessInfo>,
     path: String,
     name: String,
 }
 impl Selection {
+    fn stop_options(&self, population: &[ProcessInfo]) -> (bool, bool) {
+        (
+            self.processes.len() == 1,
+            self.nested || self.has_tree(population),
+        )
+    }
+
     fn has_tree(&self, population: &[ProcessInfo]) -> bool {
         self.processes.len() > 1
             || self.processes.iter().any(|parent| {
@@ -417,6 +431,7 @@ impl ProcessList {
                 };
                 let p = &self.processes[entry.indices[0]];
                 let selection = Selection {
+                    nested: entry.nested,
                     processes: entry
                         .indices
                         .iter()
@@ -776,6 +791,7 @@ impl ProcessList {
                 entry.key.clone(),
                 entry.nested,
                 Selection {
+                    nested: entry.nested,
                     processes: entry
                         .indices
                         .iter()
@@ -1063,7 +1079,7 @@ impl ProcessList {
         &'a self,
         settings: &'a Settings,
         status: &'a RuntimeStatusSnapshot,
-        plans: &'a [crate::power::PowerPlan],
+        plans: PlanCatalog<'a>,
     ) -> Element<'a, Message> {
         let controls = row![
             super::widgets::search_field(
@@ -1360,7 +1376,8 @@ impl ProcessList {
         }
         if let Some(selection) = &self.selected {
             let eligible = selection.processes.iter().any(|p| !inaccessible(p));
-            let tree = selection.has_tree(&self.processes);
+            let tree = selection.processes.len() > 1;
+            let (stop_process, stop_tree) = selection.stop_options(&self.processes);
             let stop_label = if tree {
                 "process_list.stop_process_tree"
             } else {
@@ -1426,7 +1443,12 @@ impl ProcessList {
                                 )))),
                                 suspendable,
                             ),
-                            (stop_label, Message::Stop(tree), eligible),
+                            ("process_list.stop_process", Message::Stop(false), eligible),
+                            (
+                                "process_list.stop_process_tree",
+                                Message::Stop(true),
+                                eligible,
+                            ),
                             ("process_list.open_rule_details", Message::OpenDetails, true),
                             (
                                 "process_list.open_process_location",
@@ -1439,6 +1461,11 @@ impl ProcessList {
                                 !selection.path.is_empty(),
                             ),
                         ] {
+                            if (key == "process_list.stop_process" && !stop_process)
+                                || (key == "process_list.stop_process_tree" && !stop_tree)
+                            {
+                                continue;
+                            }
                             if key == "process_list.open_rule_details" {
                                 menu = menu.push(iced::widget::rule::horizontal(1));
                             }
@@ -1912,7 +1939,7 @@ mod tests {
         list.rebuild();
         let settings = Settings::default();
         let status = RuntimeStatusSnapshot::default();
-        let mut view = list.view(&settings, &status, &[]);
+        let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
         let mut tree = Tree::new(&view);
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1000.0, 500.0));
@@ -1967,9 +1994,64 @@ mod tests {
         let settings = Settings::default();
         let status = RuntimeStatusSnapshot::default();
         scrolling::check_scroll_damage(
-            list.view(&settings, &status, &[]),
+            list.view(&settings, &status, PlanCatalog::Loaded(&[])),
             iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0)),
         );
+    }
+
+    #[test]
+    fn delete_keeps_selected_process_scope_and_cancel_clears_confirmation() {
+        let mut settings = Settings::default();
+        settings.general.enabled = false;
+        let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
+        let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
+        let selection = Selection {
+            nested: false,
+            processes: vec![process(10, 100, "app.exe"), process(11, 200, "app.exe")],
+            path: String::new(),
+            name: "app.exe".into(),
+        };
+        let mut list = ProcessList {
+            focused: Some(("app.exe".into(), false, selection.clone())),
+            ..ProcessList::default()
+        };
+        let _ = list.update(Message::DeleteFocused, &mut settings, &runtime);
+        let (pending, tree) = list.stopping.as_ref().unwrap();
+        assert_eq!(pending.processes.len(), 2);
+        assert!(!tree);
+        let _ = list.update(Message::CancelStop, &mut settings, &runtime);
+        assert!(list.stopping.is_none());
+        for tree in [false, true] {
+            list.selected = Some(selection.clone());
+            let _ = list.update(Message::Stop(tree), &mut settings, &runtime);
+            assert_eq!(list.stopping.as_ref().unwrap().1, tree);
+            let _ = list.update(Message::CancelStop, &mut settings, &runtime);
+            assert!(list.stopping.is_none());
+        }
+        runtime.shutdown().unwrap();
+    }
+
+    #[test]
+    fn stop_menu_distinguishes_groups_children_and_nested_rows() {
+        let parent = process(10, 100, "parent.exe");
+        let mut child = process(11, 200, "child.exe");
+        child.parent_id = Some(parent.id);
+        let mut selection = Selection {
+            nested: false,
+            processes: vec![parent.clone()],
+            path: String::new(),
+            name: parent.name.clone(),
+        };
+        assert_eq!(selection.stop_options(&[]), (true, false));
+        assert_eq!(
+            selection.stop_options(&[parent, child.clone()]),
+            (true, true)
+        );
+        selection.nested = true;
+        assert_eq!(selection.stop_options(&[]), (true, true));
+        selection.nested = false;
+        selection.processes.push(child);
+        assert_eq!(selection.stop_options(&[]), (false, true));
     }
 
     #[test]
@@ -1978,6 +2060,7 @@ mod tests {
         let mut child = process(11, 200, "child.exe");
         child.parent_id = Some(parent.id);
         let mut selection = Selection {
+            nested: false,
             processes: vec![parent.clone()],
             path: String::new(),
             name: parent.name.clone(),
@@ -1997,25 +2080,26 @@ mod tests {
         let settings = Settings::default();
         let status = RuntimeStatusSnapshot::default();
         let mut list = ProcessList::default();
-        let view = list.view(&settings, &status, &[]);
+        let view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
         let mut tree = iced::advanced::widget::Tree::new(&view);
         let root_tag = tree.tag;
         let list_tag = tree.children[0].tag;
         drop(view);
         list.selected = Some(Selection {
+            nested: false,
             processes: vec![process(10, 100, "app.exe")],
             path: String::new(),
             name: "app.exe".into(),
         });
         for context in [Some(iced::Point::ORIGIN), None] {
             list.context = context;
-            let view = list.view(&settings, &status, &[]);
+            let view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
             tree.diff(&view);
             assert_eq!(tree.tag, root_tag);
             assert_eq!(tree.children[0].tag, list_tag);
         }
         list.selected = None;
-        tree.diff(list.view(&settings, &status, &[]));
+        tree.diff(list.view(&settings, &status, PlanCatalog::Loaded(&[])));
         assert_eq!(tree.tag, root_tag);
         assert_eq!(tree.children[0].tag, list_tag);
     }
@@ -2192,6 +2276,7 @@ mod tests {
     fn action_feedback_retains_the_original_selection() {
         let mut list = ProcessList {
             selected: Some(Selection {
+                nested: false,
                 processes: vec![],
                 path: String::new(),
                 name: "original.exe".into(),
@@ -2270,6 +2355,7 @@ mod tests {
     fn selected_targets_retain_creation_time_across_refresh() {
         let old = process(10, 100, r"C:\A\app.exe");
         let selected = Selection {
+            nested: false,
             processes: vec![old],
             path: r"C:\A\app.exe".into(),
             name: "app.exe".into(),

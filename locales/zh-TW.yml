@@ -285,6 +285,7 @@ home:
   focus_and_launch_profile: "焦點與啟動"
 
 process_list:
+  plans_not_loaded: "電源計畫尚未載入。請按重新整理以重試。"
   pause_population: ????????
   resume_population: ????????
   filter: "篩選"

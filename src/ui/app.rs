@@ -96,6 +96,7 @@ pub(crate) fn run(
                     power_source: PowerSourceProfile::PluggedIn,
                     power_plans: Vec::new(),
                     power_plans_loading: false,
+                    power_plans_loaded: false,
                     foreground_plans: process_power_plans::Editor::default(),
                     running_app_plans: process_power_plans::Editor::default(),
                     activity_inputs: by_activity::Inputs::default(),
@@ -226,6 +227,7 @@ struct WinderustApp {
     power_source: PowerSourceProfile,
     power_plans: Vec<crate::power::PowerPlan>,
     power_plans_loading: bool,
+    power_plans_loaded: bool,
     foreground_plans: process_power_plans::Editor,
     running_app_plans: process_power_plans::Editor,
     activity_inputs: by_activity::Inputs,
@@ -293,7 +295,7 @@ impl WinderustApp {
             Message::ToggleNavigation => {
                 let patch = crate::application::NavigationCollapsedPatch {
                     base_revision: self.settings.base_revision(),
-                    navigation_collapsed: !self.settings.general.navigation_collapsed,
+                    navigation_collapsed: !self.settings.global().general.navigation_collapsed,
                 };
                 match self.settings.apply_navigation_collapsed_patch(patch) {
                     Ok(_) => self.publish_settings(),
@@ -342,7 +344,7 @@ impl WinderustApp {
                 message @ (settings_pages::Message::Check | settings_pages::Message::CheckStartup),
             ) => {
                 let automatic = matches!(message, settings_pages::Message::CheckStartup);
-                let channel = self.settings.general.update_channel;
+                let channel = self.settings.global().general.update_channel;
                 if !self.preferences.begin_check(channel, automatic) {
                     return Task::none();
                 }
@@ -359,11 +361,13 @@ impl WinderustApp {
                 });
             }
             Message::Preferences(message) => {
-                self.preferences.update(&mut self.settings, message);
-                self.appearance = settings_pages::theme(&self.settings.general);
+                self.settings
+                    .edit_global(|settings| self.preferences.update(settings, message));
+                self.appearance = settings_pages::theme(&self.settings.global().general);
             }
             Message::ActionLog(action_log::Message::LogMode(value)) => {
-                self.settings.advanced.action_log_mode = value;
+                self.settings
+                    .edit_global(|settings| settings.advanced.action_log_mode = value);
             }
             Message::ActionLog(action_log::Message::Clear) => {
                 self.runtime.clear_action_log();
@@ -637,6 +641,7 @@ impl WinderustApp {
                 match result {
                     Ok(plans) => {
                         self.power_plans = plans;
+                        self.power_plans_loaded = true;
                         if self.page == Page::AdvancedPowerPlanTuning {
                             self.power_tuning.ensure_plan(&self.power_plans);
                         }
@@ -677,7 +682,7 @@ impl WinderustApp {
                     event.listen(hwnd as windows_sys::Win32::Foundation::HWND);
                 }
                 self.sync_tray();
-                let update = if self.settings.general.check_for_updates {
+                let update = if self.settings.global().general.check_for_updates {
                     self.update(Message::Preferences(settings_pages::Message::CheckStartup))
                 } else {
                     Task::none()
@@ -712,14 +717,8 @@ impl WinderustApp {
                     self.power_tuning.ensure_plan(&self.power_plans);
                 }
                 let mut tasks = Vec::new();
-                if page.section_landing_page() == Page::PowerPlanControl
-                    && !self.power_plans_loading
-                {
-                    self.power_plans_loading = true;
-                    tasks.push(
-                        tasks::run(crate::power::list_plans)
-                            .map(|result| Message::PowerPlans(result.and_then(|result| result))),
-                    );
+                if page_needs_power_plans(page) {
+                    tasks.push(self.load_power_plans());
                 }
                 if !self.processes.population_paused {
                     if page == Page::ProcessList {
@@ -747,6 +746,11 @@ impl WinderustApp {
                     }
                 }
                 return Task::batch(tasks);
+            }
+            Message::Processes(process_list::Message::Details(
+                process_list::details::Message::ReloadPlans,
+            )) => {
+                return self.load_power_plans();
             }
             Message::Processes(message) => {
                 if self.processes.population_paused
@@ -826,7 +830,7 @@ impl WinderustApp {
                     if status.appearance_change_generation
                         != self.status.appearance_change_generation
                     {
-                        self.appearance = settings_pages::theme(&self.settings.general);
+                        self.appearance = settings_pages::theme(&self.settings.global().general);
                     }
                     self.processes.sync_suspended_processes(
                         &status.feature_status.app_suspension.suspended_process_ids,
@@ -897,7 +901,7 @@ impl WinderustApp {
                 return Task::batch(work);
             }
             Message::WindowClose => {
-                if self.settings.general.hide_to_tray
+                if self.settings.global().general.hide_to_tray
                     && self.tray.as_ref().is_some_and(|icon| icon.is_registered())
                 {
                     if let Some(hwnd) = self.hwnd {
@@ -961,15 +965,13 @@ impl WinderustApp {
                     self.power_tuning.refresh();
                 }
                 self.reset_editors();
-                rust_i18n::set_locale(self.settings.general.language.locale());
+                rust_i18n::set_locale(self.settings.global().general.language.locale());
                 self.publish_settings();
                 self.closing = false;
             }
-            Message::PausePowerPlans(value) => {
-                self.settings
-                    .general
-                    .pause_power_plan_switching_while_plugged_in = value
-            }
+            Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
+                settings.general.pause_power_plan_switching_while_plugged_in = value
+            }),
             Message::Stay => {
                 self.closing = false;
                 self.error_message.clear();
@@ -1001,7 +1003,9 @@ impl WinderustApp {
                                 if let Some(error) = outcome.startup_registration_error() {
                                     self.error_message = error.to_string();
                                 }
-                                rust_i18n::set_locale(self.settings.general.language.locale());
+                                rust_i18n::set_locale(
+                                    self.settings.global().general.language.locale(),
+                                );
                                 self.publish_settings();
                             }
                             Err(error) => self.error_message = error.to_string(),
@@ -1068,7 +1072,7 @@ impl WinderustApp {
         self.suspension = Default::default();
         self.trim = Default::default();
         self.timer = Default::default();
-        self.appearance = settings_pages::theme(&self.settings.general);
+        self.appearance = settings_pages::theme(&self.settings.global().general);
     }
     fn browse(&self, page: Page) -> Task<Message> {
         let profile = self.power_source;
@@ -1083,6 +1087,16 @@ impl WinderustApp {
     fn publish_settings(&mut self) {
         self.runtime
             .replace_settings(&self.settings.runtime_settings_snapshot());
+    }
+
+    fn load_power_plans(&mut self) -> Task<Message> {
+        if self.power_plans_loading {
+            return Task::none();
+        }
+        self.power_plans_loading = true;
+        self.power_plans_loaded = false;
+        tasks::run(crate::power::list_plans)
+            .map(|result| Message::PowerPlans(result.and_then(|result| result)))
     }
 
     fn sync_tray(&mut self) {
@@ -1125,7 +1139,7 @@ impl WinderustApp {
                 .collect(),
         });
         let intent = (
-            self.settings.general.hide_to_tray,
+            self.settings.global().general.hide_to_tray,
             self.settings.persisted().general.start_minimized,
         );
         if !intent.0 && !intent.1 {
@@ -1289,7 +1303,7 @@ impl WinderustApp {
             Some(
                 self.action_log
                     .side_panel(
-                        self.settings.advanced.action_log_mode,
+                        self.settings.global().advanced.action_log_mode,
                         !self.status.action_log_entries.is_empty(),
                         !self.status.action_log_summaries.is_empty(),
                     )
@@ -1399,7 +1413,7 @@ impl WinderustApp {
             .padding(design::space::SECTION as u16))
             .into();
         }
-        let collapsed = self.settings.general.navigation_collapsed;
+        let collapsed = self.settings.global().general.navigation_collapsed;
         let mut navigation = column![]
             .spacing(design::space::TINY)
             .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
@@ -1430,14 +1444,14 @@ impl WinderustApp {
         }
         let search_pages = navigation::dashboard_search_pages(
             &self.navigation_search,
-            self.settings.advanced.show_advanced_controls,
+            self.settings.global().advanced.show_advanced_controls,
         );
         let mut utilities = column![]
             .spacing(design::space::TINY)
             .padding([design::space::SMALL as u16, design::space::CONTROL as u16]);
         for section in Page::sections() {
             if section.landing_page == Page::AdvancedControls
-                && !self.settings.advanced.show_advanced_controls
+                && !self.settings.global().advanced.show_advanced_controls
             {
                 continue;
             }
@@ -1462,7 +1476,12 @@ impl WinderustApp {
                 label = label.push(iced::widget::Space::new().width(3));
             } else {
                 label = label.push(navigation::label(section.landing_page));
-                if self.settings.general.show_enabled_feature_counts_in_sidebar {
+                if self
+                    .settings
+                    .global()
+                    .general
+                    .show_enabled_feature_counts_in_sidebar
+                {
                     if let Some(count) = navigation::section_enabled_feature_count(
                         &self.settings,
                         section.landing_page,
@@ -1916,7 +1935,7 @@ impl WinderustApp {
     }
 
     fn page_view(&self) -> Element<'_, Message> {
-        let general = &self.settings.general;
+        let general = &self.settings.global().general;
         let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
             widgets::settings_card(widgets::setting_row(
                 label,
@@ -2072,13 +2091,23 @@ impl WinderustApp {
                 .view(
                     &self.settings.cpu_limiter,
                     &self.candidates,
-                    self.settings.general.enabled,
+                    self.settings.global().general.enabled,
                     &self.status.feature_status.cpu_limiter,
                 )
                 .map(Message::CpuLimiter),
             Page::ProcessList => self
                 .processes
-                .view(&self.settings, &self.status, &self.power_plans)
+                .view(
+                    &self.settings,
+                    &self.status,
+                    if self.power_plans_loading {
+                        process_list::PlanCatalog::Loading
+                    } else if self.power_plans_loaded {
+                        process_list::PlanCatalog::Loaded(&self.power_plans)
+                    } else {
+                        process_list::PlanCatalog::Unavailable
+                    },
+                )
                 .map(Message::Processes),
             Page::Home => self
                 .home
@@ -2089,7 +2118,7 @@ impl WinderustApp {
             | Page::ExperimentalFeatures
             | Page::About => self
                 .preferences
-                .view(self.page, &self.settings)
+                .view(self.page, self.settings.global())
                 .map(Message::Preferences),
             Page::PowerPlanControl => column![
                 toggle(
@@ -2135,7 +2164,7 @@ impl WinderustApp {
                 ]
                 .spacing(design::space::COMPACT)
                 .align_y(iced::Center);
-                if self.settings.general.show_feature_status_on_cards {
+                if self.settings.global().general.show_feature_status_on_cards {
                     if let Some(enabled) = navigation::feature_page_enabled(&self.settings, *page) {
                         heading = heading.push(
                             text(
@@ -2203,8 +2232,19 @@ fn tray_retry_due(
     })
 }
 
+fn page_needs_power_plans(page: Page) -> bool {
+    page == Page::ProcessList || page.section_landing_page() == Page::PowerPlanControl
+}
+
 #[cfg(test)]
-mod tray_retry_tests {
+mod tests {
+    #[test]
+    fn process_list_requests_its_power_plan_dependency() {
+        assert!(page_needs_power_plans(Page::ProcessList));
+        assert!(page_needs_power_plans(Page::PowerPlanControl));
+        assert!(!page_needs_power_plans(Page::Home));
+    }
+
     use super::*;
 
     #[test]

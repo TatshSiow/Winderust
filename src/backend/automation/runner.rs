@@ -231,7 +231,7 @@ impl RuntimeCore {
         }
     }
 
-    pub(super) fn note_settings(&mut self, settings: &Settings) -> bool {
+    pub(super) fn note_settings(&mut self, settings: &Settings, explicitly_changed: bool) -> bool {
         self.action_log.set_mode(settings.advanced.action_log_mode);
         set_execution_failure_suppression_threshold(
             settings.advanced.execution_failure_suppression_threshold(),
@@ -242,7 +242,7 @@ impl RuntimeCore {
             self.last_settings = Some(settings.clone());
             self.power_plan_controller.clear_failures();
         }
-        changed
+        changed || explicitly_changed
     }
 
     pub(super) fn detect_process_appearance(
@@ -1268,5 +1268,40 @@ pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> 
 impl Drop for RuntimeCore {
     fn drop(&mut self) {
         let _ = self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_settings_events_do_not_skip_bookkeeping() {
+        for explicit in [false, true] {
+            for changed in [false, true] {
+                let mut runner = RuntimeCore::default();
+                let mut settings = Settings::default();
+                settings.advanced.action_log_mode = crate::config::ActionLogMode::Off;
+                runner.note_settings(&settings, false);
+                if changed {
+                    settings.advanced.action_log_mode = crate::config::ActionLogMode::Full;
+                    settings.general.enabled = !settings.general.enabled;
+                }
+                assert_eq!(
+                    runner.note_settings(&settings, explicit),
+                    changed || explicit
+                );
+                assert_eq!(runner.last_settings.as_ref(), Some(&settings));
+                runner.action_log.record(
+                    crate::action_log::ActionLogFeature::ThreadPriority,
+                    None,
+                    "",
+                    crate::action_log::ActionLogResult::Applied,
+                    "test",
+                );
+                assert_eq!(runner.action_log.entries().len(), usize::from(changed));
+                assert!(!runner.note_settings(&settings, false));
+            }
+        }
     }
 }

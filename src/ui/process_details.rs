@@ -2,15 +2,16 @@ use super::super::design;
 use super::super::priority_control::{self, Kind, Tier, Value};
 use super::super::widgets::{self, button, pick_list, setting_row, settings_card, slider, switch};
 use super::super::{cpu_allocation, cpu_limiter};
+use super::PlanCatalog;
 use crate::config::*;
 use crate::foreground::executable_path_key;
-use crate::power::PowerPlan;
 use crate::ui::process_rules::{new_cpu_limiter_rule, process_setting_matches};
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 #[derive(Debug, Clone)]
 pub(in crate::ui) enum Message {
+    ReloadPlans,
     Priority(Kind, Tier, Value),
     ResetPriority(Kind),
     Adaptive(bool),
@@ -47,6 +48,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
     }
     let path = executable_path_key(std::path::Path::new(path));
     match m {
+        Message::ReloadPlans => unreachable!("The application owns power-plan loading"),
         Message::Priority(kind, tier, value) => {
             if !kind
                 .choices(s.advanced.expose_all_priority_values)
@@ -254,7 +256,7 @@ fn limiter_tier(tier: Tier) -> cpu_limiter::Tier {
 pub(super) fn view<'a>(
     s: &'a Settings,
     path: &'a str,
-    plans: &[PowerPlan],
+    plans: PlanCatalog<'_>,
 ) -> Element<'a, Message> {
     let adaptive = !s
         .adaptive_engine_process
@@ -301,44 +303,59 @@ pub(super) fn view<'a>(
         t!("process_list.details_power").to_string(),
         design::typography::BODY,
     ));
-    for foreground in [true, false] {
-        let selected = if foreground {
-            s.by_foreground
-                .rules
-                .iter()
-                .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
-                .and_then(|r| r.power_plan_guid.clone())
-        } else {
-            s.by_running_app
-                .rules
-                .iter()
-                .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
-                .and_then(|r| r.power_plan_guid.clone())
-        };
-        let mut options = vec![Plan(None, t!("common.default").to_string())];
-        options.extend(
-            plans
-                .iter()
-                .map(|p| Plan(Some(p.guid.clone()), p.name.clone())),
-        );
-        if let Some(guid) = &selected {
-            if !options.iter().any(|p| p.0.as_ref() == Some(guid)) {
-                options.push(Plan(
-                    selected.clone(),
-                    t!("common.selected_plan_unavailable").to_string(),
-                ));
-            }
-        }
-        let selected = options.iter().find(|p| p.0 == selected).cloned();
-        body = body.push(settings_card(setting_row(
-            if foreground {
-                "process_list.power_plan_foreground"
+    if let PlanCatalog::Loaded(plans) = plans {
+        for foreground in [true, false] {
+            let selected = if foreground {
+                s.by_foreground
+                    .rules
+                    .iter()
+                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+                    .and_then(|r| r.power_plan_guid.clone())
             } else {
-                "process_list.power_plan_running"
-            },
-            pick_list(options, selected, move |p| Message::Power(foreground, p.0))
-                .width(design::SELECT_WIDTH),
-        )));
+                s.by_running_app
+                    .rules
+                    .iter()
+                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+                    .and_then(|r| r.power_plan_guid.clone())
+            };
+            let mut options = vec![Plan(None, t!("common.default").to_string())];
+            options.extend(
+                plans
+                    .iter()
+                    .map(|p| Plan(Some(p.guid.clone()), p.name.clone())),
+            );
+            if let Some(guid) = &selected {
+                if !options.iter().any(|p| p.0.as_ref() == Some(guid)) {
+                    options.push(Plan(
+                        selected.clone(),
+                        t!("common.selected_plan_unavailable").to_string(),
+                    ));
+                }
+            }
+            let selected = options.iter().find(|p| p.0 == selected).cloned();
+            body = body.push(settings_card(setting_row(
+                if foreground {
+                    "process_list.power_plan_foreground"
+                } else {
+                    "process_list.power_plan_running"
+                },
+                pick_list(options, selected, move |p| Message::Power(foreground, p.0))
+                    .width(design::SELECT_WIDTH),
+            )));
+        }
+    } else {
+        body = body.push(text(
+            t!(match plans {
+                PlanCatalog::Loading => "common.loading",
+                _ => "process_list.plans_not_loaded",
+            })
+            .to_string(),
+        ));
+        if matches!(plans, PlanCatalog::Unavailable) {
+            body = body.push(
+                button(text(t!("process_list.refresh").to_string())).on_press(Message::ReloadPlans),
+            );
+        }
     }
     let mut header = row![text(t!("process_list.details_priority").to_string()).width(Fill)]
         .spacing(design::space::SMALL)

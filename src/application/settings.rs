@@ -412,6 +412,16 @@ impl SettingsEditor {
         self.selected_power_source = profile;
     }
 
+    pub(crate) fn global(&self) -> &Settings {
+        &self.draft.value
+    }
+
+    pub(crate) fn edit_global(&mut self, edit: impl FnOnce(&mut Settings)) {
+        self.draft.mark_changed();
+        edit(&mut self.draft.value);
+        self.draft.value.sync_shared_settings_to_battery();
+    }
+
     pub(crate) fn edit_with_presets(&mut self, edit: impl FnOnce(&mut Settings)) {
         self.draft.value.sync_shared_settings_to_battery();
         edit(self);
@@ -915,6 +925,33 @@ mod tests {
             storage_probe,
             startup_probe,
         )
+    }
+
+    #[test]
+    fn global_edits_save_from_battery_without_overwriting_feature_policies() {
+        let mut initial = Settings::default();
+        initial.cpu_limiter.enabled = false;
+        initial.battery_profile_mut().cpu_limiter.enabled = true;
+        let storage = FakeStorage::new(initial.clone(), Ok(initial), Ok(()), Ok(()));
+        let (mut editor, storage, _) =
+            editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+        editor.select_power_source(PowerSourceProfile::OnBattery);
+        editor.edit_global(|settings| {
+            settings.general.enabled = false;
+            settings.advanced.action_log_mode = config::ActionLogMode::Off;
+        });
+        editor.save().unwrap();
+        let saved = &storage.saved_payloads()[0];
+        assert!(!saved.general.enabled);
+        assert!(!saved.battery_profile().general.enabled);
+        assert_eq!(saved.advanced, saved.battery_profile().advanced);
+        assert!(!saved.cpu_limiter.enabled);
+        assert!(saved.battery_profile().cpu_limiter.enabled);
+        assert_eq!(
+            editor.runtime_settings_snapshot().value.general.enabled,
+            saved.general.enabled
+        );
+        assert!(!editor.has_unsaved_changes());
     }
 
     #[test]

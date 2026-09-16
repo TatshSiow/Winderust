@@ -638,6 +638,9 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
 }
 
 fn sanitize_advanced(settings: &mut Settings) {
+    if let Some(battery) = &mut settings.on_battery {
+        sanitize_advanced(battery);
+    }
     sanitize_visible_window_priority_values(settings);
     settings.process_priority.background_priority = settings
         .process_priority
@@ -856,6 +859,40 @@ fn logo() -> iced::widget::image::Handle {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn global_preference_messages_ignore_the_selected_feature_profile() {
+        for existing_battery in [false, true] {
+            let mut initial = Settings::default();
+            initial.general.enabled = true;
+            if existing_battery {
+                initial.battery_profile_mut().cpu_limiter.enabled = true;
+            }
+            let mut settings = crate::application::SettingsEditor::with_settings(initial.clone());
+            settings.select_power_source(PowerSourceProfile::OnBattery);
+            let mut editor = Editor::default();
+            for message in [
+                Message::Flag(Flag::Enabled, false),
+                Message::Flag(Flag::Startup, true),
+                Message::FailureThreshold("12".into()),
+            ] {
+                settings.edit_global(|root| editor.update(root, message));
+            }
+            assert!(!settings.global().general.enabled);
+            assert!(!settings.general.enabled);
+            assert!(settings.global().general.startup_with_windows);
+            assert_eq!(
+                settings
+                    .global()
+                    .advanced
+                    .execution_failure_suppression_threshold,
+                12
+            );
+            assert_eq!(settings.cpu_limiter.enabled, existing_battery);
+            settings.cancel();
+            assert_eq!(settings.global(), &initial);
+        }
+    }
+
     #[test]
     fn animation_modes_override_or_follow_system() {
         let mut settings = crate::config::Settings::default();

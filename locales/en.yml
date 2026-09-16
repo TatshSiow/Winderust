@@ -285,6 +285,7 @@ home:
   focus_and_launch_profile: "Focus and Launch"
 
 process_list:
+  plans_not_loaded: "Power plans have not loaded. Select Refresh to retry."
   pause_population: Pause population
   resume_population: Resume population
   filter: "Filter"
