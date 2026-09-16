@@ -1128,6 +1128,7 @@ settings_io_toast:
   import_failed: "Settings import failed"
 
 quit_prompt:
+  recovery_handoff: "Automation has stopped. Quit again to let the recovery helper retry remaining restoration. Recovery may still fail."
   title: "Quit Winderust?"
   message: "Are you sure you want to quit Winderust?"
   unsaved: "You have unsaved changes. Save them before quitting, or quit without saving."

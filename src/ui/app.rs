@@ -89,6 +89,7 @@ pub(crate) fn run(
                     hwnd: None,
                     tray: None,
                     tray_attempt: None,
+                    shutdown_failed: false,
                     hidden: false,
                     processes: process_list::ProcessList::default(),
                     cpu_limiter: cpu_limiter::CpuLimiter::default(),
@@ -217,7 +218,8 @@ struct WinderustApp {
     closing: bool,
     hwnd: Option<usize>,
     tray: Option<tray::TrayIcon>,
-    tray_attempt: Option<(bool, bool)>,
+    tray_attempt: Option<((bool, bool), std::time::Instant)>,
+    shutdown_failed: bool,
     hidden: bool,
     processes: process_list::ProcessList,
     cpu_limiter: cpu_limiter::CpuLimiter,
@@ -895,7 +897,9 @@ impl WinderustApp {
                 return Task::batch(work);
             }
             Message::WindowClose => {
-                if self.settings.general.hide_to_tray && self.tray.is_some() {
+                if self.settings.general.hide_to_tray
+                    && self.tray.as_ref().is_some_and(|icon| icon.is_registered())
+                {
                     if let Some(hwnd) = self.hwnd {
                         tray::hide_window(hwnd as windows_sys::Win32::Foundation::HWND);
                     }
@@ -1128,30 +1132,50 @@ impl WinderustApp {
             tray::set_hide_on_close(false);
             self.tray = None;
             self.tray_attempt = None;
-        } else if self.tray.is_none() && self.tray_attempt != Some(intent) {
-            if let Some(hwnd) = self.hwnd {
-                self.tray_attempt = Some(intent);
-                match tray::TrayIcon::install(hwnd as windows_sys::Win32::Foundation::HWND) {
-                    Ok(icon) => self.tray = Some(icon),
-                    Err(error) => self.error_message = error,
+        } else {
+            if tray::take_taskbar_created() {
+                self.tray_attempt = None;
+                if let Some(icon) = &mut self.tray {
+                    icon.invalidate();
+                }
+            }
+            let missing = self.tray.as_ref().is_none_or(|icon| !icon.is_registered());
+            let now = std::time::Instant::now();
+            if missing && tray_retry_due(self.tray_attempt, intent, now) {
+                if let Some(hwnd) = self.hwnd {
+                    let first_attempt = self.tray_attempt.is_none();
+                    self.tray_attempt = Some((intent, now));
+                    let result = if let Some(icon) = &mut self.tray {
+                        icon.register()
+                    } else {
+                        tray::TrayIcon::install(hwnd as windows_sys::Win32::Foundation::HWND)
+                            .map(|icon| self.tray = Some(icon))
+                    };
+                    if let Err(error) = result {
+                        if first_attempt {
+                            self.error_message = error;
+                        }
+                    }
                 }
             }
         }
-        tray::set_hide_on_close(intent.0 && self.tray.is_some());
+        tray::set_hide_on_close(
+            intent.0 && self.tray.as_ref().is_some_and(|icon| icon.is_registered()),
+        );
     }
 
     fn shutdown(&mut self) -> Task<Message> {
-        match self.runtime.shutdown() {
-            Ok(()) => {
-                tray::set_hide_on_close(false);
-                self.tray = None;
-                iced::exit()
-            }
-            Err(error) => {
+        // A confirmed subsequent quit hands the retained failure to the watchdog in main.
+        if !self.shutdown_failed {
+            if let Err(error) = self.runtime.shutdown() {
+                self.shutdown_failed = true;
                 self.error_message = error;
-                self.show_window()
+                return self.show_window();
             }
         }
+        tray::set_hide_on_close(false);
+        self.tray = None;
+        iced::exit()
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -1169,6 +1193,9 @@ impl WinderustApp {
                 design::typography::DIALOG_TITLE,
             )]
             .spacing(design::space::LARGE);
+            if self.shutdown_failed {
+                body = body.push(text(t!("quit_prompt.recovery_handoff").to_string()));
+            }
             if self.closing {
                 body = body.push(text(
                     t!(if self.pending_changes() {
@@ -2163,5 +2190,35 @@ fn priority_kind(page: Page) -> Option<priority_control::Kind> {
         Page::MemoryPriority => Some(priority_control::Kind::Memory),
         Page::DynamicPriorityBoost => Some(priority_control::Kind::DynamicBoost),
         _ => None,
+    }
+}
+
+fn tray_retry_due(
+    attempt: Option<((bool, bool), std::time::Instant)>,
+    intent: (bool, bool),
+    now: std::time::Instant,
+) -> bool {
+    attempt.is_none_or(|(previous, attempted)| {
+        previous != intent || now.duration_since(attempted) >= Duration::from_secs(5)
+    })
+}
+
+#[cfg(test)]
+mod tray_retry_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_tray_intent_retries_without_polling_or_error_spam() {
+        let now = std::time::Instant::now();
+        let intent = (true, false);
+        assert!(tray_retry_due(None, intent, now));
+        let failed = Some((intent, now));
+        assert!(!tray_retry_due(
+            failed,
+            intent,
+            now + Duration::from_millis(250)
+        ));
+        assert!(tray_retry_due(failed, intent, now + Duration::from_secs(5)));
+        assert!(tray_retry_due(failed, (true, true), now));
     }
 }

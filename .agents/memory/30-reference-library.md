@@ -746,3 +746,7 @@ state.
 
 - `src/platform/windows/power_plan.rs`: `delete_scheme` accepts `ERROR_FILE_NOT_FOUND` only after successful scheme enumeration confirms the target GUID is absent. Enumeration errors and other deletion failures remain errors. Active-plan restoration stays in `src/control/power_plan.rs`.
 - Official references: https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerdeletescheme and https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499- . The API documents nonzero failure codes; accepting verified absence is Winderust cleanup policy.
+
+## Tray recreation
+
+`src/backend/tray.rs` registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification) and re-adds the notification icon without subclassing the window again. [ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex) allows only that payload-free shell notification through UIPI for elevated execution. `src/ui/app.rs` retries failed registration at five-second intervals and permits hide-on-close only while the icon is registered.

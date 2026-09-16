@@ -3,7 +3,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
     sync::{
-        atomic::{AtomicBool, AtomicIsize, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
         Arc, Mutex,
     },
 };
@@ -17,12 +17,13 @@ use windows_sys::Win32::{
             Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
         },
         WindowsAndMessaging::{
-            AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos,
-            GetForegroundWindow, IsIconic, LoadImageW, SetForegroundWindow, SetWindowLongPtrW,
-            ShowWindow, TrackPopupMenu, GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED,
-            MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, SW_HIDE, SW_RESTORE, SW_SHOW,
-            TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-            WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
+            AppendMenuW, CallWindowProcW, ChangeWindowMessageFilterEx, CreatePopupMenu,
+            DestroyMenu, GetCursorPos, GetForegroundWindow, IsIconic, LoadImageW,
+            RegisterWindowMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
+            TrackPopupMenu, GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED,
+            MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSGFLT_ALLOW, SW_HIDE, SW_RESTORE,
+            SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK,
+            WM_LBUTTONUP, WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
         },
     },
 };
@@ -94,6 +95,13 @@ fn menu_action(command: usize, state: &MenuState) -> Option<MenuAction> {
         })
 }
 
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static TASKBAR_RECREATED: AtomicBool = AtomicBool::new(false);
+
+pub fn take_taskbar_created() -> bool {
+    take_requested(&TASKBAR_RECREATED)
+}
+
 static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static HIDE_ON_CLOSE: AtomicBool = AtomicBool::new(false);
 static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
@@ -134,6 +142,7 @@ impl Drop for TrayVisibilityWatcher {
 pub struct TrayIcon {
     hwnd: HWND,
     original_wndproc: isize,
+    registered: bool,
 }
 
 impl TrayIcon {
@@ -142,26 +151,50 @@ impl TrayIcon {
             return Err("Cannot create tray icon without a window handle.".to_owned());
         }
 
+        let name = wide_null("TaskbarCreated");
+        // SAFETY: name is null-terminated and valid throughout registration.
+        let message = unsafe { RegisterWindowMessageW(name.as_ptr()) };
+        if message == 0 {
+            return Err("Failed to register the taskbar recreation message.".into());
+        }
+        // SAFETY: hwnd is the live app window; only the payload-free shell notification is allowed.
+        if unsafe { ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, std::ptr::null_mut()) }
+            == 0
+        {
+            return Err("Failed to allow taskbar recreation notifications.".into());
+        }
+        TASKBAR_CREATED.store(message, Ordering::Relaxed);
         let original_wndproc = subclass_window(hwnd)?;
+        let mut icon = Self {
+            hwnd,
+            original_wndproc,
+            registered: false,
+        };
+        icon.register()?;
+        Ok(icon)
+    }
 
-        let mut data = notify_data(hwnd);
+    pub fn is_registered(&self) -> bool {
+        self.registered
+    }
+
+    pub fn invalidate(&mut self) {
+        self.registered = false;
+    }
+
+    pub fn register(&mut self) -> Result<(), String> {
+        let mut data = notify_data(self.hwnd);
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = WM_TRAYICON;
         data.hIcon = load_app_icon();
         write_wide_fixed(&mut data.szTip, "Winderust");
-
-        // SAFETY: data has the required size, references the live app window, and contains a
-        // shared or null icon handle valid for the call.
-        let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &data) };
-        if ok == 0 {
-            restore_window_proc(hwnd, original_wndproc)?;
-            return Err("Failed to add Winderust to the system tray.".to_owned());
+        // SAFETY: data identifies the live window and uses a shared icon handle.
+        self.registered = unsafe { Shell_NotifyIconW(NIM_ADD, &data) } != 0;
+        if self.registered {
+            Ok(())
+        } else {
+            Err("Failed to add Winderust to the system tray.".into())
         }
-
-        Ok(Self {
-            hwnd,
-            original_wndproc,
-        })
     }
 }
 
@@ -291,6 +324,10 @@ unsafe extern "system" fn tray_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) {
+        TASKBAR_RECREATED.store(true, Ordering::Relaxed);
+        HIDE_ON_CLOSE.store(false, Ordering::Relaxed);
+    }
     if message == WM_CLOSE {
         // SAFETY: hwnd belongs to this active window procedure callback.
         if unsafe { close_needs_prompt(IsIconic(hwnd) != 0, GetForegroundWindow() == hwnd) } {

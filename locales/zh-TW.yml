@@ -1131,6 +1131,7 @@ settings_io_toast:
   import_failed: "設定匯入失敗"
 
 quit_prompt:
+  recovery_handoff: "自動化已停止。再次選擇離開，將由復原程式重試剩餘的復原工作。復原仍可能失敗。"
   title: "結束 Winderust？"
   message: "確定要結束 Winderust 嗎？"
   unsaved: "您有尚未儲存的變更。您可以儲存後結束，或不儲存直接結束。"

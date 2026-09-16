@@ -128,6 +128,7 @@ const PROCESS_CONTROL_COMMAND_QUEUE_CAPACITY: usize = 32;
 pub struct RuntimeHandle {
     shared: Arc<SharedAutomationState>,
     lifecycle: Mutex<()>,
+    shutdown_result: Mutex<Option<Result<(), String>>>,
     thread: Mutex<Option<JoinHandle<Result<(), String>>>>,
     event_watcher: Mutex<Option<WindowsEventWatcher>>,
     input_hook: Mutex<Option<InputHook>>,
@@ -427,6 +428,7 @@ impl RuntimeHandle {
         let automation = Self {
             shared,
             lifecycle: Mutex::new(()),
+            shutdown_result: Mutex::new(None),
             thread: Mutex::new(None),
             event_watcher: Mutex::new(None),
             input_hook: Mutex::new(None),
@@ -477,6 +479,10 @@ impl RuntimeHandle {
 
     pub fn shutdown(&self) -> Result<(), String> {
         let _lifecycle = lock_unpoisoned(&self.lifecycle);
+        let mut result = lock_unpoisoned(&self.shutdown_result);
+        if let Some(result) = result.as_ref() {
+            return result.clone();
+        }
         {
             let mut state = lock_unpoisoned(&self.shared.state);
             if !state.stop_requested {
@@ -524,13 +530,15 @@ impl RuntimeHandle {
         if let Err(error) = lock_unpoisoned(&self.self_power).shutdown() {
             errors.push(format!("Winderust self-power restoration failed: {error}"));
         }
-        if errors.is_empty() {
+        let outcome = if errors.is_empty() {
             Ok(())
         } else {
             let error = errors.join(" ");
             update_worker_error(&self.shared, Some(error.clone()));
             Err(error)
-        }
+        };
+        *result = Some(outcome.clone());
+        outcome
     }
 
     pub fn status_snapshot_since(&self, observed_generation: u64) -> Option<RuntimeStatusSnapshot> {
@@ -543,7 +551,9 @@ impl RuntimeHandle {
             return None;
         }
         let mut snapshot = state.status.clone();
-        snapshot.worker_error = state.status.worker_error.take();
+        if !state.stop_requested {
+            snapshot.worker_error = state.status.worker_error.take();
+        }
         Some(snapshot)
     }
 

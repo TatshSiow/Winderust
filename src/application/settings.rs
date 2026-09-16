@@ -319,10 +319,11 @@ impl SettingsCoordinator {
         path: &Path,
         draft: &mut SettingsDraft,
     ) -> SettingsResult<SettingsRevision> {
-        let imported = self
+        let mut imported = self
             .storage
             .import(path)
             .map_err(SettingsCoordinatorError::Import)?;
+        imported.sync_shared_settings_to_battery();
         self.storage
             .save(&imported)
             .map_err(SettingsCoordinatorError::Save)?;
@@ -1368,6 +1369,33 @@ mod tests {
             imported.general.startup_with_windows
         );
         assert_eq!(storage_probe.saved_payloads(), vec![imported]);
+    }
+
+    #[test]
+    fn import_normalizes_shared_fields_without_flattening_feature_profiles() {
+        let mut imported = Settings::default();
+        imported.general.check_interval_ms = 2500;
+        imported.battery_profile_mut().general.check_interval_ms = 5000;
+        imported.battery_profile_mut().cpu_limiter.enabled = true;
+        imported.cpu_limiter.enabled = false;
+        let storage = FakeStorage::new(Settings::default(), Ok(imported.clone()), Ok(()), Ok(()));
+        let (mut coordinator, mut draft) =
+            SettingsCoordinator::load_from(Box::new(storage.clone())).unwrap();
+        coordinator
+            .import_toml_from(Path::new("import.toml"), &mut draft)
+            .unwrap();
+        imported.sync_shared_settings_to_battery();
+        assert_eq!(storage.saved_payloads(), vec![imported.clone()]);
+        assert_eq!(draft.value, imported);
+        assert_eq!(coordinator.persisted, imported);
+        assert!(draft.value.battery_profile().cpu_limiter.enabled);
+        assert!(!draft.value.cpu_limiter.enabled);
+        coordinator
+            .export_toml_to(Path::new("export.toml"), &draft)
+            .unwrap();
+        assert_eq!(storage.exported_payloads()[0].1, imported);
+        coordinator.save(&mut draft).unwrap();
+        assert_eq!(storage.saved_payloads()[1], imported);
     }
 
     #[test]

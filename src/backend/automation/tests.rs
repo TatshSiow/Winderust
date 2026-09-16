@@ -2329,3 +2329,30 @@ fn automation_shutdown_restores_reversible_features_in_reverse_order() {
         ],
     );
 }
+
+#[test]
+fn shutdown_retains_terminal_worker_results() {
+    for failure in [false, true] {
+        let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+        automation.shutdown().expect("initial idle shutdown");
+        *lock_unpoisoned(&automation.shutdown_result) = None;
+        *lock_unpoisoned(&automation.thread) = Some(thread::spawn(move || {
+            if failure {
+                Err("injected cleanup failure".into())
+            } else {
+                Ok(())
+            }
+        }));
+        let first = automation.shutdown();
+        assert_eq!(first.is_err(), failure);
+        assert_eq!(automation.shutdown(), first);
+        assert!(lock_unpoisoned(&automation.shared.state).stop_requested);
+        if failure {
+            assert!(first.unwrap_err().contains("injected cleanup failure"));
+            let first_status = automation.status_snapshot_since(0).unwrap();
+            let second_status = automation.status_snapshot_since(0).unwrap();
+            assert_eq!(first_status.worker_error, second_status.worker_error);
+            assert!(second_status.worker_error.is_some());
+        }
+    }
+}
