@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::process::{
-    open_process_for_set_information, ControlOwner, ProcessControlError, ProcessControlTarget,
-    ProcessIdentity, ProcessTargetKey,
+    open_process_for_set_information, transition_failure_error, ControlOwner, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,9 +292,10 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
             Err(mut failure) => {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish(&identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                         failure.uncertain = true;
                     }
                 }
@@ -311,7 +312,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                 } else if let Some(managed) = managed {
                     self.managed.insert(identity, managed);
                 }
-                Err(ProcessControlError::Failed(failure.message))
+                Err(failure.error)
             }
         }
     }
@@ -502,12 +503,13 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
-            // Restoration can race with exit after the transition has converted its error to text.
-            Err(_)
-                if matches!(
-                    self.platform.open(&identity.target(), true),
-                    Err(ProcessControlError::ProcessExited)
-                ) =>
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.open(&identity.target(), true),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
             {
                 Err(ProcessControlError::ProcessExited)
             }
@@ -520,12 +522,12 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -588,7 +590,7 @@ impl<P: MemoryPriorityPlatform> Drop for MemoryPriorityController<P> {
 }
 
 struct TransitionFailure {
-    message: String,
+    error: ProcessControlError,
     uncertain: bool,
     relinquish_recovery: bool,
     expected_preserved: bool,
@@ -610,18 +612,14 @@ fn apply_transition<P: MemoryPriorityPlatform>(
     let intent = platform
         .begin_change(process, original, expected)
         .map_err(|error| TransitionFailure {
-            message: error.to_string(),
+            error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
         })?;
     if let Err(error) = platform.apply(process, expected) {
         return Err(compensate_with_intent(
-            platform,
-            process,
-            original,
-            intent,
-            error.to_string(),
+            platform, process, original, intent, error,
         ));
     }
     match platform.query(process) {
@@ -632,16 +630,14 @@ fn apply_transition<P: MemoryPriorityPlatform>(
                 process,
                 original,
                 intent,
-                format!("Memory Priority verification returned {actual}, expected {expected}."),
+                ProcessControlError::Failed(format!(
+                    "Memory Priority verification returned {actual}, expected {expected}."
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_with_intent(
-                platform,
-                process,
-                original,
-                intent,
-                format!("Memory Priority verification failed: {error}"),
+                platform, process, original, intent, error,
             ));
         }
     }
@@ -653,7 +649,7 @@ fn apply_transition<P: MemoryPriorityPlatform>(
                 platform, process, original, message,
             )),
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -668,11 +664,11 @@ fn compensate_with_intent<P: MemoryPriorityPlatform>(
     process: &P::Process,
     original: u32,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -680,11 +676,7 @@ fn compensate_with_intent<P: MemoryPriorityPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -701,15 +693,15 @@ fn compensate_without_intent<P: MemoryPriorityPlatform>(
 ) -> TransitionFailure {
     match restore_and_verify(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: ProcessControlError::Failed(primary_error),
             uncertain: false,
             relinquish_recovery: true,
             expected_preserved: false,
         },
         Err(compensation_error) => TransitionFailure {
-            message: transition_failure_message(
-                primary_error,
-                compensation_error.to_string(),
+            error: transition_failure_error(
+                ProcessControlError::Failed(primary_error),
+                compensation_error,
                 None,
             ),
             uncertain: true,
@@ -733,20 +725,6 @@ fn restore_and_verify<P: MemoryPriorityPlatform>(
             "Compensation returned {actual}, expected {original}."
         )))
     }
-}
-
-fn transition_failure_message(
-    primary_error: String,
-    compensation_error: String,
-    recovery_error: Option<String>,
-) -> String {
-    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
-    if let Some(recovery_error) = recovery_error {
-        message.push_str(&format!(
-            " Recovery journal commit failed: {recovery_error}."
-        ));
-    }
-    message
 }
 
 fn release_failure_for_claim(
@@ -851,6 +829,8 @@ mod tests {
 
     #[derive(Default)]
     struct FakePlatform {
+        exit_on_begin: bool,
+        deny_query: bool,
         exit_on_apply: bool,
         processes: BTreeMap<u32, FakeProcess>,
         applied: Vec<(u32, u32)>,
@@ -895,6 +875,9 @@ mod tests {
         }
 
         fn query(&mut self, process: &Self::Process) -> Result<u32, ProcessControlError> {
+            if self.deny_query {
+                return Err(ProcessControlError::AccessDenied("query denied".into()));
+            }
             self.processes
                 .get(process)
                 .map(|process| process.value)
@@ -907,6 +890,10 @@ mod tests {
             _original: u32,
             _expected: u32,
         ) -> Result<Self::RecoveryIntent, ProcessControlError> {
+            if std::mem::take(&mut self.exit_on_begin) {
+                self.deny_query = true;
+                return Err(ProcessControlError::ProcessExited);
+            }
             if std::mem::take(&mut self.fail_next_begin) {
                 return Err(ProcessControlError::Failed(
                     "injected begin failure".to_owned(),
@@ -1300,6 +1287,25 @@ mod tests {
             )
             .is_err());
         assert_eq!(controller.platform.processes[&7].value, 5);
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_keeps_confirmed_exit_when_followup_query_is_denied() {
+        let mut controller = MemoryPriorityController::with_platform(platform_with(7, 1, 5));
+        controller
+            .apply_policy_claim(
+                claim(
+                    7,
+                    1,
+                    ControlOwner::MemoryPriority,
+                    ProcessMemoryPriority::Low,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.exit_on_begin = true;
+        assert!(controller.shutdown().is_ok());
         assert!(!controller.has_managed_state());
     }
 

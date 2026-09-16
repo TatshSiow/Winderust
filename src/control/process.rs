@@ -169,6 +169,26 @@ pub(crate) enum ProcessControlError {
     Failed(String),
 }
 
+// Keep confirmed exits typed so callers can relinquish the exact recovery record.
+pub(super) fn transition_failure_error(
+    primary_error: ProcessControlError,
+    compensation_error: ProcessControlError,
+    recovery_error: Option<String>,
+) -> ProcessControlError {
+    if primary_error == ProcessControlError::ProcessExited
+        || compensation_error == ProcessControlError::ProcessExited
+    {
+        return ProcessControlError::ProcessExited;
+    }
+    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
+    if let Some(recovery_error) = recovery_error {
+        message.push_str(&format!(
+            " Recovery journal commit failed: {recovery_error}."
+        ));
+    }
+    ProcessControlError::Failed(message)
+}
+
 impl fmt::Display for ProcessControlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -353,6 +373,27 @@ fn open_process_error(process_id: u32, error: ProcessOpenError) -> ProcessContro
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transition_errors_preserve_exits_and_report_other_failures() {
+        use super::{transition_failure_error, ProcessControlError};
+        let denied = ProcessControlError::AccessDenied("access denied".into());
+        for (primary, compensation) in [
+            (ProcessControlError::ProcessExited, denied.clone()),
+            (denied.clone(), ProcessControlError::ProcessExited),
+        ] {
+            assert_eq!(
+                transition_failure_error(primary, compensation, Some("journal failed".into())),
+                ProcessControlError::ProcessExited
+            );
+        }
+        let error = transition_failure_error(
+            denied,
+            ProcessControlError::Failed("restore failed".into()),
+            Some("journal failed".into()),
+        );
+        assert_eq!(error, ProcessControlError::Failed("access denied Compensation failed: restore failed. Recovery journal commit failed: journal failed.".into()));
+    }
+
     use super::*;
 
     #[test]

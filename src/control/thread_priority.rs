@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::process::{
-    open_process_for_thread_control, ControlOwner, ProcessControlError, ProcessControlTarget,
-    ProcessIdentity, ProcessTargetKey,
+    open_process_for_thread_control, transition_failure_error, ControlOwner, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 #[cfg(test)]
@@ -453,9 +453,10 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             Err(mut failure) => {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish(&identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                         failure.uncertain = true;
                     }
                 }
@@ -472,7 +473,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 } else if let Some(managed) = managed {
                     self.managed.insert(identity, managed);
                 }
-                Err(ProcessControlError::Failed(failure.message))
+                Err(failure.error)
             }
         }
     }
@@ -641,12 +642,13 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
-            // A thread can exit after opening, while the transition converts its error to text.
-            Err(_)
-                if matches!(
-                    self.platform.query(&thread),
-                    Err(ProcessControlError::ProcessExited)
-                ) =>
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.query(&thread),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
             {
                 Err(ProcessControlError::ProcessExited)
             }
@@ -659,12 +661,12 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -713,7 +715,7 @@ enum ThreadApply {
 }
 
 struct TransitionFailure {
-    message: String,
+    error: ProcessControlError,
     uncertain: bool,
     relinquish_recovery: bool,
     expected_preserved: bool,
@@ -736,18 +738,14 @@ fn apply_transition<P: ThreadPriorityPlatform>(
     let intent = platform
         .begin_change(process, thread, original, expected)
         .map_err(|error| TransitionFailure {
-            message: error.to_string(),
+            error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
         })?;
     if let Err(error) = platform.apply(thread, expected) {
         return Err(compensate_with_intent(
-            platform,
-            thread,
-            original,
-            intent,
-            error.to_string(),
+            platform, thread, original, intent, error,
         ));
     }
     match platform.query(thread) {
@@ -758,20 +756,16 @@ fn apply_transition<P: ThreadPriorityPlatform>(
                 thread,
                 original,
                 intent,
-                format!(
+                ProcessControlError::Failed(format!(
                     "Thread Priority verification returned {}, expected {}.",
                     thread_priority_label(actual),
                     thread_priority_label(expected)
-                ),
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_with_intent(
-                platform,
-                thread,
-                original,
-                intent,
-                format!("Thread Priority verification failed: {error}"),
+                platform, thread, original, intent, error,
             ));
         }
     }
@@ -782,7 +776,7 @@ fn apply_transition<P: ThreadPriorityPlatform>(
                 platform, thread, original, message,
             )),
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -797,11 +791,11 @@ fn compensate_with_intent<P: ThreadPriorityPlatform>(
     thread: &P::Thread,
     original: i32,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify(platform, thread, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -809,11 +803,7 @@ fn compensate_with_intent<P: ThreadPriorityPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -830,15 +820,15 @@ fn compensate_without_intent<P: ThreadPriorityPlatform>(
 ) -> TransitionFailure {
     match restore_and_verify(platform, thread, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: ProcessControlError::Failed(primary_error),
             uncertain: false,
             relinquish_recovery: true,
             expected_preserved: false,
         },
         Err(compensation_error) => TransitionFailure {
-            message: transition_failure_message(
-                primary_error,
-                compensation_error.to_string(),
+            error: transition_failure_error(
+                ProcessControlError::Failed(primary_error),
+                compensation_error,
                 None,
             ),
             uncertain: true,
@@ -864,18 +854,6 @@ fn restore_and_verify<P: ThreadPriorityPlatform>(
             thread_priority_label(priority)
         )))
     }
-}
-
-fn transition_failure_message(
-    primary_error: String,
-    compensation_error: String,
-    recovery_error: Option<String>,
-) -> String {
-    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
-    if let Some(recovery_error) = recovery_error {
-        message.push_str(&format!(" Crash recovery commit failed: {recovery_error}."));
-    }
-    message
 }
 
 fn release_failure(
@@ -1028,6 +1006,8 @@ mod tests {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
         OpenExited,
+        BeginExited,
+        QueryDenied,
         ApplyExited,
         Begin,
         Apply,
@@ -1148,6 +1128,9 @@ mod tests {
         }
 
         fn query(&mut self, thread: &Self::Thread) -> Result<i32, ProcessControlError> {
+            if self.take_failure(FakeFailure::QueryDenied) {
+                return Err(ProcessControlError::AccessDenied("query denied".into()));
+            }
             let priority = self
                 .process
                 .threads
@@ -1169,6 +1152,9 @@ mod tests {
             _: i32,
         ) -> Result<Self::RecoveryIntent, ProcessControlError> {
             self.events.lock().unwrap().push("begin".to_owned());
+            if self.take_failure(FakeFailure::BeginExited) {
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Begin) {
                 return Err(ProcessControlError::Failed("begin failed".to_owned()));
             }
@@ -1734,6 +1720,26 @@ mod tests {
             controller.platform.process.threads[&100].priority,
             THREAD_PRIORITY_NORMAL
         );
+    }
+
+    #[test]
+    fn shutdown_keeps_confirmed_exit_when_followup_query_is_denied() {
+        let mut controller =
+            ThreadPriorityController::with_platform(FakePlatform::new(&[THREAD_PRIORITY_NORMAL]));
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::ThreadPriority,
+                    ProcessThreadPrioritySetting::BelowNormal,
+                    ThreadPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::BeginExited);
+        controller.platform.fail_next(FakeFailure::QueryDenied);
+        assert!(controller.shutdown().is_ok());
+        assert!(!controller.has_managed_state());
     }
 
     #[test]

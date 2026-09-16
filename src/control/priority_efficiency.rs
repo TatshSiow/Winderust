@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::process::{
-    open_process_for_set_information, ControlOwner, ProcessControlError, ProcessControlTarget,
-    ProcessIdentity, ProcessTargetKey,
+    open_process_for_set_information, transition_failure_error, ControlOwner, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -752,7 +752,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                     Err(failure) => {
                         return Err(ProcessControlError::Failed(format!(
                             "{priority_error} Efficiency Mode rollback also failed: {}",
-                            failure.message
+                            failure.error
                         )));
                     }
                 }
@@ -911,9 +911,10 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     ) -> Result<(), ProcessControlError> {
         if failure.relinquish_recovery {
             if let Err(error) = self.platform.relinquish_priority(&identity) {
-                failure
-                    .message
-                    .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                failure.error = ProcessControlError::Failed(format!(
+                    "{} Recovery journal relinquish failed: {error}.",
+                    failure.error
+                ));
                 failure.uncertain = true;
             }
         }
@@ -930,7 +931,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         } else if let Some(previous) = previous {
             self.managed_priorities.insert(identity, previous);
         }
-        Err(ProcessControlError::Failed(failure.message))
+        Err(failure.error)
     }
 
     #[expect(
@@ -949,9 +950,10 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     ) -> Result<(), ProcessControlError> {
         if failure.relinquish_recovery {
             if let Err(error) = self.platform.relinquish_power(&identity) {
-                failure
-                    .message
-                    .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                failure.error = ProcessControlError::Failed(format!(
+                    "{} Recovery journal relinquish failed: {error}.",
+                    failure.error
+                ));
                 failure.uncertain = true;
             }
         }
@@ -968,7 +970,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         } else if let Some(previous) = previous {
             self.managed_power.insert(identity, previous);
         }
-        Err(ProcessControlError::Failed(failure.message))
+        Err(failure.error)
     }
 
     fn rebase_broken_priority(
@@ -1233,12 +1235,13 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
-            // Restoration can race with exit after the transition has converted its error to text.
-            Err(_)
-                if matches!(
-                    self.platform.open(&identity.target(), true),
-                    Err(ProcessControlError::ProcessExited)
-                ) =>
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.open(&identity.target(), true),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
             {
                 Err(ProcessControlError::ProcessExited)
             }
@@ -1251,12 +1254,12 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -1281,12 +1284,13 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
-            // Restoration can race with exit after the transition has converted its error to text.
-            Err(_)
-                if matches!(
-                    self.platform.open(&identity.target(), true),
-                    Err(ProcessControlError::ProcessExited)
-                ) =>
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.open(&identity.target(), true),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
             {
                 Err(ProcessControlError::ProcessExited)
             }
@@ -1299,12 +1303,12 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -1496,7 +1500,7 @@ enum ManagedProperty {
 }
 
 struct TransitionFailure {
-    message: String,
+    error: ProcessControlError,
     uncertain: bool,
     relinquish_recovery: bool,
     expected_preserved: bool,
@@ -1520,11 +1524,7 @@ fn apply_priority_transition<P: PriorityEfficiencyPlatform>(
         .map_err(transition_begin_failure)?;
     if let Err(error) = platform.apply_priority(process, expected) {
         return Err(compensate_priority_with_intent(
-            platform,
-            process,
-            original,
-            intent,
-            error.to_string(),
+            platform, process, original, intent, error,
         ));
     }
     match platform.query_priority(process) {
@@ -1535,16 +1535,14 @@ fn apply_priority_transition<P: PriorityEfficiencyPlatform>(
                 process,
                 original,
                 intent,
-                format!("Process Priority verification returned {actual}, expected {expected}."),
+                ProcessControlError::Failed(format!(
+                    "Process Priority verification returned {actual}, expected {expected}."
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_priority_with_intent(
-                platform,
-                process,
-                original,
-                intent,
-                format!("Process Priority verification failed: {error}"),
+                platform, process, original, intent, error,
             ));
         }
     }
@@ -1565,11 +1563,7 @@ fn apply_power_transition<P: PriorityEfficiencyPlatform>(
         .map_err(transition_begin_failure)?;
     if let Err(error) = platform.apply_power(process, expected) {
         return Err(compensate_power_with_intent(
-            platform,
-            process,
-            original,
-            intent,
-            error.to_string(),
+            platform, process, original, intent, error,
         ));
     }
     match platform.query_power(process) {
@@ -1580,18 +1574,14 @@ fn apply_power_transition<P: PriorityEfficiencyPlatform>(
                 process,
                 original,
                 intent,
-                format!(
+                ProcessControlError::Failed(format!(
                     "Power Throttling verification returned {actual:?}, expected {expected:?}."
-                ),
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_power_with_intent(
-                platform,
-                process,
-                original,
-                intent,
-                format!("Power Throttling verification failed: {error}"),
+                platform, process, original, intent, error,
             ));
         }
     }
@@ -1610,15 +1600,15 @@ fn finish_transition_commit<I: PriorityEfficiencyRecoveryIntent>(
         return match behavior {
             CommitFailureBehavior::Compensate => match compensate() {
                 Ok(()) => Err(TransitionFailure {
-                    message,
+                    error: ProcessControlError::Failed(message),
                     uncertain: false,
                     relinquish_recovery: true,
                     expected_preserved: false,
                 }),
                 Err(compensation_error) => Err(TransitionFailure {
-                    message: transition_failure_message(
-                        message,
-                        compensation_error.to_string(),
+                    error: transition_failure_error(
+                        ProcessControlError::Failed(message),
+                        compensation_error,
                         None,
                     ),
                     uncertain: true,
@@ -1627,7 +1617,7 @@ fn finish_transition_commit<I: PriorityEfficiencyRecoveryIntent>(
                 }),
             },
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -1642,11 +1632,11 @@ fn compensate_priority_with_intent<P: PriorityEfficiencyPlatform>(
     process: &P::Process,
     original: u32,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify_priority(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -1654,11 +1644,7 @@ fn compensate_priority_with_intent<P: PriorityEfficiencyPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -1672,11 +1658,11 @@ fn compensate_power_with_intent<P: PriorityEfficiencyPlatform>(
     process: &P::Process,
     original: PowerThrottlingState,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify_power(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -1684,11 +1670,7 @@ fn compensate_power_with_intent<P: PriorityEfficiencyPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -1731,25 +1713,11 @@ fn restore_and_verify_power<P: PriorityEfficiencyPlatform>(
 
 fn transition_begin_failure(error: ProcessControlError) -> TransitionFailure {
     TransitionFailure {
-        message: error.to_string(),
+        error,
         uncertain: false,
         relinquish_recovery: false,
         expected_preserved: false,
     }
-}
-
-fn transition_failure_message(
-    primary_error: String,
-    compensation_error: String,
-    recovery_error: Option<String>,
-) -> String {
-    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
-    if let Some(recovery_error) = recovery_error {
-        message.push_str(&format!(
-            " Crash recovery commit also failed: {recovery_error}."
-        ));
-    }
-    message
 }
 
 fn priority_is_preserved(
@@ -2005,6 +1973,7 @@ mod tests {
     #[derive(Default)]
     struct FakePlatform {
         exit_on_apply: bool,
+        deny_open: bool,
         processes: BTreeMap<u32, FakeProcess>,
         events: Vec<FakeEvent>,
         fail_next_priority_begin: bool,
@@ -2041,6 +2010,9 @@ mod tests {
             target: &ProcessControlTarget,
             _allow_cross_session_process_control: bool,
         ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
+            if self.deny_open {
+                return Err(ProcessControlError::AccessDenied("open denied".into()));
+            }
             let process = self
                 .processes
                 .get(&target.id)
@@ -2112,6 +2084,7 @@ mod tests {
         ) -> Result<(), ProcessControlError> {
             if std::mem::take(&mut self.exit_on_apply) {
                 self.processes.remove(process);
+                self.deny_open = true;
                 return Err(ProcessControlError::ProcessExited);
             }
 
@@ -2136,6 +2109,7 @@ mod tests {
         ) -> Result<(), ProcessControlError> {
             if std::mem::take(&mut self.exit_on_apply) {
                 self.processes.remove(process);
+                self.deny_open = true;
                 return Err(ProcessControlError::ProcessExited);
             }
 
@@ -2629,7 +2603,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_cleans_up_exit_during_restoration() {
+    fn shutdown_keeps_confirmed_exit_when_reopening_is_denied() {
         let mut controller =
             PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
         controller

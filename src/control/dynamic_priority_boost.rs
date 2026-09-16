@@ -10,8 +10,8 @@ use crate::{
 };
 
 use super::process::{
-    open_process_for_set_information, ControlOwner, ProcessControlError, ProcessControlTarget,
-    ProcessIdentity, ProcessTargetKey,
+    open_process_for_set_information, transition_failure_error, ControlOwner, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,9 +293,10 @@ impl<P: DynamicPriorityBoostPlatform> DynamicPriorityBoostController<P> {
             Err(mut failure) => {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish(&identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                         failure.uncertain = true;
                     }
                 }
@@ -312,7 +313,7 @@ impl<P: DynamicPriorityBoostPlatform> DynamicPriorityBoostController<P> {
                 } else if let Some(managed) = managed {
                     self.managed.insert(identity, managed);
                 }
-                Err(ProcessControlError::Failed(failure.message))
+                Err(failure.error)
             }
         }
     }
@@ -422,12 +423,13 @@ impl<P: DynamicPriorityBoostPlatform> DynamicPriorityBoostController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
-            // Restoration can race with exit after the transition has converted its error to text.
-            Err(_)
-                if matches!(
-                    self.platform.open(&identity.target(), true),
-                    Err(ProcessControlError::ProcessExited)
-                ) =>
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.open(&identity.target(), true),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
             {
                 Err(ProcessControlError::ProcessExited)
             }
@@ -440,12 +442,12 @@ impl<P: DynamicPriorityBoostPlatform> DynamicPriorityBoostController<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -469,7 +471,7 @@ impl<P: DynamicPriorityBoostPlatform> Drop for DynamicPriorityBoostController<P>
 }
 
 struct TransitionFailure {
-    message: String,
+    error: ProcessControlError,
     uncertain: bool,
     relinquish_recovery: bool,
     expected_preserved: bool,
@@ -491,7 +493,7 @@ fn apply_transition<P: DynamicPriorityBoostPlatform>(
     let intent = platform
         .begin_change(process, original, expected)
         .map_err(|error| TransitionFailure {
-            message: error.to_string(),
+            error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -499,11 +501,7 @@ fn apply_transition<P: DynamicPriorityBoostPlatform>(
 
     if let Err(error) = platform.apply(process, expected) {
         return Err(compensate_with_intent(
-            platform,
-            process,
-            original,
-            intent,
-            error.to_string(),
+            platform, process, original, intent, error,
         ));
     }
     match platform.query(process) {
@@ -514,18 +512,14 @@ fn apply_transition<P: DynamicPriorityBoostPlatform>(
                 process,
                 original,
                 intent,
-                format!(
+                ProcessControlError::Failed(format!(
                     "Dynamic Priority Boost verification returned {actual:?}, expected {expected:?}."
-                ),
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_with_intent(
-                platform,
-                process,
-                original,
-                intent,
-                format!("Dynamic Priority Boost verification failed: {error}"),
+                platform, process, original, intent, error,
             ));
         }
     }
@@ -537,7 +531,7 @@ fn apply_transition<P: DynamicPriorityBoostPlatform>(
                 platform, process, original, message,
             )),
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -552,11 +546,11 @@ fn compensate_with_intent<P: DynamicPriorityBoostPlatform>(
     process: &P::Process,
     original: DynamicPriorityBoostState,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -564,11 +558,7 @@ fn compensate_with_intent<P: DynamicPriorityBoostPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -585,15 +575,15 @@ fn compensate_without_intent<P: DynamicPriorityBoostPlatform>(
 ) -> TransitionFailure {
     match restore_and_verify(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: ProcessControlError::Failed(primary_error),
             uncertain: false,
             relinquish_recovery: true,
             expected_preserved: false,
         },
         Err(compensation_error) => TransitionFailure {
-            message: transition_failure_message(
-                primary_error,
-                compensation_error.to_string(),
+            error: transition_failure_error(
+                ProcessControlError::Failed(primary_error),
+                compensation_error,
                 None,
             ),
             uncertain: true,
@@ -617,18 +607,6 @@ fn restore_and_verify<P: DynamicPriorityBoostPlatform>(
             "Compensation returned {actual:?}, expected {original:?}."
         )))
     }
-}
-
-fn transition_failure_message(
-    primary_error: String,
-    compensation_error: String,
-    recovery_error: Option<String>,
-) -> String {
-    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
-    if let Some(recovery_error) = recovery_error {
-        message.push_str(&format!(" Recovery commit also failed: {recovery_error}."));
-    }
-    message
 }
 
 pub(crate) fn current_dynamic_priority_boost_state(
@@ -655,6 +633,8 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
+        BeginExited,
+        QueryDenied,
         ApplyExited,
         Open,
         VerificationQuery,
@@ -743,6 +723,9 @@ mod tests {
             &mut self,
             process: &Self::Process,
         ) -> Result<DynamicPriorityBoostState, ProcessControlError> {
+            if self.take_failure(FakeFailure::QueryDenied) {
+                return Err(ProcessControlError::AccessDenied("query denied".into()));
+            }
             self.events.lock().unwrap().push("query".to_owned());
             let state = self
                 .processes
@@ -764,6 +747,9 @@ mod tests {
             _: DynamicPriorityBoostState,
         ) -> Result<Self::RecoveryIntent, ProcessControlError> {
             self.events.lock().unwrap().push("begin".to_owned());
+            if self.take_failure(FakeFailure::BeginExited) {
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Begin) {
                 return Err(ProcessControlError::Failed("begin failed".to_owned()));
             }
@@ -1187,6 +1173,25 @@ mod tests {
             controller.platform.processes[&42].state,
             DynamicPriorityBoostState::Enabled
         );
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_keeps_confirmed_exit_when_followup_query_is_denied() {
+        let platform = FakePlatform::new(DynamicPriorityBoostState::Enabled);
+        let mut controller = DynamicPriorityBoostController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::DynamicPriorityBoost,
+                    DynamicPriorityBoostState::Disabled,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::BeginExited);
+        controller.platform.fail_next(FakeFailure::QueryDenied);
+        assert!(controller.shutdown().is_ok());
         assert!(!controller.has_managed_state());
     }
 
