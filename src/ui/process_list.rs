@@ -1140,11 +1140,9 @@ impl ProcessList {
                 }
             }
             let offsets = &self.offsets;
-            let range = visible_range_offsets(offsets, self.offset.get() - 32.0, size.height);
-            let mut rows = column![
-                container(header).height(32).style(super::widgets::surface),
-                Space::new().height(offsets[range.start])
-            ];
+            let range =
+                visible_range_offsets(offsets, self.offset.get(), (size.height - 32.0).max(0.0));
+            let mut rows = column![Space::new().height(offsets[range.start])];
             let mut visible_rows = Vec::with_capacity(range.len());
             for row_index in range.clone() {
                 let height = offsets[row_index + 1] - offsets[row_index];
@@ -1269,23 +1267,44 @@ impl ProcessList {
             let table = scrollable(container(rows).width(Fill))
                 .id("process-list")
                 .height(Fill)
-                .direction(iced::widget::scrollable::Direction::Both {
-                    vertical: iced::widget::scrollable::Scrollbar::default(),
-                    horizontal: iced::widget::scrollable::Scrollbar::default(),
-                })
                 .on_scroll(|v| Message::Scrolled(v.absolute_offset().y));
-            scrolling::buffered(
-                scrolling::table_surface(container(table).width(Fill).height(Fill)),
+            let table = scrolling::buffered(
+                table.into(),
                 &self.offset,
-                offsets[range.start] + 32.0,
-                offsets[range.end] + 32.0,
+                offsets[range.start],
+                offsets[range.end],
                 range.start == 0,
                 range.end == self.rows.len(),
                 |message| match message {
                     Message::Scrolled(offset) => Some(*offset),
                     _ => None,
                 },
-            )
+            );
+            let visible = Sort::ALL
+                .into_iter()
+                .filter(|col| *col == Sort::Name || self.columns[*col as usize]);
+            let table_width = visible
+                .map(|col| widths[col as usize] + design::space::SMALL as f32)
+                .sum::<f32>()
+                - design::space::SMALL as f32
+                + 32.0;
+            scrollable(scrolling::table_surface(
+                container(
+                    column![
+                        container(header).height(32).style(super::widgets::surface),
+                        table,
+                    ]
+                    .height(Fill),
+                )
+                .width(size.width.max(table_width))
+                .height(Fill),
+            ))
+            .direction(iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::default(),
+            ))
+            .width(Fill)
+            .height(Fill)
+            .into()
         }));
         let body = mouse_area(body).on_move(Message::PointerMoved);
         if let Some((stopping, tree)) = &self.stopping {
@@ -1879,6 +1898,63 @@ fn background<T: Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn header_stays_clickable_after_scrolling_process_rows() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use iced::{mouse, Event, Point, Rectangle, Size};
+        let mut list = ProcessList {
+            processes: (1..101)
+                .map(|id| process(id, id as u64, "application.exe"))
+                .collect(),
+            ..ProcessList::default()
+        };
+        list.grouped = false;
+        list.rebuild();
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        let mut view = list.view(&settings, &status, &[]);
+        let mut tree = Tree::new(&view);
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let bounds = Rectangle::with_size(Size::new(1000.0, 500.0));
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, bounds.size()),
+        );
+        let mut messages = Vec::new();
+        for (event, cursor) in [
+            (
+                mouse::Event::WheelScrolled {
+                    delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -144.0 },
+                },
+                bounds.center(),
+            ),
+            (
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                Point::new(50.0, 50.0),
+            ),
+            (
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+                Point::new(50.0, 50.0),
+            ),
+        ] {
+            view.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(event),
+                Layout::new(&node),
+                mouse::Cursor::Available(cursor),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &bounds,
+            );
+        }
+        assert!(list.offset.get() > 0.0);
+        assert!(messages
+            .iter()
+            .any(|message| matches!(message, Message::Sort(Sort::Name))));
+    }
+
     #[test]
     fn process_scroll_damage_stays_bounded() {
         let mut list = ProcessList {
