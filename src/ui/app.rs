@@ -760,7 +760,42 @@ impl WinderustApp {
                 if let Some(task) = smoke::advance(self) {
                     return task;
                 }
+                let mut tray_error = false;
+                for action in tray::take_menu_actions() {
+                    let result = match action {
+                        tray::MenuAction::MasterSwitch(enabled) => {
+                            self.settings.set_master_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature {
+                            id,
+                            profile,
+                            enabled,
+                        } => {
+                            let field = Page::sections()
+                                .iter()
+                                .flat_map(|section| section.pages)
+                                .find(|page| **page as usize == id)
+                                .and_then(|page| navigation::feature_toggle(*page));
+                            let Some(field) = field else {
+                                self.error_message = "Unknown tray feature toggle.".into();
+                                tray_error = true;
+                                continue;
+                            };
+                            self.settings.set_feature_enabled(profile, field, enabled)
+                        }
+                    };
+                    match result {
+                        Ok(_) => self.publish_settings(),
+                        Err(error) => {
+                            self.error_message = error.to_string();
+                            tray_error = true;
+                        }
+                    }
+                }
                 self.sync_tray();
+                if tray_error {
+                    return self.show_window();
+                }
                 if tray::take_quit_requested() {
                     return self.update(Message::Close);
                 }
@@ -1041,6 +1076,44 @@ impl WinderustApp {
     }
 
     fn sync_tray(&mut self) {
+        let profile = if crate::backend::power_source::is_plugged_in() != Some(false) {
+            PowerSourceProfile::PluggedIn
+        } else {
+            PowerSourceProfile::OnBattery
+        };
+        let saved = self.settings.persisted();
+        let settings = if profile == PowerSourceProfile::OnBattery {
+            saved.battery_profile()
+        } else {
+            saved
+        };
+        tray::set_menu_state(tray::MenuState {
+            enabled: saved.general.enabled,
+            profile,
+            groups: Page::sections()
+                .iter()
+                .filter(|section| {
+                    section.landing_page != Page::AdvancedControls
+                        || saved.advanced.show_advanced_controls
+                })
+                .filter_map(|section| {
+                    let items: Vec<_> = section
+                        .pages
+                        .iter()
+                        .filter_map(|page| {
+                            navigation::feature_page_enabled(settings, *page).map(|enabled| {
+                                tray::FeatureToggle {
+                                    id: *page as usize,
+                                    label: page.label(),
+                                    enabled,
+                                }
+                            })
+                        })
+                        .collect();
+                    (!items.is_empty()).then(|| (section.landing_page.label(), items))
+                })
+                .collect(),
+        });
         let intent = (
             self.settings.general.hide_to_tray,
             self.settings.persisted().general.start_minimized,

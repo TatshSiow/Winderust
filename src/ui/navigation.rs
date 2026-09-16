@@ -248,6 +248,31 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
     })
 }
 
+pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut bool> {
+    Some(match page {
+        Page::AdaptiveEngine => |settings| &mut settings.adaptive_engine.enabled,
+        Page::BackgroundEfficiency => |settings| &mut settings.background_efficiency.enabled,
+        Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
+        Page::ByForeground => |settings| &mut settings.by_foreground.enabled,
+        Page::ByRunningApp => |settings| &mut settings.by_running_app.enabled,
+        Page::ByCpuLoad => |settings| &mut settings.by_cpu_load.enabled,
+        Page::ByActivity => |settings| &mut settings.by_activity.enabled,
+        Page::ByTime => |settings| &mut settings.by_time.enabled,
+        Page::ProcessPriority => |settings| &mut settings.process_priority.enabled,
+        Page::ThreadPriority => |settings| &mut settings.thread_priority.enabled,
+        Page::DynamicPriorityBoost => |settings| &mut settings.dynamic_priority_boost.enabled,
+        Page::IoPriority => |settings| &mut settings.io_priority.enabled,
+        Page::GpuPriority => |settings| &mut settings.gpu_priority.enabled,
+        Page::MemoryPriority => |settings| &mut settings.memory_priority.enabled,
+        Page::CpuLimiter => |settings| &mut settings.cpu_limiter.enabled,
+        Page::CpuSetsSoft => |settings| &mut settings.cpu_sets_soft.enabled,
+        Page::ProcessorAffinityHard => |settings| &mut settings.processor_affinity_hard.enabled,
+        Page::AppSuspension => |settings| &mut settings.app_suspension.enabled,
+        Page::TimerResolution => |settings| &mut settings.timer_resolution.enabled,
+        _ => return None,
+    })
+}
+
 pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> Option<usize> {
     if !matches!(
         page,
@@ -525,6 +550,22 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn feature_toggle_fields_match_navigation_indicators() {
+        for page in Page::sections().iter().flat_map(|section| section.pages) {
+            let mut settings = Settings::default();
+            match feature_toggle(*page) {
+                Some(field) => {
+                    for enabled in [true, false] {
+                        *field(&mut settings) = enabled;
+                        assert_eq!(feature_page_enabled(&settings, *page), Some(enabled));
+                    }
+                }
+                None => assert_eq!(feature_page_enabled(&settings, *page), None),
+            }
+        }
+    }
+
     #[test]
     fn page_history_supports_back_forward_and_new_branches() {
         let mut history = History::default();

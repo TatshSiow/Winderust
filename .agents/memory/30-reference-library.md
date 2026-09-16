@@ -108,6 +108,8 @@ User-facing behavior:
 
 `src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live Iced window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`. `src/ui/app.rs` latches a failed install for the current Hide to tray / Start minimized configuration, preventing the visible UI tick from retrying `Shell_NotifyIconW` every second; changing that configuration permits one new attempt and the original failure remains visible when Start minimized falls back to ordinary minimization.
 
+Tray toggle items use native [AppendMenuW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-appendmenuw) `MF_CHECKED` flags and `MF_POPUP` submenus grouped by navigation section. Attached submenus are owned by the root menu; unattached menus are destroyed on failure. The callback queues typed actions for the UI tick instead of mutating runtime settings. Checkmarks reflect persisted settings for the actual power-source profile, captured with each action; the UI's preview profile does not determine tray targets. `SettingsEditor` persists only the chosen master/feature flag, preserving other drafts and the other power-source profile, and rolling back on save failure. Dashboard/process pause controls are not tray actions.
+
 Tray Exit publishes one quit request. `WinderustApp` restores the window and owns confirmation and shutdown; do not post a second native `WM_CLOSE`. Cancelling preserves Hide to tray behavior.
 
 

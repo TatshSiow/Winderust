@@ -415,6 +415,41 @@ impl SettingsEditor {
         self.coordinator.runtime_settings_snapshot(&self.draft)
     }
 
+    pub(crate) fn set_feature_enabled(
+        &mut self,
+        profile: PowerSourceProfile,
+        field: fn(&mut Settings) -> &mut bool,
+        enabled: bool,
+    ) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                // Preserve the other profile when battery settings still inherit the root.
+                settings.battery_profile_mut();
+                let settings = match profile {
+                    PowerSourceProfile::PluggedIn => settings,
+                    PowerSourceProfile::OnBattery => settings.battery_profile_mut(),
+                };
+                set_enabled_value(field(settings), enabled)
+            },
+        )
+    }
+
+    pub(crate) fn set_master_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let mut changed = set_enabled_value(&mut settings.general.enabled, enabled);
+                if let Some(battery) = settings.on_battery.as_deref_mut() {
+                    changed |= set_enabled_value(&mut battery.general.enabled, enabled);
+                }
+                changed
+            },
+        )
+    }
+
     pub(crate) fn apply_navigation_collapsed_patch(
         &mut self,
         patch: NavigationCollapsedPatch,
@@ -861,6 +896,100 @@ mod tests {
             storage_probe,
             startup_probe,
         )
+    }
+
+    #[test]
+    fn tray_feature_switch_only_saves_the_selected_profile_and_field() {
+        for profile in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+            for fail in [false, true] {
+                let mut initial = Settings::default();
+                initial.cpu_limiter.enabled = false;
+                let storage = FakeStorage::new(
+                    initial.clone(),
+                    Ok(initial),
+                    if fail {
+                        Err("write failed".into())
+                    } else {
+                        Ok(())
+                    },
+                    Ok(()),
+                );
+                let (mut editor, storage, _) =
+                    editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+                editor.general.check_interval_ms = 1_337;
+                let original = editor.draft.clone();
+                assert_eq!(
+                    editor
+                        .set_feature_enabled(profile, |s| &mut s.cpu_limiter.enabled, true)
+                        .is_err(),
+                    fail
+                );
+                if fail {
+                    assert_eq!(editor.draft, original);
+                    assert!(!editor.persisted().cpu_limiter.enabled);
+                    assert!(editor.persisted().on_battery.is_none());
+                } else {
+                    let saved = &storage.saved_payloads()[0];
+                    assert_eq!(
+                        saved.cpu_limiter.enabled,
+                        profile == PowerSourceProfile::PluggedIn
+                    );
+                    assert_eq!(
+                        saved.battery_profile().cpu_limiter.enabled,
+                        profile == PowerSourceProfile::OnBattery
+                    );
+                    assert_eq!(
+                        saved.general.check_interval_ms,
+                        Settings::default().general.check_interval_ms
+                    );
+                    assert_eq!(editor.draft.value.general.check_interval_ms, 1_337);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tray_master_switch_preserves_drafts_and_rolls_back_on_save_failure() {
+        for fail in [false, true] {
+            let mut initial = Settings::default();
+            initial.general.enabled = true;
+            initial.battery_profile_mut();
+            let storage = FakeStorage::new(
+                initial.clone(),
+                Ok(initial),
+                if fail {
+                    Err("write failed".into())
+                } else {
+                    Ok(())
+                },
+                Ok(()),
+            );
+            let (mut editor, storage, _) =
+                editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+            editor.general.check_interval_ms = 1_337;
+            editor.select_power_source(PowerSourceProfile::OnBattery);
+            let original = editor.draft.clone();
+            let result = editor.set_master_enabled(false);
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(editor.persisted().general.enabled, fail);
+            assert_eq!(editor.general.enabled, fail);
+            assert_eq!(editor.draft.value.general.check_interval_ms, 1_337);
+            if fail {
+                assert_eq!(editor.draft, original);
+            } else {
+                assert!(!editor.runtime_settings_snapshot().value.general.enabled);
+                assert_eq!(
+                    storage.saved_payloads()[0].general.check_interval_ms,
+                    Settings::default().general.check_interval_ms
+                );
+                assert!(
+                    !storage.saved_payloads()[0]
+                        .battery_profile()
+                        .general
+                        .enabled
+                );
+            }
+        }
     }
 
     #[test]
