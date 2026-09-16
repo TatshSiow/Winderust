@@ -561,12 +561,10 @@ impl Editor {
                     Some(kind.value(settings, tier)),
                     move |value| Message::Default(tier, value),
                 )
+                .width(design::SELECT_WIDTH)
                 .into()
             };
-            group = group.push(super::widgets::setting_row(
-                "common.default",
-                iced::widget::container(control).width(design::SELECT_WIDTH),
-            ));
+            group = group.push(super::widgets::setting_row("common.default", control));
             if let Some(preserve) = kind.preserve(settings, tier) {
                 let label = match tier {
                     Tier::Focus => t!("common.preserve_foreground_priority"),
