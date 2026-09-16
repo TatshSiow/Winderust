@@ -37,7 +37,7 @@ impl TuningTab {
             Self::CpuBehaviour => "adaptive_engine.cpu_behaviour",
             Self::ProcessorPower => "adaptive_engine.processor_power",
             Self::PriorityControl => "adaptive_engine.priority_control",
-            Self::CustomRules => "cpu_scheduler.custom_rules",
+            Self::CustomRules => "adaptive_engine_process.custom_rules",
         }
     }
 }
@@ -211,29 +211,31 @@ impl Editor {
                 if crate::ui::process_rules::can_add_process_candidate(
                     &self.path,
                     |p| {
-                        s.cpu_scheduler.custom_rules.iter().any(|r| {
+                        s.adaptive_engine_process.custom_rules.iter().any(|r| {
                             crate::ui::process_rules::process_setting_matches(&r.executable_path, p)
                         })
                     },
-                    crate::cpu_scheduler::is_builtin_excluded,
+                    crate::adaptive_engine_process::is_builtin_excluded,
                 ) {
-                    s.cpu_scheduler.custom_rules.push(ProcessExclusionRule {
-                        executable_path: crate::foreground::executable_path_key(
-                            std::path::Path::new(&self.path),
-                        ),
-                        ..Default::default()
-                    });
+                    s.adaptive_engine_process
+                        .custom_rules
+                        .push(ProcessExclusionRule {
+                            executable_path: crate::foreground::executable_path_key(
+                                std::path::Path::new(&self.path),
+                            ),
+                            ..Default::default()
+                        });
                     self.path.clear();
                 }
             }
             Message::RemoveExclusion(i) => {
-                if i < s.cpu_scheduler.custom_rules.len() {
-                    s.cpu_scheduler.custom_rules.remove(i);
+                if i < s.adaptive_engine_process.custom_rules.len() {
+                    s.adaptive_engine_process.custom_rules.remove(i);
                 }
             }
 
             Message::ExclusionEnabled(i, v) => {
-                if let Some(r) = s.cpu_scheduler.custom_rules.get_mut(i) {
+                if let Some(r) = s.adaptive_engine_process.custom_rules.get_mut(i) {
                     r.enabled = v
                 }
             }
@@ -282,7 +284,7 @@ impl Editor {
                     }
                     Message::Choice(f, v) => f(target, v),
                     Message::Mask(mask) => {
-                        target.cpu_scheduler.specific_processors =
+                        target.adaptive_engine_process.specific_processors =
                             (0..64).filter(|i| mask & (1u64 << i) != 0).collect()
                     }
                     _ => {}
@@ -483,48 +485,48 @@ impl Editor {
             TuningTab::CpuBehaviour => {
                 let pressure = column![
                     number!(
-                        "cpu_scheduler.maximum_restrained_apps",
+                        "adaptive_engine_process.maximum_restrained_apps",
                         1,
                         64,
-                        cpu_scheduler.maximum_restrained_apps
+                        adaptive_engine_process.maximum_restrained_apps
                     ),
                     number!(
-                        "cpu_scheduler.reaction_time",
+                        "adaptive_engine_process.reaction_time",
                         250,
                         5000,
-                        cpu_scheduler.reaction_time_ms
+                        adaptive_engine_process.reaction_time_ms
                     ),
                     number!(
-                        "cpu_scheduler.foreground_or_system_cpu_threshold",
+                        "adaptive_engine_process.foreground_or_system_cpu_threshold",
                         1,
                         100,
-                        cpu_scheduler.foreground_or_system_cpu_threshold_percent
+                        adaptive_engine_process.foreground_or_system_cpu_threshold_percent
                     ),
                     number!(
-                        "cpu_scheduler.cpu_restraint_time",
+                        "adaptive_engine_process.cpu_restraint_time",
                         1,
                         3600,
-                        cpu_scheduler.cpu_restraint_time_seconds
+                        adaptive_engine_process.cpu_restraint_time_seconds
                     ),
                     number!(
-                        "cpu_scheduler.cpu_recovery_threshold",
+                        "adaptive_engine_process.cpu_recovery_threshold",
                         1,
                         100,
-                        cpu_scheduler.cpu_recovery_threshold_percent
+                        adaptive_engine_process.cpu_recovery_threshold_percent
                     ),
                     number!(
-                        "cpu_scheduler.cpu_recovery_time",
+                        "adaptive_engine_process.cpu_recovery_time",
                         1,
                         3600,
-                        cpu_scheduler.cpu_recovery_time_seconds
+                        adaptive_engine_process.cpu_recovery_time_seconds
                     )
                 ]
                 .spacing(design::space::MEDIUM);
                 let action = super::widgets::switch(
-                    s.cpu_scheduler.cpu_pressure_restraint_enabled,
+                    s.adaptive_engine_process.cpu_pressure_restraint_enabled,
                     editable.then_some(|v| {
                         Message::Toggle(
-                            |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
+                            |s, v| s.adaptive_engine_process.cpu_pressure_restraint_enabled = v,
                             v,
                         )
                     }),
@@ -538,58 +540,58 @@ impl Editor {
                 ));
                 let mut allocation = column![
                     number!(
-                        "cpu_scheduler.background_app_cpu_threshold",
+                        "adaptive_engine_process.background_app_cpu_threshold",
                         1,
                         100,
-                        cpu_scheduler.background_app_cpu_threshold_percent
+                        adaptive_engine_process.background_app_cpu_threshold_percent
                     ),
                     choice!(
                         s,
-                        "cpu_scheduler.processor_selection",
+                        "adaptive_engine_process.processor_selection",
                         BackgroundProcessorSelection,
                         &BackgroundProcessorSelection::ALL,
                         background_processor_selection_label,
-                        cpu_scheduler.background_processor_selection
+                        adaptive_engine_process.background_processor_selection
                     ),
                     toggle!(
-                        "cpu_scheduler.dynamic_resource_zones",
-                        cpu_scheduler.dynamic_resource_zones_enabled
+                        "adaptive_engine_process.dynamic_resource_zones",
+                        adaptive_engine_process.dynamic_resource_zones_enabled
                     )
                 ]
                 .spacing(design::space::MEDIUM);
-                if !s.cpu_scheduler.dynamic_resource_zones_enabled {
+                if !s.adaptive_engine_process.dynamic_resource_zones_enabled {
                     allocation = allocation.push(choice!(
                         s,
-                        "cpu_scheduler.cpu_allocation_method",
+                        "adaptive_engine_process.cpu_allocation_method",
                         CpuAllocationMethod,
                         &CpuAllocationMethod::ALL,
                         allocation_label,
-                        cpu_scheduler.cpu_allocation_method
+                        adaptive_engine_process.cpu_allocation_method
                     ));
                 }
                 if matches!(
-                    s.cpu_scheduler.background_processor_selection,
+                    s.adaptive_engine_process.background_processor_selection,
                     BackgroundProcessorSelection::LeastUsed
                         | BackgroundProcessorSelection::LeastUsedPerformanceCores
                         | BackgroundProcessorSelection::LeastUsedEfficiencyCores
                 ) {
                     allocation = allocation.push(number!(
-                        if s.cpu_scheduler.dynamic_resource_zones_enabled {
-                            "cpu_scheduler.foreground_zone_share"
+                        if s.adaptive_engine_process.dynamic_resource_zones_enabled {
+                            "adaptive_engine_process.foreground_zone_share"
                         } else {
-                            "cpu_scheduler.processor_limit"
+                            "adaptive_engine_process.processor_limit"
                         },
                         1,
                         100,
-                        cpu_scheduler.processor_limit_percent
+                        adaptive_engine_process.processor_limit_percent
                     ));
                 }
-                if s.cpu_scheduler.background_processor_selection
+                if s.adaptive_engine_process.background_processor_selection
                     == BackgroundProcessorSelection::Custom
                     && editable
                 {
                     let mask = s
-                        .cpu_scheduler
+                        .adaptive_engine_process
                         .specific_processors
                         .iter()
                         .filter(|i| **i < 64)
@@ -601,25 +603,29 @@ impl Editor {
                         Message::Mask,
                     ));
                 }
-                if s.cpu_scheduler.background_processor_selection
+                if s.adaptive_engine_process.background_processor_selection
                     == BackgroundProcessorSelection::Custom
                     && !editable
                 {
                     allocation = allocation.push(text(format!(
                         "{}: {:?}",
-                        t!("cpu_scheduler.specific_processors"),
-                        s.cpu_scheduler.specific_processors
+                        t!("adaptive_engine_process.specific_processors"),
+                        s.adaptive_engine_process.specific_processors
                     )));
                 }
                 body = body.push(super::widgets::setting_group(
-                    "cpu_scheduler.limit_background_processors".to_string(),
+                    "adaptive_engine_process.limit_background_processors".to_string(),
                     self.expanded[usize::from(preset)][1],
                     Message::Collapse(1),
                     super::widgets::switch(
-                        s.cpu_scheduler.limit_background_processors_enabled,
+                        s.adaptive_engine_process
+                            .limit_background_processors_enabled,
                         editable.then_some(|v| {
                             Message::Toggle(
-                                |s, v| s.cpu_scheduler.limit_background_processors_enabled = v,
+                                |s, v| {
+                                    s.adaptive_engine_process
+                                        .limit_background_processors_enabled = v
+                                },
                                 v,
                             )
                         }),
@@ -757,10 +763,10 @@ impl Editor {
                     Message::TogglePriority(0),
                     row![
                         iced::widget::container(super::widgets::switch(
-                            s.cpu_scheduler.process_priority_enabled,
+                            s.adaptive_engine_process.process_priority_enabled,
                             editable.then_some(|v| {
                                 Message::Toggle(
-                                    |s, v| s.cpu_scheduler.process_priority_enabled = v,
+                                    |s, v| s.adaptive_engine_process.process_priority_enabled = v,
                                     v,
                                 )
                             }),
@@ -776,7 +782,7 @@ impl Editor {
                                 &ProcessPrioritySetting::ALL
                             },
                             process_priority_setting_label,
-                            cpu_scheduler.focus_process_priority
+                            adaptive_engine_process.focus_process_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -789,7 +795,7 @@ impl Editor {
                                 &ProcessPrioritySetting::ALL
                             },
                             process_priority_setting_label,
-                            cpu_scheduler.visible_window_priority
+                            adaptive_engine_process.visible_window_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -802,7 +808,7 @@ impl Editor {
                                 &ProcessPrioritySetting::ALL
                             },
                             process_priority_setting_label,
-                            cpu_scheduler.background_priority
+                            adaptive_engine_process.background_priority
                         ))
                         .width(Fill)
                     ]
@@ -814,26 +820,26 @@ impl Editor {
                             "adaptive_engine.detection",
                             [
                                 checkbox(
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .process_priority_foreground_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .process_priority_foreground_detection_enabled = v
                                     },
                                     v
                                 )))
                                 .into(),
                                 checkbox(
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .process_priority_visible_window_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .process_priority_visible_window_detection_enabled = v
                                     },
                                     v
@@ -845,34 +851,45 @@ impl Editor {
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
-                                checkbox(s.cpu_scheduler.process_priority_preserve_foreground)
-                                    .label(t!("adaptive_engine.same_or_higher").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler.process_priority_preserve_foreground = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
-                                checkbox(s.cpu_scheduler.process_priority_preserve_visible_window)
-                                    .label(t!("adaptive_engine.same_or_higher").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .process_priority_preserve_visible_window = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
-                                checkbox(s.cpu_scheduler.process_priority_preserve_background)
-                                    .label(t!("adaptive_engine.same_or_lower").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler.process_priority_preserve_background = v
-                                        },
-                                        v
-                                    )))
-                                    .into()
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .process_priority_preserve_foreground
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .process_priority_preserve_foreground = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .process_priority_preserve_visible_window
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .process_priority_preserve_visible_window = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .process_priority_preserve_background
+                                )
+                                .label(t!("adaptive_engine.same_or_lower").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .process_priority_preserve_background = v
+                                    },
+                                    v
+                                )))
+                                .into()
                             ]
                         )
                     ]
@@ -884,10 +901,12 @@ impl Editor {
                     Message::TogglePriority(1),
                     row![
                         iced::widget::container(super::widgets::switch(
-                            s.cpu_scheduler.background_efficiency_enabled,
+                            s.adaptive_engine_process.background_efficiency_enabled,
                             editable.then_some(|v| {
                                 Message::Toggle(
-                                    |s, v| s.cpu_scheduler.background_efficiency_enabled = v,
+                                    |s, v| {
+                                        s.adaptive_engine_process.background_efficiency_enabled = v
+                                    },
                                     v,
                                 )
                             }),
@@ -900,20 +919,21 @@ impl Editor {
                                     Choice(true, t!("common.enabled").to_string())
                                 ],
                                 Some(Choice(
-                                    s.cpu_scheduler.focus_process_background_efficiency_mode,
-                                    t!(
-                                        if s.cpu_scheduler.focus_process_background_efficiency_mode
-                                        {
-                                            "common.enabled"
-                                        } else {
-                                            "common.disabled"
-                                        }
-                                    )
+                                    s.adaptive_engine_process
+                                        .focus_process_background_efficiency_mode,
+                                    t!(if s
+                                        .adaptive_engine_process
+                                        .focus_process_background_efficiency_mode
+                                    {
+                                        "common.enabled"
+                                    } else {
+                                        "common.disabled"
+                                    })
                                     .to_string()
                                 )),
                                 |v| Message::Toggle(
                                     |s, v| s
-                                        .cpu_scheduler
+                                        .adaptive_engine_process
                                         .focus_process_background_efficiency_mode = v,
                                     v.0
                                 )
@@ -928,20 +948,21 @@ impl Editor {
                                     Choice(true, t!("common.enabled").to_string())
                                 ],
                                 Some(Choice(
-                                    s.cpu_scheduler.visible_window_background_efficiency_mode,
-                                    t!(
-                                        if s.cpu_scheduler.visible_window_background_efficiency_mode
-                                        {
-                                            "common.enabled"
-                                        } else {
-                                            "common.disabled"
-                                        }
-                                    )
+                                    s.adaptive_engine_process
+                                        .visible_window_background_efficiency_mode,
+                                    t!(if s
+                                        .adaptive_engine_process
+                                        .visible_window_background_efficiency_mode
+                                    {
+                                        "common.enabled"
+                                    } else {
+                                        "common.disabled"
+                                    })
                                     .to_string()
                                 )),
                                 |v| Message::Toggle(
                                     |s, v| s
-                                        .cpu_scheduler
+                                        .adaptive_engine_process
                                         .visible_window_background_efficiency_mode = v,
                                     v.0
                                 )
@@ -956,8 +977,8 @@ impl Editor {
                                     Choice(true, t!("common.enabled").to_string())
                                 ],
                                 Some(Choice(
-                                    s.cpu_scheduler.background_efficiency_mode,
-                                    t!(if s.cpu_scheduler.background_efficiency_mode {
+                                    s.adaptive_engine_process.background_efficiency_mode,
+                                    t!(if s.adaptive_engine_process.background_efficiency_mode {
                                         "common.enabled"
                                     } else {
                                         "common.disabled"
@@ -965,7 +986,7 @@ impl Editor {
                                     .to_string()
                                 )),
                                 |v| Message::Toggle(
-                                    |s, v| s.cpu_scheduler.background_efficiency_mode = v,
+                                    |s, v| s.adaptive_engine_process.background_efficiency_mode = v,
                                     v.0
                                 )
                             )
@@ -980,26 +1001,26 @@ impl Editor {
                         "adaptive_engine.detection",
                         [
                             checkbox(
-                                s.cpu_scheduler
+                                s.adaptive_engine_process
                                     .focus_process_background_efficiency_override_enabled
                             )
                             .label(t!("common.enabled").to_string())
                             .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                 |s, v| {
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .focus_process_background_efficiency_override_enabled = v
                                 },
                                 v
                             )))
                             .into(),
                             checkbox(
-                                s.cpu_scheduler
+                                s.adaptive_engine_process
                                     .visible_window_background_efficiency_override_enabled
                             )
                             .label(t!("common.enabled").to_string())
                             .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                 |s, v| {
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .visible_window_background_efficiency_override_enabled = v
                                 },
                                 v
@@ -1016,10 +1037,10 @@ impl Editor {
                     Message::TogglePriority(2),
                     row![
                         iced::widget::container(super::widgets::switch(
-                            s.cpu_scheduler.thread_priority.enabled,
+                            s.adaptive_engine_process.thread_priority.enabled,
                             editable.then_some(|v| {
                                 Message::Toggle(
-                                    |s, v| s.cpu_scheduler.thread_priority.enabled = v,
+                                    |s, v| s.adaptive_engine_process.thread_priority.enabled = v,
                                     v,
                                 )
                             }),
@@ -1035,7 +1056,7 @@ impl Editor {
                                 &ProcessThreadPrioritySetting::ALL
                             },
                             process_thread_priority_setting_label,
-                            cpu_scheduler.thread_priority.foreground_priority
+                            adaptive_engine_process.thread_priority.foreground_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1048,7 +1069,9 @@ impl Editor {
                                 &ProcessThreadPrioritySetting::ALL
                             },
                             process_thread_priority_setting_label,
-                            cpu_scheduler.thread_priority.visible_window_priority
+                            adaptive_engine_process
+                                .thread_priority
+                                .visible_window_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1061,7 +1084,7 @@ impl Editor {
                                 &ProcessThreadPrioritySetting::ALL
                             },
                             process_thread_priority_setting_label,
-                            cpu_scheduler.thread_priority.background_priority
+                            adaptive_engine_process.thread_priority.background_priority
                         ))
                         .width(Fill)
                     ]
@@ -1073,12 +1096,14 @@ impl Editor {
                             "adaptive_engine.detection",
                             [
                                 checkbox(
-                                    s.cpu_scheduler.thread_priority.foreground_detection_enabled
+                                    s.adaptive_engine_process
+                                        .thread_priority
+                                        .foreground_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .thread_priority
                                             .foreground_detection_enabled = v
                                     },
@@ -1086,14 +1111,14 @@ impl Editor {
                                 )))
                                 .into(),
                                 checkbox(
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .thread_priority
                                         .visible_window_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .thread_priority
                                             .visible_window_detection_enabled = v
                                     },
@@ -1107,12 +1132,14 @@ impl Editor {
                             "adaptive_engine.keep_existing_priority",
                             [
                                 checkbox(
-                                    s.cpu_scheduler.thread_priority.preserve_foreground_priority
+                                    s.adaptive_engine_process
+                                        .thread_priority
+                                        .preserve_foreground_priority
                                 )
                                 .label(t!("adaptive_engine.same_or_higher").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .thread_priority
                                             .preserve_foreground_priority = v
                                     },
@@ -1120,14 +1147,14 @@ impl Editor {
                                 )))
                                 .into(),
                                 checkbox(
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .thread_priority
                                         .preserve_visible_window_priority
                                 )
                                 .label(t!("adaptive_engine.same_or_higher").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .thread_priority
                                             .preserve_visible_window_priority = v
                                     },
@@ -1135,12 +1162,14 @@ impl Editor {
                                 )))
                                 .into(),
                                 checkbox(
-                                    s.cpu_scheduler.thread_priority.preserve_background_priority
+                                    s.adaptive_engine_process
+                                        .thread_priority
+                                        .preserve_background_priority
                                 )
                                 .label(t!("adaptive_engine.same_or_lower").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .thread_priority
                                             .preserve_background_priority = v
                                     },
@@ -1158,10 +1187,12 @@ impl Editor {
                     Message::TogglePriority(3),
                     row![
                         iced::widget::container(super::widgets::switch(
-                            s.cpu_scheduler.dynamic_priority_boost.enabled,
+                            s.adaptive_engine_process.dynamic_priority_boost.enabled,
                             editable.then_some(|v| {
                                 Message::Toggle(
-                                    |s, v| s.cpu_scheduler.dynamic_priority_boost.enabled = v,
+                                    |s, v| {
+                                        s.adaptive_engine_process.dynamic_priority_boost.enabled = v
+                                    },
                                     v,
                                 )
                             }),
@@ -1173,7 +1204,9 @@ impl Editor {
                             ProcessDynamicPriorityBoostSetting,
                             &ProcessDynamicPriorityBoostSetting::ALL,
                             process_dynamic_priority_boost_setting_label,
-                            cpu_scheduler.dynamic_priority_boost.foreground_boost
+                            adaptive_engine_process
+                                .dynamic_priority_boost
+                                .foreground_boost
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1182,7 +1215,9 @@ impl Editor {
                             ProcessDynamicPriorityBoostSetting,
                             &ProcessDynamicPriorityBoostSetting::ALL,
                             process_dynamic_priority_boost_setting_label,
-                            cpu_scheduler.dynamic_priority_boost.visible_window_boost
+                            adaptive_engine_process
+                                .dynamic_priority_boost
+                                .visible_window_boost
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1191,7 +1226,9 @@ impl Editor {
                             ProcessDynamicPriorityBoostSetting,
                             &ProcessDynamicPriorityBoostSetting::ALL,
                             process_dynamic_priority_boost_setting_label,
-                            cpu_scheduler.dynamic_priority_boost.background_boost
+                            adaptive_engine_process
+                                .dynamic_priority_boost
+                                .background_boost
                         ))
                         .width(Fill)
                     ]
@@ -1202,14 +1239,14 @@ impl Editor {
                         "adaptive_engine.detection",
                         [
                             checkbox(
-                                s.cpu_scheduler
+                                s.adaptive_engine_process
                                     .dynamic_priority_boost
                                     .foreground_detection_enabled
                             )
                             .label(t!("common.enabled").to_string())
                             .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                 |s, v| {
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .dynamic_priority_boost
                                         .foreground_detection_enabled = v
                                 },
@@ -1217,14 +1254,14 @@ impl Editor {
                             )))
                             .into(),
                             checkbox(
-                                s.cpu_scheduler
+                                s.adaptive_engine_process
                                     .dynamic_priority_boost
                                     .visible_window_detection_enabled
                             )
                             .label(t!("common.enabled").to_string())
                             .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                 |s, v| {
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .dynamic_priority_boost
                                         .visible_window_detection_enabled = v
                                 },
@@ -1242,9 +1279,12 @@ impl Editor {
                     Message::TogglePriority(4),
                     row![
                         iced::widget::container(super::widgets::switch(
-                            s.cpu_scheduler.io_priority.enabled,
+                            s.adaptive_engine_process.io_priority.enabled,
                             editable.then_some(|v| {
-                                Message::Toggle(|s, v| s.cpu_scheduler.io_priority.enabled = v, v)
+                                Message::Toggle(
+                                    |s, v| s.adaptive_engine_process.io_priority.enabled = v,
+                                    v,
+                                )
                             }),
                         ))
                         .width(64),
@@ -1258,7 +1298,7 @@ impl Editor {
                                 &ProcessIoPrioritySetting::ALL
                             },
                             process_io_priority_setting_label,
-                            cpu_scheduler.io_priority.foreground_priority
+                            adaptive_engine_process.io_priority.foreground_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1271,7 +1311,7 @@ impl Editor {
                                 &ProcessIoPrioritySetting::ALL
                             },
                             process_io_priority_setting_label,
-                            cpu_scheduler.io_priority.visible_window_priority
+                            adaptive_engine_process.io_priority.visible_window_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1284,7 +1324,7 @@ impl Editor {
                                 &ProcessIoPrioritySetting::ALL
                             },
                             process_io_priority_setting_label,
-                            cpu_scheduler.io_priority.background_priority
+                            adaptive_engine_process.io_priority.background_priority
                         ))
                         .width(Fill)
                     ]
@@ -1295,24 +1335,30 @@ impl Editor {
                         priority_option_row(
                             "adaptive_engine.detection",
                             [
-                                checkbox(s.cpu_scheduler.io_priority.foreground_detection_enabled)
-                                    .label(t!("common.enabled").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .io_priority
-                                                .foreground_detection_enabled = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
                                 checkbox(
-                                    s.cpu_scheduler.io_priority.visible_window_detection_enabled
+                                    s.adaptive_engine_process
+                                        .io_priority
+                                        .foreground_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
+                                            .io_priority
+                                            .foreground_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .io_priority
+                                        .visible_window_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
                                             .io_priority
                                             .visible_window_detection_enabled = v
                                     },
@@ -1325,41 +1371,51 @@ impl Editor {
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
-                                checkbox(s.cpu_scheduler.io_priority.preserve_foreground_priority)
-                                    .label(t!("adaptive_engine.same_or_higher").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .io_priority
-                                                .preserve_foreground_priority = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
                                 checkbox(
-                                    s.cpu_scheduler.io_priority.preserve_visible_window_priority
+                                    s.adaptive_engine_process
+                                        .io_priority
+                                        .preserve_foreground_priority
                                 )
                                 .label(t!("adaptive_engine.same_or_higher").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
+                                            .io_priority
+                                            .preserve_foreground_priority = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .io_priority
+                                        .preserve_visible_window_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
                                             .io_priority
                                             .preserve_visible_window_priority = v
                                     },
                                     v
                                 )))
                                 .into(),
-                                checkbox(s.cpu_scheduler.io_priority.preserve_background_priority)
-                                    .label(t!("adaptive_engine.same_or_lower").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .io_priority
-                                                .preserve_background_priority = v
-                                        },
-                                        v
-                                    )))
-                                    .into()
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .io_priority
+                                        .preserve_background_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_lower").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .io_priority
+                                            .preserve_background_priority = v
+                                    },
+                                    v
+                                )))
+                                .into()
                             ]
                         )
                     ]
@@ -1371,9 +1427,12 @@ impl Editor {
                     Message::TogglePriority(5),
                     row![
                         iced::widget::container(super::widgets::switch(
-                            s.cpu_scheduler.gpu_priority.enabled,
+                            s.adaptive_engine_process.gpu_priority.enabled,
                             editable.then_some(|v| {
-                                Message::Toggle(|s, v| s.cpu_scheduler.gpu_priority.enabled = v, v)
+                                Message::Toggle(
+                                    |s, v| s.adaptive_engine_process.gpu_priority.enabled = v,
+                                    v,
+                                )
                             }),
                         ))
                         .width(64),
@@ -1387,7 +1446,7 @@ impl Editor {
                                 &ProcessGpuPrioritySetting::ALL
                             },
                             process_gpu_priority_setting_label,
-                            cpu_scheduler.gpu_priority.foreground_priority
+                            adaptive_engine_process.gpu_priority.foreground_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1400,7 +1459,7 @@ impl Editor {
                                 &ProcessGpuPrioritySetting::ALL
                             },
                             process_gpu_priority_setting_label,
-                            cpu_scheduler.gpu_priority.visible_window_priority
+                            adaptive_engine_process.gpu_priority.visible_window_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1413,7 +1472,7 @@ impl Editor {
                                 &ProcessGpuPrioritySetting::ALL
                             },
                             process_gpu_priority_setting_label,
-                            cpu_scheduler.gpu_priority.background_priority
+                            adaptive_engine_process.gpu_priority.background_priority
                         ))
                         .width(Fill)
                     ]
@@ -1424,26 +1483,30 @@ impl Editor {
                         priority_option_row(
                             "adaptive_engine.detection",
                             [
-                                checkbox(s.cpu_scheduler.gpu_priority.foreground_detection_enabled)
-                                    .label(t!("common.enabled").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .gpu_priority
-                                                .foreground_detection_enabled = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
                                 checkbox(
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
+                                        .gpu_priority
+                                        .foreground_detection_enabled
+                                )
+                                .label(t!("common.enabled").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .gpu_priority
+                                            .foreground_detection_enabled = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
                                         .gpu_priority
                                         .visible_window_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .gpu_priority
                                             .visible_window_detection_enabled = v
                                     },
@@ -1456,43 +1519,51 @@ impl Editor {
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
-                                checkbox(s.cpu_scheduler.gpu_priority.preserve_foreground_priority)
-                                    .label(t!("adaptive_engine.same_or_higher").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .gpu_priority
-                                                .preserve_foreground_priority = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
                                 checkbox(
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
+                                        .gpu_priority
+                                        .preserve_foreground_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .gpu_priority
+                                            .preserve_foreground_priority = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
                                         .gpu_priority
                                         .preserve_visible_window_priority
                                 )
                                 .label(t!("adaptive_engine.same_or_higher").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .gpu_priority
                                             .preserve_visible_window_priority = v
                                     },
                                     v
                                 )))
                                 .into(),
-                                checkbox(s.cpu_scheduler.gpu_priority.preserve_background_priority)
-                                    .label(t!("adaptive_engine.same_or_lower").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .gpu_priority
-                                                .preserve_background_priority = v
-                                        },
-                                        v
-                                    )))
-                                    .into()
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .gpu_priority
+                                        .preserve_background_priority
+                                )
+                                .label(t!("adaptive_engine.same_or_lower").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .gpu_priority
+                                            .preserve_background_priority = v
+                                    },
+                                    v
+                                )))
+                                .into()
                             ]
                         )
                     ]
@@ -1504,10 +1575,10 @@ impl Editor {
                     Message::TogglePriority(6),
                     row![
                         iced::widget::container(super::widgets::switch(
-                            s.cpu_scheduler.memory_priority_enabled,
+                            s.adaptive_engine_process.memory_priority_enabled,
                             editable.then_some(|v| {
                                 Message::Toggle(
-                                    |s, v| s.cpu_scheduler.memory_priority_enabled = v,
+                                    |s, v| s.adaptive_engine_process.memory_priority_enabled = v,
                                     v,
                                 )
                             }),
@@ -1519,7 +1590,7 @@ impl Editor {
                             ProcessMemoryPrioritySetting,
                             &ProcessMemoryPrioritySetting::ALL,
                             process_memory_priority_setting_label,
-                            cpu_scheduler.focus_process_memory_priority
+                            adaptive_engine_process.focus_process_memory_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1528,7 +1599,7 @@ impl Editor {
                             ProcessMemoryPrioritySetting,
                             &ProcessMemoryPrioritySetting::ALL,
                             process_memory_priority_setting_label,
-                            cpu_scheduler.visible_window_memory_priority
+                            adaptive_engine_process.visible_window_memory_priority
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1537,7 +1608,7 @@ impl Editor {
                             ProcessMemoryPrioritySetting,
                             &ProcessMemoryPrioritySetting::ALL,
                             process_memory_priority_setting_label,
-                            cpu_scheduler.background_memory_priority
+                            adaptive_engine_process.background_memory_priority
                         ))
                         .width(Fill)
                     ]
@@ -1549,25 +1620,26 @@ impl Editor {
                             "adaptive_engine.detection",
                             [
                                 checkbox(
-                                    s.cpu_scheduler.memory_priority_foreground_detection_enabled
+                                    s.adaptive_engine_process
+                                        .memory_priority_foreground_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .memory_priority_foreground_detection_enabled = v
                                     },
                                     v
                                 )))
                                 .into(),
                                 checkbox(
-                                    s.cpu_scheduler
+                                    s.adaptive_engine_process
                                         .memory_priority_visible_window_detection_enabled
                                 )
                                 .label(t!("common.enabled").to_string())
                                 .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
                                     |s, v| {
-                                        s.cpu_scheduler
+                                        s.adaptive_engine_process
                                             .memory_priority_visible_window_detection_enabled = v
                                     },
                                     v
@@ -1579,34 +1651,45 @@ impl Editor {
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
-                                checkbox(s.cpu_scheduler.memory_priority_preserve_foreground)
-                                    .label(t!("adaptive_engine.same_or_higher").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler.memory_priority_preserve_foreground = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
-                                checkbox(s.cpu_scheduler.memory_priority_preserve_visible_window)
-                                    .label(t!("adaptive_engine.same_or_higher").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler
-                                                .memory_priority_preserve_visible_window = v
-                                        },
-                                        v
-                                    )))
-                                    .into(),
-                                checkbox(s.cpu_scheduler.memory_priority_preserve_background)
-                                    .label(t!("adaptive_engine.same_or_lower").to_string())
-                                    .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                        |s, v| {
-                                            s.cpu_scheduler.memory_priority_preserve_background = v
-                                        },
-                                        v
-                                    )))
-                                    .into()
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .memory_priority_preserve_foreground
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .memory_priority_preserve_foreground = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .memory_priority_preserve_visible_window
+                                )
+                                .label(t!("adaptive_engine.same_or_higher").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .memory_priority_preserve_visible_window = v
+                                    },
+                                    v
+                                )))
+                                .into(),
+                                checkbox(
+                                    s.adaptive_engine_process
+                                        .memory_priority_preserve_background
+                                )
+                                .label(t!("adaptive_engine.same_or_lower").to_string())
+                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
+                                    |s, v| {
+                                        s.adaptive_engine_process
+                                            .memory_priority_preserve_background = v
+                                    },
+                                    v
+                                )))
+                                .into()
                             ]
                         )
                     ]
@@ -1618,7 +1701,7 @@ impl Editor {
         }
         if !preset && tab == TuningTab::CustomRules {
             body = body
-                .push(text(t!("cpu_scheduler.custom_rules").to_string()))
+                .push(text(t!("adaptive_engine_process.custom_rules").to_string()))
                 .push(super::app_picker::view(
                     &self.path,
                     candidates,
@@ -1628,34 +1711,34 @@ impl Editor {
                     super::process_rules::can_add_process_candidate(
                         &self.path,
                         |path| {
-                            s.cpu_scheduler.custom_rules.iter().any(|rule| {
+                            s.adaptive_engine_process.custom_rules.iter().any(|rule| {
                                 super::process_rules::process_setting_matches(
                                     &rule.executable_path,
                                     path,
                                 )
                             })
                         },
-                        crate::cpu_scheduler::is_builtin_excluded,
+                        crate::adaptive_engine_process::is_builtin_excluded,
                     )
                     .then_some(Message::AddExclusion),
                     |path| {
                         super::process_rules::can_add_process_candidate(
                             path,
                             |path| {
-                                s.cpu_scheduler.custom_rules.iter().any(|rule| {
+                                s.adaptive_engine_process.custom_rules.iter().any(|rule| {
                                     super::process_rules::process_setting_matches(
                                         &rule.executable_path,
                                         path,
                                     )
                                 })
                             },
-                            crate::cpu_scheduler::is_builtin_excluded,
+                            crate::adaptive_engine_process::is_builtin_excluded,
                         )
                         .then_some(true)
                     },
                 ));
             let rules = s
-                .cpu_scheduler
+                .adaptive_engine_process
                 .custom_rules
                 .iter()
                 .enumerate()
@@ -1906,7 +1989,7 @@ mod tests {
     fn remove_updates_only_the_draft_and_discard_restores_the_rule() {
         let mut original = Settings::default();
         original
-            .cpu_scheduler
+            .adaptive_engine_process
             .custom_rules
             .push(ProcessExclusionRule {
                 executable_path: r"C:\Apps\test.exe".into(),
@@ -1915,15 +1998,15 @@ mod tests {
         let mut settings = crate::application::SettingsEditor::with_settings(original.clone());
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::RemoveExclusion(0));
-        assert!(settings.cpu_scheduler.custom_rules.is_empty());
+        assert!(settings.adaptive_engine_process.custom_rules.is_empty());
         assert_eq!(
-            settings.persisted().cpu_scheduler.custom_rules,
-            original.cpu_scheduler.custom_rules
+            settings.persisted().adaptive_engine_process.custom_rules,
+            original.adaptive_engine_process.custom_rules
         );
         settings.cancel();
         assert_eq!(
-            settings.cpu_scheduler.custom_rules,
-            original.cpu_scheduler.custom_rules
+            settings.adaptive_engine_process.custom_rules,
+            original.adaptive_engine_process.custom_rules
         );
     }
 
@@ -1967,7 +2050,7 @@ mod tests {
             let mut previous = Vec::new();
             for frame in 0..6 {
                 editor.priority_expanded[0][0] = (frame / 2) % 2 == 0;
-                settings.cpu_scheduler.process_priority_enabled = frame % 2 == 0;
+                settings.adaptive_engine_process.process_priority_enabled = frame % 2 == 0;
                 let mut view = editor.view(&settings, &[]);
                 tree.diff(view.as_widget());
                 let node = view.as_widget_mut().layout(
@@ -2065,43 +2148,66 @@ mod tests {
     fn independent_cpu_gates_and_preset_isolation() {
         let mut settings = Settings::default();
         let mut editor = Editor::default();
-        settings.cpu_scheduler.limit_background_processors_enabled = true;
+        settings
+            .adaptive_engine_process
+            .limit_background_processors_enabled = true;
         editor.update(
             &mut settings,
             Message::Toggle(
-                |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
+                |s, v| s.adaptive_engine_process.cpu_pressure_restraint_enabled = v,
                 false,
             ),
         );
-        assert!(settings.cpu_scheduler.limit_background_processors_enabled);
+        assert!(
+            settings
+                .adaptive_engine_process
+                .limit_background_processors_enabled
+        );
         let exclusion = ProcessExclusionRule {
             executable_path: r"C:\App\app.exe".into(),
             ..Default::default()
         };
-        settings.cpu_scheduler.custom_rules.push(exclusion.clone());
+        settings
+            .adaptive_engine_process
+            .custom_rules
+            .push(exclusion.clone());
         editor.update(&mut settings, Message::New);
         editor.update(
             &mut settings,
-            Message::Toggle(|s, v| s.cpu_scheduler.process_priority_enabled = v, false),
+            Message::Toggle(
+                |s, v| s.adaptive_engine_process.process_priority_enabled = v,
+                false,
+            ),
         );
-        assert!(settings.cpu_scheduler.process_priority_enabled);
+        assert!(settings.adaptive_engine_process.process_priority_enabled);
         editor.update(
             &mut settings,
             Message::Toggle(
-                |s, v| s.cpu_scheduler.cpu_pressure_restraint_enabled = v,
+                |s, v| s.adaptive_engine_process.cpu_pressure_restraint_enabled = v,
                 true,
             ),
         );
-        assert!(!settings.cpu_scheduler.cpu_pressure_restraint_enabled);
+        assert!(
+            !settings
+                .adaptive_engine_process
+                .cpu_pressure_restraint_enabled
+        );
         editor.update(&mut settings, Message::Name("Saved".into()));
         editor.update(&mut settings, Message::Save);
         editor.update(&mut settings, Message::Apply(0));
         assert!(!settings.adaptive_engine.enabled);
-        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
-        assert_eq!(settings.cpu_scheduler.custom_rules, vec![exclusion]);
-        assert!(!settings.cpu_scheduler.process_priority_enabled);
+        assert!(
+            settings
+                .adaptive_engine_process
+                .cpu_pressure_restraint_enabled
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.custom_rules,
+            vec![exclusion]
+        );
+        assert!(!settings.adaptive_engine_process.process_priority_enabled);
         editor.update(&mut settings, Message::RemoveExclusion(0));
-        assert!(settings.cpu_scheduler.custom_rules.is_empty());
+        assert!(settings.adaptive_engine_process.custom_rules.is_empty());
     }
     #[test]
     fn read_only_builtin_and_invalid_numbers_do_not_mutate() {
@@ -2111,12 +2217,12 @@ mod tests {
         editor.update(
             &mut settings,
             Message::Number(
-                |s, n| s.cpu_scheduler.reaction_time_ms = n,
+                |s, n| s.adaptive_engine_process.reaction_time_ms = n,
                 "1".into(),
                 250,
                 5000,
                 "reaction",
-                "cpu_scheduler.reaction_time",
+                "adaptive_engine_process.reaction_time",
             ),
         );
         editor.update(
@@ -2127,7 +2233,7 @@ mod tests {
         editor.update(
             &mut settings,
             Message::Toggle(
-                |s, v| s.cpu_scheduler.dynamic_resource_zones_enabled = v,
+                |s, v| s.adaptive_engine_process.dynamic_resource_zones_enabled = v,
                 true,
             ),
         );

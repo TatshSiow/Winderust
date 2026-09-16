@@ -24,7 +24,7 @@ Score component ratios from the same run, all vs paired `Off`:
 Command:
 
 ```powershell
-.\scripts\cpu_scheduler_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+.\scripts\adaptive_engine_process_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
 Results are local direction only. The script's controls and additional scenarios

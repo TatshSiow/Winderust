@@ -33,7 +33,7 @@ use features::{
         dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
         thread_priority,
     },
-    winderust_features::{background_efficiency, cpu_scheduler, memory_trim},
+    winderust_features::{adaptive_engine_process, background_efficiency, memory_trim},
 };
 use ui::app;
 

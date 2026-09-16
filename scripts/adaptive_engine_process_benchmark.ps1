@@ -240,7 +240,7 @@ function Invoke-WithProcessorPolicy {
     }
 }
 
-if (-not ('CpuSchedulerBenchmarkNative' -as [type])) {
+if (-not ('AdaptiveEngineProcessBenchmarkNative' -as [type])) {
     Add-Type -ReferencedAssemblies @('System.dll', 'System.Core.dll') -TypeDefinition @"
 using System;
 using System.Diagnostics;
@@ -249,7 +249,7 @@ using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
-public static class CpuSchedulerBenchmarkNative
+public static class AdaptiveEngineProcessBenchmarkNative
 {
     private static long sink;
 
@@ -620,36 +620,36 @@ function Measure-ScoreBenchmarks {
         l2_cache_proxy_kb = $l2CacheKb
         memory_copy_kb = $memoryCopyKb
         instruction_set_probe = 'managed_float_batch_no_intrinsics'
-        simd_vector_available = [CpuSchedulerBenchmarkNative]::IsVectorHardwareAccelerated()
-        simd_float_lanes = [CpuSchedulerBenchmarkNative]::VectorFloatLanes()
+        simd_vector_available = [AdaptiveEngineProcessBenchmarkNative]::IsVectorHardwareAccelerated()
+        simd_float_lanes = [AdaptiveEngineProcessBenchmarkNative]::VectorFloatLanes()
     }
 
     $score.int_arithmetic_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::IntArithmeticMops($scoreIterations)
+        [AdaptiveEngineProcessBenchmarkNative]::IntArithmeticMops($scoreIterations)
     }
     $score.double_arithmetic_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::DoubleArithmeticMops($scoreIterations)
+        [AdaptiveEngineProcessBenchmarkNative]::DoubleArithmeticMops($scoreIterations)
     }
     $score.float_batch_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::SimdFloatMops([Math]::Max(1, [int]($scoreIterations / 2)))
+        [AdaptiveEngineProcessBenchmarkNative]::SimdFloatMops([Math]::Max(1, [int]($scoreIterations / 2)))
     }
     $score.gzip_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::GZipRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+        [AdaptiveEngineProcessBenchmarkNative]::GZipRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
     }
     $score.deflate_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::DeflateRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+        [AdaptiveEngineProcessBenchmarkNative]::DeflateRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
     }
     $score.sha256_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::Sha256Mbps($scoreDataKbValue, $scoreRoundsValue * 4)
+        [AdaptiveEngineProcessBenchmarkNative]::Sha256Mbps($scoreDataKbValue, $scoreRoundsValue * 4)
     }
     $score.aes_cbc_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::AesCbcRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+        [AdaptiveEngineProcessBenchmarkNative]::AesCbcRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
     }
     $score.l2_cache_scan_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::MemoryScanMbps($l2CacheKb, $scoreRoundsValue * 128)
+        [AdaptiveEngineProcessBenchmarkNative]::MemoryScanMbps($l2CacheKb, $scoreRoundsValue * 128)
     }
     $score.memory_copy_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
-        [CpuSchedulerBenchmarkNative]::MemoryCopyMbps($memoryCopyKb, $scoreRoundsValue * 16)
+        [AdaptiveEngineProcessBenchmarkNative]::MemoryCopyMbps($memoryCopyKb, $scoreRoundsValue * 16)
     }
 
     return [pscustomobject]$score
@@ -747,8 +747,8 @@ function Set-CurrentThreadPrioritySetting {
         return $false
     }
 
-    $thread = [CpuSchedulerBenchmarkNative]::GetCurrentThread()
-    if (-not [CpuSchedulerBenchmarkNative]::SetThreadPriority($thread, [int]$threadPriorityRaw[$Setting])) {
+    $thread = [AdaptiveEngineProcessBenchmarkNative]::GetCurrentThread()
+    if (-not [AdaptiveEngineProcessBenchmarkNative]::SetThreadPriority($thread, [int]$threadPriorityRaw[$Setting])) {
         throw 'SetThreadPriority failed.'
     }
     return $true
@@ -761,7 +761,7 @@ function Set-ProcessIoPrioritySetting {
     }
 
     $raw = [uint32]$ioPriorityRaw[$Setting]
-    $status = [CpuSchedulerBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
+    $status = [AdaptiveEngineProcessBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
     if ($status -lt 0) {
         throw "NtSetInformationProcess failed with status $status"
     }
@@ -781,9 +781,9 @@ function Set-ProcessMemoryPrioritySetting {
     if (-not $memoryPriorityRaw.ContainsKey($Setting)) {
         return $false
     }
-    $info = New-Object 'CpuSchedulerBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
+    $info = New-Object 'AdaptiveEngineProcessBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
     $info.MemoryPriority = [uint32]$memoryPriorityRaw[$Setting]
-    if (-not [CpuSchedulerBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
+    if (-not [AdaptiveEngineProcessBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
         throw 'SetProcessInformation memory priority failed.'
     }
     return $true
@@ -791,12 +791,12 @@ function Set-ProcessMemoryPrioritySetting {
 
 function Set-ProcessEfficiencyMode {
     param([Diagnostics.Process]$Process, [bool]$Enabled = $true)
-    $state = New-Object 'CpuSchedulerBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
+    $state = New-Object 'AdaptiveEngineProcessBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
     $state.Version = 1
     $state.ControlMask = $powerThrottlingExecutionSpeed
     $state.StateMask = if ($Enabled) { $powerThrottlingExecutionSpeed } else { 0 }
     $size = [Runtime.InteropServices.Marshal]::SizeOf($state)
-    if (-not [CpuSchedulerBenchmarkNative]::SetProcessPowerThrottling($Process.Handle, $processPowerThrottlingClass, [ref]$state, [uint32]$size)) {
+    if (-not [AdaptiveEngineProcessBenchmarkNative]::SetProcessPowerThrottling($Process.Handle, $processPowerThrottlingClass, [ref]$state, [uint32]$size)) {
         throw 'SetProcessInformation Power Throttling failed.'
     }
 }
@@ -808,7 +808,7 @@ function Set-ProcessGpuPrioritySetting {
     }
 
     $raw = [int]$gpuPriorityRaw[$Setting]
-    $status = [CpuSchedulerBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
+    $status = [AdaptiveEngineProcessBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
     if ($status -ge 0) {
         return 'Applied'
     }
@@ -866,8 +866,8 @@ function Restore-ForegroundAssistControls {
     )
 
     try {
-        $thread = [CpuSchedulerBenchmarkNative]::GetCurrentThread()
-        [void][CpuSchedulerBenchmarkNative]::SetThreadPriority($thread, $OriginalThreadPriority)
+        $thread = [AdaptiveEngineProcessBenchmarkNative]::GetCurrentThread()
+        [void][AdaptiveEngineProcessBenchmarkNative]::SetThreadPriority($thread, $OriginalThreadPriority)
     } catch {
     }
     if ($ioPriorityRaw.ContainsKey($AssistControls.foreground_io_priority)) {
@@ -1277,10 +1277,10 @@ function Get-WorkerEfficiencyCount {
             if ($worker.HasExited) {
                 continue
             }
-            $state = New-Object 'CpuSchedulerBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
+            $state = New-Object 'AdaptiveEngineProcessBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
             $state.Version = 1
             $size = [Runtime.InteropServices.Marshal]::SizeOf($state)
-            if ([CpuSchedulerBenchmarkNative]::GetProcessPowerThrottling(
+            if ([AdaptiveEngineProcessBenchmarkNative]::GetProcessPowerThrottling(
                 $worker.Handle,
                 $processPowerThrottlingClass,
                 [ref]$state,
@@ -1508,8 +1508,8 @@ function Run-Case {
     $assistStatus = New-AssistStatus
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
     $originalPriority = $currentProcess.PriorityClass
-    $originalThreadPriority = [CpuSchedulerBenchmarkNative]::GetThreadPriority(
-        [CpuSchedulerBenchmarkNative]::GetCurrentThread()
+    $originalThreadPriority = [AdaptiveEngineProcessBenchmarkNative]::GetThreadPriority(
+        [AdaptiveEngineProcessBenchmarkNative]::GetCurrentThread()
     )
     $originalPriorityBoost = $null
     try {

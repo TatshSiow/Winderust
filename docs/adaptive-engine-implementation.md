@@ -6,11 +6,11 @@ a second automation engine.
 
 ## Components
 
-- `src/ui/app/shared/presets.rs` defines the visible Adaptive Engine presets and CPU Scheduler
+- `src/ui/app/shared/presets.rs` defines the visible Adaptive Engine presets and Adaptive Engine
   preset values.
 - `src/backend/automation/runner.rs` collects demand signals, selects the active processor-power
   profile, and coordinates feature policies and controllers.
-- `src/features/winderust_features/cpu_scheduler.rs` implements the internal
+- `src/features/winderust_features/adaptive_engine_process.rs` implements the internal
   CPU-pressure, target-selection, hysteresis, and priority-assist policy.
 - `src/features/winderust_features/background_efficiency.rs` selects eligible targets and submits
   Background Efficiency claims.
@@ -35,12 +35,12 @@ with internal scheduling presets:
 | Speed - Fixed maximum | Minimum 25%, maximum 100%, aggressive boost | Max Foreground |
 
 Changing tuning values makes the selected preset `Custom`. Custom presets capture Adaptive
-Engine and CPU Scheduler tuning only; enable switches, custom rules, exclusions, and the separate
+Engine and Adaptive Engine tuning only; enable switches, custom rules, exclusions, and the separate
 Background Efficiency feature remain independently owned.
 Adaptive Engine and preset details render the same CPU Behaviour, Processor Power, and Priority
 Control tuning tabs, so every preset-owned control has one UI implementation. Processor Power uses
 separate setting cards; disabling its policy dims and blocks the value cards while preserving the
-policy switch. The live page adds a Custom Rules tab for CPU Scheduler exclusions. CPU Scheduler
+policy switch. The live page adds a Custom Rules tab for Adaptive Engine exclusions. Adaptive Engine
 has no separate master switch: CPU Pressure Restraint and Limit Background Processors are the two
 independent CPU Behaviour controls. Priority Control uses one Focus / Visible Window /
 Background table with the safe automatic subset of the main Process Priority choices. Adaptive
@@ -71,10 +71,10 @@ switch.
   Background Pressure, while app launches and genuinely heavy Focus Process demand use Focus and Launch. The A/C and Battery
   boost policy/mode values for both contexts are editable and stored with the Adaptive preset.
 - Winderust applies EcoQoS to itself while the low-power Adaptive Engine path is active.
-- Background Efficiency and CPU Scheduler policy submit typed claims through RuntimeCore. Each
+- Background Efficiency and Adaptive Engine policy submit typed claims through RuntimeCore. Each
   controller revalidates exact identity, access, protection, and cross-session policy before a
   mutation.
-- CPU Scheduler checks CPU pressure at the configured reaction interval whenever either CPU
+- Adaptive Engine checks CPU pressure at the configured reaction interval whenever either CPU
   Behaviour control is enabled. Foreground and process
   lifecycle events may schedule an immediate safety pass. Focus processes are released immediately;
   eligible Visible Window and Background processes receive their configured soft pressure policy
@@ -89,7 +89,7 @@ switch.
 - Existing throttling, priority, CPU Set, affinity, and power-plan state is restored when its
   claim is released or Winderust shuts down. The watchdog independently restores committed
   externally persistent state after an abnormal exit.
-- Processor-power demand keeps its independent 500 ms sampling deadline; changing CPU Scheduler
+- Processor-power demand keeps its independent 500 ms sampling deadline; changing Adaptive Engine
   reaction time does not change Processor Power behavior.
 
 ## Ownership and Recovery

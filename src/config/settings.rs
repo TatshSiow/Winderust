@@ -11,8 +11,8 @@ use crate::rules::{
 
 pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
 pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
-pub const CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS: u64 = 250;
-pub const CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS: u64 = 5_000;
+pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MIN_MS: u64 = 250;
+pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MAX_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -42,7 +42,7 @@ pub struct Settings {
     pub cpu_limiter: CpuLimiterSettings,
     #[serde(default)]
     pub by_running_app: ByRunningAppSettings,
-    pub cpu_scheduler: CpuSchedulerSettings,
+    pub adaptive_engine_process: AdaptiveEngineProcessSettings,
     #[serde(default)]
     pub process_priority: ProcessPrioritySettings,
     #[serde(default)]
@@ -377,7 +377,7 @@ pub struct AdaptiveEnginePreset {
     pub base_processor_policy: ProcessorPowerValues,
     pub background_pressure_profile: AdaptivePowerBoostValues,
     pub focus_and_launch_profile: AdaptivePowerBoostValues,
-    pub cpu_scheduler: CpuSchedulerSettings,
+    pub adaptive_engine_process: AdaptiveEngineProcessSettings,
 }
 
 impl Default for AdaptiveEngineSettings {
@@ -934,7 +934,7 @@ pub struct ByRunningAppRule {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CpuSchedulerSettings {
+pub struct AdaptiveEngineProcessSettings {
     pub process_priority_enabled: bool,
     #[serde(default = "default_true")]
     pub process_priority_foreground_detection_enabled: bool,
@@ -1590,7 +1590,7 @@ impl Default for Settings {
             advanced_power_plan_tuning_presets: Vec::new(),
             cpu_limiter: CpuLimiterSettings::default(),
             by_running_app: ByRunningAppSettings::default(),
-            cpu_scheduler: CpuSchedulerSettings::default(),
+            adaptive_engine_process: AdaptiveEngineProcessSettings::default(),
             process_priority: ProcessPrioritySettings::default(),
             thread_priority: ThreadPrioritySettings::default(),
             dynamic_priority_boost: DynamicPriorityBoostSettings::default(),
@@ -1922,7 +1922,7 @@ impl Default for CpuLimiterSettings {
     }
 }
 
-impl Default for CpuSchedulerSettings {
+impl Default for AdaptiveEngineProcessSettings {
     fn default() -> Self {
         Self {
             process_priority_enabled: default_true(),
@@ -2337,7 +2337,7 @@ impl CpuAllocationSettings {
     }
 }
 
-impl CpuSchedulerSettings {
+impl AdaptiveEngineProcessSettings {
     pub const fn background_efficiency_mode_for(&self, focus: bool, visible_window: bool) -> bool {
         if focus && self.focus_process_background_efficiency_override_enabled {
             self.focus_process_background_efficiency_mode
@@ -2608,7 +2608,7 @@ mod tests {
 
     #[test]
     fn custom_rules_match_only_the_configured_executable_path() {
-        let settings = CpuSchedulerSettings {
+        let settings = AdaptiveEngineProcessSettings {
             custom_rules: vec![
                 ProcessExclusionRule {
                     enabled: true,

@@ -326,27 +326,28 @@ impl Editor {
     }
 }
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
-    match feature {
-        ActionLogFeature::AppSuspension => t!("nav.app_suspension").to_string(),
-        ActionLogFeature::CpuSetsSoft => t!("nav.cpu_sets_soft").to_string(),
-        ActionLogFeature::ProcessorAffinityHard => t!("nav.processor_affinity_hard").to_string(),
-        ActionLogFeature::BackgroundEfficiency => t!("nav.background_efficiency").to_string(),
-        ActionLogFeature::CpuLimiter => t!("nav.cpu_limiter").to_string(),
-        ActionLogFeature::ByForeground => t!("nav.by_foreground").to_string(),
-        ActionLogFeature::ByRunningApp => t!("nav.by_running_app").to_string(),
-        ActionLogFeature::ByCpuLoad => t!("nav.by_cpu_load").to_string(),
-        ActionLogFeature::ByActivity => t!("nav.by_activity").to_string(),
-        ActionLogFeature::ByTime => t!("nav.by_time").to_string(),
-        ActionLogFeature::CpuScheduler => t!("nav.cpu_scheduler").to_string(),
-        ActionLogFeature::ProcessPriority => t!("nav.process_priority").to_string(),
-        ActionLogFeature::ThreadPriority => t!("nav.thread_priority").to_string(),
-        ActionLogFeature::DynamicPriorityBoost => t!("nav.dynamic_priority_boost").to_string(),
-        ActionLogFeature::IoPriority => t!("nav.io_priority").to_string(),
-        ActionLogFeature::GpuPriority => t!("nav.gpu_priority").to_string(),
-        ActionLogFeature::MemoryPriority => t!("nav.memory_priority").to_string(),
-        ActionLogFeature::MemoryTrim => t!("nav.memory_trim").to_string(),
-        ActionLogFeature::TimerResolution => t!("nav.timer_resolution").to_string(),
-    }
+    let page = match feature {
+        ActionLogFeature::AppSuspension => super::Page::AppSuspension,
+        ActionLogFeature::CpuSetsSoft => super::Page::CpuSetsSoft,
+        ActionLogFeature::ProcessorAffinityHard => super::Page::ProcessorAffinityHard,
+        ActionLogFeature::BackgroundEfficiency => super::Page::BackgroundEfficiency,
+        ActionLogFeature::CpuLimiter => super::Page::CpuLimiter,
+        ActionLogFeature::ByForeground => super::Page::ByForeground,
+        ActionLogFeature::ByRunningApp => super::Page::ByRunningApp,
+        ActionLogFeature::ByCpuLoad => super::Page::ByCpuLoad,
+        ActionLogFeature::ByActivity => super::Page::ByActivity,
+        ActionLogFeature::ByTime => super::Page::ByTime,
+        ActionLogFeature::AdaptiveEngine => super::Page::AdaptiveEngine,
+        ActionLogFeature::ProcessPriority => super::Page::ProcessPriority,
+        ActionLogFeature::ThreadPriority => super::Page::ThreadPriority,
+        ActionLogFeature::DynamicPriorityBoost => super::Page::DynamicPriorityBoost,
+        ActionLogFeature::IoPriority => super::Page::IoPriority,
+        ActionLogFeature::GpuPriority => super::Page::GpuPriority,
+        ActionLogFeature::MemoryPriority => super::Page::MemoryPriority,
+        ActionLogFeature::MemoryTrim => super::Page::MemoryTrim,
+        ActionLogFeature::TimerResolution => super::Page::TimerResolution,
+    };
+    page.label()
 }
 
 pub(super) fn action_log_result_label(result: ActionLogResult) -> String {
@@ -393,7 +394,7 @@ const FEATURES: [ActionLogFeature; 19] = [
     ActionLogFeature::ByCpuLoad,
     ActionLogFeature::ByActivity,
     ActionLogFeature::ByTime,
-    ActionLogFeature::CpuScheduler,
+    ActionLogFeature::AdaptiveEngine,
     ActionLogFeature::ProcessPriority,
     ActionLogFeature::ThreadPriority,
     ActionLogFeature::DynamicPriorityBoost,

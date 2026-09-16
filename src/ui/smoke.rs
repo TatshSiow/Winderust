@@ -128,7 +128,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         TuningTab::PriorityControl,
                     )));
                 } else if index == 7 {
-                    app.settings.cpu_scheduler.custom_rules.push(
+                    app.settings.adaptive_engine_process.custom_rules.push(
                         crate::config::ProcessExclusionRule {
                             executable_path: r"C:\Apps\Example\example.exe".into(),
                             enabled: false,

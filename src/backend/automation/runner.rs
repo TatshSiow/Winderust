@@ -84,10 +84,10 @@ pub(super) struct RuntimeCore {
     cpu_limiter_manager: CpuLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
-    cpu_scheduler_manager: CpuSchedulerManager,
+    adaptive_engine_process_manager: AdaptiveEngineProcessManager,
     focus_and_launch_profile_active: bool,
     cpu_pressure_restraint_active: bool,
-    cpu_scheduler_foreground_cpu_usage_tenths: Option<u16>,
+    adaptive_engine_process_foreground_cpu_usage_tenths: Option<u16>,
     process_priority_manager: ProcessPriorityManager,
     priority_efficiency_controller: PriorityEfficiencyController,
     thread_priority_manager: ThreadPriorityManager,
@@ -210,7 +210,7 @@ impl RuntimeCore {
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
         }
-        self.run_cpu_scheduler_update(&settings, &mut observations);
+        self.run_adaptive_engine_process_update(&settings, &mut observations);
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
@@ -551,18 +551,18 @@ impl RuntimeCore {
         )
     }
 
-    pub(super) fn run_cpu_scheduler_update(
+    pub(super) fn run_adaptive_engine_process_update(
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> CpuSchedulerSnapshot {
+    ) -> AdaptiveEngineProcessSnapshot {
         self.refresh_cpu_usage();
         let foreground_process_id = observations.foreground_process_id();
         let excluded_process_ids = self.by_running_app_manager.active_process_ids();
         let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
-        let snapshot = self.cpu_scheduler_manager.update(
-            CpuSchedulerUpdate {
-                settings: &settings.cpu_scheduler,
+        let snapshot = self.adaptive_engine_process_manager.update(
+            AdaptiveEngineProcessUpdate {
+                settings: &settings.adaptive_engine_process,
                 automation_enabled: settings.general.enabled && settings.adaptive_engine.enabled,
                 allow_cross_session_process_control: settings
                     .general
@@ -581,7 +581,8 @@ impl RuntimeCore {
         );
         self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
         self.cpu_pressure_restraint_active = snapshot.cpu_pressure_restraint_active;
-        self.cpu_scheduler_foreground_cpu_usage_tenths = snapshot.foreground_cpu_usage_tenths;
+        self.adaptive_engine_process_foreground_cpu_usage_tenths =
+            snapshot.foreground_cpu_usage_tenths;
         snapshot
     }
 
@@ -655,7 +656,7 @@ impl RuntimeCore {
             performance_peak_cpu_percent: processor_demand.performance_peak_cpu_percent,
             efficiency_peak_cpu_percent: processor_demand.efficiency_peak_cpu_percent,
             foreground_cpu_percent: self
-                .cpu_scheduler_foreground_cpu_usage_tenths
+                .adaptive_engine_process_foreground_cpu_usage_tenths
                 .map(|usage| f32::from(usage) / 10.0),
             io_bytes_per_second: io_usage.bytes_per_second,
         });
@@ -707,7 +708,7 @@ impl RuntimeCore {
             .policy_target_process_ids(&[
                 ControlOwner::BackgroundEfficiency,
                 ControlOwner::AdaptiveEngine,
-                ControlOwner::CpuSchedulerFocusPriority,
+                ControlOwner::AdaptiveEngineProcessFocusPriority,
             ]);
         self.process_priority_manager.update(
             &mut self.priority_efficiency_controller,

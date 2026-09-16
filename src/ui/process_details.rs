@@ -76,7 +76,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
             .rules_mut(s)
             .retain(|r| !process_setting_matches(&r.executable_path, &path)),
         Message::Adaptive(included) => {
-            let rules = &mut s.cpu_scheduler.custom_rules;
+            let rules = &mut s.adaptive_engine_process.custom_rules;
             if included {
                 rules.retain(|r| !process_setting_matches(&r.executable_path, &path));
             } else if let Some(r) = rules
@@ -257,7 +257,7 @@ pub(super) fn view<'a>(
     plans: &[PowerPlan],
 ) -> Element<'a, Message> {
     let adaptive = !s
-        .cpu_scheduler
+        .adaptive_engine_process
         .custom_rules
         .iter()
         .any(|r| r.enabled && process_setting_matches(&r.executable_path, path));

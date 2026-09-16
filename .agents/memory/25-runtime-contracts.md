@@ -94,18 +94,18 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## CPU allocation and Adaptive Engine
 
 - CPU allocation has one runtime coordinator and deterministic precedence: CPU Sets (Soft) >
-  Processor Affinity (Hard) > Adaptive Engine / CPU Scheduler. Feature modules own
+  Processor Affinity (Hard) > Adaptive Engine. Feature modules own
   policy only; the coordinator alone owns affinity/CPU Set baselines, mutation, compensation,
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
   this handoff and directly restores all coordinator-owned state in reverse application order.
-- CPU Sets, Processor Affinity, and CPU Scheduler CPU allocation are a complete
+- CPU Sets, Processor Affinity, and Adaptive Engine CPU allocation are a complete
   typed family cutover through `src/control/cpu_allocation.rs`. Do not restore feature-owned raw
   setters, property baselines, recovery calls, or affinity-owning `Drop` paths. Exact identity,
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
   the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
   `src/platform/windows/cpu_allocation.rs`.
-- CPU Scheduler has no separate master gate. Within an enabled Adaptive Engine, CPU Pressure
+- Adaptive Engine has no separate master gate. Within an enabled Adaptive Engine, CPU Pressure
   Restraint and Limit Background Processors run independently; disabling one must not disable or
   apply the other. Limit Background Processors exposes one explicit processor selection:
   least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
@@ -118,7 +118,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   Selecting a preset copies its current mask into that tier; later preset edits or deletion do not
   silently rewrite configured rules.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
-- Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and CPU Scheduler tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
+- Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 
 ## Priority and efficiency
 
@@ -129,7 +129,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Process Priority, Power Throttling/Efficiency Mode, Dynamic Priority Boost,
   Thread Priority, I/O Priority, GPU Priority, and Memory Priority are complete
   typed process-control cutovers. Static Priority Control, Background
-  Efficiency, Adaptive Engine/CPU Scheduler policies, and Process List
+  Efficiency, Adaptive Engine/Adaptive Engine policies, and Process List
   one-shot actions share their `RuntimeCore` controllers; feature code owns
   policy only, and the crash helper remains the independent recovery mirror.
   Dynamic Priority Boost's raw live query/set pair is isolated in
@@ -149,13 +149,13 @@ Read the relevant section before changing feature policy, ownership, restoration
   query/set calls are isolated in `src/platform/windows/thread_priority.rs`.
   Thread Priority identity includes the exact process instance, thread ID, and
   thread creation time. Do not restore feature-owned setters, Process List
-  restore closures, or duplicate CPU Scheduler setters for these properties.
+  restore closures, or duplicate Adaptive Engine setters for these properties.
   GPU Priority treats a temporarily unavailable GPU scheduling context as
-  pending and retries without auto-excluding the process. CPU Scheduler keeps
+  pending and retries without auto-excluding the process. Adaptive Engine keeps
   Process Priority independent when Power Throttling is unavailable and
   remembers that unavailable control for the exact process instance so it does
   not retry-spam.
-- Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping CPU Scheduler claim, while non-overlapping CPU Scheduler claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
+- Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping Adaptive Engine claim, while non-overlapping Adaptive Engine claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
 
 ## Timer Resolution
 

@@ -17,6 +17,9 @@ use crate::{
         activity_snapshot, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
         InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
+    adaptive_engine_process::{
+        AdaptiveEngineProcessManager, AdaptiveEngineProcessSnapshot, AdaptiveEngineProcessUpdate,
+    },
     app_suspension::{AppSuspensionManager, AppSuspensionSnapshot, AppSuspensionStatus},
     application::settings::{AutoExclusionPatch, RuntimeSettingsSnapshot, SettingsRevision},
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
@@ -48,7 +51,6 @@ use crate::{
         LogicalProcessorInfo, LogicalProcessorKind,
     },
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
-    cpu_scheduler::{CpuSchedulerManager, CpuSchedulerSnapshot, CpuSchedulerUpdate},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
@@ -299,7 +301,7 @@ pub struct RuntimeFeatureStatus {
     pub processor_affinity_hard: CpuAllocationSnapshot,
     pub cpu_limiter: CpuLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
-    pub cpu_scheduler: CpuSchedulerSnapshot,
+    pub adaptive_engine_process: AdaptiveEngineProcessSnapshot,
     pub process_priority: ProcessPrioritySnapshot,
     pub thread_priority: ThreadPrioritySnapshot,
     pub dynamic_priority_boost: DynamicPriorityBoostSnapshot,
@@ -982,7 +984,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             adaptive_engine_enabled,
             PERFORMANCE_MODE_REFRESH_INTERVAL,
         );
-        let cpu_scheduler_refresh_interval = cpu_scheduler_refresh_interval(settings);
+        let adaptive_engine_process_refresh_interval =
+            adaptive_engine_process_refresh_interval(settings);
         let process_priority_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1108,8 +1111,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             settings_changed || feature_refresh_required(settings, cpu_limiter_required(settings));
         let by_running_app_refresh_required = settings_changed
             || feature_refresh_required(settings, by_running_app_required(settings));
-        let cpu_scheduler_refresh_required = settings_changed
-            || feature_refresh_required(settings, cpu_scheduler_required(settings));
+        let adaptive_engine_process_refresh_required = settings_changed
+            || feature_refresh_required(settings, adaptive_engine_process_required(settings));
         let bottleneck_classifier_refresh_required = settings_changed
             || feature_refresh_required(settings, bottleneck_classifier_required(settings));
         let adaptive_power_plan_refresh_required = settings_changed
@@ -1184,13 +1187,16 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 background_efficiency_refresh_interval,
             );
         }
-        if cpu_scheduler_refresh_required && scheduler.is_due(RefreshDomain::CpuScheduler, now) {
-            let cpu_scheduler_status = runner.run_cpu_scheduler_update(settings, &mut observations);
-            update_cpu_scheduler_status(&shared, cpu_scheduler_status);
+        if adaptive_engine_process_refresh_required
+            && scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now)
+        {
+            let adaptive_engine_process_status =
+                runner.run_adaptive_engine_process_update(settings, &mut observations);
+            update_adaptive_engine_process_status(&shared, adaptive_engine_process_status);
             scheduler.schedule_after(
-                RefreshDomain::CpuScheduler,
+                RefreshDomain::AdaptiveEngineProcess,
                 now,
-                cpu_scheduler_refresh_interval,
+                adaptive_engine_process_refresh_interval,
             );
         }
         if bottleneck_classifier_refresh_required
@@ -1470,9 +1476,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                     by_running_app_refresh_interval,
                 ),
                 (
-                    cpu_scheduler_refresh_required,
-                    RefreshDomain::CpuScheduler,
-                    cpu_scheduler_refresh_interval,
+                    adaptive_engine_process_refresh_required,
+                    RefreshDomain::AdaptiveEngineProcess,
+                    adaptive_engine_process_refresh_interval,
                 ),
                 (
                     bottleneck_classifier_refresh_required,

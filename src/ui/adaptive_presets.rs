@@ -72,7 +72,7 @@ pub(super) fn apply_built_in_adaptive_engine_preset(
     settings.adaptive_engine.background_pressure_profile =
         AdaptivePowerBoostValues::BACKGROUND_PRESSURE;
     settings.adaptive_engine.focus_and_launch_profile = AdaptivePowerBoostValues::FOCUS_AND_LAUNCH;
-    apply_cpu_scheduler_preset(&mut settings.cpu_scheduler, preset);
+    apply_adaptive_engine_process_preset(&mut settings.adaptive_engine_process, preset);
 }
 
 pub(super) fn capture_adaptive_engine_preset(
@@ -91,7 +91,9 @@ pub(super) fn capture_adaptive_engine_preset(
             .adaptive_engine
             .focus_and_launch_profile
             .normalized(),
-        cpu_scheduler: comparable_cpu_scheduler_tuning(&settings.cpu_scheduler),
+        adaptive_engine_process: comparable_adaptive_engine_process_tuning(
+            &settings.adaptive_engine_process,
+        ),
     }
 }
 
@@ -103,21 +105,33 @@ pub(super) fn apply_adaptive_engine_preset(settings: &mut Settings, preset: &Ada
     settings.adaptive_engine.focus_and_launch_profile =
         preset.focus_and_launch_profile.normalized();
 
-    let exclusions = std::mem::take(&mut settings.cpu_scheduler.custom_rules);
-    let io_exclusions = std::mem::take(&mut settings.cpu_scheduler.io_priority.exclusions);
-    let thread_exclusions = std::mem::take(&mut settings.cpu_scheduler.thread_priority.exclusions);
-    let dynamic_boost_exclusions =
-        std::mem::take(&mut settings.cpu_scheduler.dynamic_priority_boost.exclusions);
-    let gpu_exclusions = std::mem::take(&mut settings.cpu_scheduler.gpu_priority.exclusions);
-    settings.cpu_scheduler = preset.cpu_scheduler.clone();
-    settings.cpu_scheduler.custom_rules = exclusions;
-    settings.cpu_scheduler.io_priority.exclusions = io_exclusions;
-    settings.cpu_scheduler.thread_priority.exclusions = thread_exclusions;
-    settings.cpu_scheduler.dynamic_priority_boost.exclusions = dynamic_boost_exclusions;
-    settings.cpu_scheduler.gpu_priority.exclusions = gpu_exclusions;
+    let exclusions = std::mem::take(&mut settings.adaptive_engine_process.custom_rules);
+    let io_exclusions =
+        std::mem::take(&mut settings.adaptive_engine_process.io_priority.exclusions);
+    let thread_exclusions =
+        std::mem::take(&mut settings.adaptive_engine_process.thread_priority.exclusions);
+    let dynamic_boost_exclusions = std::mem::take(
+        &mut settings
+            .adaptive_engine_process
+            .dynamic_priority_boost
+            .exclusions,
+    );
+    let gpu_exclusions =
+        std::mem::take(&mut settings.adaptive_engine_process.gpu_priority.exclusions);
+    settings.adaptive_engine_process = preset.adaptive_engine_process.clone();
+    settings.adaptive_engine_process.custom_rules = exclusions;
+    settings.adaptive_engine_process.io_priority.exclusions = io_exclusions;
+    settings.adaptive_engine_process.thread_priority.exclusions = thread_exclusions;
+    settings
+        .adaptive_engine_process
+        .dynamic_priority_boost
+        .exclusions = dynamic_boost_exclusions;
+    settings.adaptive_engine_process.gpu_priority.exclusions = gpu_exclusions;
 }
 
-fn comparable_cpu_scheduler_tuning(settings: &CpuSchedulerSettings) -> CpuSchedulerSettings {
+fn comparable_adaptive_engine_process_tuning(
+    settings: &AdaptiveEngineProcessSettings,
+) -> AdaptiveEngineProcessSettings {
     let mut settings = settings.clone();
     settings.custom_rules.clear();
     settings.io_priority.exclusions.clear();
@@ -132,13 +146,13 @@ pub(super) fn background_processor_selection_label(
 ) -> String {
     match selection {
         BackgroundProcessorSelection::LeastUsed => {
-            t!("cpu_scheduler.processor_selection_least_used_all").to_string()
+            t!("adaptive_engine_process.processor_selection_least_used_all").to_string()
         }
         BackgroundProcessorSelection::LeastUsedPerformanceCores => {
-            t!("cpu_scheduler.processor_selection_least_used_p_cores").to_string()
+            t!("adaptive_engine_process.processor_selection_least_used_p_cores").to_string()
         }
         BackgroundProcessorSelection::LeastUsedEfficiencyCores => {
-            t!("cpu_scheduler.processor_selection_least_used_e_cores").to_string()
+            t!("adaptive_engine_process.processor_selection_least_used_e_cores").to_string()
         }
         BackgroundProcessorSelection::PerformanceCores => t!("cpu_allocation.p_cores").to_string(),
         BackgroundProcessorSelection::EfficiencyCores => t!("cpu_allocation.e_cores").to_string(),
@@ -152,11 +166,11 @@ pub(super) fn background_processor_selection_label(
     }
 }
 
-pub(super) fn apply_cpu_scheduler_preset(
-    settings: &mut CpuSchedulerSettings,
+pub(super) fn apply_adaptive_engine_process_preset(
+    settings: &mut AdaptiveEngineProcessSettings,
     preset: BuiltInAdaptiveEnginePreset,
 ) {
-    let values = cpu_scheduler_preset_values(preset);
+    let values = adaptive_engine_process_preset_values(preset);
     settings.process_priority_enabled = values.process_priority_enabled;
     settings.process_priority_foreground_detection_enabled = true;
     settings.process_priority_visible_window_detection_enabled = true;
@@ -200,7 +214,7 @@ pub(super) fn apply_cpu_scheduler_preset(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct CpuSchedulerPresetValues {
+pub(super) struct AdaptiveEngineProcessPresetValues {
     pub(super) process_priority_enabled: bool,
     pub(super) background_efficiency_enabled: bool,
     pub(super) background_efficiency_mode: bool,
@@ -228,12 +242,12 @@ pub(super) struct CpuSchedulerPresetValues {
     pub(super) maximum_restrained_apps: u8,
 }
 
-pub(super) fn cpu_scheduler_preset_values(
+pub(super) fn adaptive_engine_process_preset_values(
     preset: BuiltInAdaptiveEnginePreset,
-) -> CpuSchedulerPresetValues {
+) -> AdaptiveEngineProcessPresetValues {
     match preset {
         BuiltInAdaptiveEnginePreset::PowerSave | BuiltInAdaptiveEnginePreset::Balanced => {
-            CpuSchedulerPresetValues {
+            AdaptiveEngineProcessPresetValues {
                 process_priority_enabled: true,
                 background_efficiency_enabled: true,
                 background_efficiency_mode: true,
@@ -261,7 +275,7 @@ pub(super) fn cpu_scheduler_preset_values(
                 maximum_restrained_apps: 4,
             }
         }
-        BuiltInAdaptiveEnginePreset::Performance => CpuSchedulerPresetValues {
+        BuiltInAdaptiveEnginePreset::Performance => AdaptiveEngineProcessPresetValues {
             process_priority_enabled: true,
             background_efficiency_enabled: true,
             background_efficiency_mode: true,
@@ -288,7 +302,7 @@ pub(super) fn cpu_scheduler_preset_values(
             cpu_recovery_time_seconds: 5,
             maximum_restrained_apps: 8,
         },
-        BuiltInAdaptiveEnginePreset::Speed => CpuSchedulerPresetValues {
+        BuiltInAdaptiveEnginePreset::Speed => AdaptiveEngineProcessPresetValues {
             process_priority_enabled: true,
             background_efficiency_enabled: true,
             background_efficiency_mode: true,
@@ -318,7 +332,9 @@ pub(super) fn cpu_scheduler_preset_values(
     }
 }
 
-pub(super) fn io_priority_preset_values(values: CpuSchedulerPresetValues) -> IoPrioritySettings {
+pub(super) fn io_priority_preset_values(
+    values: AdaptiveEngineProcessPresetValues,
+) -> IoPrioritySettings {
     IoPrioritySettings {
         enabled: values.io_priority_enabled,
         foreground_detection_enabled: true,
@@ -422,51 +438,70 @@ mod tests {
     fn process_and_memory_options_round_trip_in_custom_presets() {
         let mut settings = Settings::default();
         settings
-            .cpu_scheduler
+            .adaptive_engine_process
             .process_priority_foreground_detection_enabled = false;
         settings
-            .cpu_scheduler
+            .adaptive_engine_process
             .process_priority_visible_window_detection_enabled = false;
-        settings.cpu_scheduler.process_priority_preserve_foreground = true;
         settings
-            .cpu_scheduler
+            .adaptive_engine_process
+            .process_priority_preserve_foreground = true;
+        settings
+            .adaptive_engine_process
             .process_priority_preserve_visible_window = true;
-        settings.cpu_scheduler.process_priority_preserve_background = true;
         settings
-            .cpu_scheduler
+            .adaptive_engine_process
+            .process_priority_preserve_background = true;
+        settings
+            .adaptive_engine_process
             .memory_priority_foreground_detection_enabled = false;
         settings
-            .cpu_scheduler
+            .adaptive_engine_process
             .memory_priority_visible_window_detection_enabled = false;
-        settings.cpu_scheduler.memory_priority_preserve_foreground = false;
         settings
-            .cpu_scheduler
+            .adaptive_engine_process
+            .memory_priority_preserve_foreground = false;
+        settings
+            .adaptive_engine_process
             .memory_priority_preserve_visible_window = false;
-        settings.cpu_scheduler.memory_priority_preserve_background = false;
+        settings
+            .adaptive_engine_process
+            .memory_priority_preserve_background = false;
         let preset = capture_adaptive_engine_preset(&settings, "Custom".into());
         let encoded = toml::to_string(&preset).unwrap();
         let decoded: AdaptiveEnginePreset = toml::from_str(&encoded).unwrap();
         let mut restored = Settings::default();
         apply_adaptive_engine_preset(&mut restored, &decoded);
-        assert_eq!(restored.cpu_scheduler, settings.cpu_scheduler);
+        assert_eq!(
+            restored.adaptive_engine_process,
+            settings.adaptive_engine_process
+        );
 
-        apply_cpu_scheduler_preset(
-            &mut restored.cpu_scheduler,
+        apply_adaptive_engine_process_preset(
+            &mut restored.adaptive_engine_process,
             BuiltInAdaptiveEnginePreset::Balanced,
         );
-        let defaults = CpuSchedulerSettings::default();
+        let defaults = AdaptiveEngineProcessSettings::default();
         assert_eq!(
             restored
-                .cpu_scheduler
+                .adaptive_engine_process
                 .process_priority_foreground_detection_enabled,
             defaults.process_priority_foreground_detection_enabled
         );
-        assert!(!restored.cpu_scheduler.process_priority_preserve_background);
+        assert!(
+            !restored
+                .adaptive_engine_process
+                .process_priority_preserve_background
+        );
         assert!(
             restored
-                .cpu_scheduler
+                .adaptive_engine_process
                 .memory_priority_visible_window_detection_enabled
         );
-        assert!(restored.cpu_scheduler.memory_priority_preserve_background);
+        assert!(
+            restored
+                .adaptive_engine_process
+                .memory_priority_preserve_background
+        );
     }
 }

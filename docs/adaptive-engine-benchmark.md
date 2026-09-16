@@ -1,7 +1,7 @@
 # Adaptive Engine Benchmark Guide
 
 This guide documents the real-runtime and synthetic benchmarks used to tune
-Adaptive Engine presets and CPU Scheduler scheduling presets.
+Adaptive Engine presets and Adaptive Engine scheduling presets.
 Synthetic results isolate mechanisms; release-binary runtime A/B results are
 the primary acceptance evidence.
 
@@ -89,7 +89,7 @@ Do not treat one local benchmark as universal. Record the CPU model, logical
 processor count, Windows power mode, and whether the machine has Intel-style
 P-cores plus E-cores or an all-P-core layout such as most AMD desktop CPUs.
 
-Adaptive Engine's internal CPU Scheduler masking is topology-aware:
+Adaptive Engine's internal Adaptive Engine masking is topology-aware:
 
 - Least-used selection ranks the configured All, P-core, or E-core logical-processor pool by
   sampled load and assigns the configured processor-limit share with rebalance hysteresis.
@@ -181,7 +181,7 @@ Run from the repository root:
 
 ```powershell
 cargo check --locked
-cargo test --locked cpu_scheduler
+cargo test --locked adaptive_engine_process
 ```
 
 For cleaner benchmark results:
@@ -210,7 +210,7 @@ Use `-DisableBackgroundProcessorLimit`,
 `-ProcessRestraintThresholdPercent <1-100>`, or
 `-MaximumRestrainedApps <1-32>` only for controlled tuning variants. Use
 `-ForegroundOrSystemCpuThresholdPercent <1-100>` to force a known activation
-threshold during controlled CPU Scheduler comparisons; the
+threshold during controlled Adaptive Engine comparisons; the
 default command keeps the serialized Low Impact values.
 
 Use `-BackgroundPressureAcBoostPolicy <0-100>` and
@@ -224,13 +224,13 @@ beyond 2% without pretending that every responsiveness preset must save 20% in
 a foreground-contended Focus and Launch workload.
 
 The runtime benchmark uses an isolated portable configuration with the current
-500 ms Processor Power cadence and 1.5 second Low Impact CPU Scheduler reaction
+500 ms Processor Power cadence and 1.5 second Low Impact Adaptive Engine reaction
 interval. It explicitly enables the current Balanced processor policy and Low
-Impact CPU Scheduler preset. Use an even pass count of at least four so
+Impact Adaptive Engine preset. Use an even pass count of at least four so
 Stock-first and Adaptive-first orders are equally represented. Stock and
 Adaptive cases receive the same 100-second background-load warmup and 30-second
 cooldown before measurement. The JSON validation gate requires observed
-CPU Scheduler priority control, at least 3% aggregate median and P95
+Adaptive Engine priority control, at least 3% aggregate median and P95
 improvement, at least 85% retained background throughput, and no package-power
 regression beyond 2%. A run that only creates the adaptive power plan without
 changing a generated worker priority is invalid for scheduler tuning.
@@ -240,7 +240,7 @@ The JSON also records `worker_efficiency_enabled_counts` and
 queries. Use them to distinguish a missing EcoQoS application from a valid
 control whose measured package-power effect simply misses the selected gate.
 
-The runner adds the exact PowerShell benchmark-host path to CPU Scheduler
+The runner adds the exact PowerShell benchmark-host path to Adaptive Engine
 exclusions. Every case is rejected if that host leaves Normal priority or if any
 generated worker exits before measurement completes. These are benchmark
 integrity requirements: without them, Winderust can restrain the workload being
@@ -249,7 +249,7 @@ treated as foreground or a dead worker can create a false latency win.
 Synthetic mechanism-isolation command:
 
 ```powershell
-.\scripts\cpu_scheduler_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+.\scripts\adaptive_engine_process_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
 Use `-ProcessTier Focus`, `-ProcessTier VisibleWindow`, or
@@ -268,19 +268,19 @@ older foreground-latency path.
 Foreground file-I/O scenario:
 
 ```powershell
-.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
+.\scripts\adaptive_engine_process_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
 ```
 
 Foreground message-loop scenario:
 
 ```powershell
-.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
+.\scripts\adaptive_engine_process_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
 ```
 
 Winderust launch scenario:
 
 ```powershell
-.\scripts\cpu_scheduler_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+.\scripts\adaptive_engine_process_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
 ```
 
 Power-drain benchmark:
@@ -416,7 +416,7 @@ Run:
 
 ```powershell
 cargo check --locked
-cargo test --locked cpu_scheduler
+cargo test --locked adaptive_engine_process
 cargo test --locked
 git diff --check
 ```

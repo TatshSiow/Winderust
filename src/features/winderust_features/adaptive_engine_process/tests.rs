@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{CpuSchedulerSettings, ProcessPrioritySetting};
+use crate::config::{AdaptiveEngineProcessSettings, ProcessPrioritySetting};
 use windows_sys::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
     IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, REALTIME_PRIORITY_CLASS,
@@ -7,7 +7,7 @@ use windows_sys::Win32::System::Threading::{
 
 #[test]
 fn adaptive_efficiency_uses_the_configured_process_tier() {
-    let mut settings = CpuSchedulerSettings {
+    let mut settings = AdaptiveEngineProcessSettings {
         background_efficiency_mode: false,
         focus_process_background_efficiency_mode: true,
         visible_window_background_efficiency_mode: true,
@@ -21,8 +21,8 @@ fn adaptive_efficiency_uses_the_configured_process_tier() {
 }
 
 #[test]
-fn repeated_failures_suppress_future_cpu_scheduler_attempts_once() {
-    let mut manager = CpuSchedulerManager::default();
+fn repeated_failures_suppress_future_adaptive_engine_process_attempts_once() {
+    let mut manager = AdaptiveEngineProcessManager::default();
     let mut log = ActionLog::new(8);
     let executable_path = r"C:\Apps\app.exe";
 
@@ -44,41 +44,41 @@ fn repeated_failures_suppress_future_cpu_scheduler_attempts_once() {
 #[test]
 fn priority_mapping_matches_configured_classes() {
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::Normal)
+        adaptive_engine_process_priority_value(ProcessPrioritySetting::Normal)
             .unwrap()
             .raw(),
         NORMAL_PRIORITY_CLASS
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::BelowNormal)
+        adaptive_engine_process_priority_value(ProcessPrioritySetting::BelowNormal)
             .unwrap()
             .raw(),
         BELOW_NORMAL_PRIORITY_CLASS
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::Idle)
+        adaptive_engine_process_priority_value(ProcessPrioritySetting::Idle)
             .unwrap()
             .raw(),
         IDLE_PRIORITY_CLASS
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::AboveNormal)
+        adaptive_engine_process_priority_value(ProcessPrioritySetting::AboveNormal)
             .unwrap()
             .raw(),
         ABOVE_NORMAL_PRIORITY_CLASS
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::Default),
+        adaptive_engine_process_priority_value(ProcessPrioritySetting::Default),
         None
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::High)
+        adaptive_engine_process_priority_value(ProcessPrioritySetting::High)
             .unwrap()
             .raw(),
         HIGH_PRIORITY_CLASS
     );
     assert_eq!(
-        cpu_scheduler_priority_value(ProcessPrioritySetting::Realtime)
+        adaptive_engine_process_priority_value(ProcessPrioritySetting::Realtime)
             .unwrap()
             .raw(),
         REALTIME_PRIORITY_CLASS
@@ -87,7 +87,7 @@ fn priority_mapping_matches_configured_classes() {
 
 #[test]
 fn cpu_pressure_restraint_respects_tiers_and_existing_ownership() {
-    let settings = CpuSchedulerSettings {
+    let settings = AdaptiveEngineProcessSettings {
         process_priority_enabled: true,
         background_priority: ProcessPrioritySetting::BelowNormal,
         visible_window_priority: ProcessPrioritySetting::Normal,
@@ -98,12 +98,14 @@ fn cpu_pressure_restraint_respects_tiers_and_existing_ownership() {
     };
 
     let visible =
-        cpu_pressure_restraint_target(&settings, CpuSchedulerTier::VisibleWindow, false).unwrap();
+        cpu_pressure_restraint_target(&settings, AdaptiveEngineProcessTier::VisibleWindow, false)
+            .unwrap();
     assert_eq!(visible.priority.unwrap().raw(), NORMAL_PRIORITY_CLASS);
     assert!(visible.apply_background_efficiency);
 
     let background =
-        cpu_pressure_restraint_target(&settings, CpuSchedulerTier::Background, true).unwrap();
+        cpu_pressure_restraint_target(&settings, AdaptiveEngineProcessTier::Background, true)
+            .unwrap();
     assert_eq!(
         background.priority.unwrap().raw(),
         BELOW_NORMAL_PRIORITY_CLASS
@@ -128,8 +130,9 @@ fn focus_and_launch_profile_window_includes_new_processes_only() {
 }
 
 #[test]
-fn focus_and_launch_profile_active_runs_for_any_cpu_scheduler_preset_while_app_is_launching() {
-    let settings = CpuSchedulerSettings {
+fn focus_and_launch_profile_active_runs_for_any_adaptive_engine_process_preset_while_app_is_launching(
+) {
+    let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
         ..Default::default()
     };
@@ -137,7 +140,7 @@ fn focus_and_launch_profile_active_runs_for_any_cpu_scheduler_preset_while_app_i
     assert!(focus_and_launch_profile_enabled(&settings, true));
     assert!(!focus_and_launch_profile_enabled(&settings, false));
     assert!(!focus_and_launch_profile_enabled(
-        &CpuSchedulerSettings {
+        &AdaptiveEngineProcessSettings {
             cpu_pressure_restraint_enabled: false,
             ..settings.clone()
         },
@@ -149,11 +152,11 @@ fn focus_and_launch_profile_active_runs_for_any_cpu_scheduler_preset_while_app_i
 fn background_apply_summary_message_uses_process_count() {
     assert_eq!(
         background_apply_summary_message(1),
-        "Applied CPU Scheduler restraint to 1 process."
+        "Applied Adaptive Engine restraint to 1 process."
     );
     assert_eq!(
         background_apply_summary_message(3),
-        "Applied CPU Scheduler restraint to 3 processes."
+        "Applied Adaptive Engine restraint to 3 processes."
     );
 }
 
@@ -262,8 +265,8 @@ fn foreground_group_includes_child_processes() {
 }
 
 #[test]
-fn cpu_scheduler_keeps_relative_restraints_when_foreground_saturates_cpu() {
-    let settings = CpuSchedulerSettings {
+fn adaptive_engine_process_keeps_relative_restraints_when_foreground_saturates_cpu() {
+    let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
         foreground_or_system_cpu_threshold_percent: 70,
         ..Default::default()
@@ -297,8 +300,8 @@ fn cpu_scheduler_keeps_relative_restraints_when_foreground_saturates_cpu() {
 }
 
 #[test]
-fn cpu_scheduler_runs_under_system_cpu_pressure() {
-    let settings = CpuSchedulerSettings {
+fn adaptive_engine_process_runs_under_system_cpu_pressure() {
+    let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
         foreground_or_system_cpu_threshold_percent: 70,
         ..Default::default()
@@ -323,13 +326,13 @@ fn cpu_scheduler_runs_under_system_cpu_pressure() {
 
 #[test]
 fn cpu_pressure_restraint_uses_recovery_band_before_stopping() {
-    let settings = CpuSchedulerSettings {
+    let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
         foreground_or_system_cpu_threshold_percent: 70,
         cpu_recovery_threshold_percent: 20,
         ..Default::default()
     };
-    let mut manager = CpuSchedulerManager::default();
+    let mut manager = AdaptiveEngineProcessManager::default();
 
     assert!(!manager.update_background_pressure(&settings, Some(10.0), Some(69.0)));
     assert!(manager.update_background_pressure(&settings, Some(10.0), Some(70.0)));
@@ -341,28 +344,28 @@ fn cpu_pressure_restraint_uses_recovery_band_before_stopping() {
 }
 
 #[test]
-fn cpu_scheduler_selects_highest_scored_candidates() {
+fn adaptive_engine_process_selects_highest_scored_candidates() {
     let max_targeted = 6;
     let candidates = (0..=u32::from(max_targeted))
-        .map(|process_id| CpuSchedulerCandidate {
+        .map(|process_id| AdaptiveEngineProcessCandidate {
             process_id,
             process_name: format!("app{process_id}.exe"),
-            decision: CpuSchedulerDecision::LowerPriority,
-            tier: CpuSchedulerTier::Background,
+            decision: AdaptiveEngineProcessDecision::LowerPriority,
+            tier: AdaptiveEngineProcessTier::Background,
             score: process_id,
         })
         .collect::<Vec<_>>();
 
-    let selected = select_cpu_scheduler_candidates(candidates, max_targeted);
+    let selected = select_adaptive_engine_process_candidates(candidates, max_targeted);
 
     assert_eq!(selected.len(), usize::from(max_targeted));
     assert!(!selected.iter().any(|candidate| candidate.process_id == 0));
 }
 
 #[test]
-fn cpu_scheduler_selection_can_replace_cooler_selected_process() {
+fn adaptive_engine_process_selection_can_replace_cooler_selected_process() {
     let now = Instant::now();
-    let selected = CpuSchedulerProcess {
+    let selected = AdaptiveEngineProcessProcess {
         process_name: "selected.exe".to_owned(),
         executable_path: r"C:\Apps\selected.exe".to_owned(),
         creation_time: 1,
@@ -371,11 +374,11 @@ fn cpu_scheduler_selection_can_replace_cooler_selected_process() {
         high_since: Some(now - Duration::from_secs(60)),
         below_since: None,
         active_since: Some(now - Duration::from_secs(60)),
-        decision: Some(CpuSchedulerDecision::LowerPriority),
+        decision: Some(AdaptiveEngineProcessDecision::LowerPriority),
         active: true,
         selected: true,
     };
-    let hotter = CpuSchedulerProcess {
+    let hotter = AdaptiveEngineProcessProcess {
         process_name: "hotter.exe".to_owned(),
         executable_path: r"C:\Apps\hotter.exe".to_owned(),
         creation_time: 2,
@@ -384,24 +387,24 @@ fn cpu_scheduler_selection_can_replace_cooler_selected_process() {
         high_since: Some(now),
         below_since: None,
         active_since: Some(now),
-        decision: Some(CpuSchedulerDecision::LowerPriority),
+        decision: Some(AdaptiveEngineProcessDecision::LowerPriority),
         active: true,
         selected: false,
     };
 
-    let selected = select_cpu_scheduler_candidates(
+    let selected = select_adaptive_engine_process_candidates(
         vec![
-            cpu_scheduler_candidate(
+            adaptive_engine_process_candidate(
                 1,
                 &selected,
-                CpuSchedulerDecision::LowerPriority,
-                CpuSchedulerTier::Background,
+                AdaptiveEngineProcessDecision::LowerPriority,
+                AdaptiveEngineProcessTier::Background,
             ),
-            cpu_scheduler_candidate(
+            adaptive_engine_process_candidate(
                 2,
                 &hotter,
-                CpuSchedulerDecision::LowerPriority,
-                CpuSchedulerTier::Background,
+                AdaptiveEngineProcessDecision::LowerPriority,
+                AdaptiveEngineProcessTier::Background,
             ),
         ],
         1,
@@ -411,9 +414,9 @@ fn cpu_scheduler_selection_can_replace_cooler_selected_process() {
 }
 
 #[test]
-fn cpu_scheduler_candidate_score_uses_only_cpu_and_selection_stickiness() {
+fn adaptive_engine_process_candidate_score_uses_only_cpu_and_selection_stickiness() {
     let now = Instant::now();
-    let process = |selected| CpuSchedulerProcess {
+    let process = |selected| AdaptiveEngineProcessProcess {
         process_name: "worker.exe".to_owned(),
         executable_path: r"C:\Apps\worker.exe".to_owned(),
         creation_time: 1,
@@ -422,61 +425,67 @@ fn cpu_scheduler_candidate_score_uses_only_cpu_and_selection_stickiness() {
         high_since: Some(now),
         below_since: None,
         active_since: Some(now),
-        decision: Some(CpuSchedulerDecision::LowerPriority),
+        decision: Some(AdaptiveEngineProcessDecision::LowerPriority),
         active: true,
         selected,
     };
 
-    let first = cpu_scheduler_candidate(
+    let first = adaptive_engine_process_candidate(
         1,
         &process(false),
-        CpuSchedulerDecision::LowerPriority,
-        CpuSchedulerTier::Background,
+        AdaptiveEngineProcessDecision::LowerPriority,
+        AdaptiveEngineProcessTier::Background,
     );
-    let repeated = cpu_scheduler_candidate(
+    let repeated = adaptive_engine_process_candidate(
         1,
         &process(false),
-        CpuSchedulerDecision::LowerPriority,
-        CpuSchedulerTier::Background,
+        AdaptiveEngineProcessDecision::LowerPriority,
+        AdaptiveEngineProcessTier::Background,
     );
 
     assert_eq!(first.score, repeated.score);
-    let selected = cpu_scheduler_candidate(
+    let selected = adaptive_engine_process_candidate(
         1,
         &process(true),
-        CpuSchedulerDecision::LowerPriority,
-        CpuSchedulerTier::Background,
+        AdaptiveEngineProcessDecision::LowerPriority,
+        AdaptiveEngineProcessTier::Background,
     );
     assert_eq!(
         selected.score,
-        first.score + CPU_SCHEDULER_SELECTION_STICKINESS_TENTHS
+        first.score + ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS
     );
 }
 
 #[test]
 fn limit_background_processors_is_immediate_for_background_only() {
-    let settings = CpuSchedulerSettings {
+    let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,
         limit_background_processors_enabled: true,
         ..Default::default()
     };
 
     assert_eq!(
-        cpu_scheduler_process_decision(&settings, CpuSchedulerTier::VisibleWindow),
-        CpuSchedulerDecision::LowerPriority
+        adaptive_engine_process_process_decision(
+            &settings,
+            AdaptiveEngineProcessTier::VisibleWindow
+        ),
+        AdaptiveEngineProcessDecision::LowerPriority
     );
     assert_eq!(
-        cpu_scheduler_process_decision(&settings, CpuSchedulerTier::Background),
-        CpuSchedulerDecision::LimitProcessors
+        adaptive_engine_process_process_decision(&settings, AdaptiveEngineProcessTier::Background),
+        AdaptiveEngineProcessDecision::LimitProcessors
     );
 
-    let priority_only = CpuSchedulerSettings {
+    let priority_only = AdaptiveEngineProcessSettings {
         limit_background_processors_enabled: false,
         ..settings
     };
     assert_eq!(
-        cpu_scheduler_process_decision(&priority_only, CpuSchedulerTier::Background),
-        CpuSchedulerDecision::LowerPriority
+        adaptive_engine_process_process_decision(
+            &priority_only,
+            AdaptiveEngineProcessTier::Background
+        ),
+        AdaptiveEngineProcessDecision::LowerPriority
     );
 }
 
@@ -517,7 +526,7 @@ fn load_aware_core_mask_picks_low_load_standard_processors() {
 
 #[test]
 fn processor_limiting_detects_pressure_without_priority_restraint() {
-    let settings = CpuSchedulerSettings {
+    let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: false,
         limit_background_processors_enabled: true,
         foreground_or_system_cpu_threshold_percent: 70,
@@ -689,7 +698,7 @@ fn process_cpu_demand_percent_uses_one_logical_processor_capacity() {
 
 #[test]
 fn process_detection_falls_through_and_preservation_follows_selected_tier() {
-    let mut settings = CpuSchedulerSettings {
+    let mut settings = AdaptiveEngineProcessSettings {
         process_priority_preserve_foreground: true,
         process_priority_preserve_visible_window: true,
         process_priority_preserve_background: true,
@@ -719,7 +728,8 @@ fn process_detection_falls_through_and_preservation_follows_selected_tier() {
         )
     );
     let pressure =
-        cpu_pressure_restraint_target(&settings, CpuSchedulerTier::VisibleWindow, true).unwrap();
+        cpu_pressure_restraint_target(&settings, AdaptiveEngineProcessTier::VisibleWindow, true)
+            .unwrap();
     assert_eq!(pressure.priority, Some(PriorityClassValue::BelowNormal));
     assert_eq!(
         pressure.preservation,
@@ -737,7 +747,7 @@ fn process_detection_falls_through_and_preservation_follows_selected_tier() {
 #[test]
 fn memory_detection_falls_through_without_changing_default_semantics() {
     use crate::config::ProcessMemoryPrioritySetting as Memory;
-    let mut settings = CpuSchedulerSettings {
+    let mut settings = AdaptiveEngineProcessSettings {
         focus_process_memory_priority: Memory::Normal,
         visible_window_memory_priority: Memory::Medium,
         background_memory_priority: Memory::Low,

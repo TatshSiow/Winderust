@@ -800,16 +800,23 @@ fn enabled_features(
         (
             Page::AdaptiveEngine,
             settings.adaptive_engine.enabled,
-            if status.cpu_scheduler.focus_and_launch_profile_active {
+            if status
+                .adaptive_engine_process
+                .focus_and_launch_profile_active
+            {
                 t!("home.focus_and_launch_profile").to_string()
-            } else if !settings.cpu_scheduler.cpu_pressure_restraint_enabled
-                && !settings.cpu_scheduler.limit_background_processors_enabled
+            } else if !settings
+                .adaptive_engine_process
+                .cpu_pressure_restraint_enabled
+                && !settings
+                    .adaptive_engine_process
+                    .limit_background_processors_enabled
             {
                 t!("common.enabled").to_string()
             } else {
                 t!(
                     "home.adjusted_count",
-                    count = status.cpu_scheduler.adjusted_processes
+                    count = status.adaptive_engine_process.adjusted_processes
                 )
                 .to_string()
             },

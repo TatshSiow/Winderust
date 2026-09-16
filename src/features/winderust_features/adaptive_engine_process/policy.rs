@@ -76,7 +76,7 @@ pub(super) fn foreground_process_group_ids(
 }
 
 pub(super) fn cpu_pressure_restraint_should_run(
-    settings: &CpuSchedulerSettings,
+    settings: &AdaptiveEngineProcessSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
@@ -89,44 +89,52 @@ pub(super) fn cpu_pressure_restraint_should_run(
 }
 
 pub(super) fn cpu_pressure_above_recovery_threshold(
-    settings: &CpuSchedulerSettings,
+    settings: &AdaptiveEngineProcessSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
     let trigger = settings.foreground_or_system_cpu_threshold_percent.min(100);
-    let recovery_threshold = f32::from(trigger.saturating_sub(CPU_SCHEDULER_RECOVERY_BAND_PERCENT));
+    let recovery_threshold =
+        f32::from(trigger.saturating_sub(ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT));
     foreground_cpu_usage_percent.is_some_and(|usage| usage >= recovery_threshold)
         || total_cpu_usage_percent.is_some_and(|usage| usage >= recovery_threshold)
 }
 
-pub(super) fn cpu_allocation_method(settings: &CpuSchedulerSettings) -> CpuAllocationMode {
+pub(super) fn cpu_allocation_method(settings: &AdaptiveEngineProcessSettings) -> CpuAllocationMode {
     match settings.cpu_allocation_method {
         CpuAllocationMethod::CpuSetsSoft => CpuAllocationMode::SoftCpuSets,
         CpuAllocationMethod::ProcessorAffinityHard => CpuAllocationMode::HardAffinity,
     }
 }
 
-pub(super) fn cpu_scheduler_process_decision(
-    settings: &CpuSchedulerSettings,
-    tier: CpuSchedulerTier,
-) -> CpuSchedulerDecision {
-    if settings.limit_background_processors_enabled && tier == CpuSchedulerTier::Background {
-        CpuSchedulerDecision::LimitProcessors
+pub(super) fn adaptive_engine_process_process_decision(
+    settings: &AdaptiveEngineProcessSettings,
+    tier: AdaptiveEngineProcessTier,
+) -> AdaptiveEngineProcessDecision {
+    if settings.limit_background_processors_enabled && tier == AdaptiveEngineProcessTier::Background
+    {
+        AdaptiveEngineProcessDecision::LimitProcessors
     } else {
-        CpuSchedulerDecision::LowerPriority
+        AdaptiveEngineProcessDecision::LowerPriority
     }
 }
 
 pub(super) fn cpu_pressure_restraint_target(
-    settings: &CpuSchedulerSettings,
-    tier: CpuSchedulerTier,
+    settings: &AdaptiveEngineProcessSettings,
+    tier: AdaptiveEngineProcessTier,
     background_efficiency_managed: bool,
 ) -> Option<PressureTargetPolicy> {
-    let (priority, preservation) =
-        process_priority_policy(settings, false, tier == CpuSchedulerTier::VisibleWindow);
+    let (priority, preservation) = process_priority_policy(
+        settings,
+        false,
+        tier == AdaptiveEngineProcessTier::VisibleWindow,
+    );
     let apply_background_efficiency = !background_efficiency_managed
         && settings.background_efficiency_enabled
-        && settings.background_efficiency_mode_for(false, tier == CpuSchedulerTier::VisibleWindow);
+        && settings.background_efficiency_mode_for(
+            false,
+            tier == AdaptiveEngineProcessTier::VisibleWindow,
+        );
 
     (priority.is_some() || apply_background_efficiency).then_some(PressureTargetPolicy {
         priority,
@@ -135,30 +143,30 @@ pub(super) fn cpu_pressure_restraint_target(
     })
 }
 
-pub(super) fn cpu_scheduler_candidate(
+pub(super) fn adaptive_engine_process_candidate(
     process_id: u32,
-    process: &CpuSchedulerProcess,
-    decision: CpuSchedulerDecision,
-    tier: CpuSchedulerTier,
-) -> CpuSchedulerCandidate {
-    CpuSchedulerCandidate {
+    process: &AdaptiveEngineProcessProcess,
+    decision: AdaptiveEngineProcessDecision,
+    tier: AdaptiveEngineProcessTier,
+) -> AdaptiveEngineProcessCandidate {
+    AdaptiveEngineProcessCandidate {
         process_id,
         process_name: process.process_name.clone(),
         decision,
         tier,
         score: u32::from(process.last_usage_tenths.unwrap_or_default())
             + if process.selected {
-                CPU_SCHEDULER_SELECTION_STICKINESS_TENTHS
+                ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS
             } else {
                 0
             },
     }
 }
 
-pub(super) fn select_cpu_scheduler_candidates(
-    mut candidates: Vec<CpuSchedulerCandidate>,
+pub(super) fn select_adaptive_engine_process_candidates(
+    mut candidates: Vec<AdaptiveEngineProcessCandidate>,
     maximum_restrained_apps: u8,
-) -> Vec<CpuSchedulerCandidate> {
+) -> Vec<AdaptiveEngineProcessCandidate> {
     candidates.sort_by(|left, right| {
         right
             .score
@@ -261,7 +269,7 @@ pub(super) fn focus_and_launch_profile_eligible(process_id: u32) -> bool {
 }
 
 pub(super) fn focus_and_launch_profile_enabled(
-    settings: &CpuSchedulerSettings,
+    settings: &AdaptiveEngineProcessSettings,
     focus_and_launch_profile_target: bool,
 ) -> bool {
     settings.cpu_pressure_restraint_enabled && focus_and_launch_profile_target
@@ -275,7 +283,7 @@ pub(super) fn process_age_in_focus_and_launch_window(
 }
 
 pub(super) fn process_priority_policy(
-    settings: &CpuSchedulerSettings,
+    settings: &AdaptiveEngineProcessSettings,
     foreground: bool,
     visible_window: bool,
 ) -> (Option<PriorityClassValue>, PriorityClassPreservation) {
@@ -308,14 +316,14 @@ pub(super) fn process_priority_policy(
     (
         settings
             .process_priority_enabled
-            .then(|| cpu_scheduler_priority_value(value))
+            .then(|| adaptive_engine_process_priority_value(value))
             .flatten(),
         preservation,
     )
 }
 
 pub(super) fn memory_priority_policy(
-    settings: &CpuSchedulerSettings,
+    settings: &AdaptiveEngineProcessSettings,
     foreground: bool,
     visible_window: bool,
 ) -> (crate::config::ProcessMemoryPrioritySetting, bool, bool) {

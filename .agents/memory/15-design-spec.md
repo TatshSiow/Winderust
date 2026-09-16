@@ -90,7 +90,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## Settings Pages
 
-- Adaptive Engine is the parent of CPU Scheduler. CPU Scheduler has no separate master switch;
+- Adaptive Engine is the parent of Adaptive Engine. Adaptive Engine has no separate master switch;
   CPU Pressure Restraint and Limit Background Processors own independent switches and retain their
   configuration while Adaptive Engine is off.
 - Adaptive Engine uses the right-rail Status / Presets tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.

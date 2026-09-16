@@ -671,41 +671,59 @@ fn sanitize_advanced(settings: &mut Settings) {
         .gpu_priority
         .foreground_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.io_priority.background_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .io_priority
+        .background_priority = settings
+        .adaptive_engine_process
         .io_priority
         .background_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.background_priority = settings
-        .cpu_scheduler
+    settings.adaptive_engine_process.background_priority = settings
+        .adaptive_engine_process
         .background_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.focus_process_priority = settings
-        .cpu_scheduler
+    settings.adaptive_engine_process.focus_process_priority = settings
+        .adaptive_engine_process
         .focus_process_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.io_priority.foreground_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .io_priority
+        .foreground_priority = settings
+        .adaptive_engine_process
         .io_priority
         .foreground_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.thread_priority.background_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .thread_priority
+        .background_priority = settings
+        .adaptive_engine_process
         .thread_priority
         .background_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.thread_priority.foreground_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .thread_priority
+        .foreground_priority = settings
+        .adaptive_engine_process
         .thread_priority
         .foreground_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.gpu_priority.background_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .gpu_priority
+        .background_priority = settings
+        .adaptive_engine_process
         .gpu_priority
         .background_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.gpu_priority.foreground_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .gpu_priority
+        .foreground_priority = settings
+        .adaptive_engine_process
         .gpu_priority
         .foreground_priority
         .safe_when_advanced_disabled();
@@ -783,25 +801,31 @@ fn sanitize_visible_window_priority_values(settings: &mut Settings) {
         .gpu_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.io_priority.visible_window_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .io_priority
+        .visible_window_priority = settings
+        .adaptive_engine_process
         .io_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.visible_window_priority = settings
-        .cpu_scheduler
+    settings.adaptive_engine_process.visible_window_priority = settings
+        .adaptive_engine_process
         .visible_window_priority
         .safe_when_advanced_disabled();
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .thread_priority
         .visible_window_priority = settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .thread_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
-    settings.cpu_scheduler.gpu_priority.visible_window_priority = settings
-        .cpu_scheduler
+    settings
+        .adaptive_engine_process
+        .gpu_priority
+        .visible_window_priority = settings
+        .adaptive_engine_process
         .gpu_priority
         .visible_window_priority
         .safe_when_advanced_disabled();
@@ -911,7 +935,8 @@ mod tests {
         assert_eq!(s.general.accent.custom_colors, vec![0x123456]);
         s.process_priority.visible_window_priority = ProcessPrioritySetting::Realtime;
         s.thread_priority.visible_window_priority = ProcessThreadPrioritySetting::TimeCritical;
-        s.cpu_scheduler.gpu_priority.background_priority = ProcessGpuPrioritySetting::Realtime;
+        s.adaptive_engine_process.gpu_priority.background_priority =
+            ProcessGpuPrioritySetting::Realtime;
         e.update(&mut s, Message::Flag(Flag::AdvancedValues, false));
         assert_eq!(
             s.process_priority.visible_window_priority,
@@ -922,7 +947,7 @@ mod tests {
             ProcessThreadPrioritySetting::Highest
         );
         assert_eq!(
-            s.cpu_scheduler.gpu_priority.background_priority,
+            s.adaptive_engine_process.gpu_priority.background_priority,
             ProcessGpuPrioritySetting::AboveNormal
         );
         let once = s.clone();

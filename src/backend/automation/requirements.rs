@@ -74,10 +74,10 @@ fn activity_input_hook_required(settings: &Settings) -> bool {
         && settings.by_activity.power_plans.performance_guid.is_some()
 }
 
-pub(super) fn cpu_scheduler_refresh_interval(settings: &Settings) -> Duration {
-    Duration::from_millis(settings.cpu_scheduler.reaction_time_ms.clamp(
-        crate::config::CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS,
-        crate::config::CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS,
+pub(super) fn adaptive_engine_process_refresh_interval(settings: &Settings) -> Duration {
+    Duration::from_millis(settings.adaptive_engine_process.reaction_time_ms.clamp(
+        crate::config::ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MIN_MS,
+        crate::config::ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MAX_MS,
     ))
 }
 
@@ -89,10 +89,14 @@ fn enabled_executable_path_rule(enabled: bool, executable_path: &str) -> bool {
     enabled && std::path::Path::new(executable_path.trim()).is_absolute()
 }
 
-pub(super) fn cpu_scheduler_required(settings: &Settings) -> bool {
+pub(super) fn adaptive_engine_process_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled
-        && (settings.cpu_scheduler.cpu_pressure_restraint_enabled
-            || settings.cpu_scheduler.limit_background_processors_enabled)
+        && (settings
+            .adaptive_engine_process
+            .cpu_pressure_restraint_enabled
+            || settings
+                .adaptive_engine_process
+                .limit_background_processors_enabled)
 }
 
 pub(super) fn app_suspension_required(settings: &Settings) -> bool {
@@ -145,30 +149,38 @@ pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
 pub(super) fn io_priority_required(settings: &Settings) -> bool {
     settings.io_priority.enabled
         || (settings.adaptive_engine.enabled
-            && settings.cpu_scheduler.cpu_pressure_restraint_enabled
-            && settings.cpu_scheduler.io_priority.enabled)
+            && settings
+                .adaptive_engine_process
+                .cpu_pressure_restraint_enabled
+            && settings.adaptive_engine_process.io_priority.enabled)
 }
 
-pub(super) fn cpu_scheduler_priority_assist_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled && settings.cpu_scheduler.cpu_pressure_restraint_enabled
+pub(super) fn adaptive_engine_process_priority_assist_required(settings: &Settings) -> bool {
+    settings.adaptive_engine.enabled
+        && settings
+            .adaptive_engine_process
+            .cpu_pressure_restraint_enabled
 }
 
 pub(super) fn thread_priority_required(settings: &Settings) -> bool {
     settings.thread_priority.enabled
-        || (cpu_scheduler_priority_assist_required(settings)
-            && settings.cpu_scheduler.thread_priority.enabled)
+        || (adaptive_engine_process_priority_assist_required(settings)
+            && settings.adaptive_engine_process.thread_priority.enabled)
 }
 
 pub(super) fn dynamic_priority_boost_required(settings: &Settings) -> bool {
     settings.dynamic_priority_boost.enabled
-        || (cpu_scheduler_priority_assist_required(settings)
-            && settings.cpu_scheduler.dynamic_priority_boost.enabled)
+        || (adaptive_engine_process_priority_assist_required(settings)
+            && settings
+                .adaptive_engine_process
+                .dynamic_priority_boost
+                .enabled)
 }
 
 pub(super) fn gpu_priority_required(settings: &Settings) -> bool {
     settings.gpu_priority.enabled
-        || (cpu_scheduler_priority_assist_required(settings)
-            && settings.cpu_scheduler.gpu_priority.enabled)
+        || (adaptive_engine_process_priority_assist_required(settings)
+            && settings.adaptive_engine_process.gpu_priority.enabled)
 }
 
 pub(super) fn effective_io_priority_settings(
@@ -181,7 +193,7 @@ pub(super) fn effective_io_priority_settings(
         io_priority = auto_io_priority;
         io_priority
             .exclusions
-            .extend(settings.cpu_scheduler.custom_rules.clone());
+            .extend(settings.adaptive_engine_process.custom_rules.clone());
     }
     io_priority
 }
@@ -198,11 +210,11 @@ pub(super) fn io_priority_control_owner(
 }
 
 fn adaptive_io_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
-    cpu_pressure_restraint_active && settings.cpu_scheduler.io_priority.enabled
+    cpu_pressure_restraint_active && settings.adaptive_engine_process.io_priority.enabled
 }
 
 pub(super) fn io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
-    let mut io_priority = settings.cpu_scheduler.io_priority.clone();
+    let mut io_priority = settings.adaptive_engine_process.io_priority.clone();
     io_priority.foreground_detection_enabled = true;
     io_priority.visible_window_detection_enabled = true;
     io_priority.preserve_foreground_priority = true;
@@ -217,7 +229,7 @@ pub(super) fn effective_thread_priority_settings(
 ) -> crate::config::ThreadPrioritySettings {
     let mut thread_priority = settings.thread_priority.clone();
     if adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
-        thread_priority = settings.cpu_scheduler.thread_priority.clone();
+        thread_priority = settings.adaptive_engine_process.thread_priority.clone();
         thread_priority.foreground_detection_enabled = true;
         thread_priority.visible_window_detection_enabled = true;
         thread_priority.preserve_foreground_priority = true;
@@ -225,7 +237,7 @@ pub(super) fn effective_thread_priority_settings(
         thread_priority.preserve_background_priority = true;
         thread_priority
             .exclusions
-            .extend(settings.cpu_scheduler.custom_rules.clone());
+            .extend(settings.adaptive_engine_process.custom_rules.clone());
     }
     thread_priority
 }
@@ -246,8 +258,8 @@ fn adaptive_thread_priority_active(
     cpu_pressure_restraint_active: bool,
 ) -> bool {
     cpu_pressure_restraint_active
-        && cpu_scheduler_priority_assist_required(settings)
-        && settings.cpu_scheduler.thread_priority.enabled
+        && adaptive_engine_process_priority_assist_required(settings)
+        && settings.adaptive_engine_process.thread_priority.enabled
 }
 
 pub(super) fn effective_dynamic_priority_boost_settings(
@@ -256,12 +268,15 @@ pub(super) fn effective_dynamic_priority_boost_settings(
 ) -> crate::config::DynamicPriorityBoostSettings {
     let mut dynamic_priority_boost = settings.dynamic_priority_boost.clone();
     if adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
-        dynamic_priority_boost = settings.cpu_scheduler.dynamic_priority_boost.clone();
+        dynamic_priority_boost = settings
+            .adaptive_engine_process
+            .dynamic_priority_boost
+            .clone();
         dynamic_priority_boost.foreground_detection_enabled = true;
         dynamic_priority_boost.visible_window_detection_enabled = true;
         dynamic_priority_boost
             .exclusions
-            .extend(settings.cpu_scheduler.custom_rules.clone());
+            .extend(settings.adaptive_engine_process.custom_rules.clone());
     }
     dynamic_priority_boost
 }
@@ -282,8 +297,11 @@ fn adaptive_dynamic_priority_boost_active(
     cpu_pressure_restraint_active: bool,
 ) -> bool {
     cpu_pressure_restraint_active
-        && cpu_scheduler_priority_assist_required(settings)
-        && settings.cpu_scheduler.dynamic_priority_boost.enabled
+        && adaptive_engine_process_priority_assist_required(settings)
+        && settings
+            .adaptive_engine_process
+            .dynamic_priority_boost
+            .enabled
 }
 
 pub(super) fn effective_gpu_priority_settings(
@@ -292,7 +310,7 @@ pub(super) fn effective_gpu_priority_settings(
 ) -> crate::config::GpuPrioritySettings {
     let mut gpu_priority = settings.gpu_priority.clone();
     if adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
-        gpu_priority = settings.cpu_scheduler.gpu_priority.clone();
+        gpu_priority = settings.adaptive_engine_process.gpu_priority.clone();
         gpu_priority.foreground_detection_enabled = true;
         gpu_priority.visible_window_detection_enabled = true;
         gpu_priority.preserve_foreground_priority = true;
@@ -300,7 +318,7 @@ pub(super) fn effective_gpu_priority_settings(
         gpu_priority.preserve_background_priority = true;
         gpu_priority
             .exclusions
-            .extend(settings.cpu_scheduler.custom_rules.clone());
+            .extend(settings.adaptive_engine_process.custom_rules.clone());
     }
     gpu_priority
 }
@@ -318,8 +336,8 @@ pub(super) fn gpu_priority_control_owner(
 
 fn adaptive_gpu_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
     cpu_pressure_restraint_active
-        && cpu_scheduler_priority_assist_required(settings)
-        && settings.cpu_scheduler.gpu_priority.enabled
+        && adaptive_engine_process_priority_assist_required(settings)
+        && settings.adaptive_engine_process.gpu_priority.enabled
 }
 
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
@@ -329,7 +347,7 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
             || processor_affinity_hard_required(settings)
             || cpu_limiter_required(settings)
             || by_running_app_required(settings)
-            || cpu_scheduler_required(settings)
+            || adaptive_engine_process_required(settings)
             || settings.process_priority.enabled
             || thread_priority_required(settings)
             || dynamic_priority_boost_required(settings)

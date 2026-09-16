@@ -78,7 +78,7 @@ target, but every mutation reopens and revalidates the exact process or thread i
 - Process List reversible actions use the same RuntimeCore controllers as automatic policy and
   may be superseded by a later automatic reconciliation.
 - CPU allocation has one coordinator with this precedence: CPU Sets (Soft), Processor Affinity
-  (Hard), then Adaptive Engine / CPU Scheduler.
+  (Hard), then Adaptive Engine.
 - App Suspension and CPU Limiter share one Job Object suspension controller. Their independent
   claims combine into one effective frozen state, so releasing either feature cannot thaw the
   other feature's claim.

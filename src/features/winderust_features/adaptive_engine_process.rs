@@ -9,7 +9,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{
-        BackgroundProcessorSelection, CpuAllocationMethod, CpuSchedulerSettings,
+        AdaptiveEngineProcessSettings, BackgroundProcessorSelection, CpuAllocationMethod,
         ProcessPrioritySetting,
     },
     control::{
@@ -49,15 +49,15 @@ use policy::*;
 use process_control::*;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
-const CPU_SCHEDULER_RECOVERY_BAND_PERCENT: u8 = 5;
-const CPU_SCHEDULER_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
-const CPU_SCHEDULER_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
-const CPU_SCHEDULER_SELECTION_STICKINESS_TENTHS: u32 = 50;
+const ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT: u8 = 5;
+const ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
+const ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
+const ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS: u32 = 50;
 const BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const FOCUS_AND_LAUNCH_PROFILE_WINDOW: Duration = Duration::from_secs(8);
 const FOCUS_PROCESS_PRIORITY_STABILITY_DELAY_MS: u64 = 750;
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CpuSchedulerSnapshot {
+pub struct AdaptiveEngineProcessSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
@@ -72,10 +72,10 @@ pub struct CpuSchedulerSnapshot {
     pub last_error: Option<String>,
 }
 
-pub struct CpuSchedulerManager {
+pub struct AdaptiveEngineProcessManager {
     focus_process_candidate: Option<FocusProcessCandidate>,
     foreground_cpu_sample: Option<(BTreeSet<u32>, ProcessCpuSample)>,
-    tracked_processes: BTreeMap<u32, CpuSchedulerProcess>,
+    tracked_processes: BTreeMap<u32, AdaptiveEngineProcessProcess>,
     background_pressure_active: bool,
     cpu_allocation: CpuAllocationManager,
     background_memory_priority: MemoryPriorityManager,
@@ -86,7 +86,7 @@ pub struct CpuSchedulerManager {
     unavailable_power_targets: BTreeSet<ProcessTargetKey>,
 }
 
-impl Default for CpuSchedulerManager {
+impl Default for AdaptiveEngineProcessManager {
     fn default() -> Self {
         Self {
             focus_process_candidate: None,
@@ -94,7 +94,7 @@ impl Default for CpuSchedulerManager {
             tracked_processes: BTreeMap::new(),
             background_pressure_active: false,
             cpu_allocation: CpuAllocationManager::with_action_log_feature(
-                ActionLogFeature::CpuScheduler,
+                ActionLogFeature::AdaptiveEngine,
             ),
             background_memory_priority: MemoryPriorityManager::default(),
             cpu_allocation_selection: None,
@@ -122,7 +122,7 @@ struct FocusProcessPriorityGroupResult {
 }
 
 #[derive(Clone)]
-struct CpuSchedulerProcess {
+struct AdaptiveEngineProcessProcess {
     process_name: String,
     executable_path: String,
     creation_time: u64,
@@ -131,29 +131,29 @@ struct CpuSchedulerProcess {
     high_since: Option<Instant>,
     below_since: Option<Instant>,
     active_since: Option<Instant>,
-    decision: Option<CpuSchedulerDecision>,
+    decision: Option<AdaptiveEngineProcessDecision>,
     active: bool,
     selected: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CpuSchedulerDecision {
+enum AdaptiveEngineProcessDecision {
     LowerPriority,
     LimitProcessors,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CpuSchedulerTier {
+enum AdaptiveEngineProcessTier {
     VisibleWindow,
     Background,
 }
 
 #[derive(Clone)]
-struct CpuSchedulerCandidate {
+struct AdaptiveEngineProcessCandidate {
     process_id: u32,
     process_name: String,
-    decision: CpuSchedulerDecision,
-    tier: CpuSchedulerTier,
+    decision: AdaptiveEngineProcessDecision,
+    tier: AdaptiveEngineProcessTier,
     score: u32,
 }
 
@@ -179,8 +179,8 @@ struct PriorityTarget {
     apply_background_efficiency: bool,
 }
 
-pub struct CpuSchedulerUpdate<'a> {
-    pub settings: &'a CpuSchedulerSettings,
+pub struct AdaptiveEngineProcessUpdate<'a> {
+    pub settings: &'a AdaptiveEngineProcessSettings,
     pub automation_enabled: bool,
     pub allow_cross_session_process_control: bool,
     pub foreground_process_id: Option<u32>,
@@ -200,16 +200,16 @@ struct FocusProcessPriorityGroup<'a> {
     preservation: PriorityClassPreservation,
 }
 
-impl CpuSchedulerManager {
+impl AdaptiveEngineProcessManager {
     pub fn update(
         &mut self,
-        input: CpuSchedulerUpdate<'_>,
+        input: AdaptiveEngineProcessUpdate<'_>,
         cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
         priority_efficiency_controller: &mut PriorityEfficiencyController,
         memory_priority_controller: &mut MemoryPriorityController,
         action_log: &mut ActionLog,
-    ) -> CpuSchedulerSnapshot {
-        let CpuSchedulerUpdate {
+    ) -> AdaptiveEngineProcessSnapshot {
+        let AdaptiveEngineProcessUpdate {
             settings,
             automation_enabled,
             allow_cross_session_process_control,
@@ -230,7 +230,7 @@ impl CpuSchedulerManager {
                 "automation disabled",
             );
             self.failure_suppression.clear();
-            return CpuSchedulerSnapshot {
+            return AdaptiveEngineProcessSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Automation disabled.".to_owned(),
@@ -246,13 +246,13 @@ impl CpuSchedulerManager {
                 priority_efficiency_controller,
                 memory_priority_controller,
                 action_log,
-                "CPU Scheduler disabled",
+                "Adaptive Engine disabled",
             );
             self.failure_suppression.clear();
-            return CpuSchedulerSnapshot {
+            return AdaptiveEngineProcessSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
-                message: "CPU Scheduler disabled.".to_owned(),
+                message: "Adaptive Engine disabled.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -268,7 +268,7 @@ impl CpuSchedulerManager {
                 action_log,
                 "current Windows session is unknown",
             );
-            return CpuSchedulerSnapshot {
+            return AdaptiveEngineProcessSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -295,7 +295,7 @@ impl CpuSchedulerManager {
                     action_log,
                     "process list unavailable",
                 );
-                return CpuSchedulerSnapshot {
+                return AdaptiveEngineProcessSnapshot {
                     enabled: true,
                     failed_processes: failed.count,
                     message: err,
@@ -314,7 +314,7 @@ impl CpuSchedulerManager {
                 action_log,
                 "visible windows are unavailable",
             );
-            return CpuSchedulerSnapshot {
+            return AdaptiveEngineProcessSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: visible windows are unavailable.".to_owned(),
@@ -388,9 +388,9 @@ impl CpuSchedulerManager {
             }
 
             let tier = if visible_window_process_group_ids.contains(&process.id) {
-                CpuSchedulerTier::VisibleWindow
+                AdaptiveEngineProcessTier::VisibleWindow
             } else {
-                CpuSchedulerTier::Background
+                AdaptiveEngineProcessTier::Background
             };
             restrainable_processes.insert(process.id, (process.name.clone(), tier));
         }
@@ -427,7 +427,7 @@ impl CpuSchedulerManager {
         let mut auto_excluded_processes = BTreeSet::new();
 
         let mut cpu_allocation_targets = Vec::new();
-        let mut cpu_scheduler_memory_targets = Vec::new();
+        let mut adaptive_engine_process_memory_targets = Vec::new();
         if settings.cpu_pressure_restraint_enabled && settings.memory_priority_enabled {
             for process in processes
                 .iter()
@@ -464,7 +464,7 @@ impl CpuSchedulerManager {
                 let Some(creation_time) = process.creation_time else {
                     continue;
                 };
-                cpu_scheduler_memory_targets.push(MemoryPriorityTarget {
+                adaptive_engine_process_memory_targets.push(MemoryPriorityTarget {
                     process_id: process.id,
                     process_name: process.name.clone(),
                     executable_path,
@@ -584,9 +584,9 @@ impl CpuSchedulerManager {
             self.tracked_processes
                 .retain(|process_id, _| current_ids.contains(process_id));
 
-            let mut cpu_scheduler_candidates = Vec::new();
+            let mut adaptive_engine_process_candidates = Vec::new();
             for (process_id, (process_name, tier)) in &restrainable_processes {
-                if *tier == CpuSchedulerTier::VisibleWindow
+                if *tier == AdaptiveEngineProcessTier::VisibleWindow
                     && !settings.cpu_pressure_restraint_enabled
                 {
                     continue;
@@ -602,7 +602,7 @@ impl CpuSchedulerManager {
                     continue;
                 }
 
-                if let Some(candidate) = self.update_cpu_scheduler_process(
+                if let Some(candidate) = self.update_adaptive_engine_process_process(
                     *process_id,
                     process_name,
                     &executable_path,
@@ -610,12 +610,12 @@ impl CpuSchedulerManager {
                     *tier,
                     now,
                 ) {
-                    cpu_scheduler_candidates.push(candidate);
+                    adaptive_engine_process_candidates.push(candidate);
                 }
             }
 
-            let selected_candidates = select_cpu_scheduler_candidates(
-                cpu_scheduler_candidates,
+            let selected_candidates = select_adaptive_engine_process_candidates(
+                adaptive_engine_process_candidates,
                 settings.maximum_restrained_apps,
             );
             let selected_ids = selected_candidates
@@ -648,11 +648,11 @@ impl CpuSchedulerManager {
                     let (value, foreground, visible_window) = memory_priority_policy(
                         settings,
                         false,
-                        candidate.tier == CpuSchedulerTier::VisibleWindow,
+                        candidate.tier == AdaptiveEngineProcessTier::VisibleWindow,
                     );
                     let priority = value.priority();
                     if let Some(priority) = priority {
-                        cpu_scheduler_memory_targets.push(MemoryPriorityTarget {
+                        adaptive_engine_process_memory_targets.push(MemoryPriorityTarget {
                             process_id: candidate.process_id,
                             process_name: candidate.process_name.clone(),
                             executable_path: executable_path.clone(),
@@ -669,8 +669,8 @@ impl CpuSchedulerManager {
                         });
                     }
                 }
-                if candidate.decision == CpuSchedulerDecision::LimitProcessors
-                    && candidate.tier == CpuSchedulerTier::Background
+                if candidate.decision == AdaptiveEngineProcessDecision::LimitProcessors
+                    && candidate.tier == AdaptiveEngineProcessTier::Background
                     && !cpu_allocation::contains_process(
                         explicit_cpu_allocation_paths,
                         &executable_path,
@@ -708,7 +708,7 @@ impl CpuSchedulerManager {
                 ControlOwner::AdaptiveEngine,
                 cpu_allocation_targets,
                 scanned_processes,
-                "CPU Scheduler active.",
+                "Adaptive Engine active.",
                 allow_cross_session_process_control,
                 action_log,
             )
@@ -718,7 +718,7 @@ impl CpuSchedulerManager {
                 ControlOwner::AdaptiveEngine,
                 Vec::new(),
                 scanned_processes,
-                "CPU Scheduler idle.",
+                "Adaptive Engine idle.",
                 allow_cross_session_process_control,
                 action_log,
             )
@@ -733,39 +733,43 @@ impl CpuSchedulerManager {
         if failures.last_error.is_none() {
             failures.last_error = cpu_allocation_snapshot.last_error.clone();
         }
-        let cpu_scheduler_memory_snapshot = self.background_memory_priority.update(
+        let adaptive_engine_process_memory_snapshot = self.background_memory_priority.update(
             memory_priority_controller,
             ControlOwner::AdaptiveEngine,
             if cpu_pressure_restraint_applies && settings.memory_priority_enabled {
-                cpu_scheduler_memory_targets
+                adaptive_engine_process_memory_targets
             } else {
                 Vec::new()
             },
             automation_enabled,
             allow_cross_session_process_control,
-            ActionLogFeature::CpuScheduler,
+            ActionLogFeature::AdaptiveEngine,
             action_log,
         );
         auto_excluded_processes.extend(
-            cpu_scheduler_memory_snapshot
+            adaptive_engine_process_memory_snapshot
                 .auto_excluded_processes
                 .iter()
                 .cloned(),
         );
-        failures.count += cpu_scheduler_memory_snapshot.failed_processes;
+        failures.count += adaptive_engine_process_memory_snapshot.failed_processes;
         if failures.last_error.is_none() {
-            failures.last_error = cpu_scheduler_memory_snapshot.last_error.clone();
+            failures.last_error = adaptive_engine_process_memory_snapshot.last_error.clone();
         }
 
         let active_priority_targets = target_processes
             .iter()
             .filter(|(_, target)| target.priority.is_some())
-            .map(|(process_id, target)| cpu_scheduler_priority_target_key(*process_id, target))
+            .map(|(process_id, target)| {
+                adaptive_engine_process_priority_target_key(*process_id, target)
+            })
             .collect::<BTreeSet<_>>();
         let active_power_targets = target_processes
             .iter()
             .filter(|(_, target)| target.apply_background_efficiency)
-            .map(|(process_id, target)| cpu_scheduler_priority_target_key(*process_id, target))
+            .map(|(process_id, target)| {
+                adaptive_engine_process_priority_target_key(*process_id, target)
+            })
             .collect::<BTreeSet<_>>();
         self.unavailable_power_targets
             .retain(|target| active_power_targets.contains(target));
@@ -785,7 +789,7 @@ impl CpuSchedulerManager {
                 &active_priority_targets,
             ),
             action_log,
-            "process no longer needs CPU Scheduler restraint",
+            "process no longer needs Adaptive Engine restraint",
             "process priority",
             &mut failures,
         );
@@ -793,12 +797,12 @@ impl CpuSchedulerManager {
             priority_efficiency_controller
                 .release_power_policy_except(ControlOwner::AdaptiveEngine, &active_power_targets),
             action_log,
-            "process no longer needs CPU Scheduler restraint",
+            "process no longer needs Adaptive Engine restraint",
             "Background Efficiency",
             &mut failures,
         );
         let mut skipped_processes = 0;
-        skipped_processes += cpu_scheduler_memory_snapshot.skipped_processes;
+        skipped_processes += adaptive_engine_process_memory_snapshot.skipped_processes;
         let mut summarized_background_applies = 0;
 
         for (process_id, target) in target_processes {
@@ -851,7 +855,7 @@ impl CpuSchedulerManager {
                             skipped = true;
                             self.unavailable_power_targets.insert(target_key.clone());
                             action_log.record(
-                            ActionLogFeature::CpuScheduler,
+                            ActionLogFeature::AdaptiveEngine,
                             Some(process_id),
                             target.process_name.clone(),
                             ActionLogResult::Skipped,
@@ -866,7 +870,7 @@ impl CpuSchedulerManager {
                             self.failure_suppression
                                 .suppress_process_failure(&target.executable_path);
                             action_log.record(
-                                ActionLogFeature::CpuScheduler,
+                                ActionLogFeature::AdaptiveEngine,
                                 Some(process_id),
                                 target.process_name.clone(),
                                 ActionLogResult::Skipped,
@@ -912,7 +916,7 @@ impl CpuSchedulerManager {
                         self.failure_suppression
                             .suppress_process_failure(&target.executable_path);
                         action_log.record(
-                            ActionLogFeature::CpuScheduler,
+                            ActionLogFeature::AdaptiveEngine,
                             Some(process_id),
                             target.process_name.clone(),
                             ActionLogResult::Skipped,
@@ -949,9 +953,9 @@ impl CpuSchedulerManager {
         {
             self.last_background_apply_summary_logged_at = Some(now);
             action_log.record(
-                ActionLogFeature::CpuScheduler,
+                ActionLogFeature::AdaptiveEngine,
                 None,
-                "CPU Scheduler",
+                "Adaptive Engine",
                 ActionLogResult::Applied,
                 background_apply_summary_message(summarized_background_applies),
             );
@@ -1042,7 +1046,7 @@ impl CpuSchedulerManager {
             failures.merge(error);
         }
 
-        CpuSchedulerSnapshot {
+        AdaptiveEngineProcessSnapshot {
             enabled: true,
             scanned_processes,
             adjusted_processes: priority_efficiency_controller
@@ -1060,7 +1064,7 @@ impl CpuSchedulerManager {
                     .map(String::as_str),
             ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "CPU Scheduler active.".to_owned(),
+            message: "Adaptive Engine active.".to_owned(),
             last_error: failures.last_error,
         }
     }
@@ -1085,7 +1089,7 @@ impl CpuSchedulerManager {
             Vec::new(),
             true,
             true,
-            ActionLogFeature::CpuScheduler,
+            ActionLogFeature::AdaptiveEngine,
             action_log,
         );
         failures.count += memory_snapshot.failed_processes;
@@ -1131,7 +1135,7 @@ impl CpuSchedulerManager {
             ControlOwner::AdaptiveEngine,
             Vec::new(),
             0,
-            "CPU Scheduler disabled.",
+            "Adaptive Engine disabled.",
             true,
             action_log,
         );
@@ -1153,7 +1157,7 @@ impl CpuSchedulerManager {
             self.focus_process_candidate = None;
         }
         let summary = priority_efficiency_controller
-            .release_all_priority_policy(ControlOwner::CpuSchedulerFocusPriority);
+            .release_all_priority_policy(ControlOwner::AdaptiveEngineProcessFocusPriority);
         if summary.restored_processes == 0 && summary.failures.is_empty() {
             return None;
         }
@@ -1178,9 +1182,9 @@ impl CpuSchedulerManager {
     ) {
         if summary.restored_processes > 0 {
             action_log.record(
-                ActionLogFeature::CpuScheduler,
+                ActionLogFeature::AdaptiveEngine,
                 None,
-                "CPU Scheduler",
+                "Adaptive Engine",
                 ActionLogResult::Restored,
                 format!(
                     "Restored {property} for {}: {reason}.",
@@ -1218,12 +1222,12 @@ impl CpuSchedulerManager {
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
-                ActionLogFeature::CpuScheduler,
+                ActionLogFeature::AdaptiveEngine,
                 Some(process_id),
                 process_name.trim().to_owned(),
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying CPU Scheduler after {} failed attempts.",
+                    "Stopped retrying Adaptive Engine after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -1260,7 +1264,7 @@ impl CpuSchedulerManager {
 
     fn update_background_pressure(
         &mut self,
-        settings: &CpuSchedulerSettings,
+        settings: &AdaptiveEngineProcessSettings,
         foreground_cpu_usage_percent: Option<f32>,
         total_cpu_usage_percent: Option<f32>,
     ) -> bool {
@@ -1418,7 +1422,7 @@ impl CpuSchedulerManager {
             .collect::<BTreeSet<_>>();
         self.merge_controller_release(
             priority_efficiency_controller.release_priority_policy_except(
-                ControlOwner::CpuSchedulerFocusPriority,
+                ControlOwner::AdaptiveEngineProcessFocusPriority,
                 &active_targets,
             ),
             action_log,
@@ -1447,7 +1451,7 @@ impl CpuSchedulerManager {
                         PathBuf::from(executable_path),
                         *creation_time,
                     ),
-                    owner: ControlOwner::CpuSchedulerFocusPriority,
+                    owner: ControlOwner::AdaptiveEngineProcessFocusPriority,
                     priority,
                     preservation,
                 },
@@ -1456,7 +1460,7 @@ impl CpuSchedulerManager {
                 Ok(ProcessPropertyApplyOutcome::Applied) => {
                     self.clear_process_failure(executable_path);
                     action_log.record(
-                        ActionLogFeature::CpuScheduler,
+                        ActionLogFeature::AdaptiveEngine,
                         Some(*process_id),
                         process_name.clone(),
                         ActionLogResult::Applied,
@@ -1476,7 +1480,7 @@ impl CpuSchedulerManager {
                     self.failure_suppression
                         .suppress_process_failure(executable_path);
                     action_log.record(
-                        ActionLogFeature::CpuScheduler,
+                        ActionLogFeature::AdaptiveEngine,
                         Some(*process_id),
                         process_name.clone(),
                         ActionLogResult::Skipped,
@@ -1500,15 +1504,15 @@ impl CpuSchedulerManager {
         result
     }
 
-    fn update_cpu_scheduler_process(
+    fn update_adaptive_engine_process_process(
         &mut self,
         process_id: u32,
         process_name: &str,
         executable_path: &str,
-        settings: &CpuSchedulerSettings,
-        tier: CpuSchedulerTier,
+        settings: &AdaptiveEngineProcessSettings,
+        tier: AdaptiveEngineProcessTier,
         now: Instant,
-    ) -> Option<CpuSchedulerCandidate> {
+    ) -> Option<AdaptiveEngineProcessCandidate> {
         let threshold = f32::from(settings.background_app_cpu_threshold_percent.min(100));
         let recovery_threshold = f32::from(
             settings
@@ -1533,22 +1537,21 @@ impl CpuSchedulerManager {
         {
             self.tracked_processes.remove(&process_id);
         }
-        let state =
-            self.tracked_processes
-                .entry(process_id)
-                .or_insert_with(|| CpuSchedulerProcess {
-                    process_name: process_name.to_owned(),
-                    executable_path: executable_path.to_owned(),
-                    creation_time,
-                    previous_cpu_time: None,
-                    last_usage_tenths: None,
-                    high_since: None,
-                    below_since: None,
-                    active_since: None,
-                    decision: None,
-                    active: false,
-                    selected: false,
-                });
+        let state = self.tracked_processes.entry(process_id).or_insert_with(|| {
+            AdaptiveEngineProcessProcess {
+                process_name: process_name.to_owned(),
+                executable_path: executable_path.to_owned(),
+                creation_time,
+                previous_cpu_time: None,
+                last_usage_tenths: None,
+                high_since: None,
+                below_since: None,
+                active_since: None,
+                decision: None,
+                active: false,
+                selected: false,
+            }
+        });
         state.process_name = process_name.to_owned();
         state.executable_path = executable_path.to_owned();
         state.creation_time = creation_time;
@@ -1567,9 +1570,11 @@ impl CpuSchedulerManager {
                 state.active = true;
                 state.active_since = Some(now);
             }
-            let decision = cpu_scheduler_process_decision(settings, tier);
+            let decision = adaptive_engine_process_process_decision(settings, tier);
             state.decision = Some(decision);
-            return Some(cpu_scheduler_candidate(process_id, state, decision, tier));
+            return Some(adaptive_engine_process_candidate(
+                process_id, state, decision, tier,
+            ));
         }
 
         if !state.active {
@@ -1589,18 +1594,20 @@ impl CpuSchedulerManager {
         let active_since = state.active_since.unwrap_or(now);
         if usage > recovery_threshold || now.duration_since(active_since) < cpu_restraint_time {
             state.below_since = None;
-            let decision = cpu_scheduler_process_decision(settings, tier);
+            let decision = adaptive_engine_process_process_decision(settings, tier);
             state.decision = Some(decision);
-            return Some(cpu_scheduler_candidate(process_id, state, decision, tier));
+            return Some(adaptive_engine_process_candidate(
+                process_id, state, decision, tier,
+            ));
         }
 
         let below_since = *state.below_since.get_or_insert(now);
         if now.duration_since(below_since) < cpu_recovery_time {
-            state.decision = Some(CpuSchedulerDecision::LowerPriority);
-            return Some(cpu_scheduler_candidate(
+            state.decision = Some(AdaptiveEngineProcessDecision::LowerPriority);
+            return Some(adaptive_engine_process_candidate(
                 process_id,
                 state,
-                CpuSchedulerDecision::LowerPriority,
+                AdaptiveEngineProcessDecision::LowerPriority,
                 tier,
             ));
         }
@@ -1637,7 +1644,7 @@ impl CpuSchedulerManager {
 
     fn cpu_allocation_mask(
         &mut self,
-        settings: &CpuSchedulerSettings,
+        settings: &AdaptiveEngineProcessSettings,
         percent: u8,
         now: Instant,
     ) -> Option<u64> {
@@ -1693,11 +1700,13 @@ impl CpuSchedulerManager {
             let next_load = average_masked_core_load(next_mask, &usages);
             if previous.kind == kind
                 && previous_count == next_count
-                && elapsed < Duration::from_secs(CPU_SCHEDULER_CORE_REBALANCE_INTERVAL_SECS)
+                && elapsed
+                    < Duration::from_secs(ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_INTERVAL_SECS)
                 && previous_load
                     .zip(next_load)
                     .is_none_or(|(previous_load, next_load)| {
-                        previous_load - next_load < CPU_SCHEDULER_CORE_REBALANCE_IMPROVEMENT_PERCENT
+                        previous_load - next_load
+                            < ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_IMPROVEMENT_PERCENT
                     })
             {
                 previous.mask
@@ -1737,11 +1746,16 @@ fn cached_executable_path(
     Some(path)
 }
 
-fn cpu_scheduler_priority_value(priority: ProcessPrioritySetting) -> Option<PriorityClassValue> {
+fn adaptive_engine_process_priority_value(
+    priority: ProcessPrioritySetting,
+) -> Option<PriorityClassValue> {
     PriorityClassValue::from_setting(priority)
 }
 
-fn cpu_scheduler_priority_target_key(process_id: u32, target: &PriorityTarget) -> ProcessTargetKey {
+fn adaptive_engine_process_priority_target_key(
+    process_id: u32,
+    target: &PriorityTarget,
+) -> ProcessTargetKey {
     ProcessControlTarget::automatic(
         process_id,
         target.process_name.clone(),
@@ -1751,7 +1765,7 @@ fn cpu_scheduler_priority_target_key(process_id: u32, target: &PriorityTarget) -
     .key()
 }
 
-impl Default for CpuSchedulerSnapshot {
+impl Default for AdaptiveEngineProcessSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -1764,7 +1778,7 @@ impl Default for CpuSchedulerSnapshot {
             failed_processes: 0,
             adjusted_apps: Vec::new(),
             auto_excluded_processes: Vec::new(),
-            message: "CPU Scheduler disabled.".to_owned(),
+            message: "Adaptive Engine disabled.".to_owned(),
             last_error: None,
         }
     }

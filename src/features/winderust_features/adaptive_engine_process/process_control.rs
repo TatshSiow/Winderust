@@ -117,7 +117,7 @@ impl PriorityFailures {
             ));
         }
         action_log.record(
-            ActionLogFeature::CpuScheduler,
+            ActionLogFeature::AdaptiveEngine,
             Some(process_id),
             process_name.to_owned(),
             ActionLogResult::Failed,
@@ -142,9 +142,9 @@ pub(super) fn process_failure_message(
 
 pub(super) fn background_apply_summary_message(count: usize) -> String {
     if count == 1 {
-        "Applied CPU Scheduler restraint to 1 process.".to_owned()
+        "Applied Adaptive Engine restraint to 1 process.".to_owned()
     } else {
-        format!("Applied CPU Scheduler restraint to {count} processes.")
+        format!("Applied Adaptive Engine restraint to {count} processes.")
     }
 }
 

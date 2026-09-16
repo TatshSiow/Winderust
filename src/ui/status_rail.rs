@@ -413,14 +413,14 @@ fn feature_status_summary(
 ) -> Option<FeatureStatusSummary> {
     let summary = match page {
         Page::AdaptiveEngine => {
-            let status = &runtime.feature_status.cpu_scheduler;
+            let status = &runtime.feature_status.adaptive_engine_process;
             FeatureStatusSummary {
                 scanned: Some(status.scanned_processes),
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
                 last_error: status.last_error.clone(),
-                action_log_feature: ActionLogFeature::CpuScheduler,
+                action_log_feature: ActionLogFeature::AdaptiveEngine,
             }
         }
         Page::BackgroundEfficiency => {

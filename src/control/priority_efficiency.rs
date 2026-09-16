@@ -1795,7 +1795,7 @@ fn priority_is_preserved(
 fn priority_owner_precedence() -> &'static [ControlOwner] {
     &[
         ControlOwner::BackgroundEfficiency,
-        ControlOwner::CpuSchedulerFocusPriority,
+        ControlOwner::AdaptiveEngineProcessFocusPriority,
         ControlOwner::AdaptiveEngine,
         ControlOwner::ProcessPriority,
     ]
@@ -2365,7 +2365,7 @@ mod tests {
                 priority_claim(
                     7,
                     1,
-                    ControlOwner::CpuSchedulerFocusPriority,
+                    ControlOwner::AdaptiveEngineProcessFocusPriority,
                     PriorityClassValue::AboveNormal,
                 ),
                 true,
@@ -2388,7 +2388,7 @@ mod tests {
             controller.platform.processes[&7].priority,
             ABOVE_NORMAL_PRIORITY_CLASS
         );
-        controller.release_all_priority_policy(ControlOwner::CpuSchedulerFocusPriority);
+        controller.release_all_priority_policy(ControlOwner::AdaptiveEngineProcessFocusPriority);
         assert_eq!(
             controller.platform.processes[&7].priority,
             IDLE_PRIORITY_CLASS
