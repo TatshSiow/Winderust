@@ -145,12 +145,10 @@ impl RuntimeCore {
         // Restore in the reverse order used by the automation loop. Several features can touch
         // the same process state, so relying on field drop order can restore an intermediate
         // Winderust-managed value instead of the value that preceded Winderust.
-        collect_restore_error(
-            &mut errors,
-            "Timer Resolution",
-            self.run_timer_resolution_update(&settings, &mut observations)
-                .last_error,
-        );
+        // Priority, allocation, and timer controllers retry any state left by the disabled
+        // feature update. Their final shutdown result is authoritative; keeping a transient
+        // update error would report failure even after that retry restored everything.
+        self.run_timer_resolution_update(&settings, &mut observations);
         if let Err(error) = self.timer_resolution_controller.shutdown() {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
         }
@@ -166,18 +164,8 @@ impl RuntimeCore {
                 errors.push(format!("CPU Limiter restoration failed: {error}"));
             }
         }
-        collect_restore_error(
-            &mut errors,
-            "Processor Affinity (Hard)",
-            self.run_processor_affinity_hard_update(&settings, &mut observations)
-                .last_error,
-        );
-        collect_restore_error(
-            &mut errors,
-            "CPU Sets (Soft)",
-            self.run_cpu_sets_soft_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_processor_affinity_hard_update(&settings, &mut observations);
+        self.run_cpu_sets_soft_update(&settings, &mut observations);
         collect_restore_error(
             &mut errors,
             "App Suspension",
@@ -199,74 +187,34 @@ impl RuntimeCore {
             }
             Err(_) => errors.push("Suspension restoration state is unavailable.".to_owned()),
         }
-        collect_restore_error(
-            &mut errors,
-            "Memory Priority",
-            self.run_memory_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_memory_priority_update(&settings, &mut observations);
         if let Err(error) = self.memory_priority_controller.shutdown() {
             errors.push(format!("Memory Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "GPU Priority",
-            self.run_gpu_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_gpu_priority_update(&settings, &mut observations);
         if let Err(error) = self.gpu_priority_controller.shutdown() {
             errors.push(format!("GPU Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "Dynamic Priority Boost",
-            self.run_dynamic_priority_boost_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_dynamic_priority_boost_update(&settings, &mut observations);
         if let Err(error) = self.dynamic_priority_boost_controller.shutdown() {
             errors.push(format!(
                 "Dynamic Priority Boost restoration failed: {error}"
             ));
         }
-        collect_restore_error(
-            &mut errors,
-            "Thread Priority",
-            self.run_thread_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_thread_priority_update(&settings, &mut observations);
         if let Err(error) = self.thread_priority_controller.shutdown() {
             errors.push(format!("Thread Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "Process Priority",
-            self.run_process_priority_update(&settings, &mut observations)
-                .last_error,
-        );
-        collect_restore_error(
-            &mut errors,
-            "I/O Priority",
-            self.run_io_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_process_priority_update(&settings, &mut observations);
+        self.run_io_priority_update(&settings, &mut observations);
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "CPU Scheduler",
-            self.run_cpu_scheduler_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_cpu_scheduler_update(&settings, &mut observations);
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "Background Efficiency",
-            self.run_background_efficiency_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_background_efficiency_update(&settings, &mut observations);
         if let Err(error) = self.priority_efficiency_controller.shutdown() {
             errors.push(format!(
                 "Process Priority and Efficiency restoration failed: {error}"
