@@ -935,6 +935,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
 
     while let Some(snapshot) = automation_snapshot(&shared) {
+        runner.action_log.begin_batch();
         let configured_settings = snapshot.settings;
         let settings = active_power_source_settings(
             configured_settings.as_ref(),

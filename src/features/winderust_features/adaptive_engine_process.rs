@@ -855,14 +855,12 @@ impl AdaptiveEngineProcessManager {
                             skipped = true;
                             self.unavailable_power_targets.insert(target_key.clone());
                             action_log.record(
-                            ActionLogFeature::AdaptiveEngine,
-                            Some(process_id),
-                            target.process_name.clone(),
-                            ActionLogResult::Skipped,
-                            format!(
-                                "Skipped Background Efficiency because its original state is unavailable: {error}"
-                            ),
-                        );
+                                ActionLogFeature::AdaptiveEngine,
+                                Some(process_id),
+                                target.process_name.clone(),
+                                ActionLogResult::Skipped,
+                                format!("Cannot read original efficiency settings: {error}"),
+                            );
                         }
                         Err(ProcessControlError::ProcessExited) => skipped = true,
                         Err(ProcessControlError::AccessDenied(error)) => {
@@ -955,7 +953,7 @@ impl AdaptiveEngineProcessManager {
             action_log.record(
                 ActionLogFeature::AdaptiveEngine,
                 None,
-                "Adaptive Engine",
+                "",
                 ActionLogResult::Applied,
                 background_apply_summary_message(summarized_background_applies),
             );
@@ -1184,7 +1182,7 @@ impl AdaptiveEngineProcessManager {
             action_log.record(
                 ActionLogFeature::AdaptiveEngine,
                 None,
-                "Adaptive Engine",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored {property} for {}: {reason}.",

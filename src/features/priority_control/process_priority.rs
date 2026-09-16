@@ -287,9 +287,9 @@ impl ProcessPriorityManager {
             action_log.record(
                 ActionLogFeature::ProcessPriority,
                 None,
-                "Process Priority",
+                "",
                 ActionLogResult::Applied,
-                format!("Applied process priority defaults to {applied_processes} process(es)."),
+                format!("Priority updated for {applied_processes} process(es)."),
             );
         }
 
@@ -373,7 +373,7 @@ impl ProcessPriorityManager {
             action_log.record(
                 ActionLogFeature::ProcessPriority,
                 None,
-                "Process Priority",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored process priority for {} process(es): {reason}.",

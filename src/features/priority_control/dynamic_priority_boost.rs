@@ -296,7 +296,7 @@ impl DynamicPriorityBoostManager {
                         Some(process_id),
                         process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        "Access denied when opening process.",
                     );
                 }
                 Err(err) => {
@@ -310,10 +310,10 @@ impl DynamicPriorityBoostManager {
             action_log.record(
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
-                "Dynamic Priority Boost",
+                "",
                 ActionLogResult::Applied,
                 format!(
-                    "Applied dynamic priority boost defaults to {}.",
+                    "Priority boost updated for {}.",
                     process_count_label(applied_processes)
                 ),
             );
@@ -376,7 +376,7 @@ impl DynamicPriorityBoostManager {
             action_log.record(
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
-                "Dynamic Priority Boost",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored dynamic priority boost for {}: {reason}.",

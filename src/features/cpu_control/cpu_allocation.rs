@@ -392,7 +392,11 @@ impl CpuAllocationManager {
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Applied,
-                        format!("Applied {}.", cpu_allocation_mode_label(target.mode)),
+                        format!(
+                            "Allowed CPU mask: {:#X} ({} logical CPUs).",
+                            target.core_mask,
+                            target.core_mask.count_ones()
+                        ),
                     );
                 }
                 Ok(CpuAllocationApplyOutcome::Unchanged) => {
@@ -582,11 +586,11 @@ pub(crate) fn record_cpu_allocation_restorations(
         *counts.entry(owner).or_insert(0_usize) += 1;
     }
     for (owner, count) in counts {
-        let (feature, label) = cpu_allocation_action_log_context(owner);
+        let (feature, _) = cpu_allocation_action_log_context(owner);
         action_log.record(
             feature,
             None,
-            label,
+            "",
             ActionLogResult::Restored,
             format!(
                 "Restored {count} CPU allocation {}: {reason}.",
@@ -709,13 +713,6 @@ fn cpu_allocation_target_key(
         target.creation_time,
     )
     .key()
-}
-
-fn cpu_allocation_mode_label(mode: CpuAllocationMode) -> &'static str {
-    match mode {
-        CpuAllocationMode::SoftCpuSets => "CPU Sets (Soft)",
-        CpuAllocationMode::HardAffinity => "Processor Affinity (Hard)",
-    }
 }
 
 fn cpu_allocation_request_label(request: CpuAllocationRequest) -> &'static str {

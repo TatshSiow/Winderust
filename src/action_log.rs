@@ -11,6 +11,7 @@ const SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS: u128 = 30_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionLogEntry {
     pub sequence: u64,
+    pub batch_id: u64,
     pub timestamp_epoch_ms: u128,
     pub feature: ActionLogFeature,
     pub process_id: Option<u32>,
@@ -63,6 +64,7 @@ pub enum ActionLogResult {
 pub struct ActionLog {
     entries: VecDeque<ActionLogEntry>,
     next_sequence: u64,
+    batch_id: Option<u64>,
     revision: u64,
     capacity: usize,
     mode: ActionLogMode,
@@ -75,6 +77,7 @@ impl ActionLog {
         Self {
             entries: VecDeque::with_capacity(capacity),
             next_sequence: 1,
+            batch_id: None,
             revision: 0,
             capacity,
             mode: ActionLogMode::Full,
@@ -84,6 +87,10 @@ impl ActionLog {
 
     pub fn set_mode(&mut self, mode: ActionLogMode) {
         self.mode = mode;
+    }
+
+    pub fn begin_batch(&mut self) {
+        self.batch_id = Some(self.next_sequence);
     }
 
     pub fn record(
@@ -115,6 +122,7 @@ impl ActionLog {
 
         let entry = ActionLogEntry {
             sequence: self.next_sequence,
+            batch_id: self.batch_id.unwrap_or(self.next_sequence),
             timestamp_epoch_ms,
             feature,
             process_id,

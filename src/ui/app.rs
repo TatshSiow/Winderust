@@ -727,7 +727,9 @@ impl WinderustApp {
                                 .map(Message::Processes),
                         );
                     }
-                    if page.supports_power_source_profiles() && !self.catalog_loading {
+                    if (page.supports_power_source_profiles() || page == Page::ActionLog)
+                        && !self.catalog_loading
+                    {
                         self.catalog_loading = true;
                         tasks.push(
                             tasks::run({
@@ -852,7 +854,7 @@ impl WinderustApp {
                                 .map(Message::Processes),
                         );
                     }
-                    if self.page.supports_power_source_profiles()
+                    if (self.page.supports_power_source_profiles() || self.page == Page::ActionLog)
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
                     {
@@ -2070,7 +2072,7 @@ impl WinderustApp {
             .into(),
             Page::ActionLog => self
                 .action_log
-                .view(&self.status.action_log_entries)
+                .view(&self.status.action_log_entries, &self.candidates)
                 .map(Message::ActionLog),
             Page::WinderustFeatures
             | Page::CpuControl

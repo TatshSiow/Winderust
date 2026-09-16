@@ -824,9 +824,9 @@ impl AppSuspensionManager {
                         process_name.clone(),
                         ActionLogResult::Applied,
                         if lifecycle.is_manual_freeze() {
-                            "Manually froze background process."
+                            "Suspended manually."
                         } else {
-                            "Froze background process after delay."
+                            "Suspended after background delay."
                         },
                     );
                     suspended_app_names.insert(process.key());
@@ -861,7 +861,7 @@ impl AppSuspensionManager {
                         Some(process_id),
                         process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because the process cannot be frozen.",
+                        "Process cannot be suspended.",
                     );
                 }
                 Err(error @ SuspensionError::Unsupported) => {
@@ -879,7 +879,7 @@ impl AppSuspensionManager {
                         Some(process_id),
                         process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because Windows Job Object freeze is unsupported.",
+                        "Windows does not support Job Object freeze.",
                     );
                     failed_actions += self.clear_automatic(
                         controller,
@@ -1567,7 +1567,7 @@ impl AppSuspensionManager {
                     Some(process_id),
                     process_name.clone(),
                     ActionLogResult::Restored,
-                    "Network activity woke the suspended process.",
+                    "Resumed: network activity.",
                 );
             }
             self.set_temporary_thaw(
@@ -1648,7 +1648,7 @@ impl AppSuspensionManager {
                     Some(process_id),
                     process_name.clone(),
                     ActionLogResult::Restored,
-                    "Audio activity woke the suspended process.",
+                    "Resumed: audio activity.",
                 );
             }
             self.set_temporary_thaw(

@@ -1,3 +1,5 @@
+mod popover;
+
 use super::design;
 use super::widgets::{button, checkbox, pick_list, Choice};
 use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
@@ -182,17 +184,23 @@ impl Editor {
         .into()
     }
 
-    pub(super) fn view<'a>(&'a self, entries: &'a [ActionLogEntry]) -> Element<'a, Message> {
-        iced::widget::responsive(move |size| self.view_at_size(entries, size)).into()
+    pub(super) fn view<'a>(
+        &'a self,
+        entries: &'a [ActionLogEntry],
+        candidates: &'a [super::app_picker::Candidate],
+    ) -> Element<'a, Message> {
+        iced::widget::responsive(move |size| self.view_at_size(entries, candidates, size)).into()
     }
 
     fn view_at_size<'a>(
         &'a self,
         entries: &'a [ActionLogEntry],
+        candidates: &'a [super::app_picker::Candidate],
         size: iced::Size,
     ) -> Element<'a, Message> {
         let entries_filtered = action_log_filtered_entries(entries, &self.result, &self.feature);
-        let count = entries_filtered.len();
+        let groups = group_entries(&entries_filtered);
+        let count = groups.len();
         let range = visible_log_range(count, self.offset.get(), size.height);
         let header = row![
             text("#").width(48),
@@ -219,7 +227,8 @@ impl Editor {
                 .padding(design::space::LARGE as u16),
             );
         }
-        for entry in entries_filtered[range.clone()].iter() {
+        for (index, group) in groups[range.clone()].iter().enumerate() {
+            let entry = group[0];
             let result_style: fn(&iced::Theme) -> iced::widget::text::Style = match entry.result {
                 ActionLogResult::Applied | ActionLogResult::Restored => text::success,
                 ActionLogResult::Skipped => text::warning,
@@ -229,7 +238,7 @@ impl Editor {
                 iced::widget::button(
                     container(
                         row![
-                            text(format!("#{}", entry.sequence))
+                            text(format!("#{}", count - range.start - index))
                                 .size(design::typography::CAPTION)
                                 .width(48),
                             text(action_log_time_label(entry.timestamp_epoch_ms))
@@ -242,32 +251,33 @@ impl Editor {
                                 .size(design::typography::CAPTION)
                                 .style(result_style)
                                 .width(90),
-                            container(
-                                text(super::widgets::fitted_text(
-                                    &action_log_process_label(entry),
-                                    158.0,
-                                    design::typography::CAPTION
-                                ))
-                                .size(design::typography::CAPTION)
-                                .wrapping(text::Wrapping::None)
-                            )
-                            .width(160)
-                            .clip(true),
-                            iced::widget::tooltip(
-                                container(
-                                    text(super::widgets::fitted_text(
-                                        &entry.reason,
-                                        size.width.max(960.0) - 600.0,
-                                        design::typography::CAPTION
-                                    ))
-                                    .size(design::typography::CAPTION)
-                                    .wrapping(text::Wrapping::None)
+                            process_group(group, candidates),
+                            {
+                                let fitted = super::widgets::fitted_text(
+                                    &entry.reason,
+                                    size.width.max(960.0) - 600.0,
+                                    design::typography::CAPTION,
+                                );
+                                let truncated = fitted != entry.reason;
+                                let content: Element<'_, Message> = container(
+                                    text(fitted)
+                                        .size(design::typography::CAPTION)
+                                        .wrapping(text::Wrapping::None),
                                 )
                                 .width(Fill)
-                                .clip(true),
-                                text(entry.reason.clone()),
-                                iced::widget::tooltip::Position::Top
-                            )
+                                .clip(true)
+                                .into();
+                                if truncated {
+                                    iced::widget::tooltip(
+                                        content,
+                                        text(entry.reason.clone()),
+                                        iced::widget::tooltip::Position::Top,
+                                    )
+                                    .into()
+                                } else {
+                                    content
+                                }
+                            }
                         ]
                         .spacing(design::space::SMALL)
                         .align_y(iced::Center),
@@ -325,6 +335,114 @@ impl Editor {
         table.into()
     }
 }
+// Group only adjacent successes from the same automation pass and operation.
+fn group_entries<'a>(entries: &[&'a ActionLogEntry]) -> Vec<Vec<&'a ActionLogEntry>> {
+    let mut groups: Vec<Vec<&ActionLogEntry>> = Vec::new();
+    for &entry in entries {
+        if let Some(group) = groups.last_mut() {
+            let first = group[0];
+            if matches!(
+                entry.result,
+                ActionLogResult::Applied | ActionLogResult::Restored
+            ) && entry.process_id.is_some()
+                && first.process_id.is_some()
+                && entry.batch_id == first.batch_id
+                && entry.feature == first.feature
+                && entry.result == first.result
+                && entry.reason == first.reason
+                && !group.iter().any(|old| old.process_id == entry.process_id)
+            {
+                group.push(entry);
+                continue;
+            }
+        }
+        groups.push(vec![entry]);
+    }
+    groups
+}
+
+fn process_icon<'a>(
+    name: &str,
+    candidates: &[super::app_picker::Candidate],
+) -> Element<'a, Message> {
+    super::app_picker::icon_for_name(name, candidates)
+        .map(|icon| {
+            iced::widget::image(icon.clone())
+                .width(16)
+                .height(16)
+                .into()
+        })
+        .unwrap_or_else(|| super::navigation::glyph("icons/app-window.svg"))
+}
+
+fn process_group<'a>(
+    entries: &[&ActionLogEntry],
+    candidates: &[super::app_picker::Candidate],
+) -> Element<'a, Message> {
+    if entries.len() == 1 && entries[0].process_id.is_none() && entries[0].process_name.is_empty() {
+        return container(text("\u{2014}").style(text::secondary))
+            .width(160)
+            .into();
+    }
+    let mut strip = row![].spacing(4).align_y(iced::Center);
+    for entry in entries.iter().take(5) {
+        strip = strip.push(process_icon(&entry.process_name, candidates));
+    }
+    let mut names_hidden = entries.len() > 1;
+    if entries.len() == 1 {
+        let label = action_log_process_label(entries[0]);
+        let fitted = super::widgets::fitted_text(&label, 134.0, design::typography::CAPTION);
+        names_hidden = fitted != label;
+        strip = strip.push(
+            text(fitted)
+                .size(design::typography::CAPTION)
+                .wrapping(text::Wrapping::None),
+        );
+    } else if entries.len() > 5 {
+        strip =
+            strip.push(text(format!("+{}", entries.len() - 5)).size(design::typography::CAPTION));
+    }
+    let anchor = container(strip).width(160).clip(true).into();
+    if !names_hidden {
+        return anchor;
+    }
+    let mut details = column![text(
+        t!("action_log.affected_processes", count = entries.len()).to_string()
+    )]
+    .spacing(8);
+    for entry in entries {
+        details = details.push(
+            row![
+                process_icon(&entry.process_name, candidates),
+                text(action_log_process_label(entry))
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        );
+    }
+    popover::view(
+        entries[0].sequence,
+        anchor,
+        container(
+            scrollable(details)
+                .width(iced::Length::Shrink)
+                .height(iced::Length::Shrink),
+        )
+        .padding(12)
+        .width(iced::Length::Shrink)
+        .max_height(300)
+        .style(|theme| {
+            let menu = super::widgets::select_menu(theme);
+            iced::widget::container::Style {
+                background: Some(menu.background),
+                border: menu.border,
+                ..Default::default()
+            }
+        })
+        .into(),
+    )
+}
+
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
     let page = match feature {
         ActionLogFeature::AppSuspension => super::Page::AppSuspension,
@@ -509,8 +627,129 @@ fn log_label(v: ActionLogMode) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn process_popup_opens_when_names_are_hidden() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        for (name, count, expected) in [
+            ("a.exe", 1, false),
+            ("a.exe", 2, true),
+            ("a.exe", 5, true),
+            ("a.exe", 6, true),
+            ("a-very-long-process-name.exe", 1, true),
+        ] {
+            let mut log = crate::action_log::ActionLog::new(10);
+            for pid in 0..count {
+                log.record(
+                    ActionLogFeature::AdaptiveEngine,
+                    Some(pid),
+                    name,
+                    ActionLogResult::Applied,
+                    "Applied",
+                );
+            }
+            let entries = log.entries();
+            let refs: Vec<_> = entries.iter().collect();
+            let mut element = process_group(&refs, &[]);
+            let mut tree = Tree::new(&element);
+            let size = iced::Size::new(500.0, 500.0);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, size),
+            );
+            let position = node.bounds().center();
+            element.as_widget_mut().update(
+                &mut tree,
+                &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
+                Layout::new(&node),
+                iced::mouse::Cursor::Available(position),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+                &iced::Rectangle::with_size(size),
+            );
+            assert_eq!(
+                element
+                    .as_widget_mut()
+                    .overlay(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &iced::Rectangle::with_size(size),
+                        iced::Vector::ZERO
+                    )
+                    .is_some(),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn successful_batches_group_without_merging_other_operations_or_exports() {
+        let mut log = crate::action_log::ActionLog::new(100);
+        log.begin_batch();
+        for pid in 1..=40 {
+            log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(pid),
+                format!("app-{pid}.exe"),
+                ActionLogResult::Applied,
+                "Applied background restraint.",
+            );
+        }
+        let entries = log.entries();
+        let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+        assert_eq!(
+            group_entries(&filtered)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            vec![40]
+        );
+        assert_eq!(action_log_entries_to_csv(&entries).lines().count(), 41);
+        log.begin_batch();
+        log.record(
+            ActionLogFeature::AdaptiveEngine,
+            Some(41),
+            "next.exe",
+            ActionLogResult::Applied,
+            "Applied background restraint.",
+        );
+        for pid in 42..=43 {
+            log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(pid),
+                "failed.exe",
+                ActionLogResult::Failed,
+                "Access denied.",
+            );
+        }
+        let entries = log.entries();
+        let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+        assert_eq!(
+            group_entries(&filtered)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1, 40]
+        );
+        for change in 0..4 {
+            let mut other = entries[0].clone();
+            other.sequence = 99;
+            other.process_id = Some(99);
+            match change {
+                0 => other.feature = ActionLogFeature::CpuLimiter,
+                1 => other.reason = "Different operation".into(),
+                2 => other.result = ActionLogResult::Restored,
+                _ => other.process_id = entries[0].process_id,
+            }
+            assert_eq!(group_entries(&[&entries[0], &other]).len(), 2);
+        }
+    }
+
+    #[test]
     fn log_scroll_damage_stays_bounded() {
         let entries: Vec<_> = (0..10000).map(|sequence| ActionLogEntry {
+            batch_id: sequence,
             sequence, timestamp_epoch_ms: 1_700_000_000_000,
             feature: ActionLogFeature::CpuLimiter, process_id: Some(1234),
             process_name: "long-running-application-name.exe".into(),
@@ -520,7 +759,7 @@ mod tests {
         let editor = Editor::default();
         let bounds = iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0));
         crate::ui::scrolling::check_scroll_damage(
-            editor.view_at_size(&entries, bounds.size()),
+            editor.view_at_size(&entries, &[], bounds.size()),
             bounds,
         );
     }
@@ -540,6 +779,7 @@ mod tests {
     #[test]
     fn combined_filters_reverse_order_and_csv_preserves_quoted_unicode() {
         let mut entries = vec![ActionLogEntry {
+            batch_id: 1,
             sequence: 1,
             timestamp_epoch_ms: 1_700_000_000_000,
             feature: ActionLogFeature::CpuLimiter,
@@ -549,6 +789,7 @@ mod tests {
             reason: "quoted \"value\", 測試\n".into(),
         }];
         entries.push(ActionLogEntry {
+            batch_id: 2,
             sequence: 2,
             result: ActionLogResult::Failed,
             ..entries[0].clone()

@@ -296,7 +296,7 @@ impl IoPriorityManager {
                         Some(process_id),
                         process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        "Access denied when opening process.",
                     );
                 }
                 Err(error) => {
@@ -310,10 +310,10 @@ impl IoPriorityManager {
             action_log.record(
                 ActionLogFeature::IoPriority,
                 None,
-                "I/O Priority",
+                "",
                 ActionLogResult::Applied,
                 format!(
-                    "Applied I/O priority to {}.",
+                    "I/O priority updated for {}.",
                     process_count_label(applied_processes)
                 ),
             );
@@ -376,7 +376,7 @@ impl IoPriorityManager {
             action_log.record(
                 ActionLogFeature::IoPriority,
                 None,
-                "I/O Priority",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored previous I/O priority for {}: {reason}.",

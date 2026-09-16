@@ -1029,6 +1029,7 @@ cpu_allocation:
     off: "關閉"
 
 action_log:
+  affected_processes: "%{count} 個受影響的處理程序"
   check_all: "全選"
   clear_all: "全部取消"
   intro_1: "動作記錄會顯示最近的程序控制變更，以及 Winderust 執行這些動作的原因。"

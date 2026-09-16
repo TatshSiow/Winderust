@@ -196,6 +196,7 @@ fn power_plan_action_logs_are_attributed_to_the_winning_rule_family() {
 fn clearing_action_log_immediately_clears_runtime_summaries() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let entry = ActionLogEntry {
+        batch_id: 1,
         sequence: 1,
         timestamp_epoch_ms: 1,
         feature: ActionLogFeature::ByTime,

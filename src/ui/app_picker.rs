@@ -89,6 +89,22 @@ pub(super) fn view<'a, M: Clone + 'static>(
     .into()
 }
 
+pub(super) fn icon_for_name<'a>(
+    name: &str,
+    candidates: &'a [Candidate],
+) -> Option<&'a image::Handle> {
+    let mut matches = candidates
+        .iter()
+        .filter(|candidate| candidate.info.name.eq_ignore_ascii_case(name));
+    let first = matches.next()?;
+    if matches.any(|candidate| {
+        !crate::foreground::same_executable_path(&first.info.image_path, &candidate.info.image_path)
+    }) {
+        return None;
+    }
+    first.icon.as_deref()
+}
+
 pub(super) fn app_name<'a, M: 'a>(path: &str, candidates: &[Candidate]) -> Element<'a, M> {
     let candidate = candidates.iter().find(|candidate| {
         crate::foreground::same_executable_path(
@@ -614,6 +630,25 @@ mod tests {
             text: None,
             repeat: false,
         })
+    }
+
+    #[test]
+    fn log_icons_require_an_unambiguous_cached_executable() {
+        let candidate = Candidate {
+            info: crate::foreground::ProcessCandidateInfo {
+                name: "app.exe".into(),
+                image_path: r"C:\Apps\app.exe".into(),
+                has_suspendable_instance: true,
+            },
+            icon: Some(Arc::new(image::Handle::from_rgba(1, 1, vec![255; 4]))),
+        };
+        let mut candidates = vec![candidate.clone()];
+        assert!(icon_for_name("APP.EXE", &candidates).is_some());
+        assert!(icon_for_name("missing.exe", &candidates).is_none());
+        let mut other = candidate;
+        other.info.image_path = r"C:\Other\app.exe".into();
+        candidates.push(other);
+        assert!(icon_for_name("app.exe", &candidates).is_none());
     }
 
     #[test]

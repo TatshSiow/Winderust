@@ -1026,6 +1026,7 @@ cpu_allocation:
     off: "Off"
 
 action_log:
+  affected_processes: "%{count} affected processes"
   check_all: "Check All"
   clear_all: "Clear All"
   intro_1: "Log shows recent process-control changes and why Winderust made them."

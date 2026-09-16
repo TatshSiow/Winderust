@@ -274,9 +274,9 @@ impl ThreadPriorityManager {
             action_log.record(
                 ActionLogFeature::ThreadPriority,
                 None,
-                "Thread Priority",
+                "",
                 ActionLogResult::Applied,
-                format!("Applied thread priority to {applied_threads} thread(s)."),
+                format!("Priority updated for {applied_threads} thread(s)."),
             );
         }
 
@@ -399,7 +399,7 @@ fn record_release(
         action_log.record(
             ActionLogFeature::ThreadPriority,
             None,
-            "Thread Priority",
+            "",
             ActionLogResult::Restored,
             format!(
                 "Restored thread priority for {} thread(s): {reason}.",

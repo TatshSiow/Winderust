@@ -152,11 +152,11 @@ fn focus_and_launch_profile_active_runs_for_any_adaptive_engine_process_preset_w
 fn background_apply_summary_message_uses_process_count() {
     assert_eq!(
         background_apply_summary_message(1),
-        "Applied Adaptive Engine restraint to 1 process."
+        "Background limits updated for 1 process."
     );
     assert_eq!(
         background_apply_summary_message(3),
-        "Applied Adaptive Engine restraint to 3 processes."
+        "Background limits updated for 3 processes."
     );
 }
 
