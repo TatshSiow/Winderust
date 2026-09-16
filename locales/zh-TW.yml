@@ -53,7 +53,7 @@ common:
   applied: "已套用"
   waiting: "等待中"
   error: "錯誤"
-  inactive: "???"
+  inactive: "未啟用"
   close: "關閉"
   feature_info: "功能說明"
   caution: "注意"
@@ -236,8 +236,8 @@ runtime_status:
   processor_affinity_hard_active: "處理器親和性（硬式）作用中。"
 
 home:
-  pause_metrics: ??????
-  resume_metrics: ??????
+  pause_metrics: "暫停更新指標"
+  resume_metrics: "恢復更新指標"
   home: "總覽"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
@@ -286,8 +286,8 @@ home:
 
 process_list:
   plans_not_loaded: "電源計畫尚未載入。請按重新整理以重試。"
-  pause_population: ????????
-  resume_population: ????????
+  pause_population: "暫停更新程序清單"
+  resume_population: "恢復更新程序清單"
   filter: "篩選"
   grouping: "分組"
   metrics: "指標"
@@ -377,8 +377,8 @@ process_list:
 
 settings:
   animation_mode: "動畫"
-  functionality: "??"
-  launch_settings: "????"
+  functionality: "功能設定"
+  launch_settings: "啟動設定"
   allow_cross_session_process_control: "允許跨工作階段處理程序控制"
   allow_cross_session_process_control_help: "允許 Winderust 控制目前 Windows 工作階段以外符合條件的服務與處理程序。Windows 存取檢查與受保護處理程序排除仍然適用。"
   intro_1: "一般設定會控制啟動行為、系統匣行為與主要自動化開關。"

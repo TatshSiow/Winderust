@@ -353,7 +353,7 @@ pub(super) fn view<'a>(
         ));
         if matches!(plans, PlanCatalog::Unavailable) {
             body = body.push(
-                button(text(t!("process_list.refresh").to_string())).on_press(Message::ReloadPlans),
+                button(text(t!("settings.refresh").to_string())).on_press(Message::ReloadPlans),
             );
         }
     }

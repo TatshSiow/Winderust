@@ -240,6 +240,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn locale_labels_are_not_question_mark_placeholders() {
+        for (locale, source) in [
+            ("en", include_str!("../locales/en.yml")),
+            ("zh-TW", include_str!("../locales/zh-TW.yml")),
+        ] {
+            for (index, line) in source.lines().enumerate() {
+                if let Some((_, value)) = line.split_once(':') {
+                    let value = value.trim().trim_matches(['\"', '\'']);
+                    assert!(
+                        value.is_empty() || !value.chars().all(|c| c == '?'),
+                        "{locale}:{} contains a placeholder label",
+                        index + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn executable_path_hash_preserves_non_unicode_units() {
         assert_ne!(fnv1a64([0xD800]), fnv1a64([0xFFFD]));
     }
