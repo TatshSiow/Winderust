@@ -64,18 +64,22 @@ pub(super) fn view<'a, M: Clone + 'static>(
         )
     });
     let input = widgets::text_input(&t!("common.search_running_apps"), query)
+        .padding(widgets::SEARCH_INPUT_PADDING)
         .on_input_maybe(enabled.then_some(select))
         .width(Length::Fill)
         .into();
     row![
-        Element::new(Picker {
-            input,
-            choices,
-            select,
-            browse,
-            enabled,
-            menu: None,
-        }),
+        widgets::search_field(
+            Element::new(Picker {
+                input,
+                choices,
+                select,
+                browse,
+                enabled,
+                menu: None,
+            }),
+            (enabled && !query.is_empty()).then(|| select(String::new())),
+        ),
         widgets::button(text(t!("common.add").to_string()))
             .style(crate::ui::widgets::primary_button)
             .on_press_maybe(add),

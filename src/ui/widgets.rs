@@ -417,6 +417,34 @@ pub(super) fn sidebar_toggle<'a, M: 'a>(
         .style(quiet)
 }
 
+pub(super) const SEARCH_INPUT_PADDING: iced::Padding = iced::Padding {
+    right: 32.0,
+    ..iced::Padding::new(design::INPUT_PADDING as f32)
+};
+
+pub(super) fn search_field<'a, M: Clone + 'a>(
+    input: impl Into<Element<'a, M>>,
+    clear: Option<M>,
+) -> Element<'a, M> {
+    let mut field = iced::widget::stack![input.into()];
+    if let Some(clear) = clear {
+        field = field.push(
+            iced::widget::container(iced::widget::tooltip(
+                button(super::navigation::glyph("icons/x.svg"))
+                    .padding(3)
+                    .style(quiet)
+                    .on_press(clear),
+                text(rust_i18n::t!("common.clear").to_string()),
+                iced::widget::tooltip::Position::Left,
+            ))
+            .padding([0, design::INPUT_PADDING])
+            .align_right(Fill)
+            .center_y(Fill),
+        );
+    }
+    field.into()
+}
+
 pub(super) fn text_input<'a, M: Clone + 'a>(
     placeholder: &str,
     value: &str,
@@ -758,6 +786,53 @@ fn step_values(
 }
 #[cfg(test)]
 mod step_tests {
+    #[test]
+    fn search_clear_button_preserves_size_and_emits_empty_query() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use iced::{mouse, Event, Point, Size};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let mut expected_size = None;
+        for value in ["", "process"] {
+            let mut field = super::search_field(
+                super::text_input("Search", value)
+                    .padding(super::SEARCH_INPUT_PADDING)
+                    .width(280)
+                    .on_input(std::convert::identity),
+                (!value.is_empty()).then(String::new),
+            );
+            let mut tree = Tree::new(&field);
+            let node = field.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(500.0, 100.0)),
+            );
+            let bounds = node.bounds();
+            assert_eq!(*expected_size.get_or_insert(bounds.size()), bounds.size());
+            assert_eq!(bounds.width, 280.0);
+            let mut messages = Vec::new();
+            for event in [
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+            ] {
+                field.as_widget_mut().update(
+                    &mut tree,
+                    &Event::Mouse(event),
+                    Layout::new(&node),
+                    mouse::Cursor::Available(Point::new(bounds.width - 16.0, bounds.height / 2.0)),
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &bounds,
+                );
+            }
+            if value.is_empty() {
+                assert!(messages.is_empty());
+            } else {
+                assert_eq!(messages, vec![String::new()]);
+            }
+        }
+    }
+
     #[test]
     fn sidebar_tab_and_title_text_share_the_same_position() {
         use crate::ui::{

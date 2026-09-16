@@ -1312,10 +1312,13 @@ impl WinderustApp {
             );
         } else {
             navigation = navigation.push(
-                container(
+                container(widgets::search_field(
                     text_input(&t!("home.search_placeholder"), &self.navigation_search)
+                        .padding(widgets::SEARCH_INPUT_PADDING)
                         .on_input(Message::NavigationSearch),
-                )
+                    (!self.navigation_search.is_empty())
+                        .then(|| Message::NavigationSearch(String::new())),
+                ))
                 .center_y(design::NAVIGATION_ROW_HEIGHT),
             );
         }

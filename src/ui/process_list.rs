@@ -1066,9 +1066,13 @@ impl ProcessList {
         plans: &'a [crate::power::PowerPlan],
     ) -> Element<'a, Message> {
         let controls = row![
-            text_input(&t!("process_list.search_placeholder"), &self.search)
-                .on_input(Message::Search)
-                .width(280),
+            super::widgets::search_field(
+                text_input(&t!("process_list.search_placeholder"), &self.search)
+                    .padding(super::widgets::SEARCH_INPUT_PADDING)
+                    .on_input(Message::Search)
+                    .width(280),
+                (!self.search.is_empty()).then(|| Message::Search(String::new())),
+            ),
             Space::new().width(Fill),
             text(t!("process_list.count", count = self.processes.len()).to_string()),
             button(text(
