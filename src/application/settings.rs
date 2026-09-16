@@ -411,6 +411,24 @@ impl SettingsEditor {
         self.selected_power_source = profile;
     }
 
+    pub(crate) fn edit_with_presets(&mut self, edit: impl FnOnce(&mut Settings)) {
+        self.draft.value.sync_shared_settings_to_battery();
+        edit(self);
+        // Preset collections are shared even when tuning the battery profile.
+        if self.selected_power_source == PowerSourceProfile::OnBattery {
+            let root = &mut self.draft.value;
+            if let Some(battery) = root.on_battery.as_mut() {
+                root.adaptive_engine_presets
+                    .clone_from(&battery.adaptive_engine_presets);
+                root.cpu_allocation_presets
+                    .clone_from(&battery.cpu_allocation_presets);
+                root.advanced_power_plan_tuning_presets
+                    .clone_from(&battery.advanced_power_plan_tuning_presets);
+            }
+        }
+        self.draft.value.sync_shared_settings_to_battery();
+    }
+
     pub(crate) fn runtime_settings_snapshot(&mut self) -> RuntimeSettingsSnapshot {
         self.coordinator.runtime_settings_snapshot(&self.draft)
     }
@@ -1157,6 +1175,68 @@ mod tests {
         );
         assert_eq!(runtime.advanced, current.advanced);
         assert!(runtime.cpu_allocation_presets.is_empty());
+    }
+
+    #[test]
+    fn preset_edits_survive_profile_switching_and_save() {
+        for profile in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+            let initial = Settings::default();
+            let storage = FakeStorage::new(initial.clone(), Ok(initial), Ok(()), Ok(()));
+            let (mut editor, _, _) =
+                editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+            editor.draft.value.battery_profile_mut();
+            editor.select_power_source(profile);
+            editor.edit_with_presets(|settings| {
+                settings
+                    .adaptive_engine_presets
+                    .push(crate::config::AdaptiveEnginePreset {
+                        name: "Saved".into(),
+                        processor_power_policy_enabled: true,
+                        base_processor_policy: settings.adaptive_engine.base_processor_policy,
+                        background_pressure_profile: settings
+                            .adaptive_engine
+                            .background_pressure_profile,
+                        focus_and_launch_profile: settings.adaptive_engine.focus_and_launch_profile,
+                        adaptive_engine_process: settings.adaptive_engine_process.clone(),
+                    });
+                settings
+                    .cpu_allocation_presets
+                    .push(crate::config::CpuAllocationPreset {
+                        name: "Saved".into(),
+                        core_mask: 3,
+                    });
+                settings.advanced_power_plan_tuning_presets.push(
+                    crate::config::AdvancedPowerPlanTuningPreset {
+                        name: "Saved".into(),
+                        values: settings.adaptive_engine.base_processor_policy,
+                    },
+                );
+            });
+            editor.save().expect("save presets");
+            for selected in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+                editor.select_power_source(selected);
+                assert_eq!(editor.adaptive_engine_presets[0].name, "Saved");
+                assert_eq!(editor.cpu_allocation_presets[0].core_mask, 3);
+                assert_eq!(editor.advanced_power_plan_tuning_presets[0].name, "Saved");
+            }
+            editor.select_power_source(profile);
+            editor.edit_with_presets(|settings| {
+                settings.adaptive_engine_presets[0].name = "Edited".into();
+                settings.cpu_allocation_presets.clear();
+                settings.advanced_power_plan_tuning_presets.clear();
+            });
+            editor.save().expect("save edits");
+            assert_eq!(editor.persisted().adaptive_engine_presets[0].name, "Edited");
+            assert!(editor.persisted().cpu_allocation_presets.is_empty());
+            assert!(editor
+                .persisted()
+                .advanced_power_plan_tuning_presets
+                .is_empty());
+            assert_eq!(
+                editor.persisted().adaptive_engine_presets,
+                editor.persisted().battery_profile().adaptive_engine_presets
+            );
+        }
     }
 
     #[test]

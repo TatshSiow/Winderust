@@ -21,6 +21,7 @@ pub(super) struct Editor {
     pub(super) status: String,
     preset: Option<PresetEditor>,
     expanded: [bool; 2],
+    selected_presets: [Option<PresetChoice>; 2],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
@@ -53,7 +54,7 @@ pub(super) enum Message {
     Value(Source, Field, u32),
     ValueText(Source, Field, String),
     Boost(Source, ProcessorBoostMode),
-    Load(Source, ProcessorPowerValues),
+    Load(Source, PresetChoice),
     OpenPreset(PresetTarget),
     PresetName(String),
     PresetValue(Field, u32),
@@ -64,6 +65,24 @@ pub(super) enum Message {
     Remove(usize),
 }
 impl Editor {
+    fn selected_preset(
+        &self,
+        source: Source,
+        values: ProcessorPowerValues,
+        options: &[PresetChoice],
+    ) -> Option<PresetChoice> {
+        self.selected_presets[source as usize]
+            .as_ref()
+            .filter(|choice| choice.1 == values.normalized() && options.contains(choice))
+            .or_else(|| {
+                options
+                    .iter()
+                    .rev()
+                    .find(|choice| choice.1 == values.normalized())
+            })
+            .cloned()
+    }
+
     pub(super) fn has_pending_editor(&self) -> bool {
         self.preset
             .as_ref()
@@ -179,9 +198,10 @@ impl Editor {
                     self.dirty = true;
                 }
             }
-            Message::Load(source, value) => {
+            Message::Load(source, choice) => {
                 if let Some(values) = self.values.as_mut() {
-                    *source_values(values, source) = value.normalized();
+                    *source_values(values, source) = choice.1.normalized();
+                    self.selected_presets[source as usize] = Some(choice);
                     self.dirty = true;
                 }
             }
@@ -346,12 +366,8 @@ impl Editor {
                         .iter()
                         .map(|p| PresetChoice(p.name.clone(), p.values.normalized())),
                 );
-                let selected = options
-                    .iter()
-                    .rev()
-                    .find(|p| p.1 == values.normalized())
-                    .cloned();
-                let action = pick_list(options, selected, move |p| Message::Load(source, p.1))
+                let selected = self.selected_preset(source, values, &options);
+                let action = pick_list(options, selected, move |p| Message::Load(source, p))
                     .placeholder(t!("common.custom").to_string())
                     .width(280);
                 let mut controls = column![].spacing(design::space::SMALL);
@@ -617,7 +633,7 @@ impl std::fmt::Display for PlanChoice {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PresetChoice(String, ProcessorPowerValues);
+pub(super) struct PresetChoice(String, ProcessorPowerValues);
 impl std::fmt::Display for PresetChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -673,6 +689,51 @@ fn mode_label(mode: EffectivePowerMode) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn identical_presets_keep_explicit_selection_for_each_source() {
+        let mut editor = Editor::default();
+        let values = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced);
+        editor.values = Some(ProcessorPowerSourceValues::same(values));
+        let options = vec![
+            PresetChoice("Balanced".into(), values),
+            PresetChoice("Mine".into(), values),
+        ];
+        editor.update(
+            &mut vec![],
+            &[],
+            Message::Load(Source::Ac, options[0].clone()),
+        );
+        editor.update(
+            &mut vec![],
+            &[],
+            Message::Load(Source::Battery, options[1].clone()),
+        );
+        assert_eq!(
+            editor.selected_preset(Source::Ac, values, &options),
+            Some(options[0].clone())
+        );
+        assert_eq!(
+            editor.selected_preset(Source::Battery, values, &options),
+            Some(options[1].clone())
+        );
+        editor.update(
+            &mut vec![],
+            &[],
+            Message::Load(Source::Ac, options[1].clone()),
+        );
+        editor.discard_editor();
+        assert_eq!(
+            editor.selected_preset(Source::Ac, values, &options),
+            Some(options[1].clone())
+        );
+        assert_eq!(
+            editor.selected_preset(Source::Ac, values, &options[..1]),
+            Some(options[0].clone())
+        );
+        let changed = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
+        assert_eq!(editor.selected_preset(Source::Ac, changed, &options), None);
+    }
+
+    #[test]
     fn presets_are_unique_readonly_and_change_only_requested_source() {
         let mut e = Editor::default();
         let mut presets = vec![];
@@ -683,7 +744,10 @@ mod tests {
             &[],
             Message::Load(
                 Source::Ac,
-                ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver),
+                PresetChoice(
+                    "Saver".into(),
+                    ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver),
+                ),
             ),
         );
         assert_eq!(e.values.unwrap().battery, balanced);

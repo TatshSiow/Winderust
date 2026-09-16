@@ -60,6 +60,7 @@ impl Tier {
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
+    selected_presets: std::collections::BTreeMap<(String, usize), super::widgets::Choice<u64>>,
     preset_name: String,
     preset_mask: u64,
     editing_preset: Option<usize>,
@@ -76,7 +77,7 @@ pub(super) enum Message {
     Browse,
     Add,
     RuleEnabled(usize, bool),
-    Mask(usize, Tier, u64),
+    Mask(usize, Tier, super::widgets::Choice<u64>),
     Remove(usize),
 
     NewPreset,
@@ -115,15 +116,19 @@ impl Editor {
                     r.enabled = v
                 }
             }
-            Message::Mask(i, tier, m) => {
+            Message::Mask(i, tier, choice) => {
                 if let Some(r) = settings_mut(s, k).rules.get_mut(i) {
-                    tier.set(r, m & available)
+                    tier.set(r, choice.0 & available);
+                    self.selected_presets
+                        .insert((r.executable_path.clone(), tier as usize), choice);
                 }
             }
             Message::Remove(i) => {
                 let rules = &mut settings_mut(s, k).rules;
                 if i < rules.len() {
-                    rules.remove(i);
+                    let removed = rules.remove(i);
+                    self.selected_presets
+                        .retain(|(path, _), _| *path != removed.executable_path);
                 }
             }
 
@@ -186,6 +191,27 @@ impl Editor {
             Message::ClosePreset => self.preset_open = false,
         }
     }
+    fn selected_preset(
+        &self,
+        path: &str,
+        tier: Tier,
+        mask: u64,
+        choices: &[super::widgets::Choice<u64>],
+    ) -> Option<super::widgets::Choice<u64>> {
+        self.selected_presets
+            .get(&(path.to_owned(), tier as usize))
+            .filter(|choice| choice.0 == mask && choices.contains(choice))
+            .or_else(|| choices.iter().find(|choice| choice.0 == mask))
+            .cloned()
+    }
+
+    pub(super) fn reset_drafts(&mut self) {
+        *self = Self {
+            selected_presets: std::mem::take(&mut self.selected_presets),
+            ..Self::default()
+        };
+    }
+
     pub(super) fn has_pending_editor(&self) -> bool {
         self.preset_open && !self.preset_read_only
     }
@@ -230,10 +256,8 @@ impl Editor {
                             .map(|p| super::widgets::Choice(p.core_mask, p.name.clone())),
                     );
                     choices.retain(|p| p.0 != 0);
-                    let selected = choices
-                        .iter()
-                        .find(|p| p.0 == mask)
-                        .cloned()
+                    let selected = self
+                        .selected_preset(&r.executable_path, tier, mask, &choices)
                         .unwrap_or_else(|| {
                             super::widgets::Choice(mask, t!("common.custom").to_string())
                         });
@@ -241,7 +265,7 @@ impl Editor {
                         choices.push(selected.clone());
                     }
                     super::widgets::pick_list(choices, Some(selected), move |v| {
-                        Message::Mask(i, tier, v.0)
+                        Message::Mask(i, tier, v)
                     })
                     .width(Fill)
                     .into()
@@ -558,6 +582,56 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identical_masks_keep_explicit_selection_per_rule_and_tier() {
+        for kind in [Kind::Soft, Kind::Hard] {
+            let mut editor = Editor::default();
+            let mut s = Settings::default();
+            let mask =
+                cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
+            let options = vec![
+                super::super::widgets::Choice(mask, "All".into()),
+                super::super::widgets::Choice(mask, "Mine".into()),
+            ];
+            settings_mut(&mut s, kind).rules.push(CpuAllocationRule {
+                enabled: true,
+                executable_path: "app.exe".into(),
+                focus_core_mask: mask,
+                visible_window_core_mask: mask,
+                background_core_mask: mask,
+            });
+            editor.update(
+                &mut s,
+                kind,
+                Message::Mask(0, Tier::Focus, options[1].clone()),
+            );
+            assert_eq!(
+                editor.selected_preset("app.exe", Tier::Focus, mask, &options),
+                Some(options[1].clone())
+            );
+            assert_eq!(
+                editor.selected_preset("app.exe", Tier::Background, mask, &options),
+                Some(options[0].clone())
+            );
+            editor.reset_drafts();
+            assert_eq!(
+                editor.selected_preset("app.exe", Tier::Focus, mask, &options),
+                Some(options[1].clone())
+            );
+            editor.update(
+                &mut s,
+                kind,
+                Message::Mask(0, Tier::Focus, options[0].clone()),
+            );
+            assert_eq!(
+                editor.selected_preset("app.exe", Tier::Focus, mask, &options),
+                Some(options[0].clone())
+            );
+            editor.update(&mut s, kind, Message::Remove(0));
+            assert!(editor.selected_presets.is_empty());
+        }
+    }
+
     #[test]
     fn builtin_preview_is_read_only_and_cancel_discards_new_preset() {
         let mut editor = Editor::default();

@@ -477,11 +477,13 @@ impl WinderustApp {
                 message,
             ),
             Message::PrioritySeparation(message) => self.priority_separation.update(message),
-            Message::PowerTuning(message) => self.power_tuning.update(
-                &mut self.settings.advanced_power_plan_tuning_presets,
-                &self.power_plans,
-                message,
-            ),
+            Message::PowerTuning(message) => self.settings.edit_with_presets(|settings| {
+                self.power_tuning.update(
+                    &mut settings.advanced_power_plan_tuning_presets,
+                    &self.power_plans,
+                    message,
+                )
+            }),
 
             Message::PowerRules(kind, message) => {
                 let editor = match kind {
@@ -509,23 +511,25 @@ impl WinderustApp {
                     cpu_allocation::Kind::Hard => Page::ProcessorAffinityHard,
                 })
             }
-            Message::Allocation(kind, message) => match kind {
-                cpu_allocation::Kind::Soft => {
-                    self.soft_allocation
-                        .update(&mut self.settings, kind, message)
-                }
-                cpu_allocation::Kind::Hard => {
-                    self.hard_allocation
-                        .update(&mut self.settings, kind, message)
-                }
-            },
+            Message::Allocation(kind, message) => {
+                self.settings.edit_with_presets(|settings| match kind {
+                    cpu_allocation::Kind::Soft => {
+                        self.soft_allocation.update(settings, kind, message)
+                    }
+                    cpu_allocation::Kind::Hard => {
+                        self.hard_allocation.update(settings, kind, message)
+                    }
+                })
+            }
             Message::Adaptive(adaptive_engine::Message::Status(message)) => {
                 return self.update(Message::Status(message))
             }
             Message::Adaptive(adaptive_engine::Message::Browse) => {
                 return self.browse(Page::AdaptiveEngine)
             }
-            Message::Adaptive(message) => self.adaptive.update(&mut self.settings, message),
+            Message::Adaptive(message) => self
+                .settings
+                .edit_with_presets(|settings| self.adaptive.update(settings, message)),
             Message::Catalog(result) => {
                 self.catalog_loading = false;
                 match result {
@@ -1052,9 +1056,9 @@ impl WinderustApp {
         self.running_app_plans = Default::default();
         self.priority = Default::default();
         self.efficiency = Default::default();
-        self.soft_allocation = Default::default();
-        self.hard_allocation = Default::default();
-        self.adaptive = Default::default();
+        self.soft_allocation.reset_drafts();
+        self.hard_allocation.reset_drafts();
+        self.adaptive.reset_drafts();
         self.time_rules = Default::default();
         self.cpu_rules = Default::default();
         self.suspension = Default::default();

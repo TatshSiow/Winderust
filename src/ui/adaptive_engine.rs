@@ -44,6 +44,7 @@ impl TuningTab {
 #[derive(Default)]
 pub(super) struct Editor {
     name: String,
+    selected_preset: Option<Choice<usize>>,
     draft: Option<Settings>,
     editing: Option<usize>,
     read_only: bool,
@@ -129,6 +130,10 @@ impl Editor {
             Message::RailTab(value) => self.presets_tab = value,
             Message::Status(_) => {}
             Message::BuiltIn(p) => {
+                self.selected_preset = BuiltInAdaptiveEnginePreset::ALL
+                    .iter()
+                    .position(|v| *v == p)
+                    .map(|i| Choice(i, built_in_adaptive_engine_preset_label(p)));
                 let mut draft = s.clone();
                 apply_built_in_adaptive_engine_preset(&mut draft, p);
                 let preset = capture_adaptive_engine_preset(&draft, String::new());
@@ -144,6 +149,7 @@ impl Editor {
             }
             Message::Apply(i) => {
                 if let Some(p) = s.adaptive_engine_presets.get(i).cloned() {
+                    self.selected_preset = Some(Choice(i + 4, p.name.clone()));
                     apply_adaptive_engine_preset(s, &p)
                 }
             }
@@ -292,6 +298,40 @@ impl Editor {
             }
         }
     }
+    fn selected_preset(&self, live: &Settings, options: &[Choice<usize>]) -> Option<Choice<usize>> {
+        let current = capture_adaptive_engine_preset(live, String::new());
+        let preferred = self
+            .selected_preset
+            .as_ref()
+            .filter(|choice| options.contains(choice));
+        preferred
+            .into_iter()
+            .chain(options.iter())
+            .find(|choice| {
+                let mut candidate = live.clone();
+                if choice.0 < 4 {
+                    apply_built_in_adaptive_engine_preset(
+                        &mut candidate,
+                        BuiltInAdaptiveEnginePreset::ALL[choice.0],
+                    );
+                } else {
+                    apply_adaptive_engine_preset(
+                        &mut candidate,
+                        &live.adaptive_engine_presets[choice.0 - 4],
+                    );
+                }
+                capture_adaptive_engine_preset(&candidate, String::new()) == current
+            })
+            .cloned()
+    }
+
+    pub(super) fn reset_drafts(&mut self) {
+        *self = Self {
+            selected_preset: self.selected_preset.take(),
+            ..Self::default()
+        };
+    }
+
     pub(super) fn validation_error(&self) -> Option<String> {
         self.invalid_numbers
             .values()
@@ -423,25 +463,7 @@ impl Editor {
                     .enumerate()
                     .map(|(i, p)| Choice(i + 4, p.name.clone())),
             );
-            let current = capture_adaptive_engine_preset(live, String::new());
-            let selected = options
-                .iter()
-                .find(|choice| {
-                    let mut candidate = live.clone();
-                    if choice.0 < 4 {
-                        apply_built_in_adaptive_engine_preset(
-                            &mut candidate,
-                            BuiltInAdaptiveEnginePreset::ALL[choice.0],
-                        );
-                    } else {
-                        apply_adaptive_engine_preset(
-                            &mut candidate,
-                            &live.adaptive_engine_presets[choice.0 - 4],
-                        );
-                    }
-                    capture_adaptive_engine_preset(&candidate, String::new()) == current
-                })
-                .cloned();
+            let selected = self.selected_preset(live, &options);
             body = body.push(super::widgets::settings_card(
                 row![
                     setting_label("adaptive_engine.preset").width(Fill),
@@ -1969,6 +1991,38 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_custom_selection_wins_over_identical_builtin() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        let builtin = BuiltInAdaptiveEnginePreset::Balanced;
+        editor.update(&mut settings, Message::BuiltIn(builtin));
+        editor.update(&mut settings, Message::New);
+        editor.update(&mut settings, Message::Name("My balanced".into()));
+        editor.update(&mut settings, Message::Save);
+        let options = vec![
+            Choice(1, built_in_adaptive_engine_preset_label(builtin)),
+            Choice(4, "My balanced".into()),
+        ];
+        editor.update(&mut settings, Message::Apply(0));
+        assert_eq!(
+            editor.selected_preset(&settings, &options),
+            Some(options[1].clone())
+        );
+        editor.reset_drafts();
+        assert_eq!(
+            editor.selected_preset(&settings, &options),
+            Some(options[1].clone())
+        );
+        editor.update(&mut settings, Message::BuiltIn(builtin));
+        assert_eq!(
+            editor.selected_preset(&settings, &options),
+            Some(options[0].clone())
+        );
+        settings.adaptive_engine_process.reaction_time_ms += 1;
+        assert_eq!(editor.selected_preset(&settings, &options), None);
+    }
+
     #[test]
     fn sidebar_delete_removes_only_the_selected_preset() {
         let mut editor = Editor::default();
