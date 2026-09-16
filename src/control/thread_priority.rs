@@ -153,6 +153,7 @@ pub(crate) struct WindowsThread {
 
 impl WindowsThread {
     fn validate(&self) -> Result<(), ProcessControlError> {
+        windows_thread_priority::ensure_active(&self.handle).map_err(map_thread_priority_error)?;
         let owner_process_id = windows_thread_priority::owner_process_id(&self.handle)
             .map_err(map_thread_priority_error)?;
         if owner_process_id != self.identity.process.id {
