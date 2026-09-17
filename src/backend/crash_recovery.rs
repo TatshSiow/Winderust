@@ -7,7 +7,8 @@ use std::{
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     ptr::null_mut,
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{mpsc, Mutex, MutexGuard, OnceLock},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -63,13 +64,12 @@ static STARTUP_ERROR: OnceLock<String> = OnceLock::new();
 #[derive(Debug)]
 struct RecoveryRuntime {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    transport: RecoveryTransport,
     entries: Vec<RecoveryEntry>,
     next_intent_id: u64,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 enum RecoveryCommand {
     Begin {
@@ -211,11 +211,9 @@ impl RecoveryIntent {
             .as_mut()
             .ok_or_else(|| "Crash recovery stopped before mutation commit.".to_owned())?;
         compact_or_push(&mut runtime.entries, entry);
-        send_command(
-            &mut runtime.stdin,
-            &mut runtime.stdout,
-            &RecoveryCommand::Commit { id: self.id },
-        )
+        runtime
+            .transport
+            .send(&RecoveryCommand::Commit { id: self.id })
     }
 }
 
@@ -223,11 +221,9 @@ impl Drop for RecoveryIntent {
     fn drop(&mut self) {
         if self.entry.is_some() {
             if let Some(runtime) = self.runtime.as_mut().and_then(|runtime| runtime.as_mut()) {
-                let _ = send_command(
-                    &mut runtime.stdin,
-                    &mut runtime.stdout,
-                    &RecoveryCommand::Cancel { id: self.id },
-                );
+                let _ = runtime
+                    .transport
+                    .send(&RecoveryCommand::Cancel { id: self.id });
             }
         }
     }
@@ -486,11 +482,24 @@ impl RecoveryClient {
 }
 
 fn finish_recovery_runtime(mut runtime: RecoveryRuntime) -> Result<(), String> {
-    drop(runtime.stdin);
-    let status = runtime
-        .child
-        .wait()
-        .map_err(|error| format!("Failed to wait for crash recovery helper: {error}"))?;
+    drop(runtime.transport);
+    wait_for_watchdog(&mut runtime.child, Duration::from_secs(5))
+}
+
+fn wait_for_watchdog(child: &mut Child, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Failed to wait for crash recovery helper: {error}"))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            return Err("Crash recovery helper shutdown timed out; recovery is unconfirmed. The helper has been left running with its recovery journal.".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     if !status.success() {
         return Err(format!(
             "Crash recovery helper exited unexpectedly with status code {}.",
@@ -510,8 +519,7 @@ fn initialize_inner() -> Result<(), String> {
     let (child, stdin, stdout) = spawn_watchdog()?;
     let runtime = RecoveryRuntime {
         child,
-        stdin,
-        stdout,
+        transport: RecoveryTransport::start(stdin, stdout, Duration::from_secs(2))?,
         entries: Vec::new(),
         next_intent_id: 1,
     };
@@ -628,13 +636,9 @@ fn forget_job(name: &str) -> Result<(), String> {
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetJob {
-            name: name.to_owned(),
-        },
-    )?;
+    runtime.transport.send(&RecoveryCommand::ForgetJob {
+        name: name.to_owned(),
+    })?;
     let key = format!("job:{name}");
     runtime.entries.retain(|entry| entry.key() != key);
     Ok(())
@@ -714,16 +718,14 @@ pub(crate) fn forget_thread_priority_change(
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetThreadPriority {
+    runtime
+        .transport
+        .send(&RecoveryCommand::ForgetThreadPriority {
             process_id,
             process_creation_time,
             thread_id,
             thread_creation_time,
-        },
-    )?;
+        })?;
     let key = thread_recovery_key(
         process_id,
         process_creation_time,
@@ -749,16 +751,14 @@ pub(crate) fn forget_thread_suspension(
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetThreadSuspension {
+    runtime
+        .transport
+        .send(&RecoveryCommand::ForgetThreadSuspension {
             process_id,
             process_creation_time,
             thread_id,
             thread_creation_time,
-        },
-    )?;
+        })?;
     let key = thread_suspension_recovery_key(
         process_id,
         process_creation_time,
@@ -783,15 +783,11 @@ fn forget_process_change(
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetProcess {
-            process_id,
-            creation_time,
-            value: value.clone(),
-        },
-    )?;
+    runtime.transport.send(&RecoveryCommand::ForgetProcess {
+        process_id,
+        creation_time,
+        value: value.clone(),
+    })?;
     let key = process_recovery_key(process_id, creation_time, &value);
     runtime.entries.retain(|entry| entry.key() != key);
     Ok(())
@@ -815,14 +811,10 @@ fn record_entry(entry: RecoveryEntry) -> Result<RecoveryIntent, String> {
         .ok_or_else(|| "Crash recovery state disappeared.".to_owned())?;
     let id = state.next_intent_id;
     state.next_intent_id = state.next_intent_id.wrapping_add(1).max(1);
-    send_command(
-        &mut state.stdin,
-        &mut state.stdout,
-        &RecoveryCommand::Begin {
-            id,
-            entry: entry.clone(),
-        },
-    )?;
+    state.transport.send(&RecoveryCommand::Begin {
+        id,
+        entry: entry.clone(),
+    })?;
     Ok(RecoveryIntent {
         runtime: Some(runtime),
         id,
@@ -1525,26 +1517,111 @@ fn spawn_watchdog() -> Result<(Child, ChildStdin, BufReader<ChildStdout>), Strin
     Ok((child, stdin, BufReader::new(stdout)))
 }
 
+#[derive(Debug)]
+enum RecoveryTransportError {
+    Rejected(String),
+    Uncertain(String),
+}
+
+type RecoveryRequest = (
+    RecoveryCommand,
+    mpsc::SyncSender<Result<(), RecoveryTransportError>>,
+);
+
+#[derive(Debug)]
+struct RecoveryTransport {
+    requests: mpsc::Sender<RecoveryRequest>,
+    failed: Option<String>,
+    timeout: Duration,
+}
+
+impl RecoveryTransport {
+    fn start(
+        mut stdin: impl Write + Send + 'static,
+        mut stdout: impl BufRead + Send + 'static,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        let (requests, incoming) = mpsc::channel::<RecoveryRequest>();
+        std::thread::Builder::new()
+            .name("recovery-transport".into())
+            .spawn(move || {
+                for (command, response) in incoming {
+                    let result = send_command(&mut stdin, &mut stdout, &command);
+                    let _ = response.send(result);
+                }
+                // Keep the pipes open after an uncertain reply until the runtime ends.
+                // Closing stdin earlier could start recovery while controllers still own changes.
+            })
+            .map_err(|error| format!("Failed to start recovery transport: {error}"))?;
+        Ok(Self {
+            requests,
+            failed: None,
+            timeout,
+        })
+    }
+
+    fn send(&mut self, command: &RecoveryCommand) -> Result<(), String> {
+        if let Some(error) = &self.failed {
+            return Err(error.clone());
+        }
+        let (response, received) = mpsc::sync_channel(1);
+        let result = if self.requests.send((command.clone(), response)).is_err() {
+            Err(RecoveryTransportError::Uncertain(
+                "Recovery transport stopped.".into(),
+            ))
+        } else {
+            match received.recv_timeout(self.timeout) {
+                Ok(result) => result,
+                Err(error) => Err(RecoveryTransportError::Uncertain(format!(
+                    "Recovery watchdog acknowledgement unavailable: {error}"
+                ))),
+            }
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(RecoveryTransportError::Rejected(error)) => Err(error),
+            Err(RecoveryTransportError::Uncertain(error)) => {
+                let error = format!("{error} Command outcome is unknown; further recovery commands are blocked and outstanding recovery ownership is retained.");
+                self.failed = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+}
+
 fn send_command(
     stdin: &mut impl Write,
     stdout: &mut impl BufRead,
     command: &RecoveryCommand,
-) -> Result<(), String> {
-    let bytes = serde_json::to_vec(command)
-        .map_err(|error| format!("Failed to serialize crash recovery state: {error}"))?;
+) -> Result<(), RecoveryTransportError> {
+    let bytes = serde_json::to_vec(command).map_err(|error| {
+        RecoveryTransportError::Rejected(format!(
+            "Failed to serialize crash recovery state: {error}"
+        ))
+    })?;
     stdin
         .write_all(&bytes)
         .and_then(|()| stdin.write_all(b"\n"))
         .and_then(|()| stdin.flush())
-        .map_err(|error| format!("Failed to update the recovery watchdog: {error}"))?;
+        .map_err(|error| {
+            RecoveryTransportError::Uncertain(format!(
+                "Failed to update the recovery watchdog: {error}"
+            ))
+        })?;
     let mut response = String::new();
-    stdout
-        .read_line(&mut response)
-        .map_err(|error| format!("Failed to read the recovery watchdog response: {error}"))?;
+    stdout.read_line(&mut response).map_err(|error| {
+        RecoveryTransportError::Uncertain(format!(
+            "Failed to read the recovery watchdog response: {error}"
+        ))
+    })?;
     match response.trim_end() {
         "ok" => Ok(()),
-        response if response.starts_with("error:") => Err(response[6..].to_owned()),
-        response => Err(format!("Invalid recovery watchdog response: {response}")),
+        response if response.starts_with("error:") => {
+            Err(RecoveryTransportError::Rejected(response[6..].to_owned()))
+        }
+        response => Err(RecoveryTransportError::Uncertain(format!(
+            "Invalid recovery watchdog response: {response}"
+        ))),
     }
 }
 
@@ -1707,8 +1784,11 @@ mod tests {
             .ok_or_else(|| "The recovery helper stdout pipe is unavailable.".to_owned())?;
         Ok(RecoveryRuntime {
             child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            transport: RecoveryTransport::start(
+                stdin,
+                BufReader::new(stdout),
+                Duration::from_secs(2),
+            )?,
             entries: Vec::new(),
             next_intent_id: 1,
         })
@@ -2390,6 +2470,113 @@ mod tests {
     }
 
     #[test]
+    fn live_nonreplying_watchdog_cannot_block_transport_or_shutdown() {
+        let mut child = DisposableChild {
+            child: Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 30",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        };
+        let mut transport = RecoveryTransport::start(
+            child.child.stdin.take().unwrap(),
+            BufReader::new(child.child.stdout.take().unwrap()),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let command = RecoveryCommand::Cancel { id: 1 };
+        let error = transport.send(&command).unwrap_err();
+        assert!(error.contains("outcome is unknown"));
+        assert_eq!(transport.send(&command).unwrap_err(), error);
+        assert!(child.child.try_wait().unwrap().is_none());
+        drop(transport);
+        assert!(wait_for_watchdog(&mut child.child, Duration::from_millis(50)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(child.child.try_wait().unwrap().is_none());
+        // Only this disposable test helper is terminated by DisposableChild's Drop.
+    }
+
+    #[test]
+    fn blocked_write_times_out_and_late_ack_cannot_acknowledge_another_command() {
+        struct GatedWriter {
+            gate: Option<mpsc::Receiver<()>>,
+            writes: std::sync::Arc<Mutex<Vec<u8>>>,
+            dropped: mpsc::Sender<()>,
+        }
+        impl Write for GatedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(gate) = self.gate.take() {
+                    gate.recv().map_err(std::io::Error::other)?;
+                }
+                self.writes.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Drop for GatedWriter {
+            fn drop(&mut self) {
+                let _ = self.dropped.send(());
+            }
+        }
+        let (release, gate) = mpsc::channel();
+        let (dropped, closed) = mpsc::channel();
+        let writes = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let mut transport = RecoveryTransport::start(
+            GatedWriter {
+                gate: Some(gate),
+                writes: writes.clone(),
+                dropped,
+            },
+            Cursor::new(b"ok\n"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let command = RecoveryCommand::Cancel { id: 9 };
+        assert!(transport
+            .send(&command)
+            .unwrap_err()
+            .contains("outcome is unknown"));
+        release.send(()).unwrap();
+        assert!(transport.send(&RecoveryCommand::Cancel { id: 10 }).is_err());
+        assert!(closed.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(transport);
+        closed.recv_timeout(Duration::from_secs(3)).unwrap();
+        let written = writes.lock().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<RecoveryCommand>(&written).unwrap(),
+            command
+        );
+    }
+
+    #[test]
+    fn explicit_watchdog_rejection_does_not_poison_a_synchronized_transport() {
+        let mut transport = RecoveryTransport::start(
+            Vec::new(),
+            Cursor::new(b"error:rejected\nok\n"),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(
+            transport
+                .send(&RecoveryCommand::Cancel { id: 1 })
+                .unwrap_err(),
+            "rejected"
+        );
+        assert!(transport.send(&RecoveryCommand::Cancel { id: 2 }).is_ok());
+    }
+
+    #[test]
     fn recovery_transport_requires_an_acknowledgement_before_returning_success() {
         let command = RecoveryCommand::Begin {
             id: 9,
@@ -2411,16 +2598,14 @@ mod tests {
 
         let mut written = Vec::new();
         let mut rejected = Cursor::new(b"error:watchdog rejected Begin\n");
-        assert_eq!(
-            send_command(&mut written, &mut rejected, &command).unwrap_err(),
-            "watchdog rejected Begin"
+        assert!(
+            matches!(send_command(&mut written, &mut rejected, &command), Err(RecoveryTransportError::Rejected(error)) if error == "watchdog rejected Begin")
         );
 
         let mut written = Vec::new();
         let mut invalid = Cursor::new(b"maybe\n");
-        assert_eq!(
-            send_command(&mut written, &mut invalid, &command).unwrap_err(),
-            "Invalid recovery watchdog response: maybe"
+        assert!(
+            matches!(send_command(&mut written, &mut invalid, &command), Err(RecoveryTransportError::Uncertain(error)) if error == "Invalid recovery watchdog response: maybe")
         );
     }
 
