@@ -19,7 +19,7 @@ pub(super) enum Message {
     ActivePlan(Option<String>),
 }
 
-pub(super) fn update(settings: &mut Settings, message: Message) {
+pub(super) fn update(settings: &mut crate::application::SettingsEditor, message: Message) {
     let input_changed = matches!(
         message,
         Message::Keyboard(_) | Message::Mouse(_) | Message::Controller(_)
@@ -52,7 +52,7 @@ pub(super) fn update(settings: &mut Settings, message: Message) {
         Message::CheckInterval(value) => {
             if let Ok(value) = value.parse::<u64>() {
                 if (CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS).contains(&value) {
-                    settings.general.check_interval_ms = value;
+                    settings.edit_global(|settings| settings.general.check_interval_ms = value);
                 }
             }
         }
@@ -60,7 +60,8 @@ pub(super) fn update(settings: &mut Settings, message: Message) {
         Message::ActivePlan(guid) => activity.power_plans.performance_guid = guid,
     }
     if input_changed {
-        activity.switch_to_performance_on_resume = activity.input_detection.any_enabled();
+        settings.by_activity.switch_to_performance_on_resume =
+            settings.by_activity.input_detection.any_enabled();
     }
 }
 
@@ -198,8 +199,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn battery_interval_messages_edit_shared_settings_without_flattening_policies() {
+        for existing_battery in [false, true] {
+            let mut initial = Settings::default();
+            initial.by_activity.idle_timeout_seconds = 60;
+            if existing_battery {
+                initial
+                    .battery_profile_mut()
+                    .by_activity
+                    .idle_timeout_seconds = 120;
+            }
+            let mut settings = crate::application::SettingsEditor::with_settings(initial.clone());
+            settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
+            update(&mut settings, Message::CheckInterval("1234".into()));
+            assert_eq!(settings.global().general.check_interval_ms, 1234);
+            assert_eq!(settings.general.check_interval_ms, 1234);
+            assert_eq!(settings.global().by_activity.idle_timeout_seconds, 60);
+            assert_eq!(
+                settings.by_activity.idle_timeout_seconds,
+                if existing_battery { 120 } else { 60 }
+            );
+            for invalid in ["", "0", "invalid", "18446744073709551615"] {
+                update(&mut settings, Message::CheckInterval(invalid.into()));
+                assert_eq!(settings.global().general.check_interval_ms, 1234);
+            }
+            update(&mut settings, Message::IdleTimeout("180".into()));
+            assert_eq!(settings.by_activity.idle_timeout_seconds, 180);
+            assert_eq!(settings.global().by_activity.idle_timeout_seconds, 60);
+            settings.cancel();
+            assert_eq!(settings.global(), &initial);
+        }
+    }
+
+    #[test]
     fn activity_keeps_a_wake_source_and_owns_its_plans() {
-        let mut settings = Settings::default();
+        let mut settings = crate::application::SettingsEditor::with_settings(Settings::default());
         update(&mut settings, Message::Keyboard(false));
         update(&mut settings, Message::Mouse(false));
         update(&mut settings, Message::Controller(false));
