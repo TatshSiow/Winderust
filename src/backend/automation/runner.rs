@@ -1012,6 +1012,29 @@ impl RuntimeCore {
         statuses
     }
 
+    pub(super) fn retry_priority_releases(&mut self, now: Instant) -> Option<String> {
+        let summary = self
+            .priority_efficiency_controller
+            .retry_pending_releases(now);
+        (!summary.failures.is_empty()).then(|| {
+            summary
+                .failures
+                .into_iter()
+                .map(|failure| {
+                    format!(
+                        "{} restoration failed for {} ({}): {}",
+                        failure.property, failure.process_name, failure.process_id, failure.error
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+    }
+
+    pub(super) fn priority_release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        self.priority_efficiency_controller.release_retry_delay(now)
+    }
+
     pub(super) fn has_managed_process_control_state(&self) -> bool {
         let app_suspension_active = self.app_suspension_active();
         self.power_plan_controller.adaptive_active()

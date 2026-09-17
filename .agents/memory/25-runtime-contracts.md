@@ -16,6 +16,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Restoration and process safety
 
+- Failed Process Priority and Efficiency policy releases remain queued independently of active claims. The runtime retries reconciliation once per second while pending, including with feature/master toggles disabled. Each retry resolves current claims and uses existing identity and restoration checks; it must not blindly restore over a new owner.
+
 - Runtime restoration is a product safety barrier: every reversible runtime
   change owned by Winderust must capture its pre-Winderust value and restore it
   in reverse application order. If the original state cannot be captured,

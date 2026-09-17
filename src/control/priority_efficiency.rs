@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 pub(crate) use crate::platform::windows::priority_efficiency::PowerThrottlingState;
 
@@ -360,6 +363,9 @@ pub(crate) struct PriorityEfficiencyController<
     power_claims: BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, PowerThrottlingClaim>>,
     managed_priorities: BTreeMap<ProcessIdentity, ManagedValue<u32>>,
     managed_power: BTreeMap<ProcessIdentity, ManagedValue<PowerThrottlingState>>,
+    pending_priority_releases: BTreeMap<ProcessTargetKey, ControlOwner>,
+    pending_power_releases: BTreeMap<ProcessTargetKey, ControlOwner>,
+    release_retry_at: Option<Instant>,
     next_apply_sequence: u64,
 }
 
@@ -377,6 +383,9 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             power_claims: BTreeMap::new(),
             managed_priorities: BTreeMap::new(),
             managed_power: BTreeMap::new(),
+            pending_priority_releases: BTreeMap::new(),
+            pending_power_releases: BTreeMap::new(),
+            release_retry_at: None,
             next_apply_sequence: 1,
         }
     }
@@ -1112,6 +1121,24 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
 
     fn reconcile_priority_key(
         &mut self,
+        owner: ControlOwner,
+        key: &ProcessTargetKey,
+        summary: &mut PriorityEfficiencyReleaseSummary,
+    ) {
+        let failures = summary.failures.len();
+        self.reconcile_priority_key_once(owner, key, summary);
+        if summary.failures.len() > failures {
+            if self.pending_priority_releases.is_empty() && self.pending_power_releases.is_empty() {
+                self.release_retry_at = Some(Instant::now() + Duration::from_secs(1));
+            }
+            self.pending_priority_releases.insert(key.clone(), owner);
+        } else {
+            self.pending_priority_releases.remove(key);
+        }
+    }
+
+    fn reconcile_priority_key_once(
+        &mut self,
         releasing_owner: ControlOwner,
         key: &ProcessTargetKey,
         summary: &mut PriorityEfficiencyReleaseSummary,
@@ -1163,6 +1190,24 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
     }
 
     fn reconcile_power_key(
+        &mut self,
+        owner: ControlOwner,
+        key: &ProcessTargetKey,
+        summary: &mut PriorityEfficiencyReleaseSummary,
+    ) {
+        let failures = summary.failures.len();
+        self.reconcile_power_key_once(owner, key, summary);
+        if summary.failures.len() > failures {
+            if self.pending_priority_releases.is_empty() && self.pending_power_releases.is_empty() {
+                self.release_retry_at = Some(Instant::now() + Duration::from_secs(1));
+            }
+            self.pending_power_releases.insert(key.clone(), owner);
+        } else {
+            self.pending_power_releases.remove(key);
+        }
+    }
+
+    fn reconcile_power_key_once(
         &mut self,
         releasing_owner: ControlOwner,
         key: &ProcessTargetKey,
@@ -1410,11 +1455,43 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             .count()
     }
 
+    pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        if self.pending_priority_releases.is_empty() && self.pending_power_releases.is_empty() {
+            return None;
+        }
+        self.release_retry_at
+            .map(|due| due.saturating_duration_since(now))
+    }
+
+    pub(crate) fn retry_pending_releases(
+        &mut self,
+        now: Instant,
+    ) -> PriorityEfficiencyReleaseSummary {
+        let mut summary = PriorityEfficiencyReleaseSummary::default();
+        if self.release_retry_delay(now) != Some(Duration::ZERO) {
+            return summary;
+        }
+        for (key, owner) in self.pending_priority_releases.clone() {
+            self.reconcile_priority_key(owner, &key, &mut summary);
+        }
+        for (key, owner) in self.pending_power_releases.clone() {
+            self.reconcile_power_key(owner, &key, &mut summary);
+        }
+        self.release_retry_at = Some(now + Duration::from_secs(1));
+        summary
+    }
+
     pub(crate) fn has_managed_state(&self) -> bool {
-        !self.managed_priorities.is_empty() || !self.managed_power.is_empty()
+        !self.managed_priorities.is_empty()
+            || !self.managed_power.is_empty()
+            || !self.pending_priority_releases.is_empty()
+            || !self.pending_power_releases.is_empty()
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        self.pending_priority_releases.clear();
+        self.pending_power_releases.clear();
+        self.release_retry_at = None;
         self.priority_claims.clear();
         self.power_claims.clear();
         let mut releases = self
@@ -2750,6 +2827,87 @@ mod tests {
             baseline_efficiency
         );
         Ok(())
+    }
+    #[test]
+    fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
+        let mut controller =
+            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+        controller
+            .apply_efficiency_claim(efficiency_claim(7, 1), true)
+            .unwrap();
+        controller.platform.fail_next_priority_apply = true;
+        controller.platform.fail_next_power_apply = true;
+        let failed = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
+        assert_eq!(failed.failures.len(), 2);
+        assert!(controller.priority_claims.is_empty());
+        assert!(controller.power_claims.is_empty());
+        let due = controller.release_retry_at.unwrap();
+        assert_eq!(
+            controller
+                .retry_pending_releases(due - Duration::from_millis(1))
+                .restored_processes,
+            0
+        );
+        // A second transient failure must preserve the queue and its bounded retry deadline.
+        controller.platform.fail_next_priority_apply = true;
+        assert_eq!(controller.retry_pending_releases(due).failures.len(), 1);
+        assert_eq!(
+            controller.release_retry_delay(due),
+            Some(Duration::from_secs(1))
+        );
+        let restored = controller.retry_pending_releases(due + Duration::from_secs(1));
+        assert!(restored.failures.is_empty());
+        assert_eq!(restored.restored_processes, 1);
+        assert_eq!(
+            controller.platform.processes[&7].priority,
+            NORMAL_PRIORITY_CLASS
+        );
+        assert_eq!(controller.platform.processes[&7].power, baseline_power());
+        assert!(!controller.has_managed_state());
+        assert_eq!(controller.release_retry_delay(due), None);
+    }
+
+    #[test]
+    fn pending_release_reconciles_the_current_claim_instead_of_restoring_over_it() {
+        let mut controller =
+            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
+        controller
+            .apply_priority_claim(
+                priority_claim(
+                    7,
+                    1,
+                    ControlOwner::ProcessPriority,
+                    PriorityClassValue::BelowNormal,
+                ),
+                true,
+            )
+            .unwrap();
+        controller
+            .apply_priority_claim(
+                priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next_priority_apply = true;
+        assert_eq!(
+            controller
+                .release_all_priority_policy(ControlOwner::AdaptiveEngine)
+                .failures
+                .len(),
+            1
+        );
+        let due = controller.release_retry_at.unwrap();
+        assert!(controller.retry_pending_releases(due).failures.is_empty());
+        assert_eq!(
+            controller.platform.processes[&7].priority,
+            BELOW_NORMAL_PRIORITY_CLASS
+        );
+        assert_eq!(controller.release_retry_delay(due), None);
+        controller.release_all_priority_policy(ControlOwner::ProcessPriority);
+        assert_eq!(
+            controller.platform.processes[&7].priority,
+            NORMAL_PRIORITY_CLASS
+        );
     }
 }
 

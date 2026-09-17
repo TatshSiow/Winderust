@@ -1439,6 +1439,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
 
         let wait_now = Instant::now();
+        if let Some(error) = runner.retry_priority_releases(wait_now) {
+            update_worker_error(&shared, Some(error));
+        }
         let mut wait_for = if power_plan_checks_required {
             run_scheduled_power_plan_check(&mut scheduler, wait_now, || {
                 if let Err(error) = runner.run_check(settings, &mut observations) {
@@ -1596,6 +1599,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             cpu_allocation_reconciliation_retry_interval =
                 CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
             continue;
+        }
+
+        if let Some(delay) = runner.priority_release_retry_delay(Instant::now()) {
+            wait_for = Some(min_worker_wait(wait_for, delay));
         }
 
         if wait_for_wake(&shared, wait_for, change_generation) {
