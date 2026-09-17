@@ -756,3 +756,7 @@ state.
 ## Tray recreation
 
 `src/backend/tray.rs` registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification) and re-adds the notification icon without subclassing the window again. [ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex) allows only that payload-free shell notification through UIPI for elevated execution. `src/ui/app.rs` retries failed registration at five-second intervals and permits hide-on-close only while the icon is registered.
+
+## Dashboard network rates
+
+`src/backend/dashboard_metrics.rs` keys network baselines by `MIB_IF_ROW2.InterfaceLuid.Value` and sums comparable per-interface `InOctets`/`OutOctets` deltas. Newly observed or reset interfaces establish a baseline; missing interfaces and failed/empty samples discard stale baselines. Loopback, down, and disconnected interfaces remain excluded. The interface index is not used because Windows can change it when an adapter is disabled/re-enabled. Reference: [MIB_IF_ROW2](https://learn.microsoft.com/en-us/windows/win32/api/netioapi/ns-netioapi-mib_if_row2).

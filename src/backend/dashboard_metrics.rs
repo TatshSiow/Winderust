@@ -58,10 +58,9 @@ struct IoCounterSample {
     sampled_at: Instant,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct NetworkCounterSample {
-    download_bytes: u64,
-    upload_bytes: u64,
+    interfaces: BTreeMap<u64, (u64, u64)>,
     sampled_at: Instant,
 }
 
@@ -224,42 +223,45 @@ fn disk_counter_value(counter: PDH_HCOUNTER) -> Option<f64> {
 
 impl NetworkUsageMonitor {
     pub fn sample(&mut self) -> NetworkUsageSnapshot {
-        let Some(current) = read_system_network_counters() else {
+        self.update(read_system_network_counters())
+    }
+
+    fn update(&mut self, current: Option<NetworkCounterSample>) -> NetworkUsageSnapshot {
+        let previous = std::mem::replace(&mut self.previous, current);
+        let (Some(previous), Some(current)) = (previous, self.previous.as_ref()) else {
             return NetworkUsageSnapshot::default();
         };
-
-        let (download_bytes_per_second, upload_bytes_per_second) =
-            self.previous.map_or((None, None), |previous| {
-                let elapsed = current.sampled_at.duration_since(previous.sampled_at);
-                let elapsed_seconds = elapsed.as_secs_f64();
-                if elapsed_seconds > 0.0 {
-                    (
-                        Some(
-                            current
-                                .download_bytes
-                                .saturating_sub(previous.download_bytes)
-                                as f64
-                                / elapsed_seconds,
-                        ),
-                        Some(
-                            current.upload_bytes.saturating_sub(previous.upload_bytes) as f64
-                                / elapsed_seconds,
-                        ),
-                    )
-                } else {
-                    (None, None)
-                }
-            });
-        let bytes_per_second = match (download_bytes_per_second, upload_bytes_per_second) {
-            (Some(download), Some(upload)) => Some(download + upload),
-            _ => None,
+        let elapsed = current
+            .sampled_at
+            .duration_since(previous.sampled_at)
+            .as_secs_f64();
+        if elapsed <= 0.0 {
+            return NetworkUsageSnapshot::default();
+        }
+        let mut totals = None;
+        for (identity, &(download, upload)) in &current.interfaces {
+            let Some(&(old_download, old_upload)) = previous.interfaces.get(identity) else {
+                continue;
+            };
+            let (Some(download), Some(upload)) = (
+                download.checked_sub(old_download),
+                upload.checked_sub(old_upload),
+            ) else {
+                continue;
+            };
+            let (total_download, total_upload) = totals.get_or_insert((0u64, 0u64));
+            *total_download = total_download.saturating_add(download);
+            *total_upload = total_upload.saturating_add(upload);
+        }
+        let Some((download, upload)) = totals else {
+            return NetworkUsageSnapshot::default();
         };
-
-        self.previous = Some(current);
+        let download = download as f64 / elapsed;
+        let upload = upload as f64 / elapsed;
         NetworkUsageSnapshot {
-            bytes_per_second,
-            download_bytes_per_second,
-            upload_bytes_per_second,
+            bytes_per_second: Some(download + upload),
+            download_bytes_per_second: Some(download),
+            upload_bytes_per_second: Some(upload),
         }
     }
 }
@@ -352,9 +354,7 @@ fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCou
     // SAFETY: GetIfTable2 allocated NumEntries contiguous table rows.
     let rows =
         unsafe { std::slice::from_raw_parts(table.Table.as_ptr(), table.NumEntries as usize) };
-    let mut download_bytes = 0u64;
-    let mut upload_bytes = 0u64;
-    let mut sampled_any = false;
+    let mut interfaces = BTreeMap::new();
 
     for row in rows {
         if row.Type == IF_TYPE_SOFTWARE_LOOPBACK
@@ -364,14 +364,13 @@ fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCou
             continue;
         }
 
-        download_bytes = download_bytes.saturating_add(row.InOctets);
-        upload_bytes = upload_bytes.saturating_add(row.OutOctets);
-        sampled_any = true;
+        // SAFETY: GetIfTable2 initializes InterfaceLuid; Value reads its complete 64-bit identity.
+        let identity = unsafe { row.InterfaceLuid.Value };
+        interfaces.insert(identity, (row.InOctets, row.OutOctets));
     }
 
-    sampled_any.then_some(NetworkCounterSample {
-        download_bytes,
-        upload_bytes,
+    (!interfaces.is_empty()).then_some(NetworkCounterSample {
+        interfaces,
         sampled_at: Instant::now(),
     })
 }
@@ -436,6 +435,74 @@ mod tests {
         assert_eq!(
             monitor
                 .update(sample(6, &[((1, 10), (1, 1))]))
+                .bytes_per_second,
+            Some(0.0)
+        );
+    }
+    #[test]
+    fn network_rates_ignore_adapter_churn_and_reset_baselines() {
+        let now = Instant::now();
+        let sample = |seconds, interfaces: &[(u64, (u64, u64))]| {
+            Some(NetworkCounterSample {
+                interfaces: interfaces.iter().copied().collect(),
+                sampled_at: now + std::time::Duration::from_secs(seconds),
+            })
+        };
+        let mut monitor = NetworkUsageMonitor::default();
+        assert_eq!(
+            monitor.update(sample(0, &[(1, (100, 200))])),
+            NetworkUsageSnapshot::default()
+        );
+        // Adapter 2 brings historical bytes; only adapter 1 has a comparable baseline.
+        let rates = monitor.update(sample(2, &[(1, (300, 600)), (2, (90000, 90000))]));
+        assert_eq!(rates.download_bytes_per_second, Some(100.0));
+        assert_eq!(rates.upload_bytes_per_second, Some(200.0));
+        // Its disappearance cannot erase adapter 1's traffic over a different interval.
+        assert_eq!(
+            monitor
+                .update(sample(5, &[(1, (600, 1200))]))
+                .bytes_per_second,
+            Some(300.0)
+        );
+        assert_eq!(
+            monitor
+                .update(sample(6, &[(1, (700, 1400)), (2, (95000, 95000))]))
+                .bytes_per_second,
+            Some(300.0)
+        );
+        // Resetting either counter invalidates only that adapter's interval.
+        assert_eq!(
+            monitor
+                .update(sample(7, &[(1, (800, 1600)), (2, (1, 96000))]))
+                .bytes_per_second,
+            Some(300.0)
+        );
+        assert_eq!(
+            monitor
+                .update(sample(8, &[(1, (900, 1800)), (2, (101, 96200))]))
+                .bytes_per_second,
+            Some(600.0)
+        );
+        assert_eq!(
+            monitor.update(sample(9, &[])),
+            NetworkUsageSnapshot::default()
+        );
+        assert_eq!(
+            monitor.update(sample(10, &[(1, (5000, 5000))])),
+            NetworkUsageSnapshot::default()
+        );
+        assert_eq!(monitor.update(None), NetworkUsageSnapshot::default());
+        assert_eq!(
+            monitor.update(sample(12, &[(1, (6000, 6000))])),
+            NetworkUsageSnapshot::default()
+        );
+        assert_eq!(
+            monitor.update(sample(12, &[(1, (6000, 6000))])),
+            NetworkUsageSnapshot::default()
+        );
+        assert_eq!(
+            monitor
+                .update(sample(13, &[(1, (6000, 6000))]))
                 .bytes_per_second,
             Some(0.0)
         );
