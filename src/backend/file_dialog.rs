@@ -20,10 +20,10 @@ pub(crate) enum FileDialogMode {
     Save,
 }
 
-pub(crate) async fn choose_settings_file(
+pub(crate) fn choose_settings_file(
     hwnd: Option<HWND>,
     mode: FileDialogMode,
-) -> Option<PathBuf> {
+) -> impl std::future::Future<Output = Option<PathBuf>> + Send {
     let default_path = match mode {
         FileDialogMode::Open => config::storage::config_path(),
         FileDialogMode::Save => config::storage::default_export_toml_path(),
@@ -41,20 +41,24 @@ pub(crate) async fn choose_settings_file(
             FileDialogMode::Open => t!("settings.import_settings").to_string(),
             FileDialogMode::Save => t!("settings.export_settings").to_string(),
         });
-    let file = match mode {
-        FileDialogMode::Open => dialog.pick_file().await,
-        FileDialogMode::Save => dialog.save_file().await,
-    }?;
-    Some(file.path().to_owned())
+    async move {
+        let file = match mode {
+            FileDialogMode::Open => dialog.pick_file().await,
+            FileDialogMode::Save => dialog.save_file().await,
+        }?;
+        Some(file.path().to_owned())
+    }
 }
 
-pub(crate) async fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBuf> {
+pub(crate) fn choose_action_log_export_file(
+    hwnd: Option<HWND>,
+) -> impl std::future::Future<Output = Option<PathBuf>> + Send {
     let filename = format!(
         "winderust_action_log_{}_{}.csv",
         env!("CARGO_PKG_VERSION"),
         Local::now().format("%Y-%m-%d")
     );
-    let file = async_dialog(hwnd)
+    let dialog = async_dialog(hwnd)
         .add_filter(t!("action_log.csv_files").to_string(), &["csv"])
         .set_directory(
             config::storage::config_path()
@@ -62,20 +66,24 @@ pub(crate) async fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<
                 .unwrap_or_else(|| Path::new(".")),
         )
         .set_file_name(filename)
-        .set_title(t!("action_log.export_csv").to_string())
-        .save_file()
-        .await?;
-    Some(file.path().to_owned())
+        .set_title(t!("action_log.export_csv").to_string());
+    async move {
+        let file = dialog.save_file().await?;
+        Some(file.path().to_owned())
+    }
 }
 
-pub(crate) async fn choose_executable_file(hwnd: Option<HWND>) -> Option<PathBuf> {
-    let file = async_dialog(hwnd)
+pub(crate) fn choose_executable_file(
+    hwnd: Option<HWND>,
+) -> impl std::future::Future<Output = Option<PathBuf>> + Send {
+    let dialog = async_dialog(hwnd)
         .add_filter(t!("common.executable_files").to_string(), &["exe"])
-        .set_title(t!("common.select_executable").to_string())
-        .pick_file()
-        .await?;
-    let path = file.path().to_owned();
-    is_executable_file(&path).then_some(path)
+        .set_title(t!("common.select_executable").to_string());
+    async move {
+        let file = dialog.pick_file().await?;
+        let path = file.path().to_owned();
+        is_executable_file(&path).then_some(path)
+    }
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -95,7 +103,7 @@ impl DialogParent {
 impl HasWindowHandle for DialogParent {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let raw = RawWindowHandle::Win32(Win32WindowHandle::new(self.0));
-        // SAFETY: self stores a non-null HWND borrowed from the live GPUI window for no longer
+        // SAFETY: self stores a non-null HWND borrowed from the live application window for no longer
         // than this DialogParent value.
         Ok(unsafe { WindowHandle::borrow_raw(raw) })
     }

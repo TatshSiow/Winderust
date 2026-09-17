@@ -1,34 +1,6 @@
-use std::{borrow::Cow, collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, sync::LazyLock};
 
-use gpui::{AssetSource, Result, SharedString};
 use icondata_core::IconData;
-
-pub struct Assets;
-
-impl AssetSource for Assets {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if path == "image/icon-design.png" {
-            return Ok(Some(Cow::Borrowed(include_bytes!(
-                "../../image/icon-design.png"
-            ))));
-        }
-
-        Ok(ICON_ASSET_BYTES
-            .get(path)
-            .map(|asset| Cow::Borrowed(asset.as_slice())))
-    }
-
-    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        if path == "icons" {
-            Ok(ICON_ASSETS
-                .iter()
-                .map(|(path, _)| SharedString::from(*path))
-                .collect())
-        } else {
-            Ok(Vec::new())
-        }
-    }
-}
 
 const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/app-window.svg", icondata_lu::LuAppWindow),
@@ -37,7 +9,9 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/calendar-days.svg", icondata_lu::LuCalendarDays),
     ("icons/chart-column.svg", icondata_lu::LuChartColumn),
     ("icons/circle-pause.svg", icondata_lu::LuCirclePause),
+    ("icons/check.svg", icondata_lu::LuCheck),
     ("icons/chevron-down.svg", icondata_lu::LuChevronDown),
+    ("icons/chevron-up.svg", icondata_lu::LuChevronUp),
     ("icons/chevron-right.svg", icondata_lu::LuChevronRight),
     (
         "icons/circle-fading-arrow-up.svg",
@@ -52,8 +26,10 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/gpu.svg", icondata_lu::LuGpu),
     ("icons/hourglass.svg", icondata_lu::LuHourglass),
     ("icons/house.svg", icondata_lu::LuHouse),
+    ("icons/square-menu.svg", icondata_lu::LuSquareMenu),
     ("icons/info.svg", icondata_lu::LuInfo),
     ("icons/leaf.svg", icondata_lu::LuLeaf),
+    ("icons/minus.svg", icondata_lu::LuMinus),
     ("icons/life-buoy.svg", icondata_lu::LuLifeBuoy),
     ("icons/list.svg", icondata_lu::LuList),
     ("icons/memory-stick.svg", icondata_lu::LuMemoryStick),
@@ -70,7 +46,13 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/panel-right-open.svg", icondata_lu::LuPanelRightOpen),
     ("icons/panels-top-left.svg", icondata_lu::LuPanelsTopLeft),
     ("icons/play.svg", icondata_lu::LuPlay),
+    ("icons/pause.svg", icondata_lu::LuPause),
+    ("icons/ban.svg", icondata_lu::LuBan),
+    ("icons/shield.svg", icondata_lu::LuShield),
+    ("icons/circle-help.svg", icondata_lu::LuCircleHelp),
+    ("icons/pencil.svg", icondata_lu::LuPencil),
     ("icons/plus.svg", icondata_lu::LuPlus),
+    ("icons/refresh-cw.svg", icondata_lu::LuRefreshCw),
     ("icons/rocket.svg", icondata_lu::LuRocket),
     ("icons/rotate-3d.svg", icondata_lu::LuRotate3d),
     ("icons/scissors.svg", icondata_lu::LuScissors),
@@ -122,6 +104,36 @@ fn push_attr(svg: &mut String, name: &str, value: Option<&str>) {
         svg.push('"');
     }
 }
+pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
+    static HANDLES: LazyLock<HashMap<&'static str, iced::widget::svg::Handle>> =
+        LazyLock::new(|| {
+            ICON_ASSET_BYTES
+                .iter()
+                .map(|(path, bytes)| (*path, iced::widget::svg::Handle::from_memory(bytes.clone())))
+                .collect()
+        });
+    HANDLES.get(path).cloned()
+}
+
+// SVG-local rotation works with the unmodified software renderer.
+pub(super) fn chevron_frame(progress: f32) -> iced::widget::svg::Handle {
+    static FRAMES: LazyLock<[iced::widget::svg::Handle; 19]> = LazyLock::new(|| {
+        std::array::from_fn(|index| {
+            let icon = icondata_lu::LuChevronRight;
+            let svg = lucide_svg(icon).replace(
+                icon.data,
+                &format!(
+                    "<g transform=\"rotate({} 12 12)\">{}</g>",
+                    index * 5,
+                    icon.data
+                ),
+            );
+            iced::widget::svg::Handle::from_memory(svg.into_bytes())
+        })
+    });
+    FRAMES[(progress.clamp(0.0, 1.0) * 18.0).round() as usize].clone()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

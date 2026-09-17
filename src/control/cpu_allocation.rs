@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::process::{
-    open_process_for_set_information, ControlOwner, ProcessControlError, ProcessControlTarget,
-    ProcessIdentity, ProcessTargetKey,
+    open_process_for_set_information, transition_failure_error, ControlOwner, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -514,9 +514,10 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             Err(mut failure) => {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish_affinity(identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                         failure.uncertain = true;
                     }
                 }
@@ -534,7 +535,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     self.managed_affinity.insert(identity.clone(), managed);
                 }
                 Err(PropertyApplyFailure {
-                    error: ProcessControlError::Failed(failure.message),
+                    error: failure.error,
                     uncertain: failure.uncertain,
                 })
             }
@@ -609,9 +610,10 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             Err(mut failure) => {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish_cpu_sets(identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                         failure.uncertain = true;
                     }
                 }
@@ -629,7 +631,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     self.managed_cpu_sets.insert(identity.clone(), managed);
                 }
                 Err(PropertyApplyFailure {
-                    error: ProcessControlError::Failed(failure.message),
+                    error: failure.error,
                     uncertain: failure.uncertain,
                 })
             }
@@ -703,13 +705,14 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             ) {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish_affinity(identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                     }
                 }
                 self.managed_affinity.insert(identity.clone(), previous);
-                return Err(ProcessControlError::Failed(failure.message));
+                return Err(failure.error);
             }
         }
         self.managed_affinity.insert(identity.clone(), previous);
@@ -734,13 +737,14 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             ) {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish_cpu_sets(identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                     }
                 }
                 self.managed_cpu_sets.insert(identity.clone(), previous);
-                return Err(ProcessControlError::Failed(failure.message));
+                return Err(failure.error);
             }
         }
         self.managed_cpu_sets.insert(identity.clone(), previous);
@@ -1157,6 +1161,16 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.open(&identity.target(), true),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish_affinity(identity) {
                     Ok(()) => Ok(true),
@@ -1166,12 +1180,12 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -1197,6 +1211,16 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.open(&identity.target(), true),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish_cpu_sets(identity) {
                     Ok(()) => Ok(true),
@@ -1206,12 +1230,12 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -1363,7 +1387,7 @@ impl PropertyApplyFailure {
 }
 
 struct TransitionFailure {
-    message: String,
+    error: ProcessControlError,
     uncertain: bool,
     relinquish_recovery: bool,
     expected_preserved: bool,
@@ -1387,11 +1411,7 @@ fn apply_affinity_transition<P: CpuAllocationPlatform>(
         .map_err(transition_begin_failure)?;
     if let Err(error) = platform.apply_affinity(process, expected) {
         return Err(compensate_affinity_with_intent(
-            platform,
-            process,
-            original,
-            intent,
-            error.to_string(),
+            platform, process, original, intent, error,
         ));
     }
     match platform.query_affinity(process) {
@@ -1402,18 +1422,14 @@ fn apply_affinity_transition<P: CpuAllocationPlatform>(
                 process,
                 original,
                 intent,
-                format!(
+                ProcessControlError::Failed(format!(
                     "Processor Affinity (Hard) verification returned {actual:#x}, expected {expected:#x}."
-                ),
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_affinity_with_intent(
-                platform,
-                process,
-                original,
-                intent,
-                format!("Processor Affinity (Hard) verification failed: {error}"),
+                platform, process, original, intent, error,
             ));
         }
     }
@@ -1422,10 +1438,13 @@ fn apply_affinity_transition<P: CpuAllocationPlatform>(
         let message = format!("Crash recovery commit failed: {error}");
         return match commit_failure_behavior {
             CommitFailureBehavior::Compensate => Err(compensate_affinity_without_intent(
-                platform, process, original, message,
+                platform,
+                process,
+                original,
+                ProcessControlError::Failed(message),
             )),
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -1447,11 +1466,7 @@ fn apply_cpu_sets_transition<P: CpuAllocationPlatform>(
         .map_err(transition_begin_failure)?;
     if let Err(error) = platform.apply_cpu_sets(process, expected) {
         return Err(compensate_cpu_sets_with_intent(
-            platform,
-            process,
-            original,
-            intent,
-            error.to_string(),
+            platform, process, original, intent, error,
         ));
     }
     match platform.query_cpu_sets(process) {
@@ -1463,19 +1478,15 @@ fn apply_cpu_sets_transition<P: CpuAllocationPlatform>(
                     process,
                     original,
                     intent,
-                    format!(
+                    ProcessControlError::Failed(format!(
                         "CPU Sets (Soft) verification returned {actual:?}, expected {expected:?}."
-                    ),
+                    )),
                 ));
             }
         }
         Err(error) => {
             return Err(compensate_cpu_sets_with_intent(
-                platform,
-                process,
-                original,
-                intent,
-                format!("CPU Sets (Soft) verification failed: {error}"),
+                platform, process, original, intent, error,
             ));
         }
     }
@@ -1484,10 +1495,13 @@ fn apply_cpu_sets_transition<P: CpuAllocationPlatform>(
         let message = format!("Crash recovery commit failed: {error}");
         return match commit_failure_behavior {
             CommitFailureBehavior::Compensate => Err(compensate_cpu_sets_without_intent(
-                platform, process, original, message,
+                platform,
+                process,
+                original,
+                ProcessControlError::Failed(message),
             )),
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -1502,11 +1516,11 @@ fn compensate_affinity_with_intent<P: CpuAllocationPlatform>(
     process: &P::Process,
     original: usize,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify_affinity(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -1514,11 +1528,7 @@ fn compensate_affinity_with_intent<P: CpuAllocationPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -1532,11 +1542,11 @@ fn compensate_cpu_sets_with_intent<P: CpuAllocationPlatform>(
     process: &P::Process,
     original: &[u32],
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify_cpu_sets(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -1544,11 +1554,7 @@ fn compensate_cpu_sets_with_intent<P: CpuAllocationPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -1561,21 +1567,17 @@ fn compensate_affinity_without_intent<P: CpuAllocationPlatform>(
     platform: &mut P,
     process: &P::Process,
     original: usize,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify_affinity(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: true,
             expected_preserved: false,
         },
         Err(compensation_error) => TransitionFailure {
-            message: transition_failure_message(
-                primary_error,
-                compensation_error.to_string(),
-                None,
-            ),
+            error: transition_failure_error(primary_error, compensation_error, None),
             uncertain: true,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -1587,21 +1589,17 @@ fn compensate_cpu_sets_without_intent<P: CpuAllocationPlatform>(
     platform: &mut P,
     process: &P::Process,
     original: &[u32],
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify_cpu_sets(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: true,
             expected_preserved: false,
         },
         Err(compensation_error) => TransitionFailure {
-            message: transition_failure_message(
-                primary_error,
-                compensation_error.to_string(),
-                None,
-            ),
+            error: transition_failure_error(primary_error, compensation_error, None),
             uncertain: true,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -1644,25 +1642,11 @@ fn restore_and_verify_cpu_sets<P: CpuAllocationPlatform>(
 
 fn transition_begin_failure(error: ProcessControlError) -> TransitionFailure {
     TransitionFailure {
-        message: error.to_string(),
+        error,
         uncertain: false,
         relinquish_recovery: false,
         expected_preserved: false,
     }
-}
-
-fn transition_failure_message(
-    primary_error: String,
-    compensation_error: String,
-    recovery_error: Option<String>,
-) -> String {
-    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
-    if let Some(recovery_error) = recovery_error {
-        message.push_str(&format!(
-            " Recovery journal commit failed: {recovery_error}."
-        ));
-    }
-    message
 }
 
 fn cpu_allocation_owner_precedence() -> &'static [ControlOwner] {
@@ -1776,6 +1760,8 @@ mod tests {
 
     #[derive(Default)]
     struct FakeState {
+        exit_on_apply: bool,
+        deny_open: bool,
         processes: BTreeMap<u32, FakeProcessState>,
         events: Vec<String>,
         reject_disallowed_cross_session_open: bool,
@@ -1818,6 +1804,9 @@ mod tests {
             allow_cross_session_process_control: bool,
         ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
             let mut state = self.state.borrow_mut();
+            if state.deny_open {
+                return Err(ProcessControlError::AccessDenied("open denied".into()));
+            }
             state
                 .open_cross_session_flags
                 .push(allow_cross_session_process_control);
@@ -1911,6 +1900,12 @@ mod tests {
             affinity: usize,
         ) -> Result<(), ProcessControlError> {
             let mut state = self.state.borrow_mut();
+            if std::mem::take(&mut state.exit_on_apply) {
+                state.processes.remove(process);
+                state.deny_open = true;
+                return Err(ProcessControlError::ProcessExited);
+            }
+
             state.events.push(format!("apply-affinity:{affinity:#x}"));
             if state.affinity_apply_failures_remaining > 0 {
                 state.affinity_apply_failures_remaining -= 1;
@@ -1932,6 +1927,12 @@ mod tests {
             ids: &[u32],
         ) -> Result<(), ProcessControlError> {
             let mut state = self.state.borrow_mut();
+            if std::mem::take(&mut state.exit_on_apply) {
+                state.processes.remove(process);
+                state.deny_open = true;
+                return Err(ProcessControlError::ProcessExited);
+            }
+
             state.events.push(format!("apply-cpu-sets:{ids:?}"));
             if std::mem::take(&mut state.fail_next_cpu_sets_apply) {
                 return Err(ProcessControlError::Failed(
@@ -2802,6 +2803,26 @@ mod tests {
             .events
             .iter()
             .any(|event| event == "forget-affinity:7"));
+    }
+
+    #[test]
+    fn shutdown_keeps_confirmed_exit_when_reopening_is_denied() {
+        let mut coordinator = coordinator();
+        coordinator
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::CpuSetsSoft,
+                    CpuAllocationRequest::SoftCpuSets {
+                        logical_processor_mask: 0b0010,
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        coordinator.platform.state.borrow_mut().exit_on_apply = true;
+        assert!(coordinator.shutdown().is_ok());
+        assert!(coordinator.managed_cpu_sets.is_empty());
     }
 
     #[test]

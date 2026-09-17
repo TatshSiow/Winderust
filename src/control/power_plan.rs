@@ -21,6 +21,8 @@ pub(crate) enum PowerPlanOwner {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PowerPlanStatus {
+    pub(crate) apply_failed: bool,
+    pub(crate) rule_index: Option<usize>,
     pub(crate) owner: Option<PowerPlanOwner>,
     pub(crate) current_guid: Option<String>,
     pub(crate) target_guid: Option<String>,
@@ -41,7 +43,7 @@ struct ActiveAdaptivePowerPlan {
     original_guid: String,
     plan_guid: String,
     profile: AdaptivePowerProfile,
-    values: ProcessorPowerSourceValues,
+    values: Option<ProcessorPowerSourceValues>,
     lower_demand_since: Option<Instant>,
     active: bool,
 }
@@ -176,6 +178,14 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         };
 
         PowerPlanStatus {
+            apply_failed: decision_target.as_deref().is_some_and(|guid| {
+                self.switch_failures
+                    .has_key_failure(&switch_failure_key(guid))
+            }),
+            rule_index: self
+                .last_decision
+                .as_ref()
+                .and_then(|decision| decision.rule_index),
             owner,
             current_guid: self.current_guid.clone(),
             target_guid: adaptive_target.or(decision_target),
@@ -321,7 +331,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 original_guid,
                 plan_guid,
                 profile: request.profile,
-                values,
+                values: Some(values),
                 lower_demand_since: None,
                 active: true,
             });
@@ -345,14 +355,16 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             request.background_pressure_profile,
             request.focus_and_launch_profile,
         );
-        let values_changed = next_values != plan.values;
+        let values_changed = Some(next_values) != plan.values;
         if values_changed {
+            // A failed write may already have changed part of the stored plan.
+            plan.values = None;
             self.platform
                 .apply_processor_values(&plan.plan_guid, next_values)?;
         }
         if next_profile != plan.profile || values_changed {
             plan.profile = next_profile;
-            plan.values = next_values;
+            plan.values = Some(next_values);
             plan.lower_demand_since = None;
         }
 
@@ -626,6 +638,8 @@ mod tests {
         failure: Option<FailurePoint>,
         verify_wrong_guid: bool,
         next_adaptive: u32,
+        processor_values: Option<ProcessorPowerSourceValues>,
+        fail_partial_processor_write: bool,
     }
 
     impl FakePlatform {
@@ -637,6 +651,8 @@ mod tests {
                 failure: None,
                 verify_wrong_guid: false,
                 next_adaptive: 1,
+                processor_values: None,
+                fail_partial_processor_write: false,
             }
         }
     }
@@ -703,15 +719,21 @@ mod tests {
         fn apply_processor_values(
             &mut self,
             guid: &str,
-            _values: ProcessorPowerSourceValues,
+            values: ProcessorPowerSourceValues,
         ) -> Result<(), String> {
             self.events.borrow_mut().push(format!("configure:{guid}"));
+            if std::mem::take(&mut self.fail_partial_processor_write) {
+                self.processor_values.as_mut().unwrap().ac = values.ac;
+                return Err("injected partial processor write".into());
+            }
+            self.processor_values = Some(values);
             Ok(())
         }
     }
 
     fn decision(target: Option<&str>) -> DecisionOutcome {
         DecisionOutcome {
+            rule_index: None,
             power_plan_guid: target.map(str::to_owned),
             state: DecisionState::NoPowerPlanSelected,
             reason: "test decision".to_owned(),
@@ -728,6 +750,17 @@ mod tests {
             background_pressure_profile: AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
             focus_and_launch_profile: AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
         }
+    }
+
+    #[test]
+    fn status_reports_failure_until_target_succeeds() {
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.last_decision = Some(decision(Some("plan")));
+        assert!(!controller.status().apply_failed);
+        controller.record_switch_failure("PLAN");
+        assert!(controller.status().apply_failed);
+        controller.clear_switch_failure("plan");
+        assert!(!controller.status().apply_failed);
     }
 
     #[test]
@@ -1007,5 +1040,29 @@ mod tests {
             ),
             "Applying the adaptive plan failed. Adaptive plan cleanup also failed: Deleting the adaptive plan failed."
         );
+    }
+    #[test]
+    fn partial_processor_write_invalidates_cache_and_repairs_previous_values() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let mut request = adaptive_request();
+        request.profile = AdaptivePowerProfile::BackgroundPressure;
+        controller.reconcile_adaptive(request, now).unwrap();
+        let original = controller.platform.processor_values.unwrap();
+        let mut changed = request;
+        changed.background_pressure_profile.ac_policy = 70;
+        controller.platform.fail_partial_processor_write = true;
+        assert!(controller.reconcile_adaptive(changed, now).is_err());
+        assert_ne!(controller.platform.processor_values, Some(original));
+        controller.platform.events.borrow_mut().clear();
+        controller.reconcile_adaptive(request, now).unwrap();
+        assert_eq!(controller.platform.processor_values, Some(original));
+        assert_eq!(
+            controller.platform.events.borrow().as_slice(),
+            ["configure:adaptive-1"]
+        );
+        controller.platform.events.borrow_mut().clear();
+        controller.reconcile_adaptive(request, now).unwrap();
+        assert!(controller.platform.events.borrow().is_empty());
     }
 }

@@ -147,6 +147,8 @@ fn automation_worker_error_is_delivered_once() {
 fn power_plan_status_is_published_as_an_independent_runtime_segment() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let status = PowerPlanStatus {
+        apply_failed: false,
+        rule_index: None,
         owner: Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation),
         current_guid: Some("current".to_owned()),
         target_guid: Some("target".to_owned()),
@@ -194,6 +196,7 @@ fn power_plan_action_logs_are_attributed_to_the_winning_rule_family() {
 fn clearing_action_log_immediately_clears_runtime_summaries() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let entry = ActionLogEntry {
+        batch_id: 1,
         sequence: 1,
         timestamp_epoch_ms: 1,
         feature: ActionLogFeature::ByTime,
@@ -1459,12 +1462,18 @@ fn automation_worker_runs_for_enabled_memory_trim() {
 }
 
 #[test]
-fn cpu_scheduler_io_assist_waits_for_pressure() {
+fn adaptive_engine_process_io_assist_waits_for_pressure() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.cpu_scheduler.io_priority.enabled = true;
-    settings.cpu_scheduler.io_priority.foreground_priority = ProcessIoPriority::Normal.into();
-    settings.cpu_scheduler.io_priority.background_priority = ProcessIoPriority::Low.into();
+    settings.adaptive_engine_process.io_priority.enabled = true;
+    settings
+        .adaptive_engine_process
+        .io_priority
+        .foreground_priority = ProcessIoPriority::Normal.into();
+    settings
+        .adaptive_engine_process
+        .io_priority
+        .background_priority = ProcessIoPriority::Low.into();
 
     assert!(!effective_io_priority_settings(&settings, false).enabled);
 
@@ -1491,53 +1500,58 @@ fn cpu_scheduler_io_assist_waits_for_pressure() {
 }
 
 #[test]
-fn cpu_scheduler_pressure_feeds_priority_defaults() {
+fn adaptive_engine_process_pressure_feeds_priority_defaults() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
-    settings.cpu_scheduler.io_priority.enabled = true;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    settings.adaptive_engine_process.io_priority.enabled = true;
+    settings
+        .adaptive_engine_process
         .io_priority
         .foreground_detection_enabled = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .io_priority
         .preserve_foreground_priority = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .io_priority
         .preserve_background_priority = false;
-    settings.cpu_scheduler.io_priority.background_priority = ProcessIoPriority::Low.into();
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
+        .io_priority
+        .background_priority = ProcessIoPriority::Low.into();
+    settings
+        .adaptive_engine_process
         .thread_priority
         .foreground_detection_enabled = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .thread_priority
         .preserve_foreground_priority = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .thread_priority
         .preserve_background_priority = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .dynamic_priority_boost
         .foreground_detection_enabled = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .gpu_priority
         .foreground_detection_enabled = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .gpu_priority
         .preserve_foreground_priority = false;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
         .gpu_priority
         .preserve_background_priority = false;
-    settings.cpu_scheduler.custom_rules = vec![ProcessExclusionRule {
+    settings.adaptive_engine_process.custom_rules = vec![ProcessExclusionRule {
         executable_path: "game.exe".to_owned(),
         ..Default::default()
     }];
@@ -1613,23 +1627,33 @@ fn cpu_scheduler_pressure_feeds_priority_defaults() {
 }
 
 #[test]
-fn cpu_scheduler_behaviours_independently_drive_polling() {
+fn adaptive_engine_process_behaviours_independently_drive_polling() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.cpu_scheduler.process_priority_enabled = false;
-    settings.cpu_scheduler.background_efficiency_enabled = false;
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = false;
+    settings.adaptive_engine_process.process_priority_enabled = false;
+    settings
+        .adaptive_engine_process
+        .background_efficiency_enabled = false;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = false;
 
-    assert!(!cpu_scheduler_required(&settings));
+    assert!(!adaptive_engine_process_required(&settings));
 
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
 
-    assert!(cpu_scheduler_required(&settings));
+    assert!(adaptive_engine_process_required(&settings));
 
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = false;
-    settings.cpu_scheduler.limit_background_processors_enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = false;
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
 
-    assert!(cpu_scheduler_required(&settings));
+    assert!(adaptive_engine_process_required(&settings));
 }
 
 #[test]
@@ -1668,24 +1692,30 @@ fn active_power_source_selects_the_matching_feature_profile() {
 }
 
 #[test]
-fn cpu_scheduler_priority_assist_temporarily_overrides_global_priority_defaults() {
+fn adaptive_engine_process_priority_assist_temporarily_overrides_global_priority_defaults() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
     settings.thread_priority.enabled = true;
     settings.thread_priority.background_priority = ProcessThreadPrioritySetting::Idle;
     settings.dynamic_priority_boost.enabled = true;
     settings.dynamic_priority_boost.background_boost = ProcessDynamicPriorityBoostSetting::Enabled;
     settings.gpu_priority.enabled = true;
     settings.gpu_priority.background_priority = ProcessGpuPrioritySetting::Idle;
-    settings.cpu_scheduler.thread_priority.background_priority =
-        ProcessThreadPrioritySetting::BelowNormal;
     settings
-        .cpu_scheduler
+        .adaptive_engine_process
+        .thread_priority
+        .background_priority = ProcessThreadPrioritySetting::BelowNormal;
+    settings
+        .adaptive_engine_process
         .dynamic_priority_boost
         .background_boost = ProcessDynamicPriorityBoostSetting::Disabled;
-    settings.cpu_scheduler.gpu_priority.background_priority =
-        ProcessGpuPrioritySetting::BelowNormal;
+    settings
+        .adaptive_engine_process
+        .gpu_priority
+        .background_priority = ProcessGpuPrioritySetting::BelowNormal;
 
     assert_eq!(
         effective_thread_priority_settings(&settings, true).background_priority,
@@ -1730,10 +1760,12 @@ fn cpu_scheduler_priority_assist_temporarily_overrides_global_priority_defaults(
 }
 
 #[test]
-fn cpu_scheduler_without_io_assist_does_not_require_io_refresh() {
+fn adaptive_engine_process_without_io_assist_does_not_require_io_refresh() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
 
     assert!(!io_priority_required(&settings));
 }
@@ -1928,8 +1960,8 @@ fn event_driven_power_checks_drop_idle_polling_for_foreground_only_rules() {
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(power_plan_check_delay(&settings, true).is_none());
-    assert!(power_plan_check_delay(&settings, false).is_some());
+    assert!(power_plan_check_delay(&settings, true, None).is_none());
+    assert!(power_plan_check_delay(&settings, false, None).is_some());
 }
 
 #[test]
@@ -1940,8 +1972,8 @@ fn activity_input_resume_waits_for_hook_event() {
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(power_plan_check_delay(&settings, true).is_none());
-    assert!(power_plan_check_delay(&settings, false).is_some());
+    assert!(power_plan_check_delay(&settings, true, None).is_none());
+    assert!(power_plan_check_delay(&settings, false, None).is_some());
 }
 
 #[test]
@@ -1976,7 +2008,7 @@ fn schedule_checks_sleep_until_next_time_boundary() {
         power_plan_guid: Some("scheduled-guid".to_owned()),
     }];
 
-    let delay = power_plan_check_delay(&settings, true).unwrap();
+    let delay = power_plan_check_delay(&settings, true, None).unwrap();
 
     assert!(delay > configured_check_interval(&settings));
     assert!(delay <= Duration::from_secs(180));
@@ -1999,7 +2031,7 @@ fn schedule_checks_cap_long_sleeps() {
     }];
 
     assert_eq!(
-        power_plan_check_delay(&settings, true),
+        power_plan_check_delay(&settings, true, None),
         Some(SCHEDULE_RULE_MAX_SLEEP)
     );
 }
@@ -2092,10 +2124,10 @@ fn workload_reaction_interval_is_independent_from_adaptive_power_sampling() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
     settings.adaptive_engine.processor_power_policy_enabled = true;
-    settings.cpu_scheduler.reaction_time_ms = 1_500;
+    settings.adaptive_engine_process.reaction_time_ms = 1_500;
 
     assert_eq!(
-        cpu_scheduler_refresh_interval(&settings),
+        adaptive_engine_process_refresh_interval(&settings),
         Duration::from_millis(1_500)
     );
     assert_eq!(
@@ -2104,30 +2136,36 @@ fn workload_reaction_interval_is_independent_from_adaptive_power_sampling() {
     );
     assert!(ADAPTIVE_IO_REFRESH_INTERVAL > ADAPTIVE_POWER_PLAN_REFRESH_INTERVAL);
 
-    settings.cpu_scheduler.reaction_time_ms = 1;
+    settings.adaptive_engine_process.reaction_time_ms = 1;
     assert_eq!(
-        cpu_scheduler_refresh_interval(&settings),
-        Duration::from_millis(crate::config::CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS)
+        adaptive_engine_process_refresh_interval(&settings),
+        Duration::from_millis(crate::config::ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MIN_MS)
     );
 }
 
 #[test]
-fn cpu_scheduler_requires_adaptive_engine() {
+fn adaptive_engine_process_requires_adaptive_engine() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
 
-    assert!(!cpu_scheduler_required(&settings));
-    assert!(!cpu_scheduler_priority_assist_required(&settings));
+    assert!(!adaptive_engine_process_required(&settings));
+    assert!(!adaptive_engine_process_priority_assist_required(&settings));
 
     settings.adaptive_engine.enabled = true;
-    assert!(cpu_scheduler_required(&settings));
-    assert!(cpu_scheduler_priority_assist_required(&settings));
+    assert!(adaptive_engine_process_required(&settings));
+    assert!(adaptive_engine_process_priority_assist_required(&settings));
 
-    settings.cpu_scheduler.cpu_pressure_restraint_enabled = false;
-    settings.cpu_scheduler.limit_background_processors_enabled = true;
-    assert!(cpu_scheduler_required(&settings));
-    assert!(!cpu_scheduler_priority_assist_required(&settings));
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = false;
+    settings
+        .adaptive_engine_process
+        .limit_background_processors_enabled = true;
+    assert!(adaptive_engine_process_required(&settings));
+    assert!(!adaptive_engine_process_priority_assist_required(&settings));
 }
 #[test]
 fn power_plan_checks_sleep_when_decision_features_are_off() {
@@ -2149,7 +2187,7 @@ fn automation_feature_execution_order_is_characterized() {
         "runner.publish_action_log_if_changed(&shared);",
         &[
             "runner.run_background_efficiency_update(",
-            "runner.run_cpu_scheduler_update(",
+            "runner.run_adaptive_engine_process_update(",
             "runner.run_adaptive_power_plan_update(",
             "runner.run_io_priority_update(",
             "runner.run_process_priority_update(",
@@ -2191,7 +2229,7 @@ fn shared_property_precedence_inputs_are_characterized() {
     let source = include_str!("runner.rs");
     let workload = source_scope(
         source,
-        "pub(super) fn run_cpu_scheduler_update",
+        "pub(super) fn run_adaptive_engine_process_update",
         "pub(super) fn run_adaptive_power_plan_update",
     );
     assert!(workload.contains("priority_efficiency_controller"));
@@ -2206,7 +2244,7 @@ fn shared_property_precedence_inputs_are_characterized() {
     assert!(process_priority.contains("priority_efficiency_controller"));
     assert!(process_priority.contains("ControlOwner::BackgroundEfficiency"));
     assert!(process_priority.contains("ControlOwner::AdaptiveEngine"));
-    assert!(process_priority.contains("ControlOwner::CpuSchedulerFocusPriority"));
+    assert!(process_priority.contains("ControlOwner::AdaptiveEngineProcessFocusPriority"));
 
     let cpu_limiter = source_scope(
         source,
@@ -2232,7 +2270,7 @@ fn shared_property_precedence_inputs_are_characterized() {
 
 #[test]
 fn power_plan_decisions_have_one_visibility_independent_runtime_route() {
-    let ui_source = include_str!("../../ui/app/runtime.rs");
+    let ui_source = include_str!("../../ui/app.rs");
     assert!(!ui_source.contains("decide("));
     assert!(!ui_source.contains("record_power_plan_change"));
     assert!(!ui_source.contains("set_active("));
@@ -2283,11 +2321,280 @@ fn automation_shutdown_restores_reversible_features_in_reverse_order() {
             "self.run_process_priority_update(",
             "self.run_io_priority_update(",
             "self.io_priority_controller.shutdown(",
-            "self.run_cpu_scheduler_update(",
+            "self.run_adaptive_engine_process_update(",
             "self.cpu_allocation_coordinator.shutdown(",
             "self.run_background_efficiency_update(",
             "self.priority_efficiency_controller.shutdown(",
             "self.power_plan_controller.shutdown(",
         ],
     );
+}
+
+#[test]
+fn shutdown_retains_terminal_worker_results() {
+    for failure in [false, true] {
+        let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+        automation.shutdown().expect("initial idle shutdown");
+        *lock_unpoisoned(&automation.shutdown_result) = None;
+        *lock_unpoisoned(&automation.thread) = Some(thread::spawn(move || {
+            if failure {
+                Err("injected cleanup failure".into())
+            } else {
+                Ok(())
+            }
+        }));
+        let first = automation.shutdown();
+        assert_eq!(first.is_err(), failure);
+        assert_eq!(automation.shutdown(), first);
+        assert!(lock_unpoisoned(&automation.shared.state).stop_requested);
+        if failure {
+            assert!(first.unwrap_err().contains("injected cleanup failure"));
+            let first_status = automation.status_snapshot_since(0).unwrap();
+            let second_status = automation.status_snapshot_since(0).unwrap();
+            assert_eq!(first_status.worker_error, second_status.worker_error);
+            assert!(second_status.worker_error.is_some());
+        }
+    }
+}
+
+#[test]
+fn unrelated_wakes_preserve_periodic_power_plan_checks() {
+    let start = Instant::now();
+    let mut scheduler = RefreshScheduler::new(start);
+    let mut checks = Vec::new();
+    for ms in [
+        0, 250, 370, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000,
+    ] {
+        let now = start + Duration::from_millis(ms);
+        let wait = run_scheduled_power_plan_check(&mut scheduler, now, || {
+            checks.push(ms);
+            Some(Duration::from_secs(1))
+        });
+        assert_eq!(wait, Some(Duration::from_millis(1000 - ms % 1000)));
+        scheduler.schedule_after(
+            RefreshDomain::ControllerActivity,
+            now,
+            Duration::from_millis(250),
+        );
+        assert!(
+            scheduler
+                .minimum_wait(
+                    wait,
+                    now,
+                    [(
+                        true,
+                        RefreshDomain::ControllerActivity,
+                        Duration::from_millis(250)
+                    )]
+                )
+                .unwrap()
+                <= Duration::from_millis(250)
+        );
+    }
+    assert_eq!(checks, [0, 1000, 2000, 3000]);
+    let now = start + Duration::from_millis(3100);
+    scheduler.invalidate(SchedulerEvent::SettingsChanged, now);
+    assert_eq!(
+        run_scheduled_power_plan_check(&mut scheduler, now, || None),
+        None
+    );
+    assert!(scheduler.is_due(RefreshDomain::PowerPlanCheck, now));
+}
+
+#[test]
+fn callbacks_deliver_events_for_either_profile_without_polling() {
+    let shared = SharedAutomationState {
+        state: Mutex::new(AutomationWorkerState {
+            settings: Arc::new(Settings::default()),
+            runtime_revision: SettingsRevision::initial(),
+            persisted_revision: SettingsRevision::initial(),
+            change_generation: 0,
+            status: RuntimeStatusSnapshot::default(),
+            pending_auto_exclusions: AutoExclusionPatch::default(),
+            pending_auto_exclusions_revision: None,
+            pending_auto_exclusions_retry_at: None,
+            process_control_commands: VecDeque::new(),
+            action_log_clear_requested: false,
+            pending_events: AutomationWakeEvents::default(),
+            input_activity: InputActivityTracker::default(),
+            windows_event_watcher_active: true,
+            worker_accepting_work: false,
+            stop_requested: false,
+        }),
+        changed: Condvar::new(),
+        status_generation: AtomicU64::new(0),
+        pending_auto_exclusions_generation: AtomicU64::new(0),
+    };
+    for battery_only in [true, false] {
+        let mut settings = Settings::default();
+        settings.battery_profile_mut();
+        let profile = if battery_only {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.general.enabled = true;
+        profile.by_time.enabled = true;
+        profile.by_time.rules.push(crate::config::ByTimeRule {
+            enabled: true,
+            power_plan_guid: Some("time-plan".into()),
+            ..Default::default()
+        });
+        profile.by_foreground.enabled = true;
+        profile.by_foreground.rules.push(ByForegroundRule {
+            enabled: true,
+            executable_path: r"C:\Apps\test.exe".into(),
+            power_plan_guid: Some("test-plan".into()),
+            ..Default::default()
+        });
+        assert!(windows_event_watcher_required(&settings));
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        for event in [
+            WindowsAutomationEvent::ForegroundChanged,
+            WindowsAutomationEvent::PowerChanged,
+            WindowsAutomationEvent::SessionChanged,
+            WindowsAutomationEvent::ClockChanged,
+        ] {
+            let before = lock_unpoisoned(&shared.state).change_generation;
+            notify_windows_event(&shared, event);
+            assert_eq!(lock_unpoisoned(&shared.state).change_generation, before + 1);
+            assert!(!wait_for_wake(&shared, None, before));
+            let snapshot = automation_snapshot(&shared).unwrap();
+            let mut expected = AutomationWakeEvents::default();
+            expected.insert_windows_event(event);
+            assert_eq!(snapshot.wake_events, expected);
+            assert_eq!(snapshot.change_generation, before + 1);
+        }
+        let profile = if battery_only {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_foreground.enabled = false;
+        profile.process_priority.enabled = true;
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        notify_windows_event(&shared, WindowsAutomationEvent::PowerChanged);
+        assert!(
+            automation_snapshot(&shared)
+                .unwrap()
+                .wake_events
+                .power_changed
+        );
+
+        let profile = if battery_only {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_activity.enabled = true;
+        profile.by_activity.input_detection.keyboard = true;
+        profile.by_activity.input_detection.mouse = false;
+        profile.app_suspension.enabled = true;
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        notify_input_event(
+            &shared,
+            InputHookEvents {
+                mouse: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            automation_snapshot(&shared).unwrap().wake_events,
+            AutomationWakeEvents::default()
+        );
+        notify_input_event(
+            &shared,
+            InputHookEvents {
+                keyboard: true,
+                app_switch: true,
+                mouse_click: true,
+                ..Default::default()
+            },
+        );
+        let events = automation_snapshot(&shared).unwrap().wake_events;
+        assert!(events.input_activity && events.app_switch && events.app_switch_mouse_click);
+
+        settings.general.enabled = false;
+        settings.battery_profile_mut().general.enabled = false;
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings);
+        let before = lock_unpoisoned(&shared.state).change_generation;
+        notify_windows_event(&shared, WindowsAutomationEvent::ForegroundChanged);
+        notify_input_event(
+            &shared,
+            InputHookEvents {
+                keyboard: true,
+                app_switch: true,
+                mouse_click: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(lock_unpoisoned(&shared.state).change_generation, before);
+    }
+    lock_unpoisoned(&shared.state).stop_requested = true;
+    let before = lock_unpoisoned(&shared.state).change_generation;
+    notify_windows_event(&shared, WindowsAutomationEvent::AppearanceChanged);
+    assert_eq!(lock_unpoisoned(&shared.state).change_generation, before);
+}
+
+#[test]
+fn idle_battery_worker_survives_source_changes_without_settings_updates() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let mut settings = Settings {
+        on_battery: Some(Box::new(Settings::default())),
+        ..Default::default()
+    };
+    settings.by_foreground.enabled = true;
+    settings.by_foreground.rules.push(ByForegroundRule {
+        enabled: true,
+        name: "nonexistent audit target".into(),
+        executable_path: r"C:\WinderustAuditNonexistent	arget.exe".into(),
+        power_plan_guid: Some("invalid-audit-plan".into()),
+    });
+    assert!(automation_worker_required(&settings));
+    assert!(!automation_worker_required(active_power_source_settings(
+        &settings,
+        Some(false)
+    )));
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.settings = Arc::new(settings);
+        state.worker_accepting_work = true;
+        state.windows_event_watcher_active = true;
+    }
+    let source = Arc::new(AtomicBool::new(false));
+    let source_reader = source.clone();
+    let shared = automation.shared.clone();
+    let (tx, rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        run_background_automation(shared, || {
+            let plugged_in = source_reader.load(Ordering::SeqCst);
+            tx.send(plugged_in).unwrap();
+            Some(plugged_in)
+        })
+    });
+    let result = || {
+        assert!(!rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        for plugged_in in [true, false, true] {
+            thread::sleep(Duration::from_millis(150));
+            assert!(!worker.is_finished(), "idle profile must retain the worker");
+            while rx.try_recv().is_ok() {}
+            source.store(plugged_in, Ordering::SeqCst);
+            notify_windows_event(&automation.shared, WindowsAutomationEvent::PowerChanged);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), plugged_in);
+        }
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(result));
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.stop_requested = true;
+        automation.shared.changed.notify_all();
+    }
+    worker.join().unwrap().unwrap();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
 }

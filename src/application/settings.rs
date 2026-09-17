@@ -60,7 +60,7 @@ pub struct AutoExclusionPatch {
     pub cpu_sets_soft: Vec<String>,
     pub processor_affinity_hard: Vec<String>,
     pub cpu_limiter: Vec<String>,
-    pub cpu_scheduler: Vec<String>,
+    pub adaptive_engine_process: Vec<String>,
     pub io_priority: Vec<String>,
     pub process_priority: Vec<String>,
     pub thread_priority: Vec<String>,
@@ -78,7 +78,7 @@ impl Default for AutoExclusionPatch {
             cpu_sets_soft: Vec::new(),
             processor_affinity_hard: Vec::new(),
             cpu_limiter: Vec::new(),
-            cpu_scheduler: Vec::new(),
+            adaptive_engine_process: Vec::new(),
             io_priority: Vec::new(),
             process_priority: Vec::new(),
             thread_priority: Vec::new(),
@@ -132,6 +132,7 @@ struct SettingsCoordinator {
     persisted_revision: SettingsRevision,
     runtime_snapshot: RuntimeSettingsSnapshot,
     projected_draft_revision: u64,
+    load_error: Option<String>,
     storage: Box<dyn SettingsStorage>,
 }
 
@@ -152,7 +153,7 @@ pub(crate) enum SettingsCoordinatorError {
         patch_revision: SettingsRevision,
         persisted_revision: SettingsRevision,
     },
-    Load(String),
+    RecoveryRequired,
     Save(String),
     Export(String),
     Import(String),
@@ -175,7 +176,10 @@ impl std::fmt::Display for SettingsCoordinatorError {
                 formatter,
                 "Settings changed before a runtime patch could be applied (patch revision {patch_revision:?}, persisted revision {persisted_revision:?})."
             ),
-            Self::Load(error) | Self::Save(error) | Self::Export(error) | Self::Import(error) => {
+            Self::RecoveryRequired => formatter.write_str(
+                "Automatic saving is disabled because settings could not be loaded. Repair settings.toml and restart, or explicitly Save or Import settings to replace it.",
+            ),
+            Self::Save(error) | Self::Export(error) | Self::Import(error) => {
                 formatter.write_str(error)
             }
         }
@@ -185,9 +189,14 @@ impl std::fmt::Display for SettingsCoordinatorError {
 impl std::error::Error for SettingsCoordinatorError {}
 
 impl SettingsCoordinator {
-    fn load_from(storage: Box<dyn SettingsStorage>) -> SettingsResult<(Self, SettingsDraft)> {
-        let settings = storage.load().map_err(SettingsCoordinatorError::Load)?;
-        Ok(Self::from_loaded_settings(settings, storage))
+    fn load_from(storage: Box<dyn SettingsStorage>) -> (Self, SettingsDraft) {
+        let (settings, load_error) = match storage.load() {
+            Ok(settings) => (settings, None),
+            Err(error) => (Settings::default(), Some(error)),
+        };
+        let (mut coordinator, draft) = Self::from_loaded_settings(settings, storage);
+        coordinator.load_error = load_error;
+        (coordinator, draft)
     }
 
     fn from_loaded_settings(
@@ -206,6 +215,7 @@ impl SettingsCoordinator {
                 persisted_revision: revision,
                 runtime_snapshot,
                 projected_draft_revision: 0,
+                load_error: None,
                 storage,
             },
             SettingsDraft {
@@ -214,10 +224,6 @@ impl SettingsCoordinator {
                 edit_revision: 0,
             },
         )
-    }
-
-    fn with_settings(settings: Settings) -> (Self, SettingsDraft) {
-        Self::from_loaded_settings(settings, Box::new(ConfigStorage))
     }
 
     fn runtime_settings_snapshot(&mut self, draft: &SettingsDraft) -> RuntimeSettingsSnapshot {
@@ -283,6 +289,10 @@ impl SettingsCoordinator {
             return Ok(false);
         }
 
+        if self.load_error.is_some() {
+            return Err(SettingsCoordinatorError::RecoveryRequired);
+        }
+
         if persisted_changed {
             self.storage
                 .save(&persisted)
@@ -305,6 +315,7 @@ impl SettingsCoordinator {
         self.storage
             .save(&candidate)
             .map_err(SettingsCoordinatorError::Save)?;
+        self.load_error = None;
         let next_revision = self.persisted_revision.next();
         self.persisted = candidate;
         self.persisted_revision = next_revision;
@@ -319,13 +330,15 @@ impl SettingsCoordinator {
         path: &Path,
         draft: &mut SettingsDraft,
     ) -> SettingsResult<SettingsRevision> {
-        let imported = self
+        let mut imported = self
             .storage
             .import(path)
             .map_err(SettingsCoordinatorError::Import)?;
+        imported.sync_shared_settings_to_battery();
         self.storage
             .save(&imported)
             .map_err(SettingsCoordinatorError::Save)?;
+        self.load_error = None;
         let next_revision = self.persisted_revision.next();
         self.persisted = imported.clone();
         self.persisted_revision = next_revision;
@@ -380,27 +393,39 @@ impl SettingsEditor {
     fn load_from(
         storage: Box<dyn SettingsStorage>,
         startup_registration: Box<dyn StartupRegistration>,
-    ) -> SettingsResult<(Self, PersistentSettingsOutcome)> {
-        let (coordinator, draft) = SettingsCoordinator::load_from(storage)?;
+    ) -> (Self, PersistentSettingsOutcome) {
+        let (coordinator, draft) = SettingsCoordinator::load_from(storage);
         let editor = Self::from_parts(coordinator, draft, startup_registration);
-        let outcome = editor.reconcile_startup_registration();
-        Ok((editor, outcome))
+        let outcome = if editor.load_error().is_some() {
+            PersistentSettingsOutcome {
+                startup_registration_error: None,
+            }
+        } else {
+            editor.reconcile_startup_registration()
+        };
+        (editor, outcome)
     }
 
-    pub(crate) fn load() -> SettingsResult<(Self, PersistentSettingsOutcome)> {
+    pub(crate) fn load() -> (Self, PersistentSettingsOutcome) {
         Self::load_from(
             Box::new(ConfigStorage),
             Box::<WindowsStartupRegistration>::default(),
         )
     }
 
+    #[cfg(any(test, feature = "render-smoke"))]
     pub(crate) fn with_settings(settings: Settings) -> Self {
-        let (coordinator, draft) = SettingsCoordinator::with_settings(settings);
+        let (coordinator, draft) =
+            SettingsCoordinator::from_loaded_settings(settings, Box::new(ConfigStorage));
         Self::from_parts(
             coordinator,
             draft,
             Box::<WindowsStartupRegistration>::default(),
         )
+    }
+
+    pub(crate) fn load_error(&self) -> Option<&str> {
+        self.coordinator.load_error.as_deref()
     }
 
     pub(crate) fn base_revision(&self) -> SettingsRevision {
@@ -411,8 +436,71 @@ impl SettingsEditor {
         self.selected_power_source = profile;
     }
 
+    pub(crate) fn global(&self) -> &Settings {
+        &self.draft.value
+    }
+
+    pub(crate) fn edit_global(&mut self, edit: impl FnOnce(&mut Settings)) {
+        self.draft.mark_changed();
+        edit(&mut self.draft.value);
+        self.draft.value.sync_shared_settings_to_battery();
+    }
+
+    pub(crate) fn edit_with_presets(&mut self, edit: impl FnOnce(&mut Settings)) {
+        self.draft.value.sync_shared_settings_to_battery();
+        edit(self);
+        // Preset collections are shared even when tuning the battery profile.
+        if self.selected_power_source == PowerSourceProfile::OnBattery {
+            let root = &mut self.draft.value;
+            if let Some(battery) = root.on_battery.as_mut() {
+                root.adaptive_engine_presets
+                    .clone_from(&battery.adaptive_engine_presets);
+                root.cpu_allocation_presets
+                    .clone_from(&battery.cpu_allocation_presets);
+                root.advanced_power_plan_tuning_presets
+                    .clone_from(&battery.advanced_power_plan_tuning_presets);
+            }
+        }
+        self.draft.value.sync_shared_settings_to_battery();
+    }
+
     pub(crate) fn runtime_settings_snapshot(&mut self) -> RuntimeSettingsSnapshot {
         self.coordinator.runtime_settings_snapshot(&self.draft)
+    }
+
+    pub(crate) fn set_feature_enabled(
+        &mut self,
+        profile: PowerSourceProfile,
+        field: fn(&mut Settings) -> &mut bool,
+        enabled: bool,
+    ) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                // Preserve the other profile when battery settings still inherit the root.
+                settings.battery_profile_mut();
+                let settings = match profile {
+                    PowerSourceProfile::PluggedIn => settings,
+                    PowerSourceProfile::OnBattery => settings.battery_profile_mut(),
+                };
+                set_enabled_value(field(settings), enabled)
+            },
+        )
+    }
+
+    pub(crate) fn set_master_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let mut changed = set_enabled_value(&mut settings.general.enabled, enabled);
+                if let Some(battery) = settings.on_battery.as_deref_mut() {
+                    changed |= set_enabled_value(&mut battery.general.enabled, enabled);
+                }
+                changed
+            },
+        )
     }
 
     pub(crate) fn apply_navigation_collapsed_patch(
@@ -571,8 +659,8 @@ fn apply_auto_exclusion_patch_to_profile(
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
-        &mut settings.cpu_scheduler.custom_rules,
-        &patch.cpu_scheduler,
+        &mut settings.adaptive_engine_process.custom_rules,
+        &patch.adaptive_engine_process,
         true,
         process_exclusion_rule,
         |rule| &rule.executable_path,
@@ -845,7 +933,7 @@ mod tests {
         let storage =
             FakeStorage::new(Settings::default(), Ok(Settings::default()), Ok(()), Ok(()));
         let storage_copy = storage.clone();
-        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage)).expect("load");
+        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage));
         (coordinator, draft, storage_copy)
     }
 
@@ -855,12 +943,291 @@ mod tests {
     ) -> (SettingsEditor, FakeStorage, FakeStartupRegistration) {
         let storage_probe = storage.clone();
         let startup_probe = startup.clone();
-        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage)).expect("load");
+        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage));
         (
             SettingsEditor::from_parts(coordinator, draft, Box::new(startup)),
             storage_probe,
             startup_probe,
         )
+    }
+
+    struct FileStorage {
+        path: PathBuf,
+        read_error: bool,
+        write_error: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SettingsStorage for FileStorage {
+        fn load(&self) -> Result<Settings, String> {
+            if self.read_error {
+                Err("Access denied".into())
+            } else {
+                config::storage::load_from_path(&self.path)
+            }
+        }
+        fn save(&self, settings: &Settings) -> Result<(), String> {
+            if self.write_error.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Access denied".into());
+            }
+            config::storage::export_toml_to(&self.path, settings)
+        }
+        fn import(&self, path: &Path) -> Result<Settings, String> {
+            config::storage::import_toml_from(path)
+        }
+        fn export(&self, path: &Path, settings: &Settings) -> Result<(), String> {
+            config::storage::export_toml_to(path, settings)
+        }
+    }
+
+    #[test]
+    fn failed_load_preserves_original_until_explicit_replacement_succeeds() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for read_error in [false, true] {
+            for import in [false, true] {
+                let path = std::env::temp_dir().join(format!(
+                    "winderust-recovery-{}-{read_error}-{import}.toml",
+                    std::process::id()
+                ));
+                let import_path = path.with_extension("import.toml");
+                let original = b"# Preserve this repairable configuration\ninvalid = [";
+                std::fs::write(&path, original).unwrap();
+                let write_error = Arc::new(AtomicBool::new(false));
+                let startup = FakeStartupRegistration::new(Ok(()));
+                let startup_probe = startup.clone();
+                let (mut editor, _) = SettingsEditor::load_from(
+                    Box::new(FileStorage {
+                        path: path.clone(),
+                        read_error,
+                        write_error: write_error.clone(),
+                    }),
+                    Box::new(startup),
+                );
+                assert!(editor.load_error().is_some());
+                assert!(startup_probe.applied_values().is_empty());
+                let patch = NavigationCollapsedPatch {
+                    base_revision: editor.base_revision(),
+                    navigation_collapsed: !editor.global().general.navigation_collapsed,
+                };
+                assert_eq!(
+                    editor.apply_navigation_collapsed_patch(patch),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                assert_eq!(
+                    editor.set_master_enabled(!editor.global().general.enabled),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                assert_eq!(
+                    editor.set_feature_enabled(
+                        PowerSourceProfile::PluggedIn,
+                        |s| &mut s.cpu_limiter.enabled,
+                        true
+                    ),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                let mut exclusions = AutoExclusionPatch {
+                    base_revision: editor.base_revision(),
+                    ..Default::default()
+                };
+                exclusions.cpu_limiter.push(r"C:\Apps\test.exe".into());
+                assert_eq!(
+                    editor.apply_auto_exclusion_patch(&exclusions),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                editor.cancel();
+                assert!(editor.load_error().is_some());
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+
+                editor.edit_global(|settings| settings.general.check_interval_ms = 1234);
+                editor.export_toml_to(&import_path).unwrap();
+                write_error.store(true, Ordering::Relaxed);
+                assert!(if import {
+                    editor.import_toml_from(&import_path)
+                } else {
+                    editor.save()
+                }
+                .is_err());
+                assert!(editor.load_error().is_some());
+                assert!(startup_probe.applied_values().is_empty());
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                write_error.store(false, Ordering::Relaxed);
+                if import {
+                    editor.import_toml_from(&import_path).unwrap();
+                } else {
+                    editor.save().unwrap();
+                }
+                assert!(editor.load_error().is_none());
+                assert_eq!(
+                    config::storage::load_from_path(&path)
+                        .unwrap()
+                        .general
+                        .check_interval_ms,
+                    1234
+                );
+                let patch = NavigationCollapsedPatch {
+                    base_revision: editor.base_revision(),
+                    ..patch
+                };
+                assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
+                assert_eq!(
+                    config::storage::load_from_path(&path)
+                        .unwrap()
+                        .general
+                        .navigation_collapsed,
+                    patch.navigation_collapsed
+                );
+                std::fs::remove_file(path).unwrap();
+                std::fs::remove_file(import_path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn missing_settings_allow_normal_automatic_persistence() {
+        let path =
+            std::env::temp_dir().join(format!("winderust-first-load-{}.toml", std::process::id()));
+        assert!(!path.exists());
+        let (mut editor, _) = SettingsEditor::load_from(
+            Box::new(FileStorage {
+                path: path.clone(),
+                read_error: false,
+                write_error: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }),
+            Box::new(FakeStartupRegistration::new(Ok(()))),
+        );
+        assert!(editor.load_error().is_none());
+        let patch = NavigationCollapsedPatch {
+            base_revision: editor.base_revision(),
+            navigation_collapsed: true,
+        };
+        assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
+        assert!(
+            config::storage::load_from_path(&path)
+                .unwrap()
+                .general
+                .navigation_collapsed
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn global_edits_save_from_battery_without_overwriting_feature_policies() {
+        let mut initial = Settings::default();
+        initial.cpu_limiter.enabled = false;
+        initial.battery_profile_mut().cpu_limiter.enabled = true;
+        let storage = FakeStorage::new(initial.clone(), Ok(initial), Ok(()), Ok(()));
+        let (mut editor, storage, _) =
+            editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+        editor.select_power_source(PowerSourceProfile::OnBattery);
+        editor.edit_global(|settings| {
+            settings.general.enabled = false;
+            settings.advanced.action_log_mode = config::ActionLogMode::Off;
+        });
+        editor.save().unwrap();
+        let saved = &storage.saved_payloads()[0];
+        assert!(!saved.general.enabled);
+        assert!(!saved.battery_profile().general.enabled);
+        assert_eq!(saved.advanced, saved.battery_profile().advanced);
+        assert!(!saved.cpu_limiter.enabled);
+        assert!(saved.battery_profile().cpu_limiter.enabled);
+        assert_eq!(
+            editor.runtime_settings_snapshot().value.general.enabled,
+            saved.general.enabled
+        );
+        assert!(!editor.has_unsaved_changes());
+    }
+
+    #[test]
+    fn tray_feature_switch_only_saves_the_selected_profile_and_field() {
+        for profile in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+            for fail in [false, true] {
+                let mut initial = Settings::default();
+                initial.cpu_limiter.enabled = false;
+                let storage = FakeStorage::new(
+                    initial.clone(),
+                    Ok(initial),
+                    if fail {
+                        Err("write failed".into())
+                    } else {
+                        Ok(())
+                    },
+                    Ok(()),
+                );
+                let (mut editor, storage, _) =
+                    editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+                editor.general.check_interval_ms = 1_337;
+                let original = editor.draft.clone();
+                assert_eq!(
+                    editor
+                        .set_feature_enabled(profile, |s| &mut s.cpu_limiter.enabled, true)
+                        .is_err(),
+                    fail
+                );
+                if fail {
+                    assert_eq!(editor.draft, original);
+                    assert!(!editor.persisted().cpu_limiter.enabled);
+                    assert!(editor.persisted().on_battery.is_none());
+                } else {
+                    let saved = &storage.saved_payloads()[0];
+                    assert_eq!(
+                        saved.cpu_limiter.enabled,
+                        profile == PowerSourceProfile::PluggedIn
+                    );
+                    assert_eq!(
+                        saved.battery_profile().cpu_limiter.enabled,
+                        profile == PowerSourceProfile::OnBattery
+                    );
+                    assert_eq!(
+                        saved.general.check_interval_ms,
+                        Settings::default().general.check_interval_ms
+                    );
+                    assert_eq!(editor.draft.value.general.check_interval_ms, 1_337);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tray_master_switch_preserves_drafts_and_rolls_back_on_save_failure() {
+        for fail in [false, true] {
+            let mut initial = Settings::default();
+            initial.general.enabled = true;
+            initial.battery_profile_mut();
+            let storage = FakeStorage::new(
+                initial.clone(),
+                Ok(initial),
+                if fail {
+                    Err("write failed".into())
+                } else {
+                    Ok(())
+                },
+                Ok(()),
+            );
+            let (mut editor, storage, _) =
+                editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+            editor.general.check_interval_ms = 1_337;
+            editor.select_power_source(PowerSourceProfile::OnBattery);
+            let original = editor.draft.clone();
+            let result = editor.set_master_enabled(false);
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(editor.persisted().general.enabled, fail);
+            assert_eq!(editor.general.enabled, fail);
+            assert_eq!(editor.draft.value.general.check_interval_ms, 1_337);
+            if fail {
+                assert_eq!(editor.draft, original);
+            } else {
+                assert!(!editor.runtime_settings_snapshot().value.general.enabled);
+                assert_eq!(
+                    storage.saved_payloads()[0].general.check_interval_ms,
+                    Settings::default().general.check_interval_ms
+                );
+                assert!(
+                    !storage.saved_payloads()[0]
+                        .battery_profile()
+                        .general
+                        .enabled
+                );
+            }
+        }
     }
 
     #[test]
@@ -960,8 +1327,7 @@ mod tests {
             Err("permission denied".to_owned()),
             Ok(()),
         );
-        let (mut coordinator, mut draft) =
-            SettingsCoordinator::load_from(Box::new(storage)).expect("load");
+        let (mut coordinator, mut draft) = SettingsCoordinator::load_from(Box::new(storage));
         draft.general.check_interval_ms = 1_337;
         let original_draft = draft.clone();
         let patch = AutoExclusionPatch {
@@ -1028,6 +1394,68 @@ mod tests {
         );
         assert_eq!(runtime.advanced, current.advanced);
         assert!(runtime.cpu_allocation_presets.is_empty());
+    }
+
+    #[test]
+    fn preset_edits_survive_profile_switching_and_save() {
+        for profile in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+            let initial = Settings::default();
+            let storage = FakeStorage::new(initial.clone(), Ok(initial), Ok(()), Ok(()));
+            let (mut editor, _, _) =
+                editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+            editor.draft.value.battery_profile_mut();
+            editor.select_power_source(profile);
+            editor.edit_with_presets(|settings| {
+                settings
+                    .adaptive_engine_presets
+                    .push(crate::config::AdaptiveEnginePreset {
+                        name: "Saved".into(),
+                        processor_power_policy_enabled: true,
+                        base_processor_policy: settings.adaptive_engine.base_processor_policy,
+                        background_pressure_profile: settings
+                            .adaptive_engine
+                            .background_pressure_profile,
+                        focus_and_launch_profile: settings.adaptive_engine.focus_and_launch_profile,
+                        adaptive_engine_process: settings.adaptive_engine_process.clone(),
+                    });
+                settings
+                    .cpu_allocation_presets
+                    .push(crate::config::CpuAllocationPreset {
+                        name: "Saved".into(),
+                        core_mask: 3,
+                    });
+                settings.advanced_power_plan_tuning_presets.push(
+                    crate::config::AdvancedPowerPlanTuningPreset {
+                        name: "Saved".into(),
+                        values: settings.adaptive_engine.base_processor_policy,
+                    },
+                );
+            });
+            editor.save().expect("save presets");
+            for selected in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+                editor.select_power_source(selected);
+                assert_eq!(editor.adaptive_engine_presets[0].name, "Saved");
+                assert_eq!(editor.cpu_allocation_presets[0].core_mask, 3);
+                assert_eq!(editor.advanced_power_plan_tuning_presets[0].name, "Saved");
+            }
+            editor.select_power_source(profile);
+            editor.edit_with_presets(|settings| {
+                settings.adaptive_engine_presets[0].name = "Edited".into();
+                settings.cpu_allocation_presets.clear();
+                settings.advanced_power_plan_tuning_presets.clear();
+            });
+            editor.save().expect("save edits");
+            assert_eq!(editor.persisted().adaptive_engine_presets[0].name, "Edited");
+            assert!(editor.persisted().cpu_allocation_presets.is_empty());
+            assert!(editor
+                .persisted()
+                .advanced_power_plan_tuning_presets
+                .is_empty());
+            assert_eq!(
+                editor.persisted().adaptive_engine_presets,
+                editor.persisted().battery_profile().adaptive_engine_presets
+            );
+        }
     }
 
     #[test]
@@ -1111,7 +1539,7 @@ mod tests {
             Ok(()),
         );
         let (mut coordinator, mut draft) =
-            SettingsCoordinator::load_from(Box::new(storage.clone())).expect("load");
+            SettingsCoordinator::load_from(Box::new(storage.clone()));
 
         let err = coordinator.save(&mut draft).unwrap_err();
         assert!(matches!(err, SettingsCoordinatorError::Save(_)));
@@ -1145,7 +1573,7 @@ mod tests {
         let (mut coordinator, mut draft, storage_probe) = {
             let storage_copy = storage.clone();
             let (coordinator, draft) =
-                SettingsCoordinator::load_from(Box::new(storage_copy.clone())).expect("load");
+                SettingsCoordinator::load_from(Box::new(storage_copy.clone()));
             (coordinator, draft, storage_copy)
         };
 
@@ -1159,6 +1587,33 @@ mod tests {
             imported.general.startup_with_windows
         );
         assert_eq!(storage_probe.saved_payloads(), vec![imported]);
+    }
+
+    #[test]
+    fn import_normalizes_shared_fields_without_flattening_feature_profiles() {
+        let mut imported = Settings::default();
+        imported.general.check_interval_ms = 2500;
+        imported.battery_profile_mut().general.check_interval_ms = 5000;
+        imported.battery_profile_mut().cpu_limiter.enabled = true;
+        imported.cpu_limiter.enabled = false;
+        let storage = FakeStorage::new(Settings::default(), Ok(imported.clone()), Ok(()), Ok(()));
+        let (mut coordinator, mut draft) =
+            SettingsCoordinator::load_from(Box::new(storage.clone()));
+        coordinator
+            .import_toml_from(Path::new("import.toml"), &mut draft)
+            .unwrap();
+        imported.sync_shared_settings_to_battery();
+        assert_eq!(storage.saved_payloads(), vec![imported.clone()]);
+        assert_eq!(draft.value, imported);
+        assert_eq!(coordinator.persisted, imported);
+        assert!(draft.value.battery_profile().cpu_limiter.enabled);
+        assert!(!draft.value.cpu_limiter.enabled);
+        coordinator
+            .export_toml_to(Path::new("export.toml"), &draft)
+            .unwrap();
+        assert_eq!(storage.exported_payloads()[0].1, imported);
+        coordinator.save(&mut draft).unwrap();
+        assert_eq!(storage.saved_payloads()[1], imported);
     }
 
     #[test]
@@ -1245,8 +1700,7 @@ mod tests {
         let startup = FakeStartupRegistration::new(Ok(()));
         let startup_probe = startup.clone();
 
-        let (editor, outcome) =
-            SettingsEditor::load_from(Box::new(storage), Box::new(startup)).expect("load");
+        let (editor, outcome) = SettingsEditor::load_from(Box::new(storage), Box::new(startup));
 
         assert!(outcome.startup_registration_error().is_none());
         assert!(editor.persisted().general.startup_with_windows);

@@ -72,6 +72,8 @@ pub(super) struct RuntimeCore {
     next_adaptive_io_refresh: Option<Instant>,
     adaptive_foreground_process_id: Option<u32>,
     controller_activity_detector: ControllerActivityDetector,
+    controller_observed_since: Option<Instant>,
+    pub(super) input_activity: InputActivityTracker,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     background_efficiency_manager: BackgroundEfficiencyManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
@@ -84,10 +86,10 @@ pub(super) struct RuntimeCore {
     cpu_limiter_manager: CpuLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
-    cpu_scheduler_manager: CpuSchedulerManager,
+    adaptive_engine_process_manager: AdaptiveEngineProcessManager,
     focus_and_launch_profile_active: bool,
     cpu_pressure_restraint_active: bool,
-    cpu_scheduler_foreground_cpu_usage_tenths: Option<u16>,
+    adaptive_engine_process_foreground_cpu_usage_tenths: Option<u16>,
     process_priority_manager: ProcessPriorityManager,
     priority_efficiency_controller: PriorityEfficiencyController,
     thread_priority_manager: ThreadPriorityManager,
@@ -145,12 +147,10 @@ impl RuntimeCore {
         // Restore in the reverse order used by the automation loop. Several features can touch
         // the same process state, so relying on field drop order can restore an intermediate
         // Winderust-managed value instead of the value that preceded Winderust.
-        collect_restore_error(
-            &mut errors,
-            "Timer Resolution",
-            self.run_timer_resolution_update(&settings, &mut observations)
-                .last_error,
-        );
+        // Priority, allocation, and timer controllers retry any state left by the disabled
+        // feature update. Their final shutdown result is authoritative; keeping a transient
+        // update error would report failure even after that retry restored everything.
+        self.run_timer_resolution_update(&settings, &mut observations);
         if let Err(error) = self.timer_resolution_controller.shutdown() {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
         }
@@ -166,18 +166,8 @@ impl RuntimeCore {
                 errors.push(format!("CPU Limiter restoration failed: {error}"));
             }
         }
-        collect_restore_error(
-            &mut errors,
-            "Processor Affinity (Hard)",
-            self.run_processor_affinity_hard_update(&settings, &mut observations)
-                .last_error,
-        );
-        collect_restore_error(
-            &mut errors,
-            "CPU Sets (Soft)",
-            self.run_cpu_sets_soft_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_processor_affinity_hard_update(&settings, &mut observations);
+        self.run_cpu_sets_soft_update(&settings, &mut observations);
         collect_restore_error(
             &mut errors,
             "App Suspension",
@@ -199,74 +189,34 @@ impl RuntimeCore {
             }
             Err(_) => errors.push("Suspension restoration state is unavailable.".to_owned()),
         }
-        collect_restore_error(
-            &mut errors,
-            "Memory Priority",
-            self.run_memory_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_memory_priority_update(&settings, &mut observations);
         if let Err(error) = self.memory_priority_controller.shutdown() {
             errors.push(format!("Memory Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "GPU Priority",
-            self.run_gpu_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_gpu_priority_update(&settings, &mut observations);
         if let Err(error) = self.gpu_priority_controller.shutdown() {
             errors.push(format!("GPU Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "Dynamic Priority Boost",
-            self.run_dynamic_priority_boost_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_dynamic_priority_boost_update(&settings, &mut observations);
         if let Err(error) = self.dynamic_priority_boost_controller.shutdown() {
             errors.push(format!(
                 "Dynamic Priority Boost restoration failed: {error}"
             ));
         }
-        collect_restore_error(
-            &mut errors,
-            "Thread Priority",
-            self.run_thread_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_thread_priority_update(&settings, &mut observations);
         if let Err(error) = self.thread_priority_controller.shutdown() {
             errors.push(format!("Thread Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "Process Priority",
-            self.run_process_priority_update(&settings, &mut observations)
-                .last_error,
-        );
-        collect_restore_error(
-            &mut errors,
-            "I/O Priority",
-            self.run_io_priority_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_process_priority_update(&settings, &mut observations);
+        self.run_io_priority_update(&settings, &mut observations);
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "CPU Scheduler",
-            self.run_cpu_scheduler_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_adaptive_engine_process_update(&settings, &mut observations);
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
-        collect_restore_error(
-            &mut errors,
-            "Background Efficiency",
-            self.run_background_efficiency_update(&settings, &mut observations)
-                .last_error,
-        );
+        self.run_background_efficiency_update(&settings, &mut observations);
         if let Err(error) = self.priority_efficiency_controller.shutdown() {
             errors.push(format!(
                 "Process Priority and Efficiency restoration failed: {error}"
@@ -283,7 +233,7 @@ impl RuntimeCore {
         }
     }
 
-    pub(super) fn note_settings(&mut self, settings: &Settings) -> bool {
+    pub(super) fn note_settings(&mut self, settings: &Settings, explicitly_changed: bool) -> bool {
         self.action_log.set_mode(settings.advanced.action_log_mode);
         set_execution_failure_suppression_threshold(
             settings.advanced.execution_failure_suppression_threshold(),
@@ -294,7 +244,7 @@ impl RuntimeCore {
             self.last_settings = Some(settings.clone());
             self.power_plan_controller.clear_failures();
         }
-        changed
+        changed || explicitly_changed
     }
 
     pub(super) fn detect_process_appearance(
@@ -313,11 +263,13 @@ impl RuntimeCore {
     }
 
     pub(super) fn poll_controller_activity(&mut self, now: Instant) -> bool {
+        self.controller_observed_since.get_or_insert(now);
         self.controller_activity_detector.poll(now)
     }
 
     pub(super) fn clear_controller_activity(&mut self) {
         self.controller_activity_detector.clear();
+        self.controller_observed_since = None;
     }
 
     pub(super) fn publish_action_log_if_changed(&mut self, shared: &SharedAutomationState) {
@@ -340,15 +292,16 @@ impl RuntimeCore {
         now: Instant,
     ) -> crate::activity::ActivitySnapshot {
         let idle_timeout = Duration::from_secs(settings.by_activity.idle_timeout_seconds);
-        let snapshot = activity_snapshot(idle_timeout);
-        let controller_idle_for = settings
-            .by_activity
-            .input_detection
-            .controller
-            .then(|| self.controller_activity_detector.idle_for(now))
-            .flatten();
-
-        merge_activity_snapshot(snapshot, controller_idle_for, idle_timeout)
+        let controller_idle_for = self.controller_activity_detector.idle_for(now).or_else(|| {
+            self.controller_observed_since
+                .map(|start| now.saturating_duration_since(start))
+        });
+        let idle_for = self.input_activity.idle_for(
+            &settings.by_activity.input_detection,
+            controller_idle_for,
+            now,
+        );
+        activity_snapshot(idle_for, idle_timeout)
     }
 
     pub(super) fn run_background_efficiency_update(
@@ -603,18 +556,18 @@ impl RuntimeCore {
         )
     }
 
-    pub(super) fn run_cpu_scheduler_update(
+    pub(super) fn run_adaptive_engine_process_update(
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> CpuSchedulerSnapshot {
+    ) -> AdaptiveEngineProcessSnapshot {
         self.refresh_cpu_usage();
         let foreground_process_id = observations.foreground_process_id();
         let excluded_process_ids = self.by_running_app_manager.active_process_ids();
         let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
-        let snapshot = self.cpu_scheduler_manager.update(
-            CpuSchedulerUpdate {
-                settings: &settings.cpu_scheduler,
+        let snapshot = self.adaptive_engine_process_manager.update(
+            AdaptiveEngineProcessUpdate {
+                settings: &settings.adaptive_engine_process,
                 automation_enabled: settings.general.enabled && settings.adaptive_engine.enabled,
                 allow_cross_session_process_control: settings
                     .general
@@ -633,7 +586,8 @@ impl RuntimeCore {
         );
         self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
         self.cpu_pressure_restraint_active = snapshot.cpu_pressure_restraint_active;
-        self.cpu_scheduler_foreground_cpu_usage_tenths = snapshot.foreground_cpu_usage_tenths;
+        self.adaptive_engine_process_foreground_cpu_usage_tenths =
+            snapshot.foreground_cpu_usage_tenths;
         snapshot
     }
 
@@ -707,7 +661,7 @@ impl RuntimeCore {
             performance_peak_cpu_percent: processor_demand.performance_peak_cpu_percent,
             efficiency_peak_cpu_percent: processor_demand.efficiency_peak_cpu_percent,
             foreground_cpu_percent: self
-                .cpu_scheduler_foreground_cpu_usage_tenths
+                .adaptive_engine_process_foreground_cpu_usage_tenths
                 .map(|usage| f32::from(usage) / 10.0),
             io_bytes_per_second: io_usage.bytes_per_second,
         });
@@ -759,7 +713,7 @@ impl RuntimeCore {
             .policy_target_process_ids(&[
                 ControlOwner::BackgroundEfficiency,
                 ControlOwner::AdaptiveEngine,
-                ControlOwner::CpuSchedulerFocusPriority,
+                ControlOwner::AdaptiveEngineProcessFocusPriority,
             ]);
         self.process_priority_manager.update(
             &mut self.priority_efficiency_controller,
@@ -1058,6 +1012,29 @@ impl RuntimeCore {
         statuses
     }
 
+    pub(super) fn retry_priority_releases(&mut self, now: Instant) -> Option<String> {
+        let summary = self
+            .priority_efficiency_controller
+            .retry_pending_releases(now);
+        (!summary.failures.is_empty()).then(|| {
+            summary
+                .failures
+                .into_iter()
+                .map(|failure| {
+                    format!(
+                        "{} restoration failed for {} ({}): {}",
+                        failure.property, failure.process_name, failure.process_id, failure.error
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+    }
+
+    pub(super) fn priority_release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        self.priority_efficiency_controller.release_retry_delay(now)
+    }
+
     pub(super) fn has_managed_process_control_state(&self) -> bool {
         let app_suspension_active = self.app_suspension_active();
         self.power_plan_controller.adaptive_active()
@@ -1197,7 +1174,8 @@ impl RuntimeCore {
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
         let by_running_app = self.by_running_app_manager.active_decision().map(
-            |(rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
+            |(rule_index, rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
+                rule_index,
                 rule_name,
                 process_name,
                 power_plan_guid,
@@ -1318,5 +1296,124 @@ pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> 
 impl Drop for RuntimeCore {
     fn drop(&mut self) {
         let _ = self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_settings_events_do_not_skip_bookkeeping() {
+        for explicit in [false, true] {
+            for changed in [false, true] {
+                let mut runner = RuntimeCore::default();
+                let mut settings = Settings::default();
+                settings.advanced.action_log_mode = crate::config::ActionLogMode::Off;
+                runner.note_settings(&settings, false);
+                if changed {
+                    settings.advanced.action_log_mode = crate::config::ActionLogMode::Full;
+                    settings.general.enabled = !settings.general.enabled;
+                }
+                assert_eq!(
+                    runner.note_settings(&settings, explicit),
+                    changed || explicit
+                );
+                assert_eq!(runner.last_settings.as_ref(), Some(&settings));
+                runner.action_log.record(
+                    crate::action_log::ActionLogFeature::ThreadPriority,
+                    None,
+                    "",
+                    crate::action_log::ActionLogResult::Applied,
+                    "test",
+                );
+                assert_eq!(runner.action_log.entries().len(), usize::from(changed));
+                assert!(!runner.note_settings(&settings, false));
+            }
+        }
+    }
+
+    #[test]
+    fn activity_classification_and_deadline_use_only_selected_sources() {
+        let start = Instant::now();
+        let now = start + Duration::from_secs(60);
+        let mut settings = Settings::default();
+        settings.by_activity.enabled = true;
+        settings.by_activity.idle_timeout_seconds = 30;
+        settings.by_activity.power_plans.power_save_guid = Some("idle".into());
+        settings.by_activity.switch_to_performance_on_resume = false;
+        assert!(input_hook_required(&settings));
+
+        for selected in 1..8 {
+            settings.by_activity.input_detection.keyboard = selected & 1 != 0;
+            settings.by_activity.input_detection.mouse = selected & 2 != 0;
+            settings.by_activity.input_detection.controller = selected & 4 != 0;
+            let mut runner = RuntimeCore::default();
+            runner.input_activity.configure(
+                InputHookConfig {
+                    keyboard: true,
+                    mouse: true,
+                },
+                start,
+            );
+            runner.controller_observed_since = Some(start);
+            // Recent events from disabled sources must not postpone idle.
+            runner.input_activity.record(
+                InputHookEvents {
+                    keyboard: selected & 1 == 0,
+                    mouse: selected & 2 == 0,
+                    ..Default::default()
+                },
+                now,
+            );
+            let snapshot = runner.activity_snapshot(&settings, now);
+            assert_eq!(snapshot.state, crate::activity::ActivityState::Idle);
+            assert_eq!(snapshot.idle_for, Some(Duration::from_secs(60)));
+            assert_eq!(
+                activity_idle_check_delay(&settings, snapshot.idle_for),
+                None
+            );
+
+            if selected & 3 != 0 {
+                runner.input_activity.record(
+                    InputHookEvents {
+                        keyboard: selected & 1 != 0,
+                        mouse: selected & 2 != 0,
+                        ..Default::default()
+                    },
+                    now - Duration::from_secs(5),
+                );
+                let snapshot = runner.activity_snapshot(&settings, now);
+                assert_eq!(snapshot.state, crate::activity::ActivityState::Active);
+                assert_eq!(snapshot.idle_for, Some(Duration::from_secs(5)));
+                assert_eq!(
+                    activity_idle_check_delay(&settings, snapshot.idle_for),
+                    Some(Duration::from_secs(25))
+                );
+            }
+
+            runner.input_activity.configure(
+                InputHookConfig {
+                    keyboard: true,
+                    mouse: true,
+                },
+                now,
+            );
+            runner.controller_observed_since = Some(now);
+            let snapshot = runner.activity_snapshot(&settings, now);
+            assert_eq!(snapshot.state, crate::activity::ActivityState::Active);
+            assert_eq!(
+                activity_idle_check_delay(&settings, snapshot.idle_for),
+                Some(Duration::from_secs(30))
+            );
+        }
+
+        let runner = RuntimeCore::default();
+        let snapshot = runner.activity_snapshot(&settings, now);
+        assert_eq!(snapshot.state, crate::activity::ActivityState::Unknown);
+        assert_eq!(
+            activity_idle_check_delay(&settings, snapshot.idle_for),
+            Some(configured_check_interval(&settings))
+        );
     }
 }

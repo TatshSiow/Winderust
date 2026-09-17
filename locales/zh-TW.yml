@@ -35,7 +35,6 @@ nav:
   adaptive_engine: "自適應引擎"
   background_efficiency: "背景效率"
   app_suspension: "應用程式暫停"
-  cpu_scheduler: "CPU 排程器"
   io_priority: "I/O 優先順序"
   gpu_priority: "GPU 優先順序"
   memory_priority: "記憶體優先順序"
@@ -51,6 +50,12 @@ nav:
   about: "關於"
 
 common:
+  applied: "已套用"
+  waiting: "等待中"
+  error: "錯誤"
+  inactive: "未啟用"
+  close: "關閉"
+  feature_info: "功能說明"
   caution: "注意"
   danger: "危險"
   control: "控制項"
@@ -74,7 +79,7 @@ common:
   edit: "編輯"
   "on": "開啟"
   "off": "關閉"
-  active: "啟用"
+  enable: "啟用"
   actions: "操作"
   enabled: "已啟用"
   disabled: "已停用"
@@ -84,7 +89,6 @@ common:
   save: "儲存"
   theme: "佈景主題"
   language: "語言"
-  animation: "動畫"
   unknown: "未知"
   custom: "自訂"
   status: "狀態"
@@ -107,6 +111,7 @@ common:
   no_power_plans_loaded: "尚未載入電源計畫"
   no_running_apps_loaded: "尚未載入執行中的應用程式"
   no_matching_apps: "沒有相符的應用程式"
+  browse_local_executable: "瀏覽本機執行檔..."
   browse_executable: "瀏覽本機執行檔..."
   select_executable: "選擇執行檔"
   executable_files: "執行檔"
@@ -128,8 +133,6 @@ common:
   all: "全部"
   rule_count: "%{count} 個規則"
   pid_count: "%{count} 個 PID"
-  seconds_short: "%{count} 秒"
-  minutes_seconds_short: "%{minutes} 分 %{seconds} 秒"
   minutes_long: "%{count} 分鐘"
   latest_sample: "最新樣本"
   seconds_ago: "%{count} 秒前"
@@ -140,9 +143,6 @@ theme:
   system: "跟隨系統"
   light: "淺色"
   dark: "深色"
-
-animation:
-  system: "跟隨系統"
 
 accent:
   recent_colors: "最近使用的色彩"
@@ -165,15 +165,10 @@ status:
   loaded_power_plans: "已載入 %{count} 個電源計畫。"
   loaded_running_apps: "已載入 %{count} 個執行中的應用程式。"
   loaded_running_processes: "已載入 %{count} 個執行中的程序。"
-  saved_settings: "已將設定儲存至 %{path}"
   saved_settings_with_error: "設定已儲存，但 %{error}。"
-  exported_settings: "已匯出設定至 %{path}"
   export_canceled: "已取消匯出。"
-  exported_action_log: "已匯出動作記錄至 %{path}"
-  action_log_export_canceled: "已取消匯出動作記錄。"
   action_log_export_empty: "沒有可匯出的動作記錄項目。"
   action_log_export_failed: "無法將動作記錄匯出至 %{path}：%{error}"
-  imported_settings: "已從 %{path} 匯入設定"
   imported_settings_with_error: "設定已匯入，但 %{error}。"
   import_canceled: "已取消匯入。"
   system_tray_unavailable: "系統匣無法使用：沒有視窗控制代碼。"
@@ -235,12 +230,14 @@ runtime_status:
   thread_priority_active: "執行緒優先權作用中。"
   process_priority_disabled: "程序優先權預設值已停用。"
   process_priority_active: "程序優先權預設值作用中。"
-  cpu_scheduler_disabled: "CPU 排程器已停用。"
-  cpu_pressure_restraint_active: "CPU 排程器作用中。"
+  adaptive_engine_process_disabled: "自適應引擎已停用。"
+  cpu_pressure_restraint_active: "自適應引擎作用中。"
   cpu_sets_soft_active: "CPU 集合（軟式）作用中。"
   processor_affinity_hard_active: "處理器親和性（硬式）作用中。"
 
 home:
+  pause_metrics: "暫停更新指標"
+  resume_metrics: "恢復更新指標"
   home: "總覽"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
@@ -256,7 +253,7 @@ home:
   memory_usage: "RAM"
   memory_used: "使用量"
   memory_cache: "快取"
-  io_usage: "I/O"
+  io_usage: "磁碟 I/O"
   io_total: "總計"
   io_read: "讀取"
   io_write: "寫入"
@@ -288,6 +285,16 @@ home:
   focus_and_launch_profile: "焦點與啟動"
 
 process_list:
+  plans_not_loaded: "電源計畫尚未載入。請按重新整理以重試。"
+  pause_population: "暫停更新程序清單"
+  resume_population: "恢復更新程序清單"
+  filter: "篩選"
+  grouping: "分組"
+  metrics: "指標"
+  metric_value: "數值"
+  metric_percentage: "百分比"
+  group_by_app: "依應用程式分組"
+  columns: "欄位"
   include: "包含"
   exclude: "排除"
   user: "使用者"
@@ -319,8 +326,9 @@ process_list:
   executable_path: "執行檔路徑"
   pid: "PID"
   status: "狀態"
+  status_unavailable: "無法使用"
   status_active: "作用中"
-  status_protected_system_process: "\u53d7\u4fdd\u8b77\u7684\u7cfb\u7d71\u8655\u7406\u7a0b\u5e8f"
+  status_system_protected: "\u53d7\u4fdd\u8b77\u7684\u7cfb\u7d71\u8655\u7406\u7a0b\u5e8f"
   status_administrator_required: "\u9700\u8981\u7cfb\u7d71\u7ba1\u7406\u54e1\u6b0a\u9650"
   status_access_denied: "\u5b58\u53d6\u906d\u62d2"
   protected_system_process_help: "Winderust \u70ba\u4e86\u7cfb\u7d71\u5b89\u5168\u800c\u4fdd\u8b77\u6b64\u8655\u7406\u7a0b\u5e8f\u3002"
@@ -329,9 +337,12 @@ process_list:
   quick_action_applied: "已將 %{action} 套用至 %{name}。"
   quick_action_queued: "已排程對 %{name} 執行「%{action}」。"
   quick_action_failed: "無法將 %{action} 套用至 %{name}：%{error}"
+  properties: "內容"
   open_rule_details: "開啟處理程序規則詳細資料"
   stop_process: "停止處理程序"
   stop_process_tree: "停止處理程序樹狀結構"
+  kill: "終止"
+  kill_confirm_title: "終止 %{name}？"
   stop_confirm_title: "停止處理程序？"
   stop_confirm: "停止 %{name} 可能導致未儲存的工作遺失。"
   stop_tree_confirm: "停止 %{name} 及其子處理程序可能導致未儲存的工作遺失。"
@@ -358,11 +369,16 @@ process_list:
 
   thread_priority: "執行緒優先順序"
   dynamic_priority_boost: "動態優先順序提升"
+  immediate_actions: "即時操作"
+  rulesets: "規則集"
   details_exclusions: "功能排除"
   details_priority: "優先順序控制"
   adaptive_engine: "自適應引擎"
 
 settings:
+  animation_mode: "動畫"
+  functionality: "功能設定"
+  launch_settings: "啟動設定"
   allow_cross_session_process_control: "允許跨工作階段處理程序控制"
   allow_cross_session_process_control_help: "允許 Winderust 控制目前 Windows 工作階段以外符合條件的服務與處理程序。Windows 存取檢查與受保護處理程序排除仍然適用。"
   intro_1: "一般設定會控制啟動行為、系統匣行為與主要自動化開關。"
@@ -383,6 +399,7 @@ settings:
   save_backup: "儲存備份"
   restore_backup: "還原備份"
   action_log_mode: "動作記錄詳細程度"
+  action_log_mode_help: "選擇要記錄的新動作記錄：全部、警告與錯誤、僅錯誤，或不記錄。"
   action_log_mode_full: "完整"
   action_log_mode_full_help: "記錄所有動作記錄項目。"
   action_log_mode_warning: "警告"
@@ -401,11 +418,8 @@ settings:
   show_enabled_feature_counts_in_sidebar_help: "顯示 Winderust 功能、電源計畫控制、優先權控制與 CPU 控制中已啟用的功能數量。"
   show_feature_status_on_cards: "在卡片上顯示功能狀態"
   show_feature_status_on_cards_help: "在功能卡片上顯示已啟用或已停用標籤。"
-  pause_dashboard_metrics: "暫停儀表板指標"
-  pause_dashboard_metrics_help: "停止更新儀表板的 CPU、記憶體、磁碟與網路指標。背景自動化仍會繼續執行。"
-  pause_process_population: "暫停程序填入"
-  pause_process_population_help: "停止填入程序清單與程序選擇器，並清除目前的程序快取。背景自動化仍會繼續執行。"
   win32_priority_separation_warning: "僅供熟悉 Windows 排程器的進階使用者調整。這個登錄值會影響所有應用程式與服務，不只 Winderust 管理的程序。"
+  win32_priority_separation_scheduler_policy: "排程器原則"
   win32_priority_separation_current: "目前登錄值"
   win32_priority_separation_backup: "備份值"
   win32_priority_separation_tuning: "排程器原則"
@@ -522,6 +536,7 @@ processor_power:
   applied_custom: "已將自訂處理器調校套用到 %{plan}。"
 
 by_activity:
+  invalid_timing: "請輸入 1 至 3600 秒的閒置逾時，以及 250 至 60000 毫秒的檢查間隔。"
   intro_1: "操作狀態排程會根據鍵盤、滑鼠與控制器活動切換電源計畫。"
   intro_2: "可在下方選擇閒置與活動時的電源計畫；輸入偵測會控制應用程式何時切換狀態。"
   enable: "啟用操作狀態排程"
@@ -566,6 +581,7 @@ weekday:
   sun: "週日"
 
 by_cpu_load:
+  if: "如果"
   intro_1: "CPU 負載計畫會在整體處理器使用率超過門檻並持續一段時間後切換全系統電源計畫。"
   intro_2: "這裡用於電源計畫自動化；特定程序需要處理器上限時，請使用 CPU 上限規則。"
   enable: "啟用 CPU 負載計畫"
@@ -612,6 +628,10 @@ background_efficiency:
   no_custom_rules: "尚未設定自訂規則。"
 
 adaptive_engine:
+  detection: "偵測"
+  keep_existing_priority: "保留現有優先順序"
+  same_or_higher: "相同或更高"
+  same_or_lower: "相同或更低"
   bottleneck_classifier: "系統瓶頸"
   bottleneck_unknown: "正在收集資料"
   bottleneck_headroom: "仍有餘裕"
@@ -636,7 +656,7 @@ adaptive_engine:
   view_preset: "檢視預設"
   preset_name: "預設名稱"
   preset_name_placeholder: "輸入預設名稱..."
-  preset_name_help: "預設名稱不可重複。預設不包含啟用開關、自訂規則、排除項目與獨立的背景效率功能。"
+  preset_name_help: "預設名稱不可重複。預設不包含自適應引擎總開關、自訂規則、排除項目與獨立的背景效率功能。"
   duplicate_preset_name: "已有相同名稱的預設。"
   unnamed_preset: "未命名預設"
   use_current_settings: "使用目前設定"
@@ -650,7 +670,7 @@ adaptive_engine:
   processor_power_policy: "處理器電源策略"
   processor_policy_dynamic: "動態"
   processor_policy_fixed: "固定"
-  processor_power_policy_help: "獨立於 CPU 排程器調整目前電源計畫，並在自適應引擎停止時還原先前數值。"
+  processor_power_policy_help: "獨立於 自適應引擎調整目前電源計畫，並在自適應引擎停止時還原先前數值。"
   base_processor_policy: "基礎處理器策略"
   base_processor_policy_help: "設定閒置時的實際數值，以及較高需求設定檔會保留的最低百分比；提升模式僅用於閒置設定檔。"
   core_parking_min_help: "Windows 保持不進入停駐狀態的邏輯處理器最低百分比；作用中的設定檔可自動提高此數值。"
@@ -730,11 +750,11 @@ app_suspension:
     off: "關閉"
     off_help: "應用程式暫停已停用。"
 
-cpu_scheduler:
-  intro_1: "只有在前景或系統 CPU 壓力高時，CPU 排程器才會對可見視窗與背景工作套用設定的策略，以保護作用中的應用程式。"
-  intro_2: "獨立的背景效率功能關閉時，CPU 排程器可以套用背景效率。"
+adaptive_engine_process:
+  intro_1: "只有在前景或系統 CPU 壓力高時，自適應引擎才會對可見視窗與背景工作套用設定的策略，以保護作用中的應用程式。"
+  intro_2: "獨立的背景效率功能關閉時，自適應引擎可以套用背景效率。"
   intro_3: "焦點、可見視窗與背景優先順序會使用與處理程序優先順序相同的層級。"
-  enable: "CPU 排程器"
+  enable: "自適應引擎"
   process_priority_help: "分別為焦點應用程式、可見視窗應用程式與符合條件的背景工作套用處理程序優先順序。"
   background_efficiency: "背景效率"
   background_efficiency_help: "分別設定焦點、可見視窗與背景應用程式的效率模式。預設會沿用背景值。只有獨立的背景效率功能關閉時才會執行。"
@@ -764,19 +784,19 @@ cpu_scheduler:
   cpu_restraint_time: "CPU 限制時間"
   cpu_restraint_time_help: "Winderust 開始反應後，應用程式至少會維持限制的時間。"
   maximum_restrained_apps: "最多限制應用程式"
-  maximum_restrained_apps_help: "限制CPU 排程器同時限制的高負載可見視窗或背景應用程式數量。較低的值較溫和，較高的值會處理更多負載。"
+  maximum_restrained_apps_help: "限制自適應引擎同時限制的高負載可見視窗或背景應用程式數量。較低的值較溫和，較高的值會處理更多負載。"
   cpu_recovery_time: "CPU 還原時間"
   cpu_recovery_time_help: "應用程式降溫後，Winderust 會維持較輕限制多久，才還原先前狀態。"
   cpu_allocation_method: "CPU 配置方法"
-  background_memory_priority: "CPU 排程器記憶體優先順序"
+  background_memory_priority: "自適應引擎記憶體優先順序"
   memory_priority_very_low: "非常低"
   memory_priority_low: "低"
   memory_priority_medium: "中"
   memory_priority_below_normal: "低於標準"
   memory_priority_normal: "標準"
-  custom_rules: "CPU 排程器排除清單"
-  custom_rules_help: "讓符合條件的程序不受CPU 排程器影響，不會自動變更其優先順序、親和性、I/O 或記憶體優先順序。"
-  no_custom_rules: "尚未設定CPU 排程器排除項目。"
+  custom_rules: "自適應引擎排除清單"
+  custom_rules_help: "讓符合條件的程序不受自適應引擎影響，不會自動變更其優先順序、親和性、I/O 或記憶體優先順序。"
+  no_custom_rules: "尚未設定自適應引擎排除項目。"
 
 
 process_priority:
@@ -916,7 +936,7 @@ memory_priority:
   no_exclusions: "尚未設定記憶體優先順序排除項目。"
 
 timer_resolution:
-  intro_1: "計時器解析度會在符合規則的 App 位於前景時要求 Windows 系統計時器解析度。"
+  intro_1: "符合規則的 App 位於前景時，Winderust 會為自己的處理程序要求計時器解析度。這不保證會改變該 App 的計時器解析度。"
   intro_2: "每個前景規則都可以使用自己的毫秒解析度值。"
   intro_3: "沒有前景規則符合、停用此控制或結束 App 時，Winderust 會釋放自己的要求。"
   enable: "啟用計時器解析度控制"
@@ -973,6 +993,9 @@ processor_affinity_hard:
   warning: "硬式親和性可能降低效能或回應速度。在多處理器群組系統上，它只會套用至程序的主要群組。"
 
 cpu_allocation:
+  custom_rules: "自訂規則"
+  selected_logical_cpus: "已選取的邏輯 CPU"
+  e_cores_no_smt: "E 核心（無 SMT）"
   focus: "焦點"
   p_core: "P 核心"
   e_core: "E 核心"
@@ -1007,6 +1030,9 @@ cpu_allocation:
     off: "關閉"
 
 action_log:
+  affected_processes: "%{count} 個受影響的處理程序"
+  check_all: "全選"
+  clear_all: "全部取消"
   intro_1: "動作記錄會顯示最近的程序控制變更，以及 Winderust 執行這些動作的原因。"
   intro_2: "項目會保存在記憶體中，並在 Winderust 結束時重設。"
   clear: "清除記錄"
@@ -1019,10 +1045,6 @@ action_log:
   recent_entries: "最近項目"
   empty: "尚未記錄程序控制動作。"
   no_filter_matches: "沒有符合目前篩選條件的動作記錄項目。"
-  previous: "上一頁"
-  next: "下一頁"
-  pagination: "顯示 %{start}-%{end} / %{total} · 第 %{current} / %{pages} 頁"
-  pagination_empty: "沒有可顯示的項目"
   sequence: "#"
   feature: "功能"
   action: "動作"
@@ -1049,6 +1071,7 @@ by_running_app:
   indicator_active: "作用中"
 
 cpu_limiter:
+  invalid_limit: "??? 1 ? 100 ??? CPU ?????"
   enable: "啟用 CPU 限制器"
   intro_1: "CPU 限制器會短暫凍結與恢復選取的應用程式群組，以達到所選的 CPU 時間目標。"
   intro_2: "焦點、可見視窗與背景的預設值可設定應用程式在每個 100 毫秒週期中預計可執行的比例，範圍為 1% 到 100%；100% 代表不限制。"
@@ -1066,7 +1089,6 @@ cpu_limiter:
   visible_window_allowed_cpu_time: "可見視窗允許的 CPU 時間"
   background_allowed_cpu_time: "背景程序允許的 CPU 時間"
   no_rules: "尚未設定自訂規則。"
-  indicator_limited: "已限制"
 
 about:
   inspired_by: "靈感來自"
@@ -1098,6 +1120,7 @@ update_channel:
   stable: "穩定版"
   pre_release: "預覽版"
 power_plan_control:
+  automation: "自動化"
   pause_plugged: "使用 AC 電源時暫停切換電源計畫"
 power_source:
   plugged_in: "已插電"
@@ -1107,3 +1130,22 @@ settings_io_toast:
   imported: "設定已匯入"
   export_failed: "設定匯出失敗"
   import_failed: "設定匯入失敗"
+
+quit_prompt:
+  recovery_handoff: "自動化已停止。再次選擇離開，將由復原程式重試剩餘的復原工作。復原仍可能失敗。"
+  title: "結束 Winderust？"
+  message: "確定要結束 Winderust 嗎？"
+  unsaved: "您有尚未儲存的變更。您可以儲存後結束，或不儲存直接結束。"
+  save_and_quit: "儲存並結束"
+  without_saving: "不儲存並結束"
+
+sidebar_status:
+  paused: "已暫停"
+  blocked: "受阻"
+  running_help: "執行狀態已確認正在作用或已套用原則。"
+  waiting_help: "已啟用；等待符合條件的應用程式、觸發條件或下次評估。"
+  paused_help: "已啟用，但其他原則或缺少觀測資料導致暫時無法執行。"
+  blocked_help: "不支援或存取被拒；尚未確認正在作用。"
+  error_help: "執行時發生失敗，請查看下方錯誤詳情。"
+  inactive_help: "功能或 Winderust 主開關已關閉。"
+  unknown_help: "無法確認目前的執行狀態。"

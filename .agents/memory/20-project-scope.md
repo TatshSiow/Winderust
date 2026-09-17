@@ -50,7 +50,6 @@ Not a goal by default:
 
 Add only when a real workflow needs them:
 
-- Gaming/work/battery presets after the current settings model stabilizes.
 - Better telemetry/export if Action Log is not enough.
 - Startup/service hardening if always-on background operation becomes a requirement.
 - Category-based exclusions only when users can name categories that beat simple process rules.

@@ -1,7 +1,35 @@
+mod action_log;
+mod adaptive_engine;
+mod advanced_power_plan_tuning;
+mod animated_controls;
+mod app_picker;
+mod app_suspension;
+mod background_efficiency;
+mod by_activity;
+mod cpu_allocation;
+mod cpu_limiter;
+mod design;
+mod home;
+mod memory_trim;
+mod motion;
+mod navigation;
+mod power_rules;
+mod priority_control;
+mod process_list;
+mod process_power_plans;
+mod scrolling;
+mod select;
+mod settings_pages;
+mod status_rail;
+mod tasks;
+mod timer_resolution;
+mod widgets;
+mod win32_priority_separation;
 use rust_i18n::t;
 
 pub(crate) mod app;
 pub(crate) mod assets;
+pub(crate) mod process_rules;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
@@ -250,18 +278,6 @@ impl Page {
     }
 }
 
-pub fn duration_label(seconds: u64) -> String {
-    if seconds < 60 {
-        t!("common.seconds_short", count = seconds).to_string()
-    } else {
-        t!(
-            "common.minutes_seconds_short",
-            minutes = seconds / 60,
-            seconds = seconds % 60
-        )
-        .to_string()
-    }
-}
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

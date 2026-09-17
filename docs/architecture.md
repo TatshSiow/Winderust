@@ -1,6 +1,6 @@
 # Architecture
 
-Winderust is a mechanism-centered modular monolith: one GPUI application process, one optional
+Winderust is a mechanism-centered modular monolith: one Iced application process, one optional
 automation worker, and one typed owner for each Windows mechanism. UI and feature code express
 intent; only controllers and their narrow Windows adapters own live mutations.
 
@@ -33,7 +33,7 @@ Windows events / UI intent / persisted settings
 
 ## Responsibilities
 
-- `WinderustApp` owns GPUI composition, dialogs, navigation, process-list presentation, and local
+- `WinderustApp` owns Iced composition, dialogs, navigation, process-list presentation, and local
   read models.
 - `SettingsEditor` is the only settings draft, revision, persistence, import, and export boundary.
 - `RuntimeHandle` owns worker lifecycle, event sources, typed commands, and published status.
@@ -78,7 +78,7 @@ target, but every mutation reopens and revalidates the exact process or thread i
 - Process List reversible actions use the same RuntimeCore controllers as automatic policy and
   may be superseded by a later automatic reconciliation.
 - CPU allocation has one coordinator with this precedence: CPU Sets (Soft), Processor Affinity
-  (Hard), then Adaptive Engine / CPU Scheduler.
+  (Hard), then Adaptive Engine.
 - App Suspension and CPU Limiter share one Job Object suspension controller. Their independent
   claims combine into one effective frozen state, so releasing either feature cannot thaw the
   other feature's claim.

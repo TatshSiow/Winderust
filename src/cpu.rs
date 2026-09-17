@@ -420,10 +420,11 @@ fn average_processor_power_frequency(
         }
     }
 
-    (count > 0).then_some(CpuFrequencySample {
-        frequency_mhz: (total / count) as u32,
-        base_frequency_mhz: (max_frequency_count > 0)
-            .then_some((max_frequency_total_mhz / max_frequency_count) as u32),
+    Some(CpuFrequencySample {
+        frequency_mhz: total.checked_div(count)? as u32,
+        base_frequency_mhz: max_frequency_total_mhz
+            .checked_div(max_frequency_count)
+            .map(|frequency| frequency as u32),
     })
 }
 
@@ -476,6 +477,32 @@ mod tests {
 
         assert_eq!(cpu_usage_percent(previous, current), Some(80.0));
         assert_eq!(cpu_usage_percent(current, current), None);
+    }
+
+    #[test]
+    fn processor_frequency_handles_missing_readings_without_losing_valid_samples() {
+        assert_eq!(average_processor_power_frequency(&[]), None);
+        for max_mhz in [0, 4000] {
+            let record = PROCESSOR_POWER_INFORMATION {
+                MaxMhz: max_mhz,
+                ..Default::default()
+            };
+            assert_eq!(average_processor_power_frequency(&[record]), None);
+        }
+        let records = [
+            PROCESSOR_POWER_INFORMATION::default(),
+            PROCESSOR_POWER_INFORMATION {
+                CurrentMhz: 2400,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            average_processor_power_frequency(&records),
+            Some(CpuFrequencySample {
+                frequency_mhz: 2400,
+                base_frequency_mhz: None,
+            })
+        );
     }
 
     #[test]

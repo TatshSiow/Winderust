@@ -31,8 +31,9 @@ use windows_sys::Win32::{
             DEVICE_NOTIFY_WINDOW_HANDLE, EVENT_OBJECT_CREATE, EVENT_SYSTEM_FOREGROUND, MSG,
             OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
             PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, PM_NOREMOVE,
-            WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_POWERBROADCAST, WM_QUIT,
-            WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW,
+            WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_DWMCOLORIZATIONCOLORCHANGED,
+            WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMECHANGE,
+            WM_WTSSESSION_CHANGE, WNDCLASSW,
         },
     },
 };
@@ -45,6 +46,7 @@ pub enum WindowsAutomationEvent {
     WindowCreated,
     PowerChanged,
     SessionChanged,
+    ClockChanged,
     AppearanceChanged,
 }
 
@@ -332,7 +334,15 @@ unsafe extern "system" fn event_window_proc(
             notify_event(WindowsAutomationEvent::SessionChanged);
             0
         }
-        WM_SETTINGCHANGE => {
+        WM_TIMECHANGE => {
+            notify_event(WindowsAutomationEvent::ClockChanged);
+            0
+        }
+        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
+            // System settings include time-zone changes; recheck without interpreting lparam.
+            if message == WM_SETTINGCHANGE {
+                notify_event(WindowsAutomationEvent::ClockChanged);
+            }
             notify_event(WindowsAutomationEvent::AppearanceChanged);
             0
         }
@@ -372,6 +382,40 @@ fn notify_event(event: WindowsAutomationEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appearance_messages_refresh_the_shared_theme() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = Some(Arc::new(move |event| {
+                received.lock().unwrap().push(event);
+            }));
+        });
+        for message in [
+            WM_SETTINGCHANGE,
+            WM_THEMECHANGED,
+            WM_DWMCOLORIZATIONCOLORCHANGED,
+            WM_TIMECHANGE,
+        ] {
+            assert_eq!(
+                // SAFETY: These appearance messages use no window handle or pointer arguments.
+                unsafe { event_window_proc(std::ptr::null_mut(), message, 0, 0) },
+                0
+            );
+        }
+        EVENT_CALLBACK.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                WindowsAutomationEvent::ClockChanged,
+                WindowsAutomationEvent::AppearanceChanged,
+                WindowsAutomationEvent::AppearanceChanged,
+                WindowsAutomationEvent::AppearanceChanged,
+                WindowsAutomationEvent::ClockChanged,
+            ]
+        );
+    }
 
     #[test]
     fn watcher_requires_every_event_source() {

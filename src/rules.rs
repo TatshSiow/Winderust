@@ -7,6 +7,5 @@ pub use decision_engine::{
 pub use execution_failure::{
     execution_failure_suppression_threshold, normalize_execution_failure_suppression_threshold,
     set_execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
-    DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
-    MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+    DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };

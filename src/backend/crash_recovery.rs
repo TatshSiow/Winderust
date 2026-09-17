@@ -7,7 +7,8 @@ use std::{
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     ptr::null_mut,
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{mpsc, Mutex, MutexGuard, OnceLock},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -63,13 +64,12 @@ static STARTUP_ERROR: OnceLock<String> = OnceLock::new();
 #[derive(Debug)]
 struct RecoveryRuntime {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    transport: RecoveryTransport,
     entries: Vec<RecoveryEntry>,
     next_intent_id: u64,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 enum RecoveryCommand {
     Begin {
@@ -211,11 +211,9 @@ impl RecoveryIntent {
             .as_mut()
             .ok_or_else(|| "Crash recovery stopped before mutation commit.".to_owned())?;
         compact_or_push(&mut runtime.entries, entry);
-        send_command(
-            &mut runtime.stdin,
-            &mut runtime.stdout,
-            &RecoveryCommand::Commit { id: self.id },
-        )
+        runtime
+            .transport
+            .send(&RecoveryCommand::Commit { id: self.id })
     }
 }
 
@@ -223,11 +221,9 @@ impl Drop for RecoveryIntent {
     fn drop(&mut self) {
         if self.entry.is_some() {
             if let Some(runtime) = self.runtime.as_mut().and_then(|runtime| runtime.as_mut()) {
-                let _ = send_command(
-                    &mut runtime.stdin,
-                    &mut runtime.stdout,
-                    &RecoveryCommand::Cancel { id: self.id },
-                );
+                let _ = runtime
+                    .transport
+                    .send(&RecoveryCommand::Cancel { id: self.id });
             }
         }
     }
@@ -327,11 +323,9 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
             break;
         }
     }
-    for (_, entry) in pending {
-        compact_or_push(&mut entries, entry);
-    }
+    let committed_len = append_pending_intents(&mut entries, pending);
     if !entries.is_empty() {
-        if let Err(error) = recover_with_retry(&entries) {
+        if let Err(error) = recover_with_retry(&entries, committed_len) {
             eprintln!("Winderust crash recovery failed: {error}");
             std::process::exit(2);
         }
@@ -432,10 +426,21 @@ fn apply_watchdog_command_with_open_job(
     Ok(())
 }
 
-fn recover_with_retry(entries: &[RecoveryEntry]) -> Result<(), String> {
+// Pending intents may or may not have executed. Keep their edges and the committed
+// boundary intact so recovery can recognize either outcome without losing a baseline.
+fn append_pending_intents(
+    entries: &mut Vec<RecoveryEntry>,
+    pending: Vec<(u64, RecoveryEntry)>,
+) -> usize {
+    let committed_len = entries.len();
+    entries.extend(pending.into_iter().map(|(_, entry)| entry));
+    committed_len
+}
+
+fn recover_with_retry(entries: &[RecoveryEntry], committed_len: usize) -> Result<(), String> {
     let mut last_error = None;
     for attempt in 0..3 {
-        let recovery = recover_journal(entries);
+        let recovery = recover_journal_with_pending(entries, committed_len);
         let plan_cleanup = restore_stale_adaptive_plans();
         match (recovery, plan_cleanup) {
             (Ok(()), Ok(())) => return Ok(()),
@@ -486,11 +491,24 @@ impl RecoveryClient {
 }
 
 fn finish_recovery_runtime(mut runtime: RecoveryRuntime) -> Result<(), String> {
-    drop(runtime.stdin);
-    let status = runtime
-        .child
-        .wait()
-        .map_err(|error| format!("Failed to wait for crash recovery helper: {error}"))?;
+    drop(runtime.transport);
+    wait_for_watchdog(&mut runtime.child, Duration::from_secs(5))
+}
+
+fn wait_for_watchdog(child: &mut Child, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Failed to wait for crash recovery helper: {error}"))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            return Err("Crash recovery helper shutdown timed out; recovery is unconfirmed. The helper has been left running with its recovery journal.".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     if !status.success() {
         return Err(format!(
             "Crash recovery helper exited unexpectedly with status code {}.",
@@ -510,8 +528,7 @@ fn initialize_inner() -> Result<(), String> {
     let (child, stdin, stdout) = spawn_watchdog()?;
     let runtime = RecoveryRuntime {
         child,
-        stdin,
-        stdout,
+        transport: RecoveryTransport::start(stdin, stdout, Duration::from_secs(2))?,
         entries: Vec::new(),
         next_intent_id: 1,
     };
@@ -628,13 +645,9 @@ fn forget_job(name: &str) -> Result<(), String> {
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetJob {
-            name: name.to_owned(),
-        },
-    )?;
+    runtime.transport.send(&RecoveryCommand::ForgetJob {
+        name: name.to_owned(),
+    })?;
     let key = format!("job:{name}");
     runtime.entries.retain(|entry| entry.key() != key);
     Ok(())
@@ -714,16 +727,14 @@ pub(crate) fn forget_thread_priority_change(
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetThreadPriority {
+    runtime
+        .transport
+        .send(&RecoveryCommand::ForgetThreadPriority {
             process_id,
             process_creation_time,
             thread_id,
             thread_creation_time,
-        },
-    )?;
+        })?;
     let key = thread_recovery_key(
         process_id,
         process_creation_time,
@@ -749,16 +760,14 @@ pub(crate) fn forget_thread_suspension(
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetThreadSuspension {
+    runtime
+        .transport
+        .send(&RecoveryCommand::ForgetThreadSuspension {
             process_id,
             process_creation_time,
             thread_id,
             thread_creation_time,
-        },
-    )?;
+        })?;
     let key = thread_suspension_recovery_key(
         process_id,
         process_creation_time,
@@ -783,15 +792,11 @@ fn forget_process_change(
         #[cfg(not(test))]
         return Err("The external recovery watchdog is unavailable.".to_owned());
     };
-    send_command(
-        &mut runtime.stdin,
-        &mut runtime.stdout,
-        &RecoveryCommand::ForgetProcess {
-            process_id,
-            creation_time,
-            value: value.clone(),
-        },
-    )?;
+    runtime.transport.send(&RecoveryCommand::ForgetProcess {
+        process_id,
+        creation_time,
+        value: value.clone(),
+    })?;
     let key = process_recovery_key(process_id, creation_time, &value);
     runtime.entries.retain(|entry| entry.key() != key);
     Ok(())
@@ -815,14 +820,10 @@ fn record_entry(entry: RecoveryEntry) -> Result<RecoveryIntent, String> {
         .ok_or_else(|| "Crash recovery state disappeared.".to_owned())?;
     let id = state.next_intent_id;
     state.next_intent_id = state.next_intent_id.wrapping_add(1).max(1);
-    send_command(
-        &mut state.stdin,
-        &mut state.stdout,
-        &RecoveryCommand::Begin {
-            id,
-            entry: entry.clone(),
-        },
-    )?;
+    state.transport.send(&RecoveryCommand::Begin {
+        id,
+        entry: entry.clone(),
+    })?;
     Ok(RecoveryIntent {
         runtime: Some(runtime),
         id,
@@ -893,13 +894,21 @@ fn compact_or_push(entries: &mut Vec<RecoveryEntry>, entry: RecoveryEntry) {
     entries.push(entry);
 }
 
+#[cfg(test)]
 fn recover_journal(entries: &[RecoveryEntry]) -> Result<(), String> {
+    recover_journal_with_pending(entries, entries.len())
+}
+
+fn recover_journal_with_pending(
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> Result<(), String> {
     let mut recovered = HashSet::new();
     let mut failures = Vec::new();
     for entry in entries.iter().rev() {
         let key = entry.key();
         if recovered.insert(key.clone()) {
-            if let Err(error) = recover_entry(entry, &key, entries) {
+            if let Err(error) = recover_entry(entry, &key, entries, committed_len) {
                 failures.push(error);
             }
         }
@@ -915,17 +924,25 @@ fn recover_entry(
     entry: &RecoveryEntry,
     key: &str,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> Result<(), String> {
     match entry {
         RecoveryEntry::Process {
             identity, expected, ..
-        } => recover_process_key(key, identity, expected, entries),
+        } => recover_process_key(key, identity, expected, entries, committed_len),
         RecoveryEntry::ThreadPriority {
             process,
             thread_id,
             thread_creation_time,
             ..
-        } => recover_thread_key(key, process, *thread_id, *thread_creation_time, entries),
+        } => recover_thread_key(
+            key,
+            process,
+            *thread_id,
+            *thread_creation_time,
+            entries,
+            committed_len,
+        ),
         RecoveryEntry::ThreadSuspension {
             process,
             thread_id,
@@ -939,7 +956,7 @@ fn recover_entry(
             *original_suspend_count,
             *expected_suspend_count,
         ),
-        RecoveryEntry::PowerPlan { .. } => recover_power_plan_key(key, entries),
+        RecoveryEntry::PowerPlan { .. } => recover_power_plan_key(key, entries, committed_len),
         RecoveryEntry::SuspendedJob { name, .. } => thaw_job(name),
     }
 }
@@ -949,12 +966,13 @@ fn recover_process_key(
     identity: &ProcessIdentity,
     value_kind: &ProcessValue,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> Result<(), String> {
     let Some(process) = open_matching_process(identity)? else {
         return Ok(());
     };
     let current = query_process_value(process.raw(), value_kind)?;
-    let desired = unwind_process_value(key, &current, entries);
+    let desired = unwind_process_value(key, &current, entries, committed_len);
     if desired != current {
         apply_process_value(process.raw(), &desired)?;
     }
@@ -965,16 +983,22 @@ fn unwind_process_value(
     key: &str,
     current: &ProcessValue,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> ProcessValue {
     let mut desired = current.clone();
-    for entry in entries.iter().rev().filter(|entry| entry.key() == key) {
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| entry.key() == key)
+    {
         if let RecoveryEntry::Process {
             original, expected, ..
         } = entry
         {
             if *expected == desired {
                 desired = original.clone();
-            } else {
+            } else if index < committed_len || *original != desired {
                 break;
             }
         }
@@ -988,6 +1012,7 @@ fn recover_thread_key(
     thread_id: u32,
     expected_creation_time: u64,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> Result<(), String> {
     let Some(process_handle) = open_matching_process(process)? else {
         return Ok(());
@@ -1033,19 +1058,7 @@ fn recover_thread_key(
             last_error()
         ));
     }
-    let mut desired = current;
-    for entry in entries.iter().rev().filter(|entry| entry.key() == key) {
-        if let RecoveryEntry::ThreadPriority {
-            original, expected, ..
-        } = entry
-        {
-            if *expected == desired {
-                desired = *original;
-            } else {
-                break;
-            }
-        }
-    }
+    let desired = unwind_thread_priority(key, current, entries, committed_len);
     if desired != current {
         // SAFETY: desired was previously read from this validated thread instance.
         if unsafe { SetThreadPriority(thread.raw(), desired) } == 0 {
@@ -1056,6 +1069,33 @@ fn recover_thread_key(
         }
     }
     Ok(())
+}
+
+fn unwind_thread_priority(
+    key: &str,
+    current: i32,
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> i32 {
+    let mut desired = current;
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| entry.key() == key)
+    {
+        if let RecoveryEntry::ThreadPriority {
+            original, expected, ..
+        } = entry
+        {
+            if *expected == desired {
+                desired = *original;
+            } else if index < committed_len || *original != desired {
+                break;
+            }
+        }
+    }
+    desired
 }
 
 fn should_resume_thread_suspension(original: u16, expected: u16, current: u16) -> bool {
@@ -1127,10 +1167,32 @@ fn recoverable_thread_suspension_result<T>(
     }
 }
 
-fn recover_power_plan_key(key: &str, entries: &[RecoveryEntry]) -> Result<(), String> {
+fn recover_power_plan_key(
+    key: &str,
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> Result<(), String> {
     let current = active_plan()?.guid;
-    let mut desired = current.clone();
-    for entry in entries.iter().rev().filter(|entry| entry.key() == key) {
+    let desired = unwind_power_plan_guid(key, &current, entries, committed_len);
+    if !desired.eq_ignore_ascii_case(&current) {
+        set_active(&desired)?;
+    }
+    Ok(())
+}
+
+fn unwind_power_plan_guid(
+    key: &str,
+    current: &str,
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> String {
+    let mut desired = current.to_owned();
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| entry.key() == key)
+    {
         if let RecoveryEntry::PowerPlan {
             original_guid,
             expected_guid,
@@ -1138,15 +1200,12 @@ fn recover_power_plan_key(key: &str, entries: &[RecoveryEntry]) -> Result<(), St
         {
             if expected_guid.eq_ignore_ascii_case(&desired) {
                 desired = original_guid.clone();
-            } else {
+            } else if index < committed_len || !original_guid.eq_ignore_ascii_case(&desired) {
                 break;
             }
         }
     }
-    if !desired.eq_ignore_ascii_case(&current) {
-        set_active(&desired)?;
-    }
-    Ok(())
+    desired
 }
 
 fn query_process_value(handle: HANDLE, kind: &ProcessValue) -> Result<ProcessValue, String> {
@@ -1525,26 +1584,111 @@ fn spawn_watchdog() -> Result<(Child, ChildStdin, BufReader<ChildStdout>), Strin
     Ok((child, stdin, BufReader::new(stdout)))
 }
 
+#[derive(Debug)]
+enum RecoveryTransportError {
+    Rejected(String),
+    Uncertain(String),
+}
+
+type RecoveryRequest = (
+    RecoveryCommand,
+    mpsc::SyncSender<Result<(), RecoveryTransportError>>,
+);
+
+#[derive(Debug)]
+struct RecoveryTransport {
+    requests: mpsc::Sender<RecoveryRequest>,
+    failed: Option<String>,
+    timeout: Duration,
+}
+
+impl RecoveryTransport {
+    fn start(
+        mut stdin: impl Write + Send + 'static,
+        mut stdout: impl BufRead + Send + 'static,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        let (requests, incoming) = mpsc::channel::<RecoveryRequest>();
+        std::thread::Builder::new()
+            .name("recovery-transport".into())
+            .spawn(move || {
+                for (command, response) in incoming {
+                    let result = send_command(&mut stdin, &mut stdout, &command);
+                    let _ = response.send(result);
+                }
+                // Keep the pipes open after an uncertain reply until the runtime ends.
+                // Closing stdin earlier could start recovery while controllers still own changes.
+            })
+            .map_err(|error| format!("Failed to start recovery transport: {error}"))?;
+        Ok(Self {
+            requests,
+            failed: None,
+            timeout,
+        })
+    }
+
+    fn send(&mut self, command: &RecoveryCommand) -> Result<(), String> {
+        if let Some(error) = &self.failed {
+            return Err(error.clone());
+        }
+        let (response, received) = mpsc::sync_channel(1);
+        let result = if self.requests.send((command.clone(), response)).is_err() {
+            Err(RecoveryTransportError::Uncertain(
+                "Recovery transport stopped.".into(),
+            ))
+        } else {
+            match received.recv_timeout(self.timeout) {
+                Ok(result) => result,
+                Err(error) => Err(RecoveryTransportError::Uncertain(format!(
+                    "Recovery watchdog acknowledgement unavailable: {error}"
+                ))),
+            }
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(RecoveryTransportError::Rejected(error)) => Err(error),
+            Err(RecoveryTransportError::Uncertain(error)) => {
+                let error = format!("{error} Command outcome is unknown; further recovery commands are blocked and outstanding recovery ownership is retained.");
+                self.failed = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+}
+
 fn send_command(
     stdin: &mut impl Write,
     stdout: &mut impl BufRead,
     command: &RecoveryCommand,
-) -> Result<(), String> {
-    let bytes = serde_json::to_vec(command)
-        .map_err(|error| format!("Failed to serialize crash recovery state: {error}"))?;
+) -> Result<(), RecoveryTransportError> {
+    let bytes = serde_json::to_vec(command).map_err(|error| {
+        RecoveryTransportError::Rejected(format!(
+            "Failed to serialize crash recovery state: {error}"
+        ))
+    })?;
     stdin
         .write_all(&bytes)
         .and_then(|()| stdin.write_all(b"\n"))
         .and_then(|()| stdin.flush())
-        .map_err(|error| format!("Failed to update the recovery watchdog: {error}"))?;
+        .map_err(|error| {
+            RecoveryTransportError::Uncertain(format!(
+                "Failed to update the recovery watchdog: {error}"
+            ))
+        })?;
     let mut response = String::new();
-    stdout
-        .read_line(&mut response)
-        .map_err(|error| format!("Failed to read the recovery watchdog response: {error}"))?;
+    stdout.read_line(&mut response).map_err(|error| {
+        RecoveryTransportError::Uncertain(format!(
+            "Failed to read the recovery watchdog response: {error}"
+        ))
+    })?;
     match response.trim_end() {
         "ok" => Ok(()),
-        response if response.starts_with("error:") => Err(response[6..].to_owned()),
-        response => Err(format!("Invalid recovery watchdog response: {response}")),
+        response if response.starts_with("error:") => {
+            Err(RecoveryTransportError::Rejected(response[6..].to_owned()))
+        }
+        response => Err(RecoveryTransportError::Uncertain(format!(
+            "Invalid recovery watchdog response: {response}"
+        ))),
     }
 }
 
@@ -1707,8 +1851,11 @@ mod tests {
             .ok_or_else(|| "The recovery helper stdout pipe is unavailable.".to_owned())?;
         Ok(RecoveryRuntime {
             child,
-            stdin,
-            stdout: BufReader::new(stdout),
+            transport: RecoveryTransport::start(
+                stdin,
+                BufReader::new(stdout),
+                Duration::from_secs(2),
+            )?,
             entries: Vec::new(),
             next_intent_id: 1,
         })
@@ -1855,11 +2002,21 @@ mod tests {
         assert_eq!(entries.len(), 2);
         let key = entries[0].key();
         assert_eq!(
-            unwind_process_value(&key, &ProcessValue::PriorityClass(3), &entries),
+            unwind_process_value(
+                &key,
+                &ProcessValue::PriorityClass(3),
+                &entries,
+                entries.len()
+            ),
             ProcessValue::PriorityClass(4)
         );
         assert_eq!(
-            unwind_process_value(&key, &ProcessValue::PriorityClass(2), &entries),
+            unwind_process_value(
+                &key,
+                &ProcessValue::PriorityClass(2),
+                &entries,
+                entries.len()
+            ),
             ProcessValue::PriorityClass(2)
         );
     }
@@ -2102,6 +2259,69 @@ mod tests {
         match record_thread_suspension(std::ptr::null_mut(), std::ptr::null_mut(), u16::MAX) {
             Ok(_) => panic!("overflow must be rejected before either handle is queried"),
             Err(error) => assert_eq!(error, "Thread suspend count cannot exceed 65535."),
+        }
+    }
+
+    #[test]
+    fn pending_intents_preserve_committed_baselines_at_eof() {
+        for (kind, pending_value) in (0..3).flat_map(|kind| [1, 3].map(|value| (kind, value))) {
+            let mut entries = Vec::new();
+            let mut pending = Vec::new();
+            let mut jobs = HashMap::new();
+            let entry = |original: u32, expected: u32| match kind {
+                0 => RecoveryEntry::Process {
+                    identity: identity(),
+                    original: ProcessValue::PriorityClass(original),
+                    expected: ProcessValue::PriorityClass(expected),
+                },
+                1 => RecoveryEntry::ThreadPriority {
+                    process: identity(),
+                    thread_id: 7,
+                    thread_creation_time: 8,
+                    original: original as i32,
+                    expected: expected as i32,
+                },
+                _ => RecoveryEntry::PowerPlan {
+                    original_guid: original.to_string(),
+                    expected_guid: expected.to_string(),
+                },
+            };
+            for command in [
+                RecoveryCommand::Begin {
+                    id: 1,
+                    entry: entry(1, 2),
+                },
+                RecoveryCommand::Commit { id: 1 },
+                RecoveryCommand::Begin {
+                    id: 2,
+                    entry: entry(2, pending_value),
+                },
+            ] {
+                apply_watchdog_command(command, &mut entries, &mut pending, &mut jobs).unwrap();
+            }
+            let committed_len = append_pending_intents(&mut entries, pending);
+            let key = entries[0].key();
+            for (actual, expected) in [(2, 1), (pending_value, 1), (4, 4)] {
+                match kind {
+                    0 => assert_eq!(
+                        unwind_process_value(
+                            &key,
+                            &ProcessValue::PriorityClass(actual),
+                            &entries,
+                            committed_len
+                        ),
+                        ProcessValue::PriorityClass(expected)
+                    ),
+                    1 => assert_eq!(
+                        unwind_thread_priority(&key, actual as i32, &entries, committed_len),
+                        expected as i32
+                    ),
+                    _ => assert_eq!(
+                        unwind_power_plan_guid(&key, &actual.to_string(), &entries, committed_len),
+                        expected.to_string()
+                    ),
+                }
+            }
         }
     }
 
@@ -2390,6 +2610,113 @@ mod tests {
     }
 
     #[test]
+    fn live_nonreplying_watchdog_cannot_block_transport_or_shutdown() {
+        let mut child = DisposableChild {
+            child: Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 30",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        };
+        let mut transport = RecoveryTransport::start(
+            child.child.stdin.take().unwrap(),
+            BufReader::new(child.child.stdout.take().unwrap()),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let command = RecoveryCommand::Cancel { id: 1 };
+        let error = transport.send(&command).unwrap_err();
+        assert!(error.contains("outcome is unknown"));
+        assert_eq!(transport.send(&command).unwrap_err(), error);
+        assert!(child.child.try_wait().unwrap().is_none());
+        drop(transport);
+        assert!(wait_for_watchdog(&mut child.child, Duration::from_millis(50)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(child.child.try_wait().unwrap().is_none());
+        // Only this disposable test helper is terminated by DisposableChild's Drop.
+    }
+
+    #[test]
+    fn blocked_write_times_out_and_late_ack_cannot_acknowledge_another_command() {
+        struct GatedWriter {
+            gate: Option<mpsc::Receiver<()>>,
+            writes: std::sync::Arc<Mutex<Vec<u8>>>,
+            dropped: mpsc::Sender<()>,
+        }
+        impl Write for GatedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(gate) = self.gate.take() {
+                    gate.recv().map_err(std::io::Error::other)?;
+                }
+                self.writes.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Drop for GatedWriter {
+            fn drop(&mut self) {
+                let _ = self.dropped.send(());
+            }
+        }
+        let (release, gate) = mpsc::channel();
+        let (dropped, closed) = mpsc::channel();
+        let writes = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let mut transport = RecoveryTransport::start(
+            GatedWriter {
+                gate: Some(gate),
+                writes: writes.clone(),
+                dropped,
+            },
+            Cursor::new(b"ok\n"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let command = RecoveryCommand::Cancel { id: 9 };
+        assert!(transport
+            .send(&command)
+            .unwrap_err()
+            .contains("outcome is unknown"));
+        release.send(()).unwrap();
+        assert!(transport.send(&RecoveryCommand::Cancel { id: 10 }).is_err());
+        assert!(closed.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(transport);
+        closed.recv_timeout(Duration::from_secs(3)).unwrap();
+        let written = writes.lock().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<RecoveryCommand>(&written).unwrap(),
+            command
+        );
+    }
+
+    #[test]
+    fn explicit_watchdog_rejection_does_not_poison_a_synchronized_transport() {
+        let mut transport = RecoveryTransport::start(
+            Vec::new(),
+            Cursor::new(b"error:rejected\nok\n"),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(
+            transport
+                .send(&RecoveryCommand::Cancel { id: 1 })
+                .unwrap_err(),
+            "rejected"
+        );
+        assert!(transport.send(&RecoveryCommand::Cancel { id: 2 }).is_ok());
+    }
+
+    #[test]
     fn recovery_transport_requires_an_acknowledgement_before_returning_success() {
         let command = RecoveryCommand::Begin {
             id: 9,
@@ -2411,16 +2738,14 @@ mod tests {
 
         let mut written = Vec::new();
         let mut rejected = Cursor::new(b"error:watchdog rejected Begin\n");
-        assert_eq!(
-            send_command(&mut written, &mut rejected, &command).unwrap_err(),
-            "watchdog rejected Begin"
+        assert!(
+            matches!(send_command(&mut written, &mut rejected, &command), Err(RecoveryTransportError::Rejected(error)) if error == "watchdog rejected Begin")
         );
 
         let mut written = Vec::new();
         let mut invalid = Cursor::new(b"maybe\n");
-        assert_eq!(
-            send_command(&mut written, &mut invalid, &command).unwrap_err(),
-            "Invalid recovery watchdog response: maybe"
+        assert!(
+            matches!(send_command(&mut written, &mut invalid, &command), Err(RecoveryTransportError::Uncertain(error)) if error == "Invalid recovery watchdog response: maybe")
         );
     }
 

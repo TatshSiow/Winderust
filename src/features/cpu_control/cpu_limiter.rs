@@ -30,6 +30,7 @@ pub struct CpuLimiterSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub limited_apps: Vec<String>,
+    pub failed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
@@ -225,6 +226,10 @@ impl CpuLimiterManager {
                 enabled: true,
                 scanned_processes,
                 tracked_processes: selected.len(),
+                failed_apps: selected
+                    .values()
+                    .map(|target| target.executable_path.clone())
+                    .collect(),
                 skipped_processes,
                 message: "CPU Limiter stopped because its timing worker failed.".to_owned(),
                 last_error: Some(error),
@@ -232,6 +237,7 @@ impl CpuLimiterManager {
             };
         }
 
+        let mut failed_apps = BTreeSet::new();
         let mut failed_keys = BTreeSet::new();
         let mut last_error = None;
         let mut failed_processes = 0;
@@ -254,6 +260,7 @@ impl CpuLimiterManager {
                             .record_process_failure(&executable_path);
                     }
                     if failure.error.should_report() {
+                        failed_apps.insert(executable_path.clone());
                         failed_processes += 1;
                         last_error = Some(failure.error.to_string());
                         action_log.record(
@@ -275,6 +282,10 @@ impl CpuLimiterManager {
                     enabled: true,
                     scanned_processes,
                     tracked_processes: selected.len(),
+                    failed_apps: selected
+                        .values()
+                        .map(|target| target.executable_path.clone())
+                        .collect(),
                     skipped_processes,
                     message: "CPU Limiter stopped because its timing worker failed.".to_owned(),
                     last_error: Some(error),
@@ -319,10 +330,25 @@ impl CpuLimiterManager {
             }
         }
 
+        for rule in &settings.rules {
+            if self
+                .failure_suppression
+                .has_key_failure(&process_failure_key(&rule.executable_path))
+                && !self.limited.values().any(|process| {
+                    same_executable_path(
+                        Path::new(&process.executable_path),
+                        Path::new(&rule.executable_path),
+                    )
+                })
+            {
+                failed_apps.insert(rule.executable_path.clone());
+            }
+        }
         CpuLimiterSnapshot {
             enabled: true,
             scanned_processes,
             limited_processes: active_keys.len(),
+            failed_apps: failed_apps.into_iter().collect(),
             tracked_processes: selected.len(),
             skipped_processes,
             failed_processes,

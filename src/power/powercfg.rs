@@ -113,6 +113,7 @@ pub(crate) enum ProcessorPowerApplyStage {
     BatteryBoostPolicy,
     AcBoostMode,
     BatteryBoostMode,
+    QueryActivePlan,
     ReactivatePlan,
 }
 
@@ -130,6 +131,7 @@ impl std::fmt::Display for ProcessorPowerApplyStage {
             Self::BatteryBoostPolicy => "write battery boost policy",
             Self::AcBoostMode => "write A/C boost mode",
             Self::BatteryBoostMode => "write battery boost mode",
+            Self::QueryActivePlan => "query the active plan",
             Self::ReactivatePlan => "refresh the active plan",
         })
     }
@@ -247,15 +249,22 @@ pub(crate) fn apply_processor_power_values_staged(
         windows_power::write_dc_value,
     )?;
 
-    if windows_power::active_scheme_guid()
-        .ok()
-        .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(guid))
-    {
-        set_active(guid).map_err(|error| {
+    reactivate_if_active(guid, windows_power::active_scheme_guid, set_active)
+}
+
+fn reactivate_if_active(
+    guid: &str,
+    active_guid: impl FnOnce() -> Result<String, String>,
+    activate: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), ProcessorPowerApplyError> {
+    let active = active_guid().map_err(|error| {
+        ProcessorPowerApplyError::at(ProcessorPowerApplyStage::QueryActivePlan, error)
+    })?;
+    if active.eq_ignore_ascii_case(guid) {
+        activate(guid).map_err(|error| {
             ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ReactivatePlan, error)
         })?;
     }
-
     Ok(())
 }
 
@@ -422,5 +431,40 @@ mod tests {
         assert_eq!(values.battery.performance_min, 20);
         assert_eq!(values.battery.performance_max, 20);
         assert_eq!(values.battery.boost_policy, 30);
+    }
+    #[test]
+    fn active_query_failure_is_incomplete_and_retry_does_not_activate_an_inactive_plan() {
+        let error = reactivate_if_active(
+            "plan",
+            || Err("query failed".into()),
+            |_| panic!("must not activate an unknown plan"),
+        )
+        .unwrap_err();
+        assert_eq!(error.stage(), ProcessorPowerApplyStage::QueryActivePlan);
+        assert!(reactivate_if_active(
+            "plan",
+            || Ok("other".into()),
+            |_| panic!("must not activate an inactive plan")
+        )
+        .is_ok());
+        let error = reactivate_if_active(
+            "plan",
+            || Ok("PLAN".into()),
+            |_| Err("activation failed".into()),
+        )
+        .unwrap_err();
+        assert_eq!(error.stage(), ProcessorPowerApplyStage::ReactivatePlan);
+        let mut activated = false;
+        reactivate_if_active(
+            "plan",
+            || Ok("PLAN".into()),
+            |guid| {
+                assert_eq!(guid, "plan");
+                activated = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(activated);
     }
 }

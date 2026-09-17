@@ -5,6 +5,7 @@ pub(super) struct AutomationSnapshot {
     pub(super) change_generation: u64,
     pub(super) process_control_commands: VecDeque<ProcessControlCommand>,
     pub(super) action_log_clear_requested: bool,
+    pub(super) input_activity: InputActivityTracker,
     pub(super) wake_events: AutomationWakeEvents,
     pub(super) windows_event_watcher_active: bool,
 }
@@ -13,6 +14,7 @@ pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<Auto
     let mut state = lock_unpoisoned(&shared.state);
     (!state.stop_requested).then(|| AutomationSnapshot {
         settings: state.settings.clone(),
+        input_activity: state.input_activity,
         change_generation: state.change_generation,
         process_control_commands: std::mem::take(&mut state.process_control_commands),
         action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
@@ -50,7 +52,11 @@ pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: Window
 
 pub(super) fn notify_input_event(shared: &SharedAutomationState, events: InputHookEvents) {
     let mut state = lock_unpoisoned(&shared.state);
-    if state.stop_requested || !input_hook_should_check(&state.settings, events) {
+    if state.stop_requested {
+        return;
+    }
+    state.input_activity.record(events, Instant::now());
+    if !input_hook_should_check(&state.settings, events) {
         return;
     }
 
@@ -150,7 +156,10 @@ pub(super) fn merge_auto_exclusion_patch(
         &mut target.processor_affinity_hard,
     );
     changed |= append_unique_executable_paths(&incoming.cpu_limiter, &mut target.cpu_limiter);
-    changed |= append_unique_executable_paths(&incoming.cpu_scheduler, &mut target.cpu_scheduler);
+    changed |= append_unique_executable_paths(
+        &incoming.adaptive_engine_process,
+        &mut target.adaptive_engine_process,
+    );
     changed |= append_unique_executable_paths(&incoming.io_priority, &mut target.io_priority);
     changed |=
         append_unique_executable_paths(&incoming.process_priority, &mut target.process_priority);
@@ -193,17 +202,19 @@ pub(super) fn update_by_running_app_status(
     );
 }
 
-pub(super) fn update_cpu_scheduler_status(
+pub(super) fn update_adaptive_engine_process_status(
     shared: &SharedAutomationState,
-    status: CpuSchedulerSnapshot,
+    status: AdaptiveEngineProcessSnapshot,
 ) {
     update_status_with_auto_exclusions(
         shared,
         status,
         |status| &status.auto_excluded_processes,
-        |pending, path_list| append_unique_executable_paths(path_list, &mut pending.cpu_scheduler),
-        |feature_status| &feature_status.cpu_scheduler,
-        |feature_status| &mut feature_status.cpu_scheduler,
+        |pending, path_list| {
+            append_unique_executable_paths(path_list, &mut pending.adaptive_engine_process)
+        },
+        |feature_status| &feature_status.adaptive_engine_process,
+        |feature_status| &mut feature_status.adaptive_engine_process,
     );
 }
 
@@ -423,4 +434,12 @@ pub(super) fn bump_status_generation(
     shared
         .status_generation
         .store(state.status.generation, Ordering::Release);
+}
+
+pub(super) fn configure_input_activity(shared: &SharedAutomationState, config: InputHookConfig) {
+    let mut state = lock_unpoisoned(&shared.state);
+    state.input_activity.configure(config, Instant::now());
+    state.pending_events.input_activity = true;
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
 }

@@ -1,0 +1,842 @@
+mod popover;
+
+use super::design;
+use super::widgets::{button, checkbox, pick_list, Choice};
+use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
+use crate::config::ActionLogMode;
+use crate::ui::scrolling::scrollable;
+use chrono::{Local, TimeZone};
+use iced::widget::{column, container, row, text};
+use iced::{Element, Fill};
+use rust_i18n::t;
+
+pub(super) struct Editor {
+    result: Vec<ActionLogResult>,
+    feature: Vec<ActionLogFeature>,
+    offset: std::cell::Cell<f32>,
+}
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            result: RESULTS.to_vec(),
+            feature: FEATURES.to_vec(),
+            offset: std::cell::Cell::new(0.0),
+        }
+    }
+}
+#[derive(Debug, Clone)]
+pub(super) enum Message {
+    Result(ActionLogResult, bool),
+    Feature(ActionLogFeature, bool),
+    AllResults(bool),
+    AllFeatures(bool),
+    Scrolled(f32),
+    RowPressed,
+    Clear,
+    Export,
+    LogMode(ActionLogMode),
+}
+impl Editor {
+    pub(super) fn update(&mut self, message: Message) {
+        match message {
+            Message::Result(result, checked) => {
+                self.result.retain(|value| *value != result);
+                if checked {
+                    self.result.push(result);
+                }
+                self.offset.set(0.0);
+            }
+            Message::Feature(feature, checked) => {
+                self.feature.retain(|value| *value != feature);
+                if checked {
+                    self.feature.push(feature);
+                }
+                self.offset.set(0.0);
+            }
+            Message::AllResults(checked) => {
+                self.result = if checked {
+                    RESULTS.to_vec()
+                } else {
+                    Vec::new()
+                };
+                self.offset.set(0.0);
+            }
+            Message::AllFeatures(checked) => {
+                self.feature = if checked {
+                    FEATURES.to_vec()
+                } else {
+                    Vec::new()
+                };
+                self.offset.set(0.0);
+            }
+            Message::Scrolled(offset) => self.offset.set(offset),
+            Message::RowPressed => {}
+            Message::Clear => {
+                self.offset.set(0.0);
+            }
+            Message::Export | Message::LogMode(_) => {} // The application owns CSV export and persisted log settings.
+        }
+    }
+    pub(super) fn side_panel(
+        &self,
+        log_mode: ActionLogMode,
+        has_entries: bool,
+        has_summaries: bool,
+    ) -> Element<'_, Message> {
+        let mut results = column![row![
+            button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllResults(true)),
+            button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllResults(false)),
+        ]
+        .spacing(design::space::SMALL),]
+        .spacing(design::space::SMALL);
+        for result in RESULTS {
+            results = results.push(
+                checkbox(self.result.contains(&result))
+                    .label(action_log_result_label(result))
+                    .on_toggle(move |checked| Message::Result(result, checked)),
+            );
+        }
+        let mut features = column![row![
+            button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllFeatures(true)),
+            button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
+                .width(Fill)
+                .height(32)
+                .on_press(Message::AllFeatures(false)),
+        ]
+        .spacing(design::space::SMALL),]
+        .spacing(design::space::SMALL);
+        for feature in FEATURES {
+            features = features.push(
+                checkbox(self.feature.contains(&feature))
+                    .label(action_log_feature_label(feature))
+                    .on_toggle(move |checked| Message::Feature(feature, checked)),
+            );
+        }
+        let filters = scrollable(
+            column![
+                super::widgets::heading(
+                    t!("settings.action_log_mode").to_string(),
+                    design::typography::SECONDARY
+                ),
+                super::widgets::settings_card(
+                    pick_list(
+                        ActionLogMode::ALL.map(|v| Choice(v, log_label(v))).to_vec(),
+                        Some(Choice(log_mode, log_label(log_mode))),
+                        |v| Message::LogMode(v.0),
+                    )
+                    .width(Fill)
+                ),
+                super::widgets::heading(
+                    t!("process_list.filter").to_string(),
+                    design::typography::SECONDARY
+                ),
+                column![
+                    super::widgets::heading(
+                        t!("action_log.result_filter").to_string(),
+                        design::typography::SECONDARY
+                    ),
+                    super::widgets::settings_card(results),
+                ]
+                .spacing(design::space::SMALL),
+                column![
+                    super::widgets::heading(
+                        t!("action_log.feature_filter").to_string(),
+                        design::typography::SECONDARY
+                    ),
+                    super::widgets::settings_card(features),
+                ]
+                .spacing(design::space::SMALL),
+            ]
+            .spacing(design::space::MEDIUM)
+            .padding([0, design::space::MEDIUM as u16]),
+        )
+        .height(Fill);
+        column![
+            super::widgets::panel_heading(t!("nav.settings").to_string()),
+            filters,
+            iced::widget::rule::horizontal(1),
+            container(
+                row![
+                    button(container(text(t!("action_log.clear").to_string())).center_x(Fill))
+                        .width(Fill)
+                        .height(32)
+                        .on_press_maybe((has_entries || has_summaries).then_some(Message::Clear)),
+                    button(container(text(t!("action_log.export_csv").to_string())).center_x(Fill))
+                        .width(Fill)
+                        .height(32)
+                        .on_press_maybe(has_entries.then_some(Message::Export)),
+                ]
+                .spacing(design::space::SMALL)
+            )
+            .padding([design::space::MEDIUM as u16, 0]),
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill)
+        .into()
+    }
+
+    pub(super) fn view<'a>(
+        &'a self,
+        entries: &'a [ActionLogEntry],
+        candidates: &'a [super::app_picker::Candidate],
+    ) -> Element<'a, Message> {
+        iced::widget::responsive(move |size| self.view_at_size(entries, candidates, size)).into()
+    }
+
+    fn view_at_size<'a>(
+        &'a self,
+        entries: &'a [ActionLogEntry],
+        candidates: &'a [super::app_picker::Candidate],
+        size: iced::Size,
+    ) -> Element<'a, Message> {
+        let entries_filtered = action_log_filtered_entries(entries, &self.result, &self.feature);
+        let groups = group_entries(&entries_filtered);
+        let count = groups.len();
+        let range = visible_log_range(count, self.offset.get(), size.height);
+        let header = row![
+            text("#").width(48),
+            text(t!("action_log.time").to_string()).width(80),
+            text(t!("action_log.feature").to_string()).width(140),
+            text(t!("action_log.result").to_string()).width(90),
+            text(t!("action_log.process").to_string()).width(160),
+            text(t!("action_log.reason").to_string()).width(Fill)
+        ]
+        .spacing(design::space::SMALL);
+        let mut entries_table =
+            column![iced::widget::Space::new().height(range.start as f32 * ACTION_LOG_ROW_HEIGHT)]
+                .spacing(0);
+        if count == 0 {
+            entries_table = entries_table.push(
+                container(
+                    text(if entries.is_empty() {
+                        t!("action_log.empty").to_string()
+                    } else {
+                        t!("action_log.no_filter_matches").to_string()
+                    })
+                    .style(text::secondary),
+                )
+                .padding(design::space::LARGE as u16),
+            );
+        }
+        for (index, group) in groups[range.clone()].iter().enumerate() {
+            let entry = group[0];
+            let result_style: fn(&iced::Theme) -> iced::widget::text::Style = match entry.result {
+                ActionLogResult::Applied | ActionLogResult::Restored => text::success,
+                ActionLogResult::Skipped => text::warning,
+                ActionLogResult::Failed => text::danger,
+            };
+            entries_table = entries_table.push(
+                iced::widget::button(
+                    container(
+                        row![
+                            text(format!("#{}", count - range.start - index))
+                                .size(design::typography::CAPTION)
+                                .width(48),
+                            text(action_log_time_label(entry.timestamp_epoch_ms))
+                                .size(design::typography::CAPTION)
+                                .width(80),
+                            text(action_log_feature_label(entry.feature))
+                                .size(design::typography::CAPTION)
+                                .width(140),
+                            text(action_log_result_text(entry.result))
+                                .size(design::typography::CAPTION)
+                                .style(result_style)
+                                .width(90),
+                            process_group(group, candidates),
+                            {
+                                let fitted = super::widgets::fitted_text(
+                                    &entry.reason,
+                                    size.width.max(960.0) - 600.0,
+                                    design::typography::CAPTION,
+                                );
+                                let truncated = fitted != entry.reason;
+                                let content: Element<'_, Message> = container(
+                                    text(fitted)
+                                        .size(design::typography::CAPTION)
+                                        .wrapping(text::Wrapping::None),
+                                )
+                                .width(Fill)
+                                .clip(true)
+                                .into();
+                                if truncated {
+                                    iced::widget::tooltip(
+                                        content,
+                                        text(entry.reason.clone()),
+                                        iced::widget::tooltip::Position::Top,
+                                    )
+                                    .into()
+                                } else {
+                                    content
+                                }
+                            }
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                    )
+                    .padding([0, design::space::MEDIUM as u16])
+                    .center_y(ACTION_LOG_ROW_HEIGHT - 1.0)
+                    .width(Fill),
+                )
+                .padding(0)
+                .width(Fill)
+                .on_press(Message::RowPressed)
+                .style(|theme, status| {
+                    let mut style = super::widgets::quiet(theme, status);
+                    style.border.radius = 0.0.into();
+                    style.text_color = theme.palette().text;
+                    style
+                }),
+            );
+            entries_table = entries_table.push(iced::widget::rule::horizontal(1));
+        }
+        entries_table = entries_table.push(
+            iced::widget::Space::new().height((count - range.end) as f32 * ACTION_LOG_ROW_HEIGHT),
+        );
+        let table = column![
+            container(header)
+                .padding([0, design::space::MEDIUM as u16])
+                .center_y(32),
+            iced::widget::rule::horizontal(1),
+            super::scrolling::buffered(
+                scrollable(entries_table)
+                    .id("action-log")
+                    .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
+                    .height(Fill)
+                    .into(),
+                &self.offset,
+                range.start as f32 * ACTION_LOG_ROW_HEIGHT,
+                range.end as f32 * ACTION_LOG_ROW_HEIGHT,
+                range.start == 0,
+                range.end == count,
+                |message| match message {
+                    Message::Scrolled(offset) => Some(*offset),
+                    _ => None,
+                }
+            ),
+        ]
+        .height(Fill);
+        let table = scrollable(super::scrolling::table_surface(
+            container(table).width(size.width.max(960.0)).height(Fill),
+        ))
+        .direction(iced::widget::scrollable::Direction::Horizontal(
+            iced::widget::scrollable::Scrollbar::default(),
+        ))
+        .width(Fill)
+        .height(Fill);
+        table.into()
+    }
+}
+// Group only adjacent successes from the same automation pass and operation.
+fn group_entries<'a>(entries: &[&'a ActionLogEntry]) -> Vec<Vec<&'a ActionLogEntry>> {
+    let mut groups: Vec<Vec<&ActionLogEntry>> = Vec::new();
+    for &entry in entries {
+        if let Some(group) = groups.last_mut() {
+            let first = group[0];
+            if matches!(
+                entry.result,
+                ActionLogResult::Applied | ActionLogResult::Restored
+            ) && entry.process_id.is_some()
+                && first.process_id.is_some()
+                && entry.batch_id == first.batch_id
+                && entry.feature == first.feature
+                && entry.result == first.result
+                && entry.reason == first.reason
+                && !group.iter().any(|old| old.process_id == entry.process_id)
+            {
+                group.push(entry);
+                continue;
+            }
+        }
+        groups.push(vec![entry]);
+    }
+    groups
+}
+
+fn process_icon<'a>(
+    name: &str,
+    candidates: &[super::app_picker::Candidate],
+) -> Element<'a, Message> {
+    super::app_picker::icon_for_name(name, candidates)
+        .map(|icon| {
+            iced::widget::image(icon.clone())
+                .width(16)
+                .height(16)
+                .into()
+        })
+        .unwrap_or_else(|| super::navigation::glyph("icons/app-window.svg"))
+}
+
+fn process_group<'a>(
+    entries: &[&ActionLogEntry],
+    candidates: &[super::app_picker::Candidate],
+) -> Element<'a, Message> {
+    if entries.len() == 1 && entries[0].process_id.is_none() && entries[0].process_name.is_empty() {
+        return container(text("\u{2014}").style(text::secondary))
+            .width(160)
+            .into();
+    }
+    let mut strip = row![].spacing(4).align_y(iced::Center);
+    for entry in entries.iter().take(5) {
+        strip = strip.push(process_icon(&entry.process_name, candidates));
+    }
+    let mut names_hidden = entries.len() > 1;
+    if entries.len() == 1 {
+        let label = action_log_process_label(entries[0]);
+        let fitted = super::widgets::fitted_text(&label, 134.0, design::typography::CAPTION);
+        names_hidden = fitted != label;
+        strip = strip.push(
+            text(fitted)
+                .size(design::typography::CAPTION)
+                .wrapping(text::Wrapping::None),
+        );
+    } else if entries.len() > 5 {
+        strip =
+            strip.push(text(format!("+{}", entries.len() - 5)).size(design::typography::CAPTION));
+    }
+    let anchor = container(strip).width(160).clip(true).into();
+    if !names_hidden {
+        return anchor;
+    }
+    let mut details = column![text(
+        t!("action_log.affected_processes", count = entries.len()).to_string()
+    )]
+    .spacing(8);
+    for entry in entries {
+        details = details.push(
+            row![
+                process_icon(&entry.process_name, candidates),
+                text(action_log_process_label(entry))
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+        );
+    }
+    popover::view(
+        entries[0].sequence,
+        anchor,
+        container(
+            scrollable(details)
+                .width(iced::Length::Shrink)
+                .height(iced::Length::Shrink),
+        )
+        .padding(12)
+        .width(iced::Length::Shrink)
+        .max_height(300)
+        .style(|theme| {
+            let menu = super::widgets::select_menu(theme);
+            iced::widget::container::Style {
+                background: Some(menu.background),
+                border: menu.border,
+                ..Default::default()
+            }
+        })
+        .into(),
+    )
+}
+
+pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
+    let page = match feature {
+        ActionLogFeature::AppSuspension => super::Page::AppSuspension,
+        ActionLogFeature::CpuSetsSoft => super::Page::CpuSetsSoft,
+        ActionLogFeature::ProcessorAffinityHard => super::Page::ProcessorAffinityHard,
+        ActionLogFeature::BackgroundEfficiency => super::Page::BackgroundEfficiency,
+        ActionLogFeature::CpuLimiter => super::Page::CpuLimiter,
+        ActionLogFeature::ByForeground => super::Page::ByForeground,
+        ActionLogFeature::ByRunningApp => super::Page::ByRunningApp,
+        ActionLogFeature::ByCpuLoad => super::Page::ByCpuLoad,
+        ActionLogFeature::ByActivity => super::Page::ByActivity,
+        ActionLogFeature::ByTime => super::Page::ByTime,
+        ActionLogFeature::AdaptiveEngine => super::Page::AdaptiveEngine,
+        ActionLogFeature::ProcessPriority => super::Page::ProcessPriority,
+        ActionLogFeature::ThreadPriority => super::Page::ThreadPriority,
+        ActionLogFeature::DynamicPriorityBoost => super::Page::DynamicPriorityBoost,
+        ActionLogFeature::IoPriority => super::Page::IoPriority,
+        ActionLogFeature::GpuPriority => super::Page::GpuPriority,
+        ActionLogFeature::MemoryPriority => super::Page::MemoryPriority,
+        ActionLogFeature::MemoryTrim => super::Page::MemoryTrim,
+        ActionLogFeature::TimerResolution => super::Page::TimerResolution,
+    };
+    page.label()
+}
+
+pub(super) fn action_log_result_label(result: ActionLogResult) -> String {
+    action_log_result_text(result).into()
+}
+
+pub(super) fn action_log_result_text(result: ActionLogResult) -> &'static str {
+    match result {
+        ActionLogResult::Applied => "Applied",
+        ActionLogResult::Restored => "Restored",
+        ActionLogResult::Skipped => "Skipped",
+        ActionLogResult::Failed => "Failed",
+    }
+}
+
+pub(super) fn action_log_filtered_entries<'a>(
+    entries: &'a [ActionLogEntry],
+    result_filter: &[ActionLogResult],
+    feature_filter: &[ActionLogFeature],
+) -> Vec<&'a ActionLogEntry> {
+    entries
+        .iter()
+        .rev()
+        .filter(|entry| {
+            result_filter.contains(&entry.result) && feature_filter.contains(&entry.feature)
+        })
+        .collect()
+}
+
+const RESULTS: [ActionLogResult; 4] = [
+    ActionLogResult::Applied,
+    ActionLogResult::Restored,
+    ActionLogResult::Skipped,
+    ActionLogResult::Failed,
+];
+const FEATURES: [ActionLogFeature; 19] = [
+    ActionLogFeature::AppSuspension,
+    ActionLogFeature::CpuSetsSoft,
+    ActionLogFeature::ProcessorAffinityHard,
+    ActionLogFeature::BackgroundEfficiency,
+    ActionLogFeature::CpuLimiter,
+    ActionLogFeature::ByForeground,
+    ActionLogFeature::ByRunningApp,
+    ActionLogFeature::ByCpuLoad,
+    ActionLogFeature::ByActivity,
+    ActionLogFeature::ByTime,
+    ActionLogFeature::AdaptiveEngine,
+    ActionLogFeature::ProcessPriority,
+    ActionLogFeature::ThreadPriority,
+    ActionLogFeature::DynamicPriorityBoost,
+    ActionLogFeature::IoPriority,
+    ActionLogFeature::GpuPriority,
+    ActionLogFeature::MemoryPriority,
+    ActionLogFeature::MemoryTrim,
+    ActionLogFeature::TimerResolution,
+];
+
+const ACTION_LOG_ROW_HEIGHT: f32 = 36.0;
+
+fn visible_log_range(count: usize, offset: f32, height: f32) -> std::ops::Range<usize> {
+    let first = ((offset.max(0.0) / ACTION_LOG_ROW_HEIGHT).floor() as usize).min(count);
+    let start = first.saturating_sub(8);
+    let end = (first + (height.max(0.0) / ACTION_LOG_ROW_HEIGHT).ceil() as usize + 8).min(count);
+    start..end
+}
+pub(super) fn action_log_action_label(result: ActionLogResult) -> &'static str {
+    match result {
+        ActionLogResult::Applied => "Apply",
+        ActionLogResult::Restored => "Restore",
+        ActionLogResult::Skipped => "Skip",
+        ActionLogResult::Failed => "Fail",
+    }
+}
+
+pub(super) fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
+    let mut csv = csv::WriterBuilder::new()
+        .terminator(csv::Terminator::CRLF)
+        .from_writer(Vec::with_capacity(entries.len() * 128));
+    csv.write_record([
+        "sequence",
+        "timestamp",
+        "feature",
+        "process_id",
+        "process_name",
+        "action",
+        "result",
+        "reason",
+    ])
+    .expect("writing CSV to memory cannot fail");
+    for entry in entries {
+        let sequence = entry.sequence.to_string();
+        let timestamp = action_log_export_time_label(entry.timestamp_epoch_ms);
+        let process_id = entry
+            .process_id
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+
+        let feature = action_log_feature_label(entry.feature);
+        csv.write_record([
+            sequence.as_str(),
+            timestamp.as_str(),
+            feature.as_str(),
+            process_id.as_str(),
+            entry.process_name.as_str(),
+            action_log_action_label(entry.result),
+            action_log_result_text(entry.result),
+            entry.reason.as_str(),
+        ])
+        .expect("writing CSV to memory cannot fail");
+    }
+    String::from_utf8(
+        csv.into_inner()
+            .expect("flushing CSV memory buffer cannot fail"),
+    )
+    .expect("CSV fields are valid UTF-8")
+}
+
+pub(super) fn action_log_export_time_label(timestamp_epoch_ms: u128) -> String {
+    let timestamp = timestamp_epoch_ms.min(i64::MAX as u128) as i64;
+    Local
+        .timestamp_millis_opt(timestamp)
+        .single()
+        .map(|time| time.format("%Y-%m-%d %H:%M:%S%.3f %:z").to_string())
+        .unwrap_or_else(|| timestamp_epoch_ms.to_string())
+}
+
+pub(super) fn action_log_process_label(entry: &ActionLogEntry) -> String {
+    let name = if entry.process_name.trim().is_empty() {
+        t!("common.none").to_string()
+    } else {
+        entry.process_name.clone()
+    };
+    match entry.process_id {
+        Some(process_id) => format!("{name} ({})", process_id),
+        None => name,
+    }
+}
+
+pub(super) fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
+    let timestamp = timestamp_epoch_ms.min(i64::MAX as u128) as i64;
+    Local
+        .timestamp_millis_opt(timestamp)
+        .single()
+        .map(|time| time.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".to_owned())
+}
+
+fn log_label(v: ActionLogMode) -> String {
+    match v {
+        ActionLogMode::Full => t!("settings.action_log_mode_full"),
+        ActionLogMode::Warning => t!("settings.action_log_mode_warning"),
+        ActionLogMode::Error => t!("settings.action_log_mode_error"),
+        ActionLogMode::Off => t!("settings.action_log_mode_off"),
+    }
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn process_popup_opens_when_names_are_hidden() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        for (name, count, expected) in [
+            ("a.exe", 1, false),
+            ("a.exe", 2, true),
+            ("a.exe", 5, true),
+            ("a.exe", 6, true),
+            ("a-very-long-process-name.exe", 1, true),
+        ] {
+            let mut log = crate::action_log::ActionLog::new(10);
+            for pid in 0..count {
+                log.record(
+                    ActionLogFeature::AdaptiveEngine,
+                    Some(pid),
+                    name,
+                    ActionLogResult::Applied,
+                    "Applied",
+                );
+            }
+            let entries = log.entries();
+            let refs: Vec<_> = entries.iter().collect();
+            let mut element = process_group(&refs, &[]);
+            let mut tree = Tree::new(&element);
+            let size = iced::Size::new(500.0, 500.0);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, size),
+            );
+            let position = node.bounds().center();
+            element.as_widget_mut().update(
+                &mut tree,
+                &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
+                Layout::new(&node),
+                iced::mouse::Cursor::Available(position),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+                &iced::Rectangle::with_size(size),
+            );
+            assert_eq!(
+                element
+                    .as_widget_mut()
+                    .overlay(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &iced::Rectangle::with_size(size),
+                        iced::Vector::ZERO
+                    )
+                    .is_some(),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn successful_batches_group_without_merging_other_operations_or_exports() {
+        let mut log = crate::action_log::ActionLog::new(100);
+        log.begin_batch();
+        for pid in 1..=40 {
+            log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(pid),
+                format!("app-{pid}.exe"),
+                ActionLogResult::Applied,
+                "Applied background restraint.",
+            );
+        }
+        let entries = log.entries();
+        let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+        assert_eq!(
+            group_entries(&filtered)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            vec![40]
+        );
+        assert_eq!(action_log_entries_to_csv(&entries).lines().count(), 41);
+        log.begin_batch();
+        log.record(
+            ActionLogFeature::AdaptiveEngine,
+            Some(41),
+            "next.exe",
+            ActionLogResult::Applied,
+            "Applied background restraint.",
+        );
+        for pid in 42..=43 {
+            log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(pid),
+                "failed.exe",
+                ActionLogResult::Failed,
+                "Access denied.",
+            );
+        }
+        let entries = log.entries();
+        let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+        assert_eq!(
+            group_entries(&filtered)
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1, 40]
+        );
+        for change in 0..4 {
+            let mut other = entries[0].clone();
+            other.sequence = 99;
+            other.process_id = Some(99);
+            match change {
+                0 => other.feature = ActionLogFeature::CpuLimiter,
+                1 => other.reason = "Different operation".into(),
+                2 => other.result = ActionLogResult::Restored,
+                _ => other.process_id = entries[0].process_id,
+            }
+            assert_eq!(group_entries(&[&entries[0], &other]).len(), 2);
+        }
+    }
+
+    #[test]
+    fn log_scroll_damage_stays_bounded() {
+        let entries: Vec<_> = (0..10000).map(|sequence| ActionLogEntry {
+            batch_id: sequence,
+            sequence, timestamp_epoch_ms: 1_700_000_000_000,
+            feature: ActionLogFeature::CpuLimiter, process_id: Some(1234),
+            process_name: "long-running-application-name.exe".into(),
+            result: ActionLogResult::Applied,
+            reason: "Applied configured process policy because the foreground and background conditions changed; additional details for the log entry.".into(),
+        }).collect();
+        let editor = Editor::default();
+        let bounds = iced::Rectangle::with_size(iced::Size::new(1920.0, 1080.0));
+        crate::ui::scrolling::check_scroll_damage(
+            editor.view_at_size(&entries, &[], bounds.size()),
+            bounds,
+        );
+    }
+
+    #[test]
+    fn virtual_log_rows_are_bounded_and_reach_the_end() {
+        assert_eq!(visible_log_range(0, 0.0, 900.0), 0..0);
+        let range = visible_log_range(10000, 3600.0, 900.0);
+        assert_eq!(range, 92..133);
+        assert_eq!(visible_log_range(52, 1500.0, 900.0).end, 52);
+        let mut editor = Editor::default();
+        editor.update(Message::Scrolled(3600.0));
+        editor.update(Message::Result(ActionLogResult::Failed, false));
+        assert_eq!(editor.offset.get(), 0.0);
+    }
+
+    #[test]
+    fn combined_filters_reverse_order_and_csv_preserves_quoted_unicode() {
+        let mut entries = vec![ActionLogEntry {
+            batch_id: 1,
+            sequence: 1,
+            timestamp_epoch_ms: 1_700_000_000_000,
+            feature: ActionLogFeature::CpuLimiter,
+            process_id: Some(42),
+            process_name: "app.exe".into(),
+            result: ActionLogResult::Applied,
+            reason: "quoted \"value\", 測試\n".into(),
+        }];
+        entries.push(ActionLogEntry {
+            batch_id: 2,
+            sequence: 2,
+            result: ActionLogResult::Failed,
+            ..entries[0].clone()
+        });
+        assert_eq!(
+            action_log_filtered_entries(
+                &entries,
+                &[ActionLogResult::Failed],
+                &[ActionLogFeature::CpuLimiter]
+            )[0]
+            .sequence,
+            2
+        );
+        assert_eq!(
+            action_log_filtered_entries(&entries, &RESULTS, &FEATURES)[0].sequence,
+            2
+        );
+        let mut editor = Editor::default();
+        assert_eq!(
+            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            2
+        );
+        editor.update(Message::AllResults(false));
+        assert!(action_log_filtered_entries(&entries, &editor.result, &editor.feature).is_empty());
+        editor.update(Message::Result(ActionLogResult::Applied, true));
+        editor.update(Message::Result(ActionLogResult::Failed, true));
+        assert_eq!(
+            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            2
+        );
+        editor.update(Message::AllFeatures(false));
+        assert!(action_log_filtered_entries(&entries, &editor.result, &editor.feature).is_empty());
+        editor.update(Message::Feature(ActionLogFeature::CpuLimiter, true));
+        assert_eq!(
+            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            2
+        );
+        editor.update(Message::AllResults(true));
+        editor.update(Message::AllFeatures(true));
+        assert_eq!(editor.result.len(), RESULTS.len());
+        assert_eq!(editor.feature.len(), FEATURES.len());
+        let csv = action_log_entries_to_csv(&entries);
+        let records = csv::Reader::from_reader(csv.as_bytes())
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(&records[0][7], entries[0].reason);
+    }
+}

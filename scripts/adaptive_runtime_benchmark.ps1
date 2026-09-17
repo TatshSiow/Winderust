@@ -33,7 +33,7 @@ if ($Passes -lt 4 -or ($Passes % 2) -ne 0) {
 if ($WorkerSeconds -le ($WarmupSeconds + 30)) {
     throw 'WorkerSeconds must exceed WarmupSeconds by more than 30 seconds so workers survive measurement.'
 }
-$benchmarkScript = Join-Path $PSScriptRoot 'cpu_scheduler_benchmark.ps1'
+$benchmarkScript = Join-Path $PSScriptRoot 'adaptive_engine_process_benchmark.ps1'
 $env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
 try {
     . $benchmarkScript `
@@ -94,7 +94,7 @@ battery_mode = "efficient_aggressive"
 [background_efficiency]
 enabled = false
 
-[cpu_scheduler]
+[adaptive_engine_process]
 process_priority_enabled = true
 background_efficiency_enabled = true
 focus_process_background_efficiency_override_enabled = true
@@ -290,7 +290,7 @@ function Run-AdaptiveCase {
             -WarmupSeconds $WarmupSeconds
         Assert-ValidCase -Result $result -Name 'Adaptive'
         if (@($result.observed_worker_priorities | Where-Object { $_ -ne 'Normal' }).Count -eq 0) {
-            throw "Invalid runtime benchmark: CPU Scheduler did not change any generated worker priority."
+            throw "Invalid runtime benchmark: Adaptive Engine did not change any generated worker priority."
         }
         $result | Add-Member -NotePropertyName runtime_control_observed -NotePropertyValue $true
         $result | Add-Member -NotePropertyName adaptive_policy_after_load -NotePropertyValue (Read-ActiveProcessorPolicy)

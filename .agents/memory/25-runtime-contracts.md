@@ -1,0 +1,175 @@
+# Runtime Contracts
+
+Read the relevant section before changing feature policy, ownership, restoration, or backend boundaries. API evidence lives in [30-reference-library.md](30-reference-library.md); UI presentation lives in [15-design-spec.md](15-design-spec.md).
+
+## Application boundaries
+
+- Update checks support Stable and Pre-release channels. Automatic checks are optional; manual checks remain available on About.
+- `SettingsEditor` is the application settings boundary. It privately owns draft/revision state,
+  save/cancel/import/export/auto-patch merge, runtime publication, and persisted startup intent.
+  Win32 Priority Separation and Advanced Power Plan Tuning use typed application services; they
+  are explicit persistent operations, not temporary managed state or crash-recovery owners.
+- Runtime feature status is one semantically stable `Arc<RuntimeFeatureStatus>` segment. Process
+  catalog/list, dashboard history, update state, and shell navigation remain plain UI read models.
+  Process queries, icons, monitors, Iced subscriptions, tray, dialogs, and focus remain at the
+  `WinderustApp` composition boundary.
+
+## Restoration and process safety
+
+- At watchdog EOF, unresolved intents remain separate from committed transitions. Recovery unwinds an expected value, or skips an unapplied pending edge only when the current value equals its original value. Committed mismatches and unrelated external values stop the chain; never compact pending intents into committed baselines.
+
+- Watchdog pipe I/O runs on one dedicated transport thread. Recovery callers wait at most two seconds for a reply; uncertain delivery/acknowledgment disables further commands on that connection, while an explicit rejection preserves protocol synchronization. Keep the connection and helper journal alive until runtime shutdown so a late reply cannot trigger premature recovery or acknowledge another command. Shutdown waits at most five seconds and reports unconfirmed recovery without killing the helper. A stalled I/O thread is not joined; parent process exit closes its remaining pipe handles. This bounds caller/shutdown waits, not recovery completion by a hung helper.
+
+- Failed Process Priority and Efficiency policy releases remain queued independently of active claims. The runtime retries reconciliation once per second while pending, including with feature/master toggles disabled. Each retry resolves current claims and uses existing identity and restoration checks; it must not blindly restore over a new owner.
+
+- Runtime restoration is a product safety barrier: every reversible runtime
+  change owned by Winderust must capture its pre-Winderust value and restore it
+  in reverse application order. If the original state cannot be captured,
+  Winderust must not make that reversible change.
+- The barrier covers automation managers, Process List quick actions, and
+  automatic power-plan switches. Clean shutdown restores through feature
+  ownership; crash or forced-termination recovery is handed to Winderust's
+  external watchdog before each mutation. Process termination, memory trimming,
+  watchdog termination, Windows shutdown, and power loss remain outside this
+  guarantee.
+- Cross-session process control is owned by Winderust Behaviour and defaults on. Disabling it restores same-session-only acquisition/targeting; it never blocks restoration of exact state Winderust already owns. Windows access checks and existing protected-process safeguards always remain active for new mutations.
+- `src/control/process.rs` owns typed process targets, stable identity keys, and safety validation;
+  `src/platform/windows/process.rs` alone translates operation-specific minimal access into
+  `OpenProcess` and preserves App Suspension's synchronize-first fallback. Platform acquisition
+  does not import feature, foreground, rule, UI, or controller policy. This is the mutation/command
+  acquisition boundary: feature-specific CPU-time and age observations may use query-only handles,
+  but they never authorize a mutation; controllers always reopen and revalidate selected targets.
+- Memory Trim and Stop Process / Stop Process Tree are typed, result-bearing runtime commands.
+  `src/control/memory_trim.rs` and `src/control/process_termination.rs` own command semantics;
+  their raw calls live only in the matching `src/platform/windows/` adapters. Both revalidate exact
+  process identity, protection, access, and the current cross-session setting on the runtime
+  worker. They are irreversible and must never acquire a baseline, recovery entry, managed claim,
+  or shutdown restore path. Stop Tree retains exact root identities across its confirmation prompt
+  and rejects reused roots or known-stale numeric parent links before submitting the command.
+
+## Power plans
+
+- Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
+- The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
+- Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
+- `PowerPlanController` owns all automatic active-plan and temporary Adaptive-plan lifecycle state.
+  `src/power/powercfg.rs` owns typed plan/domain semantics, while raw GUID, power-scheme,
+  processor-setting, and effective-power-mode APIs live only in
+  `src/platform/windows/power_plan.rs`. Persistent Advanced Power Plan Tuning remains a separate
+  explicit application service and never enters the automatic recovery journal.
+- `src/backend/self_power.rs` owns Winderust's composed hidden/Adaptive priority and Power
+  Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
+  clean shutdown. Raw current-process query/set calls live only in
+  `src/platform/windows/self_power.rs`. This process-lifetime state does not use crash recovery.
+
+## Failure handling
+
+- Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
+- Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
+- On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
+- Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), CPU Limiter, App Suspension.
+- Exclusion-list features append `ProcessExclusionRule`.
+
+## App Suspension and CPU Limiter
+
+- App Suspension rejects Session 0, LocalSystem, LocalService, and NetworkService processes plus
+  curated Windows shell/shared-host processes. Process List and the App Suspension picker keep
+  unavailable targets visible, labeled, and disabled; grouped Process List actions cover every
+  captured process in the group. Other process controls are unaffected.
+- App Suspension is a complete typed cutover through `src/control/suspension.rs`. Automatic rules,
+  App-page Freeze, and Process List Suspend/Resume share the RuntimeCore controller; feature code
+  owns grace/wake/reporting policy only. The controller retains failed thaw/finalization state for
+  bounded retry and explicit shutdown. The crash helper opens the exact named job before freeze and
+  thaws that retained job even if the recorded root exits while inherited children remain. Raw Job
+  Object creation, assignment, and membership live in `src/platform/windows/job.rs`; freeze/thaw
+  and the shared undocumented layout live in `src/platform/windows/suspension.rs`.
+- Background Efficiency and CPU Limiter custom rules use Focus, Visible Window, and Background
+  columns with Focus > Visible Window > Background precedence. CPU Limiter page defaults set
+  1% to 100% Focus, Visible Window, and Background targets; each rule tier selects Follow Default,
+  Custom, or Unlimited, with Custom owning its own 1% to 100% target. A 100% target is Unlimited.
+- CPU Limiter is a 100 ms freeze/thaw duty cycle. It shares
+  `SuspensionController` with App Suspension; independent owner phases combine
+  into one effective frozen state, and one feature cannot thaw the other's claim. One native
+  high-resolution waitable-timer worker owns all limiter schedules. Job Object control remains the
+  primary backend; only `NotSupported` job assignment selects CPU Limiter's exact-thread fallback.
+  That fallback owns one suspend-count increment per exact thread and never applies to App
+  Suspension. Active limiter target and process-appearance refresh remain at one second even while
+  hidden or under Adaptive Engine saver cadence. CPU Limiter does not own CPU allocation or Windows
+  CPU-rate state.
+
+## CPU allocation and Adaptive Engine
+
+- CPU allocation has one runtime coordinator and deterministic precedence: CPU Sets (Soft) >
+  Processor Affinity (Hard) > Adaptive Engine. Feature modules own
+  policy only; the coordinator alone owns affinity/CPU Set baselines, mutation, compensation,
+  arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
+  reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
+  this handoff and directly restores all coordinator-owned state in reverse application order.
+- CPU Sets, Processor Affinity, and Adaptive Engine CPU allocation are a complete
+  typed family cutover through `src/control/cpu_allocation.rs`. Do not restore feature-owned raw
+  setters, property baselines, recovery calls, or affinity-owning `Drop` paths. Exact identity,
+  mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
+  the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
+  `src/platform/windows/cpu_allocation.rs`.
+- Adaptive Engine has no separate master gate. Within an enabled Adaptive Engine, CPU Pressure
+  Restraint and Limit Background Processors run independently; disabling one must not disable or
+  apply the other. Limit Background Processors exposes one explicit processor selection:
+  least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
+  fixed P/E/no-SMT topology masks, or an exact custom mask. The per-app CPU threshold decides when a background app becomes eligible;
+  the shared CPU allocation coordinator remains the only mutation and restoration owner.
+- CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog. The
+  topology-derived Core Presets are read-only: All, P-cores, E-cores, All cores no SMT, P-cores no
+  SMT, and E-cores no SMT. Custom presets remain editable. Every rule independently selects Focus,
+  Visible Window, and Background masks with Focus > Visible Window > Background precedence.
+  Selecting a preset copies its current mask into that tier; later preset edits or deletion do not
+  silently rewrite configured rules.
+- Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
+- Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
+
+## Priority and efficiency
+
+- Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection
+  layers as Priority Control. Foreground Detection defaults on, Visible Window Detection defaults
+  off, and each layer owns an Enabled/Disabled Efficiency Mode default.
+- Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules independently override all three tiers. Retired Auto priority values are rejected rather than mapped to current defaults.
+- Process Priority, Power Throttling/Efficiency Mode, Dynamic Priority Boost,
+  Thread Priority, I/O Priority, GPU Priority, and Memory Priority are complete
+  typed process-control cutovers. Static Priority Control, Background
+  Efficiency, Adaptive Engine/Adaptive Engine policies, and Process List
+  one-shot actions share their `RuntimeCore` controllers; feature code owns
+  policy only, and the crash helper remains the independent recovery mirror.
+  Dynamic Priority Boost's raw live query/set pair is isolated in
+  `src/platform/windows/dynamic_priority_boost.rs`; its controller still owns the full recovery
+  transaction and restoration chain.
+  Process Priority and process Power Throttling raw class constants, state conversion, and live
+  query/set calls are isolated in `src/platform/windows/priority_efficiency.rs`; their compound
+  controller still owns arbitration, recovery transactions, compensation, and restoration.
+  Memory Priority's raw class constants and live query/set pair are isolated in
+  `src/platform/windows/memory_priority.rs`; unknown raw baselines remain controller-owned and
+  exactly restorable.
+  GPU Priority's raw D3DKMT query/set pair and NTSTATUS classification are isolated in
+  `src/platform/windows/gpu_priority.rs`; temporary missing-context handling remains unchanged.
+  I/O Priority's undocumented NT declarations, numeric information class, query/set pair, and
+  NTSTATUS classification are isolated in `src/platform/windows/io_priority.rs`.
+  Thread Priority's Toolhelp enumeration, thread open/identity reads, priority constants, and live
+  query/set calls are isolated in `src/platform/windows/thread_priority.rs`.
+  Thread Priority identity includes the exact process instance, thread ID, and
+  thread creation time. Do not restore feature-owned setters, Process List
+  restore closures, or duplicate Adaptive Engine setters for these properties.
+  GPU Priority treats a temporarily unavailable GPU scheduling context as
+  pending and retries without auto-excluding the process. Adaptive Engine keeps
+  Process Priority independent when Power Throttling is unavailable and
+  remembers that unavailable control for the exact process instance so it does
+  not retry-spam.
+- Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping Adaptive Engine claim, while non-overlapping Adaptive Engine claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
+
+## Timer Resolution
+
+- Timer Resolution does not use process failure suppression.
+- `src/control/timer_resolution.rs` is the sole Timer Resolution lifecycle owner;
+  `src/platform/windows/timer_resolution.rs` is the sole raw WinMM adapter. The feature manager
+  owns foreground-rule policy and reporting only; every successful begin is paired with the exact
+  end period on replacement, disable, or shutdown. This process-lifetime state has no crash
+  journal.
+
+- Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.

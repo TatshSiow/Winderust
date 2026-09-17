@@ -291,7 +291,7 @@ impl CpuAllocationManager {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "CPU Scheduler supplies already-discovered exact process targets"
+        reason = "Adaptive Engine supplies already-discovered exact process targets"
     )]
     pub(crate) fn update_discovered_targets(
         &mut self,
@@ -392,7 +392,11 @@ impl CpuAllocationManager {
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Applied,
-                        format!("Applied {}.", cpu_allocation_mode_label(target.mode)),
+                        format!(
+                            "Allowed CPU mask: {:#X} ({} logical CPUs).",
+                            target.core_mask,
+                            target.core_mask.count_ones()
+                        ),
                     );
                 }
                 Ok(CpuAllocationApplyOutcome::Unchanged) => {
@@ -582,11 +586,11 @@ pub(crate) fn record_cpu_allocation_restorations(
         *counts.entry(owner).or_insert(0_usize) += 1;
     }
     for (owner, count) in counts {
-        let (feature, label) = cpu_allocation_action_log_context(owner);
+        let (feature, _) = cpu_allocation_action_log_context(owner);
         action_log.record(
             feature,
             None,
-            label,
+            "",
             ActionLogResult::Restored,
             format!(
                 "Restored {count} CPU allocation {}: {reason}.",
@@ -649,7 +653,7 @@ pub(crate) fn cpu_allocation_action_log_context(
             ActionLogFeature::ProcessorAffinityHard,
             "Processor Affinity (Hard)",
         ),
-        ControlOwner::AdaptiveEngine => (ActionLogFeature::CpuScheduler, "CPU Scheduler"),
+        ControlOwner::AdaptiveEngine => (ActionLogFeature::AdaptiveEngine, "Adaptive Engine"),
         unsupported => {
             unreachable!("unsupported CPU allocation Action Log owner: {unsupported:?}")
         }
@@ -709,13 +713,6 @@ fn cpu_allocation_target_key(
         target.creation_time,
     )
     .key()
-}
-
-fn cpu_allocation_mode_label(mode: CpuAllocationMode) -> &'static str {
-    match mode {
-        CpuAllocationMode::SoftCpuSets => "CPU Sets (Soft)",
-        CpuAllocationMode::HardAffinity => "Processor Affinity (Hard)",
-    }
 }
 
 fn cpu_allocation_request_label(request: CpuAllocationRequest) -> &'static str {
@@ -1204,14 +1201,14 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].feature, ActionLogFeature::CpuSetsSoft);
         assert!(entries[0].reason.contains("2 CPU allocation properties"));
-        assert_eq!(entries[1].feature, ActionLogFeature::CpuScheduler);
+        assert_eq!(entries[1].feature, ActionLogFeature::AdaptiveEngine);
         assert!(entries[1].reason.contains("1 CPU allocation property"));
     }
 
     #[test]
     fn cross_owner_release_failure_is_not_charged_to_the_releasing_status() {
         let mut manager =
-            CpuAllocationManager::with_action_log_feature(ActionLogFeature::CpuScheduler);
+            CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
         let mut failures = CpuAllocationFailures::default();
         let mut log = ActionLog::new(8);
 
@@ -1267,7 +1264,7 @@ mod tests {
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::CpuScheduler);
+        assert_eq!(entries[0].feature, ActionLogFeature::AdaptiveEngine);
         assert_eq!(entries[0].result, ActionLogResult::Applied);
         assert!(entries[0].reason.contains("Processor Affinity (Hard)"));
     }

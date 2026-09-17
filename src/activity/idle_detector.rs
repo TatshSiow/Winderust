@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use super::input_tracker;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityState {
     Active,
@@ -15,8 +13,8 @@ pub struct ActivitySnapshot {
     pub idle_for: Option<Duration>,
 }
 
-pub fn activity_snapshot(idle_timeout: Duration) -> ActivitySnapshot {
-    match input_tracker::last_input_elapsed() {
+pub fn activity_snapshot(idle_for: Option<Duration>, idle_timeout: Duration) -> ActivitySnapshot {
+    match idle_for {
         Some(idle_for) => {
             let state = if idle_for >= idle_timeout {
                 ActivityState::Idle

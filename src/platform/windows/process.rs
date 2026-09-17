@@ -1,8 +1,9 @@
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
     System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_INFORMATION,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
+        PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     },
 };
 
@@ -12,6 +13,7 @@ use crate::win_util::{last_error, WinHandle};
 pub(crate) enum ProcessAccess {
     SetInformation,
     SafetyOnly,
+    ThreadSnapshot,
     WorkingSetTrim,
     Termination,
     JobAssignment,
@@ -51,6 +53,7 @@ pub(crate) fn open(process_id: u32, access: ProcessAccess) -> Result<WinHandle, 
 fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
     const SET_INFORMATION: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION];
     const SAFETY_ONLY: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION];
+    const THREAD_SNAPSHOT: &[u32] = &[PROCESS_QUERY_INFORMATION];
     const WORKING_SET_TRIM: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA];
     const TERMINATION: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE];
     const JOB_ASSIGNMENT: &[u32] = &[
@@ -64,6 +67,7 @@ fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
     match access {
         ProcessAccess::SetInformation => SET_INFORMATION,
         ProcessAccess::SafetyOnly => SAFETY_ONLY,
+        ProcessAccess::ThreadSnapshot => THREAD_SNAPSHOT,
         ProcessAccess::WorkingSetTrim => WORKING_SET_TRIM,
         ProcessAccess::Termination => TERMINATION,
         ProcessAccess::JobAssignment => JOB_ASSIGNMENT,
@@ -83,6 +87,10 @@ mod tests {
         assert_eq!(
             desired_access_masks(ProcessAccess::SafetyOnly),
             &[PROCESS_QUERY_LIMITED_INFORMATION]
+        );
+        assert_eq!(
+            desired_access_masks(ProcessAccess::ThreadSnapshot),
+            &[PROCESS_QUERY_INFORMATION]
         );
         assert_eq!(
             desired_access_masks(ProcessAccess::WorkingSetTrim),

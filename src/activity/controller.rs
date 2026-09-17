@@ -66,10 +66,10 @@ fn trigger_active(value: u8) -> bool {
 }
 
 fn thumbstick_active(x: i16, y: i16, deadzone: u16) -> bool {
-    let x = i32::from(x);
-    let y = i32::from(y);
-    let deadzone = i32::from(deadzone);
-    x.saturating_mul(x) + y.saturating_mul(y) > deadzone.saturating_mul(deadzone)
+    let x = i64::from(x);
+    let y = i64::from(y);
+    let deadzone = i64::from(deadzone);
+    x * x + y * y > deadzone * deadzone
 }
 
 #[cfg(test)]
@@ -112,5 +112,36 @@ mod tests {
             0,
             XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
         ));
+    }
+    #[test]
+    fn thumbstick_handles_full_axis_range_and_deadzone_boundaries() {
+        for deadzone in [
+            XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
+            XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
+        ] {
+            for x in [i16::MIN, i16::MAX] {
+                for y in [i16::MIN, i16::MAX] {
+                    assert!(thumbstick_active(x, y, deadzone));
+                    assert!(gamepad_has_activity(&XINPUT_GAMEPAD {
+                        sThumbLX: x,
+                        sThumbLY: y,
+                        ..Default::default()
+                    }));
+                    assert!(gamepad_has_activity(&XINPUT_GAMEPAD {
+                        sThumbRX: x,
+                        sThumbRY: y,
+                        ..Default::default()
+                    }));
+                }
+            }
+            assert!(!thumbstick_active(0, 0, deadzone));
+            for sign in [-1, 1] {
+                for offset in [-1, 0, 1] {
+                    let axis = sign * (deadzone as i16 + offset);
+                    assert_eq!(thumbstick_active(axis, 0, deadzone), offset > 0);
+                    assert_eq!(thumbstick_active(0, axis, deadzone), offset > 0);
+                }
+            }
+        }
     }
 }

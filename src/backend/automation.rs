@@ -14,15 +14,18 @@ use std::{
 use crate::{
     action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
-        activity_snapshot, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
+        activity_snapshot, input_tracker::InputActivityTracker, ControllerActivityDetector,
         InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
+    },
+    adaptive_engine_process::{
+        AdaptiveEngineProcessManager, AdaptiveEngineProcessSnapshot, AdaptiveEngineProcessUpdate,
     },
     app_suspension::{AppSuspensionManager, AppSuspensionSnapshot, AppSuspensionStatus},
     application::settings::{AutoExclusionPatch, RuntimeSettingsSnapshot, SettingsRevision},
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
     config::{
-        AccentColorSource, AnimationMode, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
+        AccentColorSource, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
         ProcessGpuPriority, ProcessIoPriority, ProcessMemoryPriority, ProcessPrioritySetting,
         ProcessThreadPrioritySetting, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
@@ -48,7 +51,6 @@ use crate::{
         LogicalProcessorInfo, LogicalProcessorKind,
     },
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
-    cpu_scheduler::{CpuSchedulerManager, CpuSchedulerSnapshot, CpuSchedulerUpdate},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
@@ -126,6 +128,7 @@ const PROCESS_CONTROL_COMMAND_QUEUE_CAPACITY: usize = 32;
 pub struct RuntimeHandle {
     shared: Arc<SharedAutomationState>,
     lifecycle: Mutex<()>,
+    shutdown_result: Mutex<Option<Result<(), String>>>,
     thread: Mutex<Option<JoinHandle<Result<(), String>>>>,
     event_watcher: Mutex<Option<WindowsEventWatcher>>,
     input_hook: Mutex<Option<InputHook>>,
@@ -299,7 +302,7 @@ pub struct RuntimeFeatureStatus {
     pub processor_affinity_hard: CpuAllocationSnapshot,
     pub cpu_limiter: CpuLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
-    pub cpu_scheduler: CpuSchedulerSnapshot,
+    pub adaptive_engine_process: AdaptiveEngineProcessSnapshot,
     pub process_priority: ProcessPrioritySnapshot,
     pub thread_priority: ThreadPrioritySnapshot,
     pub dynamic_priority_boost: DynamicPriorityBoostSnapshot,
@@ -347,6 +350,7 @@ struct AutomationWorkerState {
     process_control_commands: VecDeque<ProcessControlCommand>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
+    input_activity: InputActivityTracker,
     windows_event_watcher_active: bool,
     worker_accepting_work: bool,
     stop_requested: bool,
@@ -359,6 +363,7 @@ struct AutomationWakeEvents {
     window_created: bool,
     power_changed: bool,
     session_changed: bool,
+    clock_changed: bool,
     appearance_changed: bool,
     input_activity: bool,
     app_switch: bool,
@@ -372,6 +377,7 @@ impl AutomationWakeEvents {
             WindowsAutomationEvent::WindowCreated => self.window_created = true,
             WindowsAutomationEvent::PowerChanged => self.power_changed = true,
             WindowsAutomationEvent::SessionChanged => self.session_changed = true,
+            WindowsAutomationEvent::ClockChanged => self.clock_changed = true,
             WindowsAutomationEvent::AppearanceChanged => self.appearance_changed = true,
         }
     }
@@ -397,6 +403,7 @@ impl RuntimeHandle {
                 process_control_commands: VecDeque::new(),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
+                input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: false,
                 worker_accepting_work: false,
                 stop_requested: false,
@@ -425,6 +432,7 @@ impl RuntimeHandle {
         let automation = Self {
             shared,
             lifecycle: Mutex::new(()),
+            shutdown_result: Mutex::new(None),
             thread: Mutex::new(None),
             event_watcher: Mutex::new(None),
             input_hook: Mutex::new(None),
@@ -475,6 +483,10 @@ impl RuntimeHandle {
 
     pub fn shutdown(&self) -> Result<(), String> {
         let _lifecycle = lock_unpoisoned(&self.lifecycle);
+        let mut result = lock_unpoisoned(&self.shutdown_result);
+        if let Some(result) = result.as_ref() {
+            return result.clone();
+        }
         {
             let mut state = lock_unpoisoned(&self.shared.state);
             if !state.stop_requested {
@@ -522,13 +534,15 @@ impl RuntimeHandle {
         if let Err(error) = lock_unpoisoned(&self.self_power).shutdown() {
             errors.push(format!("Winderust self-power restoration failed: {error}"));
         }
-        if errors.is_empty() {
+        let outcome = if errors.is_empty() {
             Ok(())
         } else {
             let error = errors.join(" ");
             update_worker_error(&self.shared, Some(error.clone()));
             Err(error)
-        }
+        };
+        *result = Some(outcome.clone());
+        outcome
     }
 
     pub fn status_snapshot_since(&self, observed_generation: u64) -> Option<RuntimeStatusSnapshot> {
@@ -541,7 +555,9 @@ impl RuntimeHandle {
             return None;
         }
         let mut snapshot = state.status.clone();
-        snapshot.worker_error = state.status.worker_error.take();
+        if !state.stop_requested {
+            snapshot.worker_error = state.status.worker_error.take();
+        }
         Some(snapshot)
     }
 
@@ -828,7 +844,7 @@ impl RuntimeHandle {
             let thread_shared = Arc::clone(&self.shared);
             lock_unpoisoned(&self.shared.state).worker_accepting_work = true;
             *thread = Some(thread::spawn(move || {
-                run_background_automation(thread_shared)
+                run_background_automation(thread_shared, power_source::is_plugged_in)
             }));
         }
     }
@@ -863,6 +879,7 @@ impl RuntimeHandle {
         let mut input_hook = lock_unpoisoned(&self.input_hook);
         if !input_hook_required(&settings.value) {
             input_hook.take();
+            configure_input_activity(&self.shared, InputHookConfig::default());
             return;
         }
 
@@ -874,12 +891,16 @@ impl RuntimeHandle {
             return;
         }
         input_hook.take();
+        configure_input_activity(&self.shared, InputHookConfig::default());
         let shared = Arc::clone(&self.shared);
         match InputHook::install(
             config,
             Arc::new(move |events| notify_input_event(&shared, events)),
         ) {
-            Ok(installed) => *input_hook = Some(installed),
+            Ok(installed) => {
+                *input_hook = Some(installed);
+                configure_input_activity(&self.shared, config);
+            }
             Err(error) => update_worker_error(&self.shared, Some(error)),
         }
     }
@@ -925,7 +946,10 @@ impl Drop for AutomationWorkerExitGuard<'_> {
     }
 }
 
-fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), String> {
+fn run_background_automation(
+    shared: Arc<SharedAutomationState>,
+    power_source: impl Fn() -> Option<bool>,
+) -> Result<(), String> {
     let _exit_guard = AutomationWorkerExitGuard { shared: &shared };
     let mut runner = RuntimeCore::default();
     let mut scheduler = RefreshScheduler::new(Instant::now());
@@ -933,11 +957,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
 
     while let Some(snapshot) = automation_snapshot(&shared) {
+        runner.action_log.begin_batch();
         let configured_settings = snapshot.settings;
-        let settings = active_power_source_settings(
-            configured_settings.as_ref(),
-            power_source::is_plugged_in(),
-        );
+        let settings = active_power_source_settings(configured_settings.as_ref(), power_source());
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =
             runner.cpu_allocation_release_retry_pending();
@@ -952,6 +974,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             runner.action_log.clear();
         }
         let wake_events = snapshot.wake_events;
+        runner.input_activity = snapshot.input_activity;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
         let mut observations = CycleObservations::default();
         let hidden_to_tray = tray::is_hidden_to_tray();
@@ -982,7 +1005,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             adaptive_engine_enabled,
             PERFORMANCE_MODE_REFRESH_INTERVAL,
         );
-        let cpu_scheduler_refresh_interval = cpu_scheduler_refresh_interval(settings);
+        let adaptive_engine_process_refresh_interval =
+            adaptive_engine_process_refresh_interval(settings);
         let process_priority_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
@@ -1031,7 +1055,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL,
         );
         let event_now = Instant::now();
-        let settings_changed = wake_events.settings_changed || runner.note_settings(settings);
+        let settings_changed = runner.note_settings(settings, wake_events.settings_changed);
         if settings_changed {
             scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }
@@ -1043,6 +1067,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
         if wake_events.power_changed {
             scheduler.invalidate(SchedulerEvent::PowerChanged, event_now);
+        }
+        if wake_events.clock_changed {
+            scheduler.invalidate(SchedulerEvent::ClockChanged, event_now);
         }
         if wake_events.session_changed {
             scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);
@@ -1108,8 +1135,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             settings_changed || feature_refresh_required(settings, cpu_limiter_required(settings));
         let by_running_app_refresh_required = settings_changed
             || feature_refresh_required(settings, by_running_app_required(settings));
-        let cpu_scheduler_refresh_required = settings_changed
-            || feature_refresh_required(settings, cpu_scheduler_required(settings));
+        let adaptive_engine_process_refresh_required = settings_changed
+            || feature_refresh_required(settings, adaptive_engine_process_required(settings));
         let bottleneck_classifier_refresh_required = settings_changed
             || feature_refresh_required(settings, bottleneck_classifier_required(settings));
         let adaptive_power_plan_refresh_required = settings_changed
@@ -1184,13 +1211,16 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 background_efficiency_refresh_interval,
             );
         }
-        if cpu_scheduler_refresh_required && scheduler.is_due(RefreshDomain::CpuScheduler, now) {
-            let cpu_scheduler_status = runner.run_cpu_scheduler_update(settings, &mut observations);
-            update_cpu_scheduler_status(&shared, cpu_scheduler_status);
+        if adaptive_engine_process_refresh_required
+            && scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now)
+        {
+            let adaptive_engine_process_status =
+                runner.run_adaptive_engine_process_update(settings, &mut observations);
+            update_adaptive_engine_process_status(&shared, adaptive_engine_process_status);
             scheduler.schedule_after(
-                RefreshDomain::CpuScheduler,
+                RefreshDomain::AdaptiveEngineProcess,
                 now,
-                cpu_scheduler_refresh_interval,
+                adaptive_engine_process_refresh_interval,
             );
         }
         if bottleneck_classifier_refresh_required
@@ -1409,20 +1439,20 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
 
         let wait_now = Instant::now();
+        if let Some(error) = runner.retry_priority_releases(wait_now) {
+            update_worker_error(&shared, Some(error));
+        }
         let mut wait_for = if power_plan_checks_required {
-            if scheduler.is_due(RefreshDomain::PowerPlanCheck, wait_now) {
+            run_scheduled_power_plan_check(&mut scheduler, wait_now, || {
                 if let Err(error) = runner.run_check(settings, &mut observations) {
                     update_worker_error(&shared, Some(error));
                 }
-            }
-
-            if let Some(delay) = power_plan_check_delay(settings, windows_event_watcher_active) {
-                scheduler.schedule_after(RefreshDomain::PowerPlanCheck, wait_now, delay);
-                Some(delay)
-            } else {
-                scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
-                None
-            }
+                power_plan_check_delay(
+                    settings,
+                    windows_event_watcher_active,
+                    runner.activity_snapshot(settings, Instant::now()).idle_for,
+                )
+            })
         } else {
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
             None
@@ -1470,9 +1500,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                     by_running_app_refresh_interval,
                 ),
                 (
-                    cpu_scheduler_refresh_required,
-                    RefreshDomain::CpuScheduler,
-                    cpu_scheduler_refresh_interval,
+                    adaptive_engine_process_refresh_required,
+                    RefreshDomain::AdaptiveEngineProcess,
+                    adaptive_engine_process_refresh_interval,
                 ),
                 (
                     bottleneck_classifier_refresh_required,
@@ -1546,7 +1576,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
         if automation_worker_can_exit(
             wait_for,
-            automation_worker_required(settings),
+            automation_worker_required(configured_settings.as_ref()),
             runner.has_managed_process_control_state(),
         ) {
             if !worker_exit_is_still_idle(&shared, change_generation) {
@@ -1569,6 +1599,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             cpu_allocation_reconciliation_retry_interval =
                 CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL;
             continue;
+        }
+
+        if let Some(delay) = runner.priority_release_retry_delay(Instant::now()) {
+            wait_for = Some(min_worker_wait(wait_for, delay));
         }
 
         if wait_for_wake(&shared, wait_for, change_generation) {
@@ -1613,6 +1647,22 @@ fn automation_worker_can_exit(
     has_managed_process_state: bool,
 ) -> bool {
     wait_for.is_none() && !automation_required && !has_managed_process_state
+}
+
+fn run_scheduled_power_plan_check(
+    scheduler: &mut RefreshScheduler,
+    now: Instant,
+    check: impl FnOnce() -> Option<Duration>,
+) -> Option<Duration> {
+    if scheduler.is_due(RefreshDomain::PowerPlanCheck, now) {
+        let delay = check()?;
+        scheduler.schedule_after(RefreshDomain::PowerPlanCheck, now, delay);
+    }
+    scheduler.minimum_wait(
+        None,
+        now,
+        [(true, RefreshDomain::PowerPlanCheck, Duration::MAX)],
+    )
 }
 
 fn min_worker_wait(current: Option<Duration>, candidate: Duration) -> Duration {

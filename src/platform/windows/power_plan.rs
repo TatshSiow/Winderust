@@ -10,7 +10,9 @@ use std::{
 use windows_sys::{
     core::GUID,
     Win32::{
-        Foundation::{LocalFree, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
+        Foundation::{
+            LocalFree, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS,
+        },
         System::Power::{
             PowerDeleteScheme, PowerDuplicateScheme, PowerEnumerate, PowerGetActiveScheme,
             PowerReadACValueIndex, PowerReadDCValueIndex, PowerReadDescription,
@@ -123,9 +125,19 @@ pub(crate) fn duplicate_scheme(source_guid: &str) -> Result<String, String> {
 
 pub(crate) fn delete_scheme(guid: &str) -> Result<(), String> {
     let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-    // SAFETY: guid is a fully parsed scheme GUID and a null root key selects the current user.
+    // SAFETY: guid is fully parsed and the reserved root key must be null.
     let result = unsafe { PowerDeleteScheme(null_mut(), &guid) };
-    if result == ERROR_SUCCESS {
+    finish_scheme_deletion(result, || {
+        let target = format_guid(&guid);
+        Ok(list_schemes()?.iter().any(|plan| plan.guid == target))
+    })
+}
+
+fn finish_scheme_deletion(
+    result: u32,
+    exists: impl FnOnce() -> Result<bool, String>,
+) -> Result<(), String> {
+    if result == ERROR_SUCCESS || (result == ERROR_FILE_NOT_FOUND && !exists()?) {
         Ok(())
     } else {
         Err(format!(
@@ -601,6 +613,22 @@ const GUID_PROCESSOR_PERFORMANCE_BOOST_MODE: GUID = GUID {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_accepts_only_success_or_verified_absence() {
+        assert!(finish_scheme_deletion(ERROR_SUCCESS, || panic!("unexpected query")).is_ok());
+        assert!(finish_scheme_deletion(ERROR_FILE_NOT_FOUND, || Ok(false)).is_ok());
+        assert!(finish_scheme_deletion(ERROR_FILE_NOT_FOUND, || Ok(true)).is_err());
+        assert_eq!(
+            finish_scheme_deletion(ERROR_FILE_NOT_FOUND, || Err("enumeration failed".into())),
+            Err("enumeration failed".into()),
+        );
+        assert!(finish_scheme_deletion(
+            windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED,
+            || panic!("unexpected query"),
+        )
+        .is_err());
+    }
 
     #[test]
     fn parses_and_formats_guid() {

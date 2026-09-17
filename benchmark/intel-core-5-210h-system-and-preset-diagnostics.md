@@ -52,7 +52,7 @@ active. Paired Stock runs reduce drift but do not remove it.
 ## Method
 
 The benchmark used
-[`cpu_scheduler_benchmark.ps1`](../scripts/cpu_scheduler_benchmark.ps1)
+[`adaptive_engine_process_benchmark.ps1`](../scripts/adaptive_engine_process_benchmark.ps1)
 with 12 generated CPU workers. Each tier matrix used three independently
 ordered passes, five foreground rounds per case, and a paired Stock case beside
 each preset. The workload applied the current preset processor policy,

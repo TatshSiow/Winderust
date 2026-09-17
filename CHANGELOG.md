@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+### Changed
+
+- Port all Winderust pages and shared controls from GPUI to Iced with the Tiny Skia software renderer, preserving the existing runtime and portable settings.
+
 ## 0.8.0-alpha - 2026-09-01
 
 ### Added

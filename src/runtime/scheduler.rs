@@ -12,7 +12,7 @@ pub(crate) enum RefreshDomain {
     CpuLimiter,
     CpuAllocationReconciliation,
     ByRunningApp,
-    CpuScheduler,
+    AdaptiveEngineProcess,
     BottleneckClassifier,
     AdaptivePowerPlan,
     ProcessPriority,
@@ -37,7 +37,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 22] = [
     RefreshDomain::CpuLimiter,
     RefreshDomain::CpuAllocationReconciliation,
     RefreshDomain::ByRunningApp,
-    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::BottleneckClassifier,
     RefreshDomain::AdaptivePowerPlan,
     RefreshDomain::ProcessPriority,
@@ -59,7 +59,7 @@ const FOREGROUND_DOMAINS: [RefreshDomain; 16] = [
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
-    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::AdaptivePowerPlan,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
@@ -87,7 +87,7 @@ const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 13] = [
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
     RefreshDomain::ByRunningApp,
-    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
     RefreshDomain::DynamicPriorityBoost,
@@ -104,6 +104,7 @@ pub(crate) enum SchedulerEvent {
     WindowCreated,
     PowerChanged,
     SessionChanged,
+    ClockChanged,
     InputActivity,
     AppSwitch,
     AppSwitchMouseClick,
@@ -154,7 +155,9 @@ impl RefreshScheduler {
             SchedulerEvent::WindowCreated => {
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
             }
-            SchedulerEvent::PowerChanged | SchedulerEvent::InputActivity => {
+            SchedulerEvent::PowerChanged
+            | SchedulerEvent::InputActivity
+            | SchedulerEvent::ClockChanged => {
                 self.schedule_now(RefreshDomain::PowerPlanCheck, now);
             }
             SchedulerEvent::SessionChanged => {
@@ -283,6 +286,7 @@ mod tests {
         let now = Instant::now();
         for event in [
             SchedulerEvent::PowerChanged,
+            SchedulerEvent::ClockChanged,
             SchedulerEvent::InputActivity,
             SchedulerEvent::ControllerActivity,
         ] {

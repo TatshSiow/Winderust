@@ -123,11 +123,11 @@ Assert-NoSourceMatch `
     -Paths @('src/features/winderust_features/background_efficiency.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'legacy CPU Scheduler priority or Power Throttling owner' `
+    -Boundary 'legacy Adaptive Engine priority or Power Throttling owner' `
     -Pattern 'struct AdjustedProcess|struct BoostedProcess|previous_priority|applied_priority|restore_adjusted|restore_boosted|GetPriorityClass|SetPriorityClass|GetProcessInformation|SetProcessInformation|record_process_change|ProcessValue::PriorityClass|ProcessValue::power_throttling' `
     -Paths @(
-        'src/features/winderust_features/cpu_scheduler.rs',
-        'src/features/winderust_features/cpu_scheduler/process_control.rs'
+        'src/features/winderust_features/adaptive_engine_process.rs',
+        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoSourceMatch `
@@ -135,8 +135,7 @@ Assert-NoSourceMatch `
     -Pattern 'process_priority::apply_once|background_efficiency::apply_efficiency_mode_once|process_quick_action_restore|process_efficiency_mode_overrides' `
     -Paths @(
         'src/ui/app.rs',
-        'src/ui/app/pages/process_list_page.rs',
-        'src/ui/app/process_refresh.rs'
+        'src/ui/process_list.rs'
     )
 
 Assert-SourceMatchCount `
@@ -158,14 +157,14 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own Memory Priority mutation or restoration' `
     -Pattern 'memory_priority::apply_once|memory_priority::current_priority|quick_apply_memory_priority|current_memory_priority\(' `
-    -Paths @('src/ui/app/pages/process_list_page.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'CPU Scheduler does not own a Memory Priority writer' `
+    -Boundary 'Adaptive Engine does not own a Memory Priority writer' `
     -Pattern 'MEMORY_PRIORITY_INFORMATION|ProcessMemoryPriorityClass|ProcessValue::MemoryPriority' `
     -Paths @(
-        'src/features/winderust_features/cpu_scheduler.rs',
-        'src/features/winderust_features/cpu_scheduler/process_control.rs'
+        'src/features/winderust_features/adaptive_engine_process.rs',
+        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
     )
 
 Assert-SourceMatchCount `
@@ -226,7 +225,7 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own Thread Priority mutation or restoration' `
     -Pattern 'quick_apply_thread_priority|thread_priority::apply_once|thread_priority::current_priority' `
-    -Paths @('src/ui/app/pages/process_list_page.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoUnexpectedWriter `
     -Mechanism 'Dynamic Priority Boost' `
@@ -250,11 +249,11 @@ Assert-NoSourceMatch `
     -Paths @('src/features/priority_control/dynamic_priority_boost.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'legacy Dynamic Priority Boost CPU Scheduler capability' `
+    -Boundary 'legacy Dynamic Priority Boost Adaptive Engine capability' `
     -Pattern 'previous_dynamic_priority_boost_disabled|applied_dynamic_priority_boost_disabled|disable_dynamic_priority_boost|GetProcessPriorityBoost|SetProcessPriorityBoost' `
     -Paths @(
-        'src/features/winderust_features/cpu_scheduler.rs',
-        'src/features/winderust_features/cpu_scheduler/process_control.rs'
+        'src/features/winderust_features/adaptive_engine_process.rs',
+        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -281,14 +280,14 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own I/O Priority mutation or restoration' `
     -Pattern 'io_priority::apply_once|io_priority::current_priority|current_io_priority\(' `
-    -Paths @('src/ui/app/pages/process_list_page.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'CPU Scheduler does not own an I/O Priority writer' `
+    -Boundary 'Adaptive Engine does not own an I/O Priority writer' `
     -Pattern 'previous_io_priority|applied_io_priority|set_io_priority|NtSetInformationProcess' `
     -Paths @(
-        'src/features/winderust_features/cpu_scheduler.rs',
-        'src/features/winderust_features/cpu_scheduler/process_control.rs'
+        'src/features/winderust_features/adaptive_engine_process.rs',
+        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -315,14 +314,14 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'Process List does not own GPU Priority mutation or restoration' `
     -Pattern 'gpu_priority::apply_once|gpu_priority::current_priority|current_gpu_priority\(' `
-    -Paths @('src/ui/app/pages/process_list_page.rs')
+    -Paths @('src/ui/process_list.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'CPU Scheduler does not own a GPU Priority writer' `
+    -Boundary 'Adaptive Engine does not own a GPU Priority writer' `
     -Pattern 'previous_gpu_priority|applied_gpu_priority|set_gpu_priority|D3DKMTSetProcessSchedulingPriorityClass' `
     -Paths @(
-        'src/features/winderust_features/cpu_scheduler.rs',
-        'src/features/winderust_features/cpu_scheduler/process_control.rs'
+        'src/features/winderust_features/adaptive_engine_process.rs',
+        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -363,8 +362,8 @@ Assert-NoSourceMatch `
     -Paths @(
         'src/features/cpu_control/cpu_allocation.rs',
         'src/features/cpu_control/cpu_limiter.rs',
-        'src/features/winderust_features/cpu_scheduler.rs',
-        'src/features/winderust_features/cpu_scheduler/process_control.rs'
+        'src/features/winderust_features/adaptive_engine_process.rs',
+        'src/features/winderust_features/adaptive_engine_process/process_control.rs'
     )
 
 Assert-NoUnexpectedWriter `
@@ -440,8 +439,8 @@ Assert-NoSourceMatch `
     -Pattern 'SetInformationJobObject|ProcessFreezer|record_suspended_job|forget_suspended_job|app_suspension_(?:freeze_requests|process_requests)' `
     -Paths @(
         'src/features/advanced_controls/app_suspension.rs',
-        'src/ui/app/pages/app_suspension_page.rs',
-        'src/ui/app/pages/process_list_page.rs',
+        'src/ui/app_suspension.rs',
+        'src/ui/process_list.rs',
         'src/backend/automation.rs',
         'src/backend/automation/status.rs'
     )
@@ -532,7 +531,7 @@ Assert-NoSourceMatch `
     -Pattern 'TerminateProcess|fn terminate_process|fn terminate_process_trees' `
     -Paths @(
         'src/foreground/process_list.rs',
-        'src/ui/app/pages/process_list_page.rs'
+        'src/ui/process_list.rs'
     )
 
 Assert-NoSourceMatch `
@@ -698,108 +697,112 @@ Assert-SourceMatchCount `
     -Paths @('src/backend/automation.rs') `
     -ExpectedCount 1
 
+# Iced owns UI state and subscriptions; RuntimeHandle remains the sole automation facade.
 Assert-SourceMatchCount `
-    -Boundary 'Process List keeps its independent process query' `
+    -Boundary 'Process List enumeration and confirmed tree refresh stay independent of RuntimeCore observations' `
     -Pattern 'list_processes_with_paths\(\)' `
-    -Paths @('src/ui/app/process_refresh.rs') `
+    -Paths @('src/ui/process_list.rs') `
+    -ExpectedCount 2
+
+Assert-SourceMatchCount `
+    -Boundary 'Process List owns one resource sampling call' `
+    -Pattern 'sample_process_resources\(' `
+    -Paths @('src/ui/process_list.rs') `
     -ExpectedCount 1
 
 Assert-SourceMatchCount `
-    -Boundary 'WinderustApp owns one Process Catalog read model' `
-    -Pattern '^    process_catalog:\s*ProcessCatalogModel,' `
+    -Boundary 'WinderustApp owns one Process Catalog candidate collection' `
+    -Pattern '^\s*candidates:\s*Vec<super::app_picker::Candidate>,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one Process List read model' `
-    -Pattern '^    process_list:\s*ProcessListModel,' `
+    -Pattern '^\s*processes:\s*process_list::ProcessList,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
-    -Boundary 'WinderustApp does not mirror Process Catalog or Process List fields' `
-    -Pattern '^\s*(?:process_candidates|process_candidate_load_state|selected_process_paths|running_processes|process_resource_samples|process_resource_usage|hide_inaccessible_processes|running_process_load_state|process_refresh_in_progress|process_icon_cache|expanded_process_list_groups|process_list_sort|selected_process_id|process_details)\s*:' `
+    -Boundary 'WinderustApp does not mirror Process List resources selection or sorting' `
+    -Pattern '^\s*(?:process_resource_samples|process_resource_usage|hide_inaccessible|expanded_groups|selected_process_id|process_details)\s*:' `
     -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'runtime and control layers do not own UI process read models' `
-    -Pattern 'ProcessCatalogModel|ProcessListModel' `
-    -Paths @('src/backend', 'src/control')
+    -Boundary 'runtime and control layers do not depend on UI models or Iced' `
+    -Pattern 'crate::ui|\biced::|\bgpui::|ProcessCatalogModel|ProcessListModel|DashboardModel|UpdateModel|ShellModel' `
+    -Paths @('src/backend/automation.rs', 'src/backend/automation', 'src/control')
 
 Assert-SourceMatchCount `
-    -Boundary 'WinderustApp owns one Dashboard read model' `
-    -Pattern '^    dashboard:\s*DashboardModel,' `
+    -Boundary 'WinderustApp owns one Home read model' `
+    -Pattern '^\s*home:\s*home::Model,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
-    -Boundary 'WinderustApp does not mirror individual Dashboard metric snapshots or histories' `
+    -Boundary 'WinderustApp does not mirror individual dashboard histories' `
     -Pattern '^\s*(?:cpu_usage|cpu_usage_history|memory_usage|memory_usage_history|io_usage|io_usage_history|network_usage|network_usage_history)\s*:' `
     -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'Dashboard read model does not own metric sampling' `
-    -Pattern 'CpuUsageMonitor|IoUsageMonitor|NetworkUsageMonitor|sample_memory_usage\(' `
-    -Paths @('src/ui/app/dashboard_model.rs')
-
-Assert-NoSourceMatch `
-    -Boundary 'runtime and control layers do not own the UI Dashboard read model' `
-    -Pattern 'DashboardModel' `
-    -Paths @('src/backend', 'src/control')
+    -Boundary 'Home model keeps native sampling handles on its worker' `
+    -Pattern '^\s*\w+:\s*(?:CpuUsageMonitor|IoUsageMonitor|NetworkUsageMonitor)|unsafe impl Send|Mutex<(?:CpuUsageMonitor|IoUsageMonitor|NetworkUsageMonitor)' `
+    -Paths @('src/ui/home.rs')
 
 Assert-SourceMatchCount `
-    -Boundary 'WinderustApp owns one Update model' `
-    -Pattern '^    update:\s*UpdateModel,' `
+    -Boundary 'WinderustApp owns one settings and update UI editor' `
+    -Pattern '^\s*preferences:\s*settings_pages::Editor,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
-    -Boundary 'WinderustApp does not mirror individual Update fields' `
+    -Boundary 'WinderustApp does not mirror update response fields' `
     -Pattern '^\s*(?:available_update|latest_version|update_check_in_progress|update_check_message|startup_update_modal_visible|startup_update_modal_closing)\s*:' `
     -Paths @('src/ui/app.rs')
 
-Assert-NoSourceMatch `
-    -Boundary 'runtime and control layers do not own UI Update state' `
-    -Pattern 'UpdateModel|UpdateModalDismissal' `
-    -Paths @('src/backend/automation.rs', 'src/backend/automation', 'src/control')
-
 Assert-SourceMatchCount `
-    -Boundary 'WinderustApp owns one Shell model' `
-    -Pattern '^    shell:\s*ShellModel,' `
+    -Boundary 'Iced application owns one current navigation page' `
+    -Pattern '^\s*page:\s*Page,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-NoSourceMatch `
-    -Boundary 'WinderustApp does not mirror Shell navigation state' `
-    -Pattern '^\s*(?:back_stack|forward_stack|breadcrumb_transition|page_transition_generation)\s*:' `
-    -Paths @('src/ui/app.rs')
-
-Assert-NoSourceMatch `
-    -Boundary 'UI navigation page replacement remains a Shell transition' `
-    -Pattern '\.shell\.page\s*=\s*[A-Za-z_]' `
-    -Paths @('src/ui')
-
-Assert-NoSourceMatch `
-    -Boundary 'runtime and control layers do not own UI Shell state' `
-    -Pattern 'ShellModel' `
-    -Paths @('src/backend', 'src/control')
+    -Boundary 'navigation remains a UI projection without Windows mutation or runtime lifecycle' `
+    -Pattern 'RuntimeHandle|RuntimeCore|windows_sys|unsafe|crate::control|crate::platform' `
+    -Paths @('src/ui/navigation.rs')
 
 Assert-SourceMatchCount `
-    -Boundary 'WinderustApp retains one segmented runtime feature-status read model' `
-    -Pattern '^\s*feature_status:\s*Arc<RuntimeFeatureStatus>,' `
+    -Boundary 'WinderustApp retains one segmented runtime status snapshot' `
+    -Pattern '^\s*status:\s*RuntimeStatusSnapshot,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
 
 Assert-SourceMatchCount `
-    -Boundary 'WinderustApp owns one SettingsEditor composition boundary' `
-    -Pattern '^    settings:\s*SettingsEditor,' `
-    -Paths @('src/ui/app.rs') `
+    -Boundary 'runtime snapshot retains one shared feature-status segment' `
+    -Pattern '^\s*pub feature_status:\s*Arc<RuntimeFeatureStatus>,' `
+    -Paths @('src/backend/automation.rs') `
     -ExpectedCount 1
+
+$icedApplication = Get-Content -LiteralPath 'src/ui/app.rs' -Encoding utf8 -Raw
+if ($icedApplication -notmatch '(?s)struct WinderustApp\s*\{[^}]*\bsettings:\s*SettingsEditor,') {
+    throw 'WinderustApp must retain SettingsEditor as its settings composition boundary.'
+}
+Write-Host 'Architecture ownership gate passed: WinderustApp owns SettingsEditor'
+
 
 Assert-NoSourceMatch `
     -Boundary 'WinderustApp does not mirror individual runtime feature snapshots' `
-    -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|cpu_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|cpu_scheduler_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
+    -Pattern '^\s*(?:background_efficiency_status|app_suspension_status|cpu_limiter_status|cpu_sets_soft_status|processor_affinity_hard_status|by_running_app_status|adaptive_engine_process_status|process_priority_status|thread_priority_status|dynamic_priority_boost_status|io_priority_status|gpu_priority_status|memory_priority_status|memory_trim_status|timer_resolution_status)\s*:' `
     -Paths @('src/ui/app.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'production Iced renderer contains no GPUI entities or framework dependencies' `
+    -Pattern '\bgpui(?:_component)?\b|\bEntity<|\bContext<Self>' `
+    -Paths @('src/ui')
+
+Assert-NoSourceMatch `
+    -Boundary 'Iced process controls do not mutate native state outside runtime commands' `
+    -Pattern 'SetPriorityClass|SetProcessInformation|SetProcessAffinityMask|SetProcessDefaultCpuSets|SuspendThread|ResumeThread|TerminateProcess|unsafe' `
+    -Paths @('src/ui/process_list.rs', 'src/ui/process_details.rs', 'src/ui/cpu_allocation.rs', 'src/ui/adaptive_engine.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'single RuntimeHandle lifecycle facade' `

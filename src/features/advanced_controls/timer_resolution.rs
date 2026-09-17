@@ -273,34 +273,6 @@ impl TimerResolutionManager {
     }
 }
 
-pub fn query_snapshot(enabled: bool) -> TimerResolutionSnapshot {
-    match TimerResolutionController::default().query() {
-        Ok(info) => snapshot_from_query(
-            enabled,
-            None,
-            None,
-            Some(info),
-            0,
-            None,
-            if enabled {
-                "Timer resolution status loaded."
-            } else {
-                "Timer resolution control disabled."
-            },
-        ),
-        Err(err) => {
-            let message = err;
-            TimerResolutionSnapshot {
-                enabled,
-                failed_actions: 1,
-                message: "Timer resolution query failed.".to_owned(),
-                last_error: Some(message),
-                ..Default::default()
-            }
-        }
-    }
-}
-
 pub fn normalize_desired_resolution(
     desired_100ns: u32,
     minimum_100ns: u32,

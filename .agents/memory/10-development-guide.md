@@ -5,7 +5,8 @@ This is the working guide for code changes. Product scope and future goals live 
 ## Project Basics
 
 - Windows-only Rust desktop app.
-- UI stack: GPUI plus `gpui-component`.
+- UI stack: Iced 0.14 with tiny-skia only and rust-i18n locales.
+- Use the unmodified crates.io `iced_tiny_skia` renderer; do not add local renderer patches. Rendering regressions live in the application test suite (`src/ui/scrolling.rs`, `motion.rs`, `select.rs`, and page tests).
 - Settings format: TOML through `serde` and `toml`.
 - Localization: `rust-i18n` with files in `locales/`.
 - Windows integration: direct Win32 APIs through `windows` and `windows-sys`.
@@ -34,10 +35,28 @@ If `target\release\winderust.exe` is locked because the app is running:
 .\scripts\build_release.cmd -TargetDir target-next
 ```
 
+## Rendering and performance
+
+- `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.
+- `src/ui/select.rs` retains native input while avoiding option measurement for explicitly sized fields.
+- `src/ui/motion.rs` and `animated_controls.rs` own small transitions. Do not add per-page animation timers or animate large lists.
+- Renderer dev-dependencies support pixel comparisons and damage-region tests; they do not replace the production renderer.
+- `[profile.dev.package."*"] opt-level = 2` optimizes dependencies for debug use. Release settings are separate; benchmark before changing them.
+- Compare the reported interaction before and after a performance change. Scrolling benchmarks do not establish tab-switch or expansion performance; raster timings exclude layout and event handling.
+- Documentation-only changes need link/path and diff checks. Run the Rust checks above after code or dependency changes.
+
+## Research before custom implementation
+
+- Before implementing a new capability, search existing repository code, the standard library, native Windows APIs, and installed dependencies.
+- If those do not cover it, always check crates.io and the candidate crates' official documentation (docs.rs or upstream) before writing a custom implementation. Use current web references; do not rely only on recalled crate names or APIs.
+- Prefer an existing solution that reasonably meets the requirement. Check maintenance, license compatibility, Windows/Iced version support, dependency weight, and performance before adding a crate.
+- Implement custom code only when existing options do not reasonably fit; briefly record the concrete gap or tradeoff. Finding a crate does not automatically justify adding it.
+- Reuse findings while they remain applicable. Routine edits to an established implementation do not require repeating the same crate search.
+
 ## Routine Chores
 
 For dependency PRs, review each update independently. Check the changed files,
-release notes, and whether the version is already required by the GPUI revisions
+release notes, and whether the version is already required by the UI dependencies
 pinned in `Cargo.toml`; do not merge a major-version bump merely because
 Dependabot opened it. Run the default checks above, confirm CI passes, then merge
 or close the PR. Keep unrelated dependency updates in separate commits so a bad
@@ -133,16 +152,13 @@ and the corrected commit must be the tagged source.
 
 ## Source Map
 
-- `src/main.rs`: app entry, single-instance guard, GPUI startup.
-- `src/ui/app.rs`: the single GPUI `WinderustApp` composition root, construction, rendering,
-  teardown, and app-level tests. Operational method groups live in `src/ui/app/*.rs`. Plain
-  transition/read models are `shell_model.rs`, `dashboard_model.rs`, `process_models.rs`, and
-  `update_model.rs`; sampling, queries, icons, GPUI timers, tray, dialogs, focus, and motion remain
-  at the composition root rather than moving into `RuntimeCore`.
-- `src/ui/app/pages/`: page and shell renderers. `src/ui/app/shared/`: reusable UI components, state helpers, formatting, policies, and shared feature logic. Page dispatch is
-  in `app_shell.rs`; process add/check and rule-construction helpers are in
-  `process_policies.rs`. Process List table grouping, sorting, and layout live in
-  `pages/process_list_page/table_model.rs`; edit actions live in `editing.rs`.
+- `src/main.rs`: app entry, single-instance guard, and Iced startup.
+- `src/ui/app.rs`: `WinderustApp` composition, message dispatch, subscriptions,
+  native window/tray lifecycle, settings publication, and teardown. Runtime work remains
+  in typed commands and services; UI drafts do not belong in `RuntimeCore`.
+- `src/ui/`: page editors and views; `widgets.rs` supplies shared controls, `status_rail.rs` presents runtime status, and `navigation.rs` maps pages
+  to bundled icons. `process_list.rs` owns table sorting, grouping, and pending actions.
+- `src/ui/process_rules.rs`: shared process eligibility and rule-construction helpers.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
@@ -179,7 +195,7 @@ and the corrected commit must be the tagged source.
   time.
 - `src/control/cpu_allocation.rs`: sole live CPU Sets and process-affinity baseline, claim
   arbitration, compensation, and clean-release boundary for CPU Sets (Soft), Processor Affinity
-  (Hard), and CPU Scheduler CPU allocation. Its precedence is CPU Sets (Soft) > Processor
+  (Hard), and Adaptive Engine CPU allocation. Its precedence is CPU Sets (Soft) > Processor
   Affinity (Hard) > Adaptive Engine.
   `src/platform/windows/cpu_allocation.rs` owns the raw affinity/CPU Set query and write calls plus
   packed system CPU Set topology conversion.
@@ -217,12 +233,12 @@ and the corrected commit must be the tagged source.
   `src/features/cpu_control/cpu_allocation.rs` owns their discovery, topology,
   tier selection, and reporting policy, while the typed controller owns the shared
   Windows mechanism and restoration state. CPU Limiter remains separate from CPU allocation and
-  uses shared Job Object freeze/thaw duty cycling. CPU Scheduler retains pressure, selection, and tuning only.
-  CPU Scheduler process sampling and identity helpers live in
-  `cpu_scheduler/process_control.rs`; its Process Priority, Power Throttling,
+  uses shared Job Object freeze/thaw duty cycling. Adaptive Engine retains pressure, selection, and tuning only.
+  Adaptive Engine process sampling and identity helpers live in
+  `adaptive_engine_process/process_control.rs`; its Process Priority, Power Throttling,
   and Memory Priority mutations route through typed controllers. Pure workload
-  decisions and core-selection calculations live in `cpu_scheduler/policy.rs`;
-  stateful policy lifecycle remains in `cpu_scheduler.rs`.
+  decisions and core-selection calculations live in `adaptive_engine_process/policy.rs`;
+  stateful policy lifecycle remains in `adaptive_engine_process.rs`.
 
 ## Navigation
 
@@ -242,14 +258,14 @@ Pages are grouped in `src/ui.rs`:
 - Advanced: App Suspension, Timer Resolution, Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
-`WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs` together.
+`WinderustApp::page_view` in `src/ui/app.rs` together.
 
 ## Settings
 
 - Runtime settings live in `Settings`.
 - Use `#[serde(default)]` only when a current setting is intentionally optional; do not add pre-release migration aliases.
 - If a setting is edited through the UI, update the relevant page module and
-  input synchronization in `src/ui/app.rs`.
+  editor reset and message handling in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
 
 ### Power Plan Ownership
@@ -263,7 +279,7 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
 - Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CpuLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
-- CPU Scheduler is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
+- Adaptive Engine is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
 - Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, Background CPU Restriction, Core Steering, Core Limiter, Soft CPU Sets, or Hard CPU Affinity. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 
@@ -311,12 +327,12 @@ Process-control features must keep these defaults:
 ## UI Rules
 
 - Keep controls compact and operational.
-- Use existing GPUI/gpui-component helpers before adding new UI primitives.
+- Use existing Iced widgets and local `widgets.rs` helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
-- Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
-- Keep `src/ui/app.rs` for shared app state, construction, rendering, and teardown; keep operational method groups in `src/ui/app/*.rs`. Put a
-  complete page in `src/ui/app/pages/` and repeated helper families in `src/ui/app/shared/`;
-  do not start a framework rewrite.
+- Follow `15-design-spec.md` for current controls, panels, and motion.
+- Keep `src/ui/app.rs` for composition, messages, native integration, and teardown.
+  Put complete page editors and views in sibling modules and reuse `widgets.rs`
+  for shared behavior. Do not introduce another UI framework.
 - Multiple focused `impl WinderustApp` blocks are acceptable for the private UI
   module. Keep glob imports contained there; use explicit imports when a module
   gains independent ownership or its dependencies become unclear, not as
@@ -338,7 +354,7 @@ Process-control features must keep these defaults:
   `src/control/process_termination.rs`; raw calls in the matching `src/platform/windows/` modules.
 - Shared process-control acquisition: typed identity/safety validation in `src/control/process.rs`;
   minimal mutation/command access masks and raw `OpenProcess` in
-  `src/platform/windows/process.rs`. Read-only Process List, CPU Limiter, and CPU Scheduler
+  `src/platform/windows/process.rs`. Read-only Process List, CPU Limiter, and Adaptive Engine
   sampling remains observation input and cannot authorize a write; every mutation reopens the
   exact target through the shared control boundary.
 - Process Priority and Power Throttling: shared lifecycle/arbitration in
@@ -356,8 +372,7 @@ Process-control features must keep these defaults:
   `src/platform/windows/suspension.rs`; native limiter timing in
   `src/platform/windows/cpu_limiter.rs`.
 - Win32 Priority Separation: page logic in
-  `src/ui/app/pages/win32_priority_separation_page.rs`, bit/value helpers in
-  `src/ui/app/shared/appearance.rs`, and registry access in
+  `src/ui/win32_priority_separation.rs`, including its bit/value helpers, and registry access in
   `src/backend/win_registry.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.

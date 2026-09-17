@@ -448,7 +448,7 @@ impl GpuPriorityManager {
             action_log.record(
                 ActionLogFeature::GpuPriority,
                 None,
-                "GPU Priority",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored previous GPU priority for {}: {reason}.",
@@ -519,7 +519,7 @@ impl GpuPriorityManager {
             action_log.record(
                 ActionLogFeature::GpuPriority,
                 None,
-                "GPU Priority",
+                "",
                 ActionLogResult::Applied,
                 gpu_priority_apply_summary_message(count),
             );
@@ -534,7 +534,7 @@ impl GpuPriorityManager {
             action_log.record(
                 ActionLogFeature::GpuPriority,
                 None,
-                "GPU Priority",
+                "",
                 ActionLogResult::Skipped,
                 gpu_priority_skip_summary_message(pending_context_count, access_denied_count),
             );
@@ -551,7 +551,7 @@ impl GpuPriorityManager {
 }
 
 fn gpu_priority_apply_summary_message(count: usize) -> String {
-    format!("Applied GPU priority to {}.", process_count_label(count))
+    format!("GPU priority updated for {}.", process_count_label(count))
 }
 
 fn gpu_priority_skip_summary_message(

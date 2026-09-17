@@ -1,1828 +1,2264 @@
-use std::{
-    cell::RefCell,
-    cmp::Ordering as CmpOrdering,
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    path::{Path, PathBuf},
-    rc::Rc,
-    sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc, LazyLock, Mutex,
-    },
-    time::{Duration, Instant},
+use super::{
+    action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
+    by_activity, cpu_allocation, cpu_limiter, design, home, memory_trim, navigation, power_rules,
+    priority_control, process_list, process_power_plans, settings_pages, status_rail, tasks,
+    timer_resolution, widgets, win32_priority_separation,
 };
+use crate::ui::scrolling::scrollable;
+use std::{cell::RefCell, path::PathBuf, time::Duration};
+use widgets::{button, text_input};
 
+use iced::widget::{column, container, row, text};
+use iced::{Element, Fill, Subscription, Task, Theme};
 use rust_i18n::t;
 
-use chrono::{Local, TimeZone};
-use gpui::{
-    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, rgba, size, Animation,
-    AnimationExt, AnyElement, App, Bounds, Context, DragMoveEvent, Empty, Entity, EntityId,
-    FocusHandle, Focusable, Hsla, Image, IntoElement, MouseButton, NavigationDirection, Pixels,
-    Point, PromptButton, PromptLevel, Render, ScrollAnchor, ScrollHandle, SharedString,
-    Subscription, Task, Timer, Window, WindowControlArea,
-};
-use gpui_component::{
-    animation::cubic_bezier,
-    button::{Button, ButtonCustomVariant, ButtonVariants},
-    chart::AreaChart,
-    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
-    h_flex,
-    input::{Escape as InputEscape, Input, InputEvent, InputState},
-    label::Label,
-    menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
-    scroll::{Scrollable, ScrollableElement, Scrollbar},
-    slider::{SliderEvent, SliderState, SliderValue},
-    theme::Colorize,
-    tooltip::Tooltip,
-    v_flex, v_virtual_list, ActiveTheme, Disableable, Icon, IconName, IconNamed, Sizable,
-    VirtualListScrollHandle,
-};
-
+use crate::application::SettingsEditor;
+use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
+use crate::config::PowerSourceProfile;
+use crate::ui::Page;
+use crate::SingleInstanceRestoreEvent;
 use crate::{
-    action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult, ActionLogSummaries},
-    activity::{
-        activity_snapshot, merge_activity_snapshot, ActivitySnapshot, ActivityState,
-        ControllerActivityDetector,
-    },
-    app_suspension::{self, AppSuspensionSnapshot},
-    application::{
-        AdvancedPowerPlanTuningService, NavigationCollapsedPatch, SettingsEditor,
-        Win32PrioritySeparationError, Win32PrioritySeparationService,
-        Win32PrioritySeparationSnapshot,
-    },
-    automation::{
-        ProcessControlActionReceiver, RuntimeCommandError, RuntimeFeatureStatus, RuntimeHandle,
-    },
-    background_efficiency,
-    config::{
-        self, AccentColorSource, AccentSettings, ActionLogMode, AdaptiveEnginePreset,
-        AdvancedPowerPlanTuningPreset, AnimationMode, AppLanguage, AppSuspensionRule,
-        AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
-        BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
-        ByCpuLoadRule, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
-        ByRunningAppSettings, ByTimeRule, CpuAllocationMethod, CpuAllocationRule, CpuLimiterRule,
-        CpuLimiterSettings, CpuSchedulerSettings, CpuUsageComparison, DynamicPriorityBoostSettings,
-        GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings,
-        NetworkThresholdUnit, PowerSourceProfile, ProcessDynamicPriorityBoostSetting,
-        ProcessExclusionRule, ProcessGpuPriority, ProcessGpuPrioritySetting, ProcessIoPriority,
-        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
-        ProcessPrioritySetting, ProcessPrioritySettings, ProcessThreadPrioritySetting, Settings,
-        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, UpdateChannel,
-        WeekdaySetting, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
-        CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS, CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS,
-    },
-    control::{
-        dynamic_priority_boost::{current_dynamic_priority_boost_state, DynamicPriorityBoostState},
-        gpu_priority::current_process_gpu_priority,
-        io_priority::current_process_io_priority,
-        memory_priority::current_process_memory_priority,
-        power_plan::PowerPlanStatus,
-        priority_efficiency::{current_efficiency_mode, current_process_priority},
-        thread_priority::current_process_thread_priority,
-    },
-    cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
-    cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind},
-    cpu_limiter::{self, CpuLimiterSnapshot},
-    cpu_scheduler, crash_recovery,
-    dashboard_metrics::{
-        sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
-        NetworkUsageMonitor, NetworkUsageSnapshot,
-    },
-    dynamic_priority_boost,
-    features::power_plan_control::next_by_time_switch_label,
-    file_dialog::{
-        choose_action_log_export_file, choose_executable_file, choose_settings_file, FileDialogMode,
-    },
-    foreground::{
-        capture_process_action_target, capture_process_action_target_for_owned_release,
-        contains_process_name, ensure_process_action_target_access, executable_path_key,
-        list_process_candidates, list_processes_with_paths, open_process_location,
-        process_candidates_from_processes, process_tree_action_targets, same_executable_path,
-        sample_process_resources, ProcessActionAccess, ProcessActionTarget,
-        ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
-    },
-    gpu_priority, io_priority, memory_priority, memory_trim,
-    power::{
-        active_plan, list_plans, AdaptivePowerBoostValues, EffectivePowerMode,
-        EffectivePowerModeMonitor, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
-        ProcessorPowerPreset, ProcessorPowerSourceValues, ProcessorPowerValues,
-    },
-    privilege,
-    process_icon::load_process_icon,
-    process_priority,
-    rules::{
-        MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
-    },
-    thread_priority, timer_resolution,
-    tray::{self, TrayIcon},
-    ui::{self, Page},
-    update_checker::{self, AvailableUpdate},
-    win_registry::{read_registry_binary_root, read_registry_dword_root},
-};
-use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::System::Registry::HKEY_CURRENT_USER;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
+    file_dialog::{choose_settings_file, FileDialogMode},
+    tray,
 };
 
-mod dashboard_model;
-mod list_removal;
-mod navigation_state;
-mod pages;
-mod process_models;
-mod process_refresh;
-pub(in crate::ui::app) use process_refresh::process_load_state_message;
-mod runtime;
-mod settings_io;
-mod shared;
-mod shell_model;
-mod tray_state;
-mod update_check;
-mod update_model;
+#[cfg(feature = "render-smoke")]
+#[path = "smoke.rs"]
+pub(crate) mod smoke;
 
-use dashboard_model::DashboardModel;
-use pages::*;
-use process_models::{ProcessCatalogModel, ProcessListModel};
-use shared::*;
-use shell_model::ShellModel;
-use update_model::{UpdateModalDismissal, UpdateModel};
-
-const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
-const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
-const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const DASHBOARD_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const TIMER_RESOLUTION_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
-const DASHBOARD_HISTORY_LEN: usize = 30;
-const DASHBOARD_SUMMARY_CARD_HEIGHT: f32 = 196.0;
-const DASHBOARD_LINE_CHART_HEIGHT: f32 = 112.0;
-const DASHBOARD_LINE_CHART_TICK_MARGIN: usize = DASHBOARD_HISTORY_LEN + 1;
-const DASHBOARD_PERCENT_CHART_MAX: f64 = 100.0;
-const DASHBOARD_SPLIT_ITEM_WIDTH: f32 = 140.0;
-const DASHBOARD_SPLIT_VALUE_WIDTH: f32 = 90.0;
-const CARD_ROW_HEIGHT: f32 = 58.0;
-const CORE_TILE_GRID_COLUMNS: usize = 8;
-const CORE_TILE_HEIGHT: f32 = 54.0;
-const EXPANDED_CHILD_MAX_ANIMATION_HEIGHT: f32 = 1800.0;
-const EXPANDED_CHILD_SLIDE_PX: f32 = 8.0;
-const MOTION_CONTROL_SECONDS: f64 = 0.18;
-const MOTION_CONTROL_MIN_SECONDS: f64 = 0.08;
-const MOTION_CONTROL_FRAME_INTERVAL: Duration = Duration::from_millis(16);
-const MOTION_FAST_SECONDS: f64 = 0.15;
-const MOTION_STANDARD_SECONDS: f64 = 0.22;
-const MOTION_EXPAND_SECONDS: f64 = 0.24;
-const MOTION_EXPAND_MIN_SECONDS: f64 = 0.1;
-const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const PROCESS_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
-const TITLE_BAR_HEIGHT: f32 = 40.0;
-const TITLE_BAR_CONTROL_WIDTH: f32 = 46.0;
-const TITLE_BAR_CONTROL_ICON_SIZE: f32 = 12.0;
-const TITLE_BAR_CONTROL_ICON_LINE_HEIGHT: f32 = 12.0;
-const PAGE_HEADER_HEIGHT: f32 = 48.0;
-const PAGE_CONTENT_VERTICAL_PADDING: f32 = 24.0;
-const CONTENT_MAX_WIDTH: f32 = 1040.0;
-const NAV_PANE_WIDTH: f32 = 276.0;
-const NAV_PANE_COMPACT_WIDTH: f32 = 64.0;
-
-const fn navigation_pane_width(collapsed: bool) -> f32 {
-    if collapsed {
-        NAV_PANE_COMPACT_WIDTH
-    } else {
-        NAV_PANE_WIDTH
-    }
-}
-
-fn navigation_pane_width_at_progress(progress: f32) -> f32 {
-    NAV_PANE_COMPACT_WIDTH + (NAV_PANE_WIDTH - NAV_PANE_COMPACT_WIDTH) * progress
-}
-const BRAND_RADIUS_CONTROL: f32 = 5.0;
-const BRAND_RADIUS_SURFACE: f32 = 7.0;
-const BRAND_RADIUS_OVERLAY: f32 = 8.0;
-const FONT_UI: &str = "Bahnschrift";
-const FONT_BRAND: &str = "Bahnschrift";
-const FONT_WINDOW_CONTROLS: &str = "Segoe Fluent Icons";
-const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
-const DROPDOWN_OPTION_ROW_HEIGHT: f32 = 40.0;
-const DROPDOWN_CONTROL_HEIGHT: f32 = 32.0;
-const DROPDOWN_SELECT_COMPACT_WIDTH: f32 = 136.0;
-const DROPDOWN_SELECT_TABLE_WIDTH: f32 = 168.0;
-const DROPDOWN_SELECT_STANDARD_WIDTH: f32 = 240.0;
-const DROPDOWN_SELECT_WIDE_WIDTH: f32 = 280.0;
-const NETWORK_UNIT_PICKER_WIDTH: f32 = 76.0;
-const SUSPENSION_ACTIVE_COLUMN_WIDTH: f32 = 56.0;
-const SUSPENSION_STATUS_COLUMN_WIDTH: f32 = 96.0;
-const SUSPENSION_DETECT_COLUMN_WIDTH: f32 = 72.0;
-const SUSPENSION_ACTION_COLUMN_WIDTH: f32 = 76.0;
-const DROPDOWN_SURFACE_VERTICAL_PADDING: f32 = 16.0;
-const DROPDOWN_OPTION_GAP: f32 = 4.0;
-const DROPDOWN_MENU_OFFSET: f32 = 34.0;
-const DROPDOWN_VIEWPORT_MARGIN: f32 = 12.0;
-const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
-const ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS: u64 = 1;
-const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
-const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
-const TIMER_RESOLUTION_INPUT_MIN_MS: f64 = 0.1;
-const TIMER_RESOLUTION_INPUT_MAX_MS: f64 = 1000.0;
-const CPU_SCHEDULER_THRESHOLD_MIN_PERCENT: u64 = 1;
-const CPU_SCHEDULER_THRESHOLD_MAX_PERCENT: u64 = 100;
-const CPU_SCHEDULER_SECONDS_MIN: u64 = 1;
-const CPU_SCHEDULER_SECONDS_MAX: u64 = 3_600;
-const CPU_SCHEDULER_TARGET_LIMIT_MIN: u64 = 1;
-const CPU_SCHEDULER_TARGET_LIMIT_MAX: u64 = 64;
-const WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT: u32 = 0x26;
-const DWM_REGISTRY_SUB_KEY: &str = "Software\\Microsoft\\Windows\\DWM";
-const DWM_ACCENT_COLOR_VALUE: &str = "AccentColor";
-const EXPLORER_ACCENT_REGISTRY_SUB_KEY: &str =
-    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent";
-const EXPLORER_ACCENT_PALETTE_VALUE: &str = "AccentPalette";
-const RULE_TITLE_TEXT_SIZE: f32 = 14.0;
-const RULE_TITLE_LINE_HEIGHT: f32 = 20.0;
-const TEXT_PAGE_TITLE_SIZE: f32 = 28.0;
-const TEXT_PAGE_TITLE_LINE_HEIGHT: f32 = 36.0;
-const TEXT_PAGE_CRUMB_SIZE: f32 = 20.0;
-const TEXT_PAGE_CRUMB_LINE_HEIGHT: f32 = 28.0;
-const TEXT_HEADER_SIZE: f32 = RULE_TITLE_TEXT_SIZE;
-const TEXT_HEADER_LINE_HEIGHT: f32 = RULE_TITLE_LINE_HEIGHT;
-const TEXT_BODY_SIZE: f32 = 14.0;
-const TEXT_BODY_LINE_HEIGHT: f32 = 20.0;
-const TEXT_CONTROL_SIZE: f32 = 14.0;
-const TEXT_CONTROL_LINE_HEIGHT: f32 = 20.0;
-const TEXT_LABEL_SIZE: f32 = 12.0;
-const TEXT_LABEL_LINE_HEIGHT: f32 = 16.0;
-const TEXT_CAPTION_SIZE: f32 = 12.0;
-const TEXT_CAPTION_LINE_HEIGHT: f32 = 16.0;
-
-const COLOR_APP_BG: u32 = 0x101112;
-const COLOR_TITLE_BAR: u32 = 0x0c0d0f;
-const COLOR_SETTINGS_CARD: u32 = 0x191b1f;
-const COLOR_SETTINGS_CARD_HOVER: u32 = 0x23262b;
-const COLOR_SIDEBAR_SELECTED: u32 = 0x272b31;
-const COLOR_SIDEBAR_HOVER: u32 = 0x202329;
-const COLOR_PANEL_ACTIVE: u32 = 0x2d3239;
-const COLOR_BORDER: u32 = 0x363b43;
-const COLOR_TEXT: u32 = 0xf4f4f5;
-const COLOR_MUTED: u32 = 0xc7ccd1;
-const COLOR_DIM: u32 = 0x8b929a;
-const COLOR_ACCENT: u32 = 0xa7e957;
-const COLOR_SUCCESS: u32 = 0x9ee069;
-const COLOR_SUCCESS_BG: u32 = 0x1f3418;
-const COLOR_WARNING: u32 = 0xffc857;
-const COLOR_WARNING_BG: u32 = 0x3d2e14;
-const COLOR_LIGHT_APP_BG: u32 = 0xf4f4f5;
-const COLOR_LIGHT_TITLE_BAR: u32 = 0xebedef;
-const COLOR_LIGHT_SETTINGS_CARD: u32 = 0xffffff;
-const COLOR_LIGHT_SETTINGS_CARD_HOVER: u32 = 0xf0f2f4;
-const COLOR_LIGHT_SIDEBAR_SELECTED: u32 = 0xe1e5e9;
-const COLOR_LIGHT_SIDEBAR_HOVER: u32 = 0xe9ecef;
-const COLOR_LIGHT_PANEL_ACTIVE: u32 = 0xe3e7eb;
-const COLOR_LIGHT_BORDER: u32 = 0xc7ccd2;
-const COLOR_LIGHT_TEXT: u32 = 0x171a1d;
-const COLOR_LIGHT_MUTED: u32 = 0x565d64;
-const COLOR_LIGHT_DIM: u32 = 0x747c84;
-
-const ACCENT_PALETTE: [u32; 48] = [
-    0xa7e957, 0xc7f36d, 0x8fd14f, 0x65b741, 0x3f8f34, 0x2f6f34, 0xd8c75b, 0xffc857, 0xe0a93a,
-    0xb9802f, 0x8d6128, 0xff8f5a, 0xe46845, 0xbb4c38, 0x8d382f, 0x6a2f2a, 0x4fc3a5, 0x2aa889,
-    0x167c68, 0x0f5f54, 0x76d0b2, 0xa8d6a1, 0xd1e3a4, 0xf2e5a0, 0xe8d7b2, 0xc7b58f, 0xa8946d,
-    0x786a50, 0x9bbf74, 0x7fa15d, 0x5d8048, 0x3f6038, 0xd9a441, 0xbf8033, 0xa45f31, 0x7d452e,
-    0xd96f6a, 0xb85b58, 0x8d4645, 0x633839, 0x8aa49a, 0x6f877d, 0x53665f, 0x3d4d47, 0xc1b897,
-    0xa8a07d, 0x837c61, 0x625d48,
-];
-const ACCENT_SWATCHES_PER_ROW: usize = 8;
-const ACCENT_SWATCH_SIZE: f32 = 42.0;
-const ACCENT_COLOR_PICKER_INNER_SIZE: f32 = ACCENT_SWATCH_SIZE;
-const ACCENT_COLOR_PICKER_WRAPPER_SIZE: f32 = ACCENT_SWATCH_SIZE;
-
-static UI_ACCENT_COLOR: AtomicU32 = AtomicU32::new(COLOR_ACCENT);
-static UI_ACCENT_TINT_SURFACES: AtomicBool = AtomicBool::new(false);
-static UI_DARK_MODE: AtomicBool = AtomicBool::new(true);
-static UI_ANIMATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
-
-const NAV_HISTORY_LIMIT: usize = 64;
-
-struct ProcessCandidate {
-    name: String,
-    image_path: PathBuf,
-    has_suspendable_instance: bool,
-    icon: Option<Arc<Image>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ProcessPolicySummary {
-    status: String,
-    cpu_percent: Option<f32>,
-    memory_bytes: Option<u64>,
-    power_plan_foreground: String,
-    power_plan_running: String,
-    adaptive_engine: String,
-    background_efficiency: String,
-    process_priority: String,
-    thread_priority: String,
-    dynamic_priority_boost: String,
-    io_priority: String,
-    gpu_priority: String,
-    memory_priority: String,
-    custom_columns: HashSet<ProcessListColumn>,
-    active_columns: HashSet<ProcessListColumn>,
-}
-
-impl ProcessPolicySummary {
-    fn mark_custom(&mut self, column: ProcessListColumn) {
-        self.custom_columns.insert(column);
-    }
-
-    fn uses_custom_rule(&self, column: ProcessListColumn) -> bool {
-        self.custom_columns.contains(&column)
-    }
-
-    fn set_active(&mut self, column: ProcessListColumn, active: bool) {
-        if active {
-            self.active_columns.insert(column);
-        } else {
-            self.active_columns.remove(&column);
-        }
-    }
-
-    fn value_is_active(&self, column: ProcessListColumn) -> bool {
-        self.active_columns.contains(&column)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct CpuUsageHistorySample {
-    percent: f32,
-    frequency_mhz: Option<u32>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct MemoryUsageHistorySample {
-    usage_percent: f32,
-    cache_percent: f32,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct IoUsageHistorySample {
-    read_bytes_per_second: f32,
-    write_bytes_per_second: f32,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct NetworkUsageHistorySample {
-    download_bytes_per_second: f32,
-    upload_bytes_per_second: f32,
-}
-
-struct DashboardDualLinePoint {
-    tick: String,
-    first_value: f64,
-    second_value: f64,
-    first_label: String,
-    second_label: String,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct MemoryCapacityParts {
-    value: f64,
-    unit: &'static str,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-enum ProcessLoadState {
-    #[default]
-    Loading,
-    Loaded,
-    Failed(String),
-    Paused,
-}
-
-#[derive(Clone)]
-struct ProcessDetailsDraft {
-    display_name: String,
-    executable_path: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum PresetSidePanelTab {
-    Status,
-    #[default]
-    Presets,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct ProcessResourceUsage {
-    cpu_percent: Option<f32>,
-    working_set_bytes: Option<u64>,
-    efficiency_mode: Option<bool>,
-}
-
-struct SettingsIoToast {
-    title: String,
-    message: String,
-    success: bool,
-    shown_at: Instant,
-    closing: bool,
-}
-
-struct TabContentTransition {
-    target: String,
-    generation: u64,
-    started_at: Instant,
-    from_x: f32,
-}
-
-pub struct WinderustApp {
+pub(crate) fn run(
     settings: SettingsEditor,
-    shell: ShellModel,
-    editing_power_source_profile: PowerSourceProfile,
-    plans: Vec<PowerPlan>,
-    current_plan: Option<PowerPlan>,
-    activity: ActivitySnapshot,
-    dashboard: DashboardModel,
-    feature_status: Arc<RuntimeFeatureStatus>,
-    power_plan_status: Arc<PowerPlanStatus>,
-    action_log_entries: Arc<Vec<ActionLogEntry>>,
-    action_log_summaries: Arc<ActionLogSummaries>,
-    last_appearance_change_generation: u64,
-    last_runtime_status_generation: u64,
-    last_auto_exclusion_patch_generation: u64,
-    action_log_result_filter: ActionLogResultFilter,
-    action_log_feature_filter: ActionLogFeatureFilter,
-    action_log_page: usize,
-    next_schedule: String,
-    next_check: Instant,
-    next_active_plan_refresh: Instant,
-    next_cpu_usage_refresh: Instant,
-    next_dashboard_io_refresh: Instant,
-    next_timer_resolution_status_refresh: Instant,
-    next_process_refresh: Instant,
-    effective_power_mode_monitor: Option<EffectivePowerModeMonitor>,
-    effective_power_mode: EffectivePowerMode,
-    runtime_handle: RuntimeHandle,
-    cpu_monitor: CpuUsageMonitor,
-    io_monitor: IoUsageMonitor,
-    network_monitor: NetworkUsageMonitor,
-    controller_activity_detector: ControllerActivityDetector,
-    tray_hide_on_close: bool,
-    hwnd: Option<HWND>,
-    tray_icon: Option<TrayIcon>,
-    tray_install_failed_for: Option<(bool, bool)>,
-    status_message: String,
-    process_catalog: ProcessCatalogModel,
-    process_list: ProcessListModel,
-    app_icon: Option<Arc<Image>>,
-    active_power_plan_picker: Option<String>,
-    advanced_power_plan_tuning_service: AdvancedPowerPlanTuningService,
-    processor_power_draft: ProcessorPowerSourceValues,
-    processor_power_target_plan_guid: Option<String>,
-    processor_power_loaded_plan_guid: Option<String>,
-    processor_power_target_plan_personality: Option<PowerPlanPersonality>,
-    processor_power_dirty: bool,
-    win32_priority_separation_service: Win32PrioritySeparationService,
-    win32_priority_separation_value: Option<u32>,
-    win32_priority_separation_edit_value: u32,
-    win32_priority_separation_backup: Option<u32>,
-    win32_priority_separation_status: String,
-    start_minimized_applied: bool,
-    editing_rule_title: Option<RuleTitleTarget>,
-    adaptive_engine_side_panel_tab: PresetSidePanelTab,
-    adaptive_engine_tuning_tab: AdaptiveEngineTuningTab,
-    cpu_allocation_side_panel_tab: PresetSidePanelTab,
-    side_panel_collapsed: bool,
-    side_panel_visible: bool,
-    retained_side_panel_page: Option<Page>,
-    editing_numeric: Option<NumericField>,
-    adaptive_engine_preset_editor: Option<AdaptiveEnginePresetEditor>,
-    cpu_allocation_preset_editor: Option<CpuAllocationPresetEditor>,
-    advanced_power_plan_tuning_preset_editor: Option<AdvancedPowerPlanTuningPresetEditor>,
-    expanded_rule_cards: HashSet<RuleCardTarget>,
-    expanded_setting_groups: HashSet<SettingGroupTarget>,
-    update: UpdateModel,
-    about_updates_focus_handle: FocusHandle,
-    about_page_scroll_handle: ScrollHandle,
-    about_updates_scroll_anchor: ScrollAnchor,
-    unsaved_popup_was_visible: bool,
-    unsaved_popup_vanish_started: Option<Instant>,
-    settings_io_toast: Option<SettingsIoToast>,
-    tab_content_transition: Option<TabContentTransition>,
-    tab_content_transition_generation: u64,
-    pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
-    dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
-    accent_color_picker: Entity<ColorPickerState>,
-    _rule_title_input_subscriptions: Vec<Subscription>,
-    _process_picker_input_subscriptions: Vec<Subscription>,
-    _numeric_input_subscription: Option<Subscription>,
-    _notify_input_subscriptions: Vec<Subscription>,
-    _processor_power_slider_subscriptions: Vec<Subscription>,
-    _cpu_threshold_slider_subscriptions: Vec<Subscription>,
-    _cpu_limiter_slider_subscriptions: Vec<Subscription>,
-    _activity_slider_subscriptions: Vec<Subscription>,
-    _accent_color_picker_subscription: Subscription,
-    _window_activation_subscription: Subscription,
-    _shutdown_subscription: Option<Subscription>,
-    shutdown_started: bool,
-    inputs: UiInputs,
-    _tick_task: Task<()>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BreadcrumbSegment {
-    page: Page,
-    label: String,
-}
-
-struct BreadcrumbTransition {
-    previous: Vec<BreadcrumbSegment>,
-    current: Vec<BreadcrumbSegment>,
-    started: Instant,
-    generation: u64,
-}
-
-#[derive(Default)]
-struct CardHoverState {
-    hovered: HashSet<String>,
-    changes: HashMap<String, CardHoverChange>,
-    generation: u64,
-}
-
-#[derive(Clone, Copy)]
-struct CardHoverChange {
-    hovered: bool,
-    generation: u64,
-    changed_at: Instant,
-}
-
-static CARD_HOVER_STATE: LazyLock<Mutex<CardHoverState>> =
-    LazyLock::new(|| Mutex::new(CardHoverState::default()));
-
-#[derive(Clone, Copy)]
-struct ExpandableTransition {
-    from_progress: f32,
-    to_progress: f32,
-    started: Instant,
-    duration: Duration,
-}
-
-#[derive(Default)]
-struct ExpandableMotionState {
-    transitions: HashMap<String, ExpandableTransition>,
-}
-
-static EXPANDABLE_MOTION_STATE: LazyLock<Mutex<ExpandableMotionState>> =
-    LazyLock::new(|| Mutex::new(ExpandableMotionState::default()));
-
-#[derive(Clone, Copy)]
-struct ControlTransition {
-    from_progress: f32,
-    to_progress: f32,
-    started: Instant,
-    duration: Duration,
-    generation: u64,
-}
-
-#[derive(Default)]
-struct ControlMotionState {
-    values: HashMap<String, String>,
-    transitions: HashMap<String, ControlTransition>,
-    generation: u64,
-}
-
-static CONTROL_MOTION_STATE: LazyLock<Mutex<ControlMotionState>> =
-    LazyLock::new(|| Mutex::new(ControlMotionState::default()));
-
-#[derive(Clone, Copy)]
-struct DropdownCloseTransition {
-    started: Instant,
-    generation: u64,
-}
-
-#[derive(Default)]
-struct DropdownMotionState {
-    open: HashMap<String, u64>,
-    closing: HashMap<String, DropdownCloseTransition>,
-    generation: u64,
-}
-
-static DROPDOWN_MOTION_STATE: LazyLock<Mutex<DropdownMotionState>> =
-    LazyLock::new(|| Mutex::new(DropdownMotionState::default()));
-static DISABLED_FEATURE_STATES: LazyLock<Mutex<HashMap<String, bool>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[derive(Clone, Copy)]
-enum DropdownPopupPhase {
-    Hidden,
-    Open(u64),
-    Closing(u64),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ListItemRemovalTarget {
-    kind: ListItemRemovalKind,
-    index: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum ListItemRemovalKind {
-    ByForegroundRule,
-    ByTimeRule,
-    ByCpuLoadRule,
-    BackgroundEfficiencyRule,
-    AppSuspensionRule,
-    CpuSetsSoftRule,
-    ProcessorAffinityHardRule,
-    AdaptiveEnginePreset,
-    CpuAllocationPreset,
-    AdvancedPowerPlanTuningPreset,
-    CpuLimiterRule,
-    ByRunningAppRule,
-    CpuSchedulerCustomRule,
-    ProcessPriorityExclusion,
-    ThreadPriorityExclusion,
-    DynamicPriorityBoostExclusion,
-    IoPriorityExclusion,
-    GpuPriorityExclusion,
-    MemoryPriorityExclusion,
-    TimerResolutionRule,
-    MemoryTrimExclusion,
-}
-
-#[derive(Clone, Copy)]
-struct CpuAllocationPresetEditor {
-    target: CpuAllocationPresetEditorTarget,
-    core_mask: u64,
-}
-
-#[derive(Clone)]
-struct AdaptiveEnginePresetEditor {
-    target: AdaptiveEnginePresetEditorTarget,
-    preset: AdaptiveEnginePreset,
-    tuning_tab: AdaptiveEngineTuningTab,
-}
-
-#[derive(Clone, Copy)]
-enum AdaptiveEnginePresetEditorTarget {
-    BuiltIn(BuiltInAdaptiveEnginePreset),
-    Custom(Option<usize>),
-}
-
-#[derive(Clone, Copy)]
-enum CpuAllocationPresetEditorTarget {
-    Core(usize),
-    Custom(Option<usize>),
-}
-
-struct AdvancedPowerPlanTuningPresetEditor {
-    target: AdvancedPowerPlanTuningPresetEditorTarget,
-    values: ProcessorPowerValues,
-    sliders: [Entity<SliderState>; 4],
-    _slider_subscriptions: Vec<Subscription>,
-}
-
-#[derive(Clone, Copy)]
-enum AdvancedPowerPlanTuningPresetEditorTarget {
-    BuiltIn(ProcessorPowerPreset),
-    Custom(Option<usize>),
-}
-
-impl ListItemRemovalTarget {
-    const fn new(kind: ListItemRemovalKind, index: usize) -> Self {
-        Self { kind, index }
-    }
-
-    const fn index(self) -> usize {
-        self.index
-    }
-
-    const fn with_index(self, index: usize) -> Self {
-        Self { index, ..self }
-    }
-
-    fn same_list(self, other: Self) -> bool {
-        self.kind == other.kind
-    }
-}
-
-struct UiInputs {
-    dashboard_search: Entity<InputState>,
-    process_list_search: Entity<InputState>,
-    by_cpu_load_rule_names: Vec<Entity<InputState>>,
-    cpu_rule_thresholds: Vec<Entity<SliderState>>,
-    cpu_rule_upper_thresholds: Vec<Entity<SliderState>>,
-    cpu_limiter_focus_default_allowed_time: Entity<SliderState>,
-    cpu_limiter_visible_window_default_allowed_time: Entity<SliderState>,
-    cpu_limiter_background_default_allowed_time: Entity<SliderState>,
-    cpu_limiter_focus_allowed_times: Vec<Entity<SliderState>>,
-    cpu_limiter_visible_window_allowed_times: Vec<Entity<SliderState>>,
-    cpu_limiter_background_allowed_times: Vec<Entity<SliderState>>,
-    by_time_rule_names: Vec<Entity<InputState>>,
-    schedule_start_times: Vec<Entity<InputState>>,
-    schedule_end_times: Vec<Entity<InputState>>,
-    foreground_process: Entity<InputState>,
-    background_efficiency_process: Entity<InputState>,
-    memory_trim_exclusion: Entity<InputState>,
-    app_suspension_process: Entity<InputState>,
-    cpu_limiter_process: Entity<InputState>,
-    performance_process: Entity<InputState>,
-    cpu_sets_soft_process: Entity<InputState>,
-    processor_affinity_hard_process: Entity<InputState>,
-    adaptive_engine_preset_name: Entity<InputState>,
-    cpu_allocation_preset_name: Entity<InputState>,
-    advanced_power_plan_tuning_preset_name: Entity<InputState>,
-    cpu_scheduler_process: Entity<InputState>,
-    process_priority_process: Entity<InputState>,
-    thread_priority_process: Entity<InputState>,
-    dynamic_priority_boost_process: Entity<InputState>,
-    io_priority_process: Entity<InputState>,
-    gpu_priority_process: Entity<InputState>,
-    memory_priority_process: Entity<InputState>,
-    timer_resolution_process: Entity<InputState>,
-    numeric_value: Entity<InputState>,
-    activity_idle_timeout: Entity<SliderState>,
-    activity_check_interval: Entity<SliderState>,
-    processor_power_ac_core_parking_min: Entity<SliderState>,
-    processor_power_ac_performance_min: Entity<SliderState>,
-    processor_power_ac_performance_max: Entity<SliderState>,
-    processor_power_ac_boost_policy: Entity<SliderState>,
-    processor_power_battery_core_parking_min: Entity<SliderState>,
-    processor_power_battery_performance_min: Entity<SliderState>,
-    processor_power_battery_performance_max: Entity<SliderState>,
-    processor_power_battery_boost_policy: Entity<SliderState>,
-}
-
-struct InitialProcessorPowerState {
-    plans: Vec<PowerPlan>,
-    current_plan: Option<PowerPlan>,
-    values: ProcessorPowerSourceValues,
-    target_plan_guid: Option<String>,
-    loaded_plan_guid: Option<String>,
-    target_plan_personality: Option<PowerPlanPersonality>,
-    status_message: String,
-}
-
-#[derive(Clone)]
-struct DragStableSlider(EntityId);
-
-impl Render for DragStableSlider {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
-enum TickOutcome {
-    Continue { changed: bool },
-    Stop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Win32PrioritySeparationField {
-    QuantumDuration,
-    QuantumBehaviour,
-    ForegroundBoost,
-}
-
-#[derive(Clone, Copy)]
-struct Win32PrioritySeparationFieldOption {
-    bits: u32,
-}
-
-fn default_processor_power_values() -> ProcessorPowerSourceValues {
-    ProcessorPowerSourceValues::same(ProcessorPowerValues::for_preset(
-        ProcessorPowerPreset::Balanced,
-    ))
-    .normalized()
-}
-
-fn load_initial_processor_power_state(
-    service: &AdvancedPowerPlanTuningService,
-) -> InitialProcessorPowerState {
-    let fallback_values = default_processor_power_values();
-
-    match list_plans() {
-        Ok(plans) => {
-            let current_plan = plans.iter().find(|plan| plan.active).cloned();
-            let target_plan = current_plan.as_ref().or_else(|| plans.first()).cloned();
-            let status_loaded = t!("status.loaded_power_plans", count = plans.len()).to_string();
-            let target_plan_personality = target_plan
-                .as_ref()
-                .and_then(|plan| service.read_personality(&plan.guid).ok());
-
-            let (values, loaded_plan_guid, status_message) = match target_plan.as_ref() {
-                Some(plan) => match service.read_values(&plan.guid) {
-                    Ok(values) => (values.normalized(), Some(plan.guid.clone()), status_loaded),
-                    Err(error) => (fallback_values, None, error.to_string()),
-                },
-                None => (fallback_values, None, status_loaded),
+    error: Option<String>,
+    runtime: RuntimeHandle,
+    restore_event: Option<SingleInstanceRestoreEvent>,
+) -> iced::Result {
+    let startup = RefCell::new(Some((settings, error, runtime, restore_event)));
+    iced::application(
+        move || {
+            let Some((settings, error, runtime, restore_event)) = startup.borrow_mut().take()
+            else {
+                unreachable!("Iced must initialize the application exactly once");
             };
-
-            InitialProcessorPowerState {
-                plans,
-                current_plan,
-                values,
-                target_plan_guid: target_plan.map(|plan| plan.guid),
-                loaded_plan_guid,
-                target_plan_personality,
-                status_message,
-            }
-        }
-        Err(err) => InitialProcessorPowerState {
-            plans: Vec::new(),
-            current_plan: None,
-            values: fallback_values,
-            target_plan_guid: None,
-            loaded_plan_guid: None,
-            target_plan_personality: None,
-            status_message: err,
+            rust_i18n::set_locale(settings.general.language.locale());
+            (
+                WinderustApp {
+                    appearance: settings_pages::theme(&settings.general),
+                    #[cfg(feature = "render-smoke")]
+                    smoke: smoke::Run::requested(),
+                    navigation_search: String::new(),
+                    expanded_section: None,
+                    status_collapsed: false,
+                    feature_info_expanded: false,
+                    preferences: settings_pages::Editor::default(),
+                    home: home::Model::default(),
+                    action_log: action_log::Editor::default(),
+                    sampler: std::sync::Arc::new(std::sync::Mutex::new(home::Sampler::default())),
+                    sampled_at: std::time::Instant::now(),
+                    sampling: false,
+                    process_sampled_at: std::time::Instant::now(),
+                    catalog_sampled_at: std::time::Instant::now(),
+                    suspension: app_suspension::Editor::default(),
+                    trim: memory_trim::Editor::default(),
+                    timer: timer_resolution::Editor::default(),
+                    priority_separation: win32_priority_separation::Editor::default(),
+                    power_tuning: advanced_power_plan_tuning::Editor::default(),
+                    effective_power_mode: crate::power::EffectivePowerModeMonitor::new().ok(),
+                    time_rules: power_rules::Editor::default(),
+                    cpu_rules: power_rules::Editor::default(),
+                    priority: priority_control::Editor::default(),
+                    efficiency: background_efficiency::Editor::default(),
+                    soft_allocation: cpu_allocation::Editor::default(),
+                    hard_allocation: cpu_allocation::Editor::default(),
+                    adaptive: adaptive_engine::Editor::default(),
+                    candidates: Vec::new(),
+                    unavailable_candidates: Vec::new(),
+                    catalog_loading: false,
+                    settings,
+                    runtime,
+                    status: RuntimeStatusSnapshot::default(),
+                    error_message: error
+                        .or_else(crate::crash_recovery::startup_error)
+                        .unwrap_or_default(),
+                    page: Page::Home,
+                    navigation_history: navigation::History::default(),
+                    breadcrumb: vec![Page::Home],
+                    restore_event,
+                    window: None,
+                    auto_exclusion_generation: 0,
+                    closing: false,
+                    hwnd: None,
+                    tray: None,
+                    tray_attempt: None,
+                    shutdown_failed: false,
+                    hidden: false,
+                    processes: process_list::ProcessList::default(),
+                    cpu_limiter: cpu_limiter::CpuLimiter::default(),
+                    power_source: PowerSourceProfile::PluggedIn,
+                    power_plans: Vec::new(),
+                    power_plans_loading: false,
+                    power_plans_loaded: false,
+                    foreground_plans: process_power_plans::Editor::default(),
+                    running_app_plans: process_power_plans::Editor::default(),
+                    activity_inputs: by_activity::Inputs::default(),
+                },
+                iced::window::latest().map(Message::Window),
+            )
         },
-    }
+        WinderustApp::update,
+        WinderustApp::view,
+    )
+    .title("Winderust")
+    .window(iced::window::Settings {
+        size: iced::Size::new(1120.0, 760.0),
+        min_size: Some(iced::Size::new(900.0, 620.0)),
+        decorations: true,
+        exit_on_close_request: false,
+        ..Default::default()
+    })
+    .settings(iced::Settings {
+        default_font: design::typography::FONT,
+        default_text_size: design::typography::BODY.into(),
+        ..Default::default()
+    })
+    .theme(|app: &WinderustApp| app.appearance.clone())
+    .subscription(|app: &WinderustApp| {
+        Subscription::batch([
+            iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
+            iced::window::close_requests().map(|_| Message::WindowClose),
+            iced::event::listen_with(|event, status, _| {
+                if status != iced::event::Status::Ignored {
+                    return None;
+                }
+                match event {
+                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                        iced::mouse::Button::Back,
+                    )) => Some(Message::NavigateHistory(false)),
+                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                        iced::mouse::Button::Forward,
+                    )) => Some(Message::NavigateHistory(true)),
+                    _ => None,
+                }
+            }),
+            if app.page == Page::ProcessList && app.processes.resizing_columns() {
+                iced::event::listen_raw(|event, _, _| match event {
+                    iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(
+                        Message::Processes(process_list::Message::ResizeMoved(position.x)),
+                    ),
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left,
+                    ))
+                    | iced::Event::Window(iced::window::Event::Unfocused) => {
+                        Some(Message::Processes(process_list::Message::ResizeEnd))
+                    }
+                    _ => None,
+                })
+            } else {
+                Subscription::none()
+            },
+            if app.page == Page::ProcessList {
+                iced::event::listen_with(|event, status, _| match event {
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
+                        modifiers,
+                        ..
+                    }) if status == iced::event::Status::Ignored && modifiers.is_empty() => {
+                        Some(Message::Processes(process_list::Message::DeleteFocused))
+                    }
+                    _ => None,
+                })
+            } else {
+                Subscription::none()
+            },
+        ])
+    })
+    .run()
+}
+
+struct WinderustApp {
+    #[cfg(feature = "render-smoke")]
+    smoke: Option<smoke::Run>,
+    appearance: Theme,
+    navigation_search: String,
+    expanded_section: Option<Page>,
+    status_collapsed: bool,
+    feature_info_expanded: bool,
+    preferences: settings_pages::Editor,
+    home: home::Model,
+    action_log: action_log::Editor,
+    sampler: std::sync::Arc<std::sync::Mutex<home::Sampler>>,
+    sampled_at: std::time::Instant,
+    sampling: bool,
+    process_sampled_at: std::time::Instant,
+    catalog_sampled_at: std::time::Instant,
+    suspension: app_suspension::Editor,
+    trim: memory_trim::Editor,
+    timer: timer_resolution::Editor,
+    priority_separation: win32_priority_separation::Editor,
+    power_tuning: advanced_power_plan_tuning::Editor,
+    effective_power_mode: Option<crate::power::EffectivePowerModeMonitor>,
+    time_rules: power_rules::Editor,
+    cpu_rules: power_rules::Editor,
+    priority: priority_control::Editor,
+    efficiency: background_efficiency::Editor,
+    soft_allocation: cpu_allocation::Editor,
+    hard_allocation: cpu_allocation::Editor,
+    adaptive: adaptive_engine::Editor,
+    candidates: Vec<super::app_picker::Candidate>,
+    unavailable_candidates: Vec<String>,
+    catalog_loading: bool,
+    settings: SettingsEditor,
+    runtime: RuntimeHandle,
+    status: RuntimeStatusSnapshot,
+    error_message: String,
+    page: Page,
+    navigation_history: navigation::History,
+    breadcrumb: Vec<Page>,
+    restore_event: Option<SingleInstanceRestoreEvent>,
+    window: Option<iced::window::Id>,
+    auto_exclusion_generation: u64,
+    closing: bool,
+    hwnd: Option<usize>,
+    tray: Option<tray::TrayIcon>,
+    tray_attempt: Option<((bool, bool), std::time::Instant)>,
+    shutdown_failed: bool,
+    hidden: bool,
+    processes: process_list::ProcessList,
+    cpu_limiter: cpu_limiter::CpuLimiter,
+    power_source: PowerSourceProfile,
+    power_plans: Vec<crate::power::PowerPlan>,
+    power_plans_loading: bool,
+    power_plans_loaded: bool,
+    foreground_plans: process_power_plans::Editor,
+    running_app_plans: process_power_plans::Editor,
+    activity_inputs: by_activity::Inputs,
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    #[cfg(feature = "render-smoke")]
+    SmokeScreenshot(iced::window::Screenshot),
+    NavigationSearch(String),
+    DismissError,
+    NavigateHistory(bool),
+    ToggleNavigation,
+    ToggleSection(Page),
+    ToggleFeatureInfo,
+    ToggleStatus,
+    Preferences(settings_pages::Message),
+    Status(status_rail::Message),
+    Home(home::Message),
+    Sample(Result<home::Sample, String>),
+    ActionLog(action_log::Message),
+    ExportLog(Option<PathBuf>),
+    Suspension(app_suspension::Message),
+    Trim(memory_trim::Message),
+    Timer(timer_resolution::Message),
+    PrioritySeparation(win32_priority_separation::Message),
+    PowerTuning(advanced_power_plan_tuning::Message),
+    CommandFinished(Result<(), String>),
+
+    PowerRules(power_rules::Kind, power_rules::Message),
+    Priority(priority_control::Kind, priority_control::Message),
+    Efficiency(background_efficiency::Message),
+    Allocation(cpu_allocation::Kind, cpu_allocation::Message),
+    Adaptive(adaptive_engine::Message),
+    Catalog(Result<Vec<super::app_picker::Candidate>, String>),
+    ExecutableChosen(Page, PowerSourceProfile, Option<PathBuf>),
+    Page(Page),
+    Tick,
+    Window(Option<iced::window::Id>),
+    NativeWindow(Option<usize>),
+    WindowClose,
+    Close,
+    Save,
+    Cancel,
+    PausePowerPlans(bool),
+    SettingsFile(FileDialogMode),
+    SettingsFileChosen(FileDialogMode, Option<PathBuf>),
+    Stay,
+    DiscardAndClose,
+    Processes(process_list::Message),
+    CpuLimiter(cpu_limiter::Message),
+    PowerSource(PowerSourceProfile),
+    ByActivity(by_activity::Message),
+    ProcessPowerPlans(process_power_plans::Kind, process_power_plans::Message),
+    PowerPlans(Result<Vec<crate::power::PowerPlan>, String>),
 }
 
 impl WinderustApp {
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        settings: SettingsEditor,
-        settings_load_error: Option<String>,
-        runtime_handle: RuntimeHandle,
-    ) -> Self {
-        let hwnd = tray::hwnd_from_window(window);
-        let window_activation_subscription =
-            cx.observe_window_activation(window, |app, window, cx| {
-                if window.is_window_active() && tray::take_restore_requested() {
-                    app.refresh_after_tray_restore(window, cx);
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            #[cfg(feature = "render-smoke")]
+            Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
+            Message::DismissError => self.error_message.clear(),
+            Message::NavigationSearch(value) => self.navigation_search = value,
+            Message::ToggleNavigation => {
+                let patch = crate::application::NavigationCollapsedPatch {
+                    base_revision: self.settings.base_revision(),
+                    navigation_collapsed: !self.settings.global().general.navigation_collapsed,
+                };
+                match self.settings.apply_navigation_collapsed_patch(patch) {
+                    Ok(_) => self.publish_settings(),
+                    Err(error) => self.error_message = error.to_string(),
                 }
-            });
-        apply_language(settings.general.language);
-        apply_appearance_settings(&settings.general, window, cx);
-        let effective_power_mode_monitor = EffectivePowerModeMonitor::new().ok();
-        let effective_power_mode = effective_power_mode_monitor
-            .as_ref()
-            .map(EffectivePowerModeMonitor::snapshot)
-            .unwrap_or(EffectivePowerMode::Unknown);
-        let advanced_power_plan_tuning_service = AdvancedPowerPlanTuningService::default();
-        let mut initial_processor_power =
-            load_initial_processor_power_state(&advanced_power_plan_tuning_service);
-        if let Some(error) = settings_load_error {
-            initial_processor_power.status_message = error;
-        }
-        if let Some(error) = crash_recovery::startup_error() {
-            initial_processor_power.status_message = error;
-        }
-        let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
-        let initial_process_load_state = if settings.advanced.pause_process_population {
-            ProcessLoadState::Paused
-        } else {
-            ProcessLoadState::Loading
-        };
-        let win32_priority_separation_service = Win32PrioritySeparationService::default();
-        let (
-            win32_priority_separation_value,
-            win32_priority_separation_backup,
-            win32_priority_separation_status,
-        ) = win32_priority_separation_snapshot_state(win32_priority_separation_service.snapshot());
-        let win32_priority_separation_edit_value = win32_priority_separation_value
-            .map(normalize_win32_priority_separation_value)
-            .unwrap_or(WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT);
-        let initial_timer_resolution_status =
-            timer_resolution::query_snapshot(settings.timer_resolution.enabled);
-        let app_icon = std::env::current_exe()
-            .ok()
-            .and_then(|path| load_process_icon(&path));
-        let accent_color_picker = cx.new(|cx| {
-            ColorPickerState::new(window, cx)
-                .default_value(rgb(settings.general.accent.custom_color))
-        });
-        let accent_color_picker_subscription = cx.subscribe_in(
-            &accent_color_picker,
-            window,
-            |app, _, event: &ColorPickerEvent, window, cx| {
-                let ColorPickerEvent::Change(Some(color)) = event else {
-                    return;
-                };
-                let Some(color) = hsla_to_rgb_u32(*color) else {
-                    return;
-                };
-                app.settings.general.accent.source = AccentColorSource::Custom;
-                app.settings.general.accent.custom_color = color;
-                add_custom_accent_color(&mut app.settings.general.accent, color);
-                app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
-                app.active_power_plan_picker = None;
-                apply_appearance_settings(&app.settings.general, window, cx);
-                cx.notify();
-            },
-        );
-        let about_page_scroll_handle = ScrollHandle::new();
-        let about_updates_scroll_anchor =
-            ScrollAnchor::for_handle(about_page_scroll_handle.clone());
-        let mut app = Self {
-            settings,
-            shell: ShellModel::new(Page::Home),
-            editing_power_source_profile: if crate::backend::power_source::is_plugged_in()
-                == Some(false)
-            {
-                PowerSourceProfile::OnBattery
-            } else {
-                PowerSourceProfile::PluggedIn
-            },
-            plans: initial_processor_power.plans,
-            current_plan: initial_processor_power.current_plan,
-            activity: ActivitySnapshot {
-                state: ActivityState::Unknown,
-                idle_for: None,
-            },
-            dashboard: DashboardModel::new(),
-            feature_status: Arc::new(RuntimeFeatureStatus {
-                timer_resolution: initial_timer_resolution_status,
-                ..Default::default()
-            }),
-            power_plan_status: Arc::new(PowerPlanStatus::default()),
-            action_log_entries: Arc::new(Vec::new()),
-            action_log_summaries: Arc::new(ActionLogSummaries::new()),
-            last_appearance_change_generation: 0,
-            last_runtime_status_generation: 0,
-            last_auto_exclusion_patch_generation: 0,
-            action_log_result_filter: ActionLogResultFilter::All,
-            action_log_feature_filter: ActionLogFeatureFilter::All,
-            action_log_page: 0,
-            next_schedule: t!("status.no_active_time_rules").to_string(),
-            next_check: Instant::now(),
-            next_active_plan_refresh: Instant::now(),
-            next_cpu_usage_refresh: Instant::now(),
-            next_dashboard_io_refresh: Instant::now(),
-            next_timer_resolution_status_refresh: Instant::now(),
-            next_process_refresh: Instant::now(),
-            effective_power_mode_monitor,
-            effective_power_mode,
-            runtime_handle,
-            cpu_monitor: CpuUsageMonitor::default(),
-            io_monitor: IoUsageMonitor::default(),
-            network_monitor: NetworkUsageMonitor::default(),
-            controller_activity_detector: ControllerActivityDetector::default(),
-            tray_hide_on_close: false,
-            hwnd,
-            tray_icon: None,
-            tray_install_failed_for: None,
-            status_message: initial_processor_power.status_message,
-            process_catalog: ProcessCatalogModel::new(initial_process_load_state.clone()),
-            process_list: ProcessListModel::new(initial_process_load_state),
-            app_icon,
-            active_power_plan_picker: None,
-            advanced_power_plan_tuning_service,
-            processor_power_draft: initial_processor_power.values,
-            processor_power_target_plan_guid: initial_processor_power.target_plan_guid,
-            processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
-            processor_power_target_plan_personality: initial_processor_power
-                .target_plan_personality,
-            processor_power_dirty: false,
-            win32_priority_separation_service,
-            win32_priority_separation_value,
-            win32_priority_separation_edit_value,
-            win32_priority_separation_backup,
-            win32_priority_separation_status,
-            start_minimized_applied: false,
-            editing_rule_title: None,
-            adaptive_engine_side_panel_tab: PresetSidePanelTab::default(),
-            adaptive_engine_tuning_tab: AdaptiveEngineTuningTab::default(),
-            cpu_allocation_side_panel_tab: PresetSidePanelTab::default(),
-            side_panel_collapsed: false,
-            side_panel_visible: false,
-            retained_side_panel_page: None,
-            editing_numeric: None,
-            adaptive_engine_preset_editor: None,
-            cpu_allocation_preset_editor: None,
-            advanced_power_plan_tuning_preset_editor: None,
-            expanded_rule_cards: HashSet::new(),
-            expanded_setting_groups: HashSet::new(),
-            update: UpdateModel::new(),
-            about_updates_focus_handle: cx.focus_handle(),
-            about_page_scroll_handle,
-            about_updates_scroll_anchor,
-            unsaved_popup_was_visible: false,
-            unsaved_popup_vanish_started: None,
-            settings_io_toast: None,
-            tab_content_transition: None,
-            tab_content_transition_generation: 0,
-            pending_list_item_removals: HashMap::new(),
-            dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
-            accent_color_picker,
-            _rule_title_input_subscriptions: Vec::new(),
-            _process_picker_input_subscriptions: Vec::new(),
-            _numeric_input_subscription: None,
-            _notify_input_subscriptions: Vec::new(),
-            _processor_power_slider_subscriptions: Vec::new(),
-            _cpu_threshold_slider_subscriptions: Vec::new(),
-            _cpu_limiter_slider_subscriptions: Vec::new(),
-            _activity_slider_subscriptions: Vec::new(),
-            _accent_color_picker_subscription: accent_color_picker_subscription,
-            _window_activation_subscription: window_activation_subscription,
-            _shutdown_subscription: None,
-            shutdown_started: false,
-            inputs,
-            _tick_task: Task::ready(()),
-        };
-
-        app._shutdown_subscription = Some(cx.on_app_quit(|app, _| {
-            if let Err(error) = app.shutdown() {
-                app.status_message = error;
             }
-            async {}
-        }));
-        app.rebuild_rule_title_input_subscriptions(window, cx);
-        app.rebuild_process_picker_input_subscriptions(window, cx);
-        app.subscribe_to_numeric_input(window, cx);
-        app.rebuild_notify_input_subscriptions(window, cx);
-        app.subscribe_to_processor_power_sliders(window, cx);
-        app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
-        app.rebuild_cpu_limiter_slider_subscriptions(window, cx);
-        app.subscribe_to_activity_sliders(window, cx);
-        window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
-        app.sync_tray_icon();
-        app.run_check(Instant::now());
-        app.sync_processor_power_slider_states(window, cx);
-        if app.settings.persisted().general.check_for_updates {
-            app.check_for_updates(false, cx);
+            Message::ToggleFeatureInfo => self.feature_info_expanded = !self.feature_info_expanded,
+            Message::ToggleSection(page) => {
+                if self.page != page {
+                    return self.update(Message::Page(page));
+                }
+                self.expanded_section = (self.expanded_section != Some(page)).then_some(page);
+            }
+            Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
+            Message::Status(status_rail::Message::RelaunchAdmin) => {
+                if crate::privilege::relaunch_as_admin() {
+                    return self.update(Message::Close);
+                }
+            }
+            Message::Preferences(settings_pages::Message::Open(url)) => {
+                if let Err(error) = crate::win_util::open_url(&url) {
+                    self.error_message = error;
+                }
+            }
+            Message::Home(home::Message::Navigate(page)) => {
+                return self.update(Message::Page(page))
+            }
+            Message::Home(home::Message::PauseMetrics(value)) => {
+                self.home.metrics_paused = value;
+            }
+            Message::Sample(result) => {
+                self.sampling = false;
+                match result {
+                    Ok(sample) if !self.home.metrics_paused => self.home.record(sample),
+                    Ok(_) => {}
+                    Err(error) => self.error_message = error,
+                }
+            }
+            Message::Preferences(settings_pages::Message::Export) => {
+                return self.update(Message::SettingsFile(FileDialogMode::Save))
+            }
+            Message::Preferences(settings_pages::Message::Import) => {
+                return self.update(Message::SettingsFile(FileDialogMode::Open))
+            }
+            Message::Preferences(
+                message @ (settings_pages::Message::Check | settings_pages::Message::CheckStartup),
+            ) => {
+                let automatic = matches!(message, settings_pages::Message::CheckStartup);
+                let channel = self.settings.global().general.update_channel;
+                if !self.preferences.begin_check(channel, automatic) {
+                    return Task::none();
+                }
+                return tasks::run(move || {
+                    crate::update_checker::check(channel)
+                        .map(|r| (r.latest_version, r.available_update.map(|u| u.url)))
+                        .map_err(|_| t!("about.update_check_failed").to_string())
+                })
+                .map(move |r| {
+                    Message::Preferences(settings_pages::Message::Checked(
+                        channel,
+                        r.and_then(|r| r),
+                    ))
+                });
+            }
+            Message::Preferences(message) => {
+                self.settings
+                    .edit_global(|settings| self.preferences.update(settings, message));
+                self.appearance = settings_pages::theme(&self.settings.global().general);
+            }
+            Message::ActionLog(action_log::Message::LogMode(value)) => {
+                self.settings
+                    .edit_global(|settings| settings.advanced.action_log_mode = value);
+            }
+            Message::ActionLog(action_log::Message::Clear) => {
+                self.runtime.clear_action_log();
+                self.status.action_log_entries = Default::default();
+                self.status.action_log_summaries = Default::default();
+                self.action_log.update(action_log::Message::Clear);
+                return iced::widget::operation::scroll_to(
+                    "action-log",
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: None,
+                        y: Some(0.0),
+                    },
+                );
+            }
+            Message::ActionLog(action_log::Message::Export) => {
+                return Task::perform(
+                    crate::file_dialog::choose_action_log_export_file(
+                        self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
+                    ),
+                    Message::ExportLog,
+                )
+            }
+            Message::ActionLog(message) => {
+                let reset = matches!(
+                    message,
+                    action_log::Message::Result(..)
+                        | action_log::Message::Feature(..)
+                        | action_log::Message::AllResults(_)
+                        | action_log::Message::AllFeatures(_)
+                );
+                self.action_log.update(message);
+                if reset {
+                    return iced::widget::operation::scroll_to(
+                        "action-log",
+                        iced::widget::scrollable::AbsoluteOffset {
+                            x: None,
+                            y: Some(0.0),
+                        },
+                    );
+                }
+            }
+            Message::ExportLog(path) => {
+                if let Some(path) = path {
+                    if let Err(error) = crate::config::storage::write_bytes_atomically(
+                        &path,
+                        action_log::action_log_entries_to_csv(&self.status.action_log_entries)
+                            .as_bytes(),
+                    ) {
+                        self.error_message = t!(
+                            "status.action_log_export_failed",
+                            path = path.display(),
+                            error = error
+                        )
+                        .to_string();
+                    }
+                }
+            }
+
+            Message::CommandFinished(result) => {
+                if let Err(error) = result {
+                    self.error_message = error;
+                }
+            }
+            Message::Suspension(app_suspension::Message::Browse) => {
+                return self.browse(Page::AppSuspension)
+            }
+            Message::Suspension(message) => {
+                if let Some((path, freeze)) = self.suspension.update(
+                    &mut self.settings.app_suspension,
+                    &self.status.feature_status.app_suspension,
+                    &self.unavailable_candidates,
+                    message,
+                ) {
+                    match self
+                        .runtime
+                        .request_app_suspension_path_action(&path, freeze)
+                    {
+                        Ok(receiver) => {
+                            return tasks::run(move || {
+                                receiver
+                                    .recv()
+                                    .map_err(|e| e.to_string())
+                                    .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
+                            })
+                            .map(|r| Message::CommandFinished(r.and_then(|r| r)))
+                        }
+                        Err(error) => self.error_message = error.to_string(),
+                    }
+                }
+            }
+            Message::Trim(memory_trim::Message::Browse) => return self.browse(Page::MemoryTrim),
+            Message::Trim(memory_trim::Message::TrimNow) => {
+                match self.runtime.request_memory_trim_now() {
+                    Ok(receiver) => {
+                        return tasks::run(move || {
+                            receiver
+                                .recv()
+                                .map_err(|e| e.to_string())
+                                .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
+                        })
+                        .map(|r| Message::CommandFinished(r.and_then(|r| r)))
+                    }
+                    Err(error) => self.error_message = error.to_string(),
+                }
+            }
+            Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
+            Message::Timer(timer_resolution::Message::Browse) => {
+                return self.browse(Page::TimerResolution)
+            }
+            Message::Timer(message) => self.timer.update(
+                &mut self.settings.timer_resolution,
+                &self.status.feature_status.timer_resolution,
+                message,
+            ),
+            Message::PrioritySeparation(message) => self.priority_separation.update(message),
+            Message::PowerTuning(message) => self.settings.edit_with_presets(|settings| {
+                self.power_tuning.update(
+                    &mut settings.advanced_power_plan_tuning_presets,
+                    &self.power_plans,
+                    message,
+                )
+            }),
+
+            Message::PowerRules(kind, message) => {
+                let editor = match kind {
+                    power_rules::Kind::Time => &mut self.time_rules,
+                    power_rules::Kind::CpuLoad => &mut self.cpu_rules,
+                };
+                editor.update(kind, &mut self.settings, &self.power_plans, message);
+            }
+            Message::Priority(kind, priority_control::Message::Browse) => {
+                return self.browse(priority_page(kind))
+            }
+            Message::Priority(kind, message) => {
+                self.priority.update(&mut self.settings, kind, message)
+            }
+            Message::Efficiency(background_efficiency::Message::Browse) => {
+                return self.browse(Page::BackgroundEfficiency)
+            }
+            Message::Efficiency(message) => self.efficiency.update(&mut self.settings, message),
+            Message::Allocation(_, cpu_allocation::Message::Status(message)) => {
+                return self.update(Message::Status(message))
+            }
+            Message::Allocation(kind, cpu_allocation::Message::Browse) => {
+                return self.browse(match kind {
+                    cpu_allocation::Kind::Soft => Page::CpuSetsSoft,
+                    cpu_allocation::Kind::Hard => Page::ProcessorAffinityHard,
+                })
+            }
+            Message::Allocation(kind, message) => {
+                self.settings.edit_with_presets(|settings| match kind {
+                    cpu_allocation::Kind::Soft => {
+                        self.soft_allocation.update(settings, kind, message)
+                    }
+                    cpu_allocation::Kind::Hard => {
+                        self.hard_allocation.update(settings, kind, message)
+                    }
+                })
+            }
+            Message::Adaptive(adaptive_engine::Message::Status(message)) => {
+                return self.update(Message::Status(message))
+            }
+            Message::Adaptive(adaptive_engine::Message::Browse) => {
+                return self.browse(Page::AdaptiveEngine)
+            }
+            Message::Adaptive(message) => self
+                .settings
+                .edit_with_presets(|settings| self.adaptive.update(settings, message)),
+            Message::Catalog(result) => {
+                self.catalog_loading = false;
+                match result {
+                    Ok(candidates) if !self.processes.population_paused => {
+                        self.unavailable_candidates = candidates
+                            .iter()
+                            .filter(|candidate| !candidate.info.has_suspendable_instance)
+                            .map(|candidate| {
+                                candidate.info.image_path.to_string_lossy().into_owned()
+                            })
+                            .collect();
+                        self.candidates = candidates;
+                    }
+                    Ok(_) => {}
+                    Err(error) => self.error_message = error,
+                }
+            }
+            Message::ExecutableChosen(page, profile, path) => {
+                if profile == self.power_source {
+                    if let Some(path) = path {
+                        let path = path.to_string_lossy().into_owned();
+                        if let Some(kind) = priority_kind(page) {
+                            return self.update(Message::Priority(
+                                kind,
+                                priority_control::Message::Path(path),
+                            ));
+                        }
+                        match page {
+                            Page::AppSuspension => {
+                                return self.update(Message::Suspension(
+                                    app_suspension::Message::Path(path),
+                                ))
+                            }
+                            Page::MemoryTrim => {
+                                return self.update(Message::Trim(memory_trim::Message::Path(path)))
+                            }
+                            Page::TimerResolution => {
+                                return self
+                                    .update(Message::Timer(timer_resolution::Message::Path(path)))
+                            }
+                            Page::CpuSetsSoft => {
+                                return self.update(Message::Allocation(
+                                    cpu_allocation::Kind::Soft,
+                                    cpu_allocation::Message::Path(path),
+                                ))
+                            }
+                            Page::ProcessorAffinityHard => {
+                                return self.update(Message::Allocation(
+                                    cpu_allocation::Kind::Hard,
+                                    cpu_allocation::Message::Path(path),
+                                ))
+                            }
+                            Page::BackgroundEfficiency => {
+                                return self.update(Message::Efficiency(
+                                    background_efficiency::Message::Path(path),
+                                ))
+                            }
+                            Page::AdaptiveEngine => {
+                                return self.update(Message::Adaptive(
+                                    adaptive_engine::Message::Path(path),
+                                ))
+                            }
+                            Page::CpuLimiter => {
+                                return self
+                                    .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)))
+                            }
+                            Page::ByForeground => {
+                                return self.update(Message::ProcessPowerPlans(
+                                    process_power_plans::Kind::Foreground,
+                                    process_power_plans::Message::Path(path),
+                                ))
+                            }
+                            Page::ByRunningApp => {
+                                return self.update(Message::ProcessPowerPlans(
+                                    process_power_plans::Kind::RunningApp,
+                                    process_power_plans::Message::Path(path),
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Message::ProcessPowerPlans(kind, process_power_plans::Message::Browse) => {
+                return self.browse(match kind {
+                    process_power_plans::Kind::Foreground => Page::ByForeground,
+                    process_power_plans::Kind::RunningApp => Page::ByRunningApp,
+                })
+            }
+            Message::ProcessPowerPlans(kind, message) => {
+                let editor = match kind {
+                    process_power_plans::Kind::Foreground => &mut self.foreground_plans,
+                    process_power_plans::Kind::RunningApp => &mut self.running_app_plans,
+                };
+                editor.update(kind, &mut self.settings, &self.power_plans, message);
+            }
+            Message::ByActivity(message) => {
+                self.activity_inputs.edit(&message);
+                by_activity::update(&mut self.settings, message);
+            }
+            Message::PowerPlans(result) => {
+                self.power_plans_loading = false;
+                match result {
+                    Ok(plans) => {
+                        self.power_plans = plans;
+                        self.power_plans_loaded = true;
+                        if self.page == Page::AdvancedPowerPlanTuning {
+                            self.power_tuning.ensure_plan(&self.power_plans);
+                        }
+                    }
+                    Err(error) => self.error_message = error,
+                }
+            }
+            Message::CpuLimiter(cpu_limiter::Message::Browse) => {
+                return self.browse(Page::CpuLimiter)
+            }
+            Message::CpuLimiter(message) => self
+                .cpu_limiter
+                .update(&mut self.settings.cpu_limiter, message),
+            Message::PowerSource(_) if self.pending_editor() || self.invalid_inputs() => {
+                self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::PowerSource(source) => {
+                self.power_source = source;
+                self.settings.select_power_source(source);
+                self.reset_editors();
+            }
+            Message::Window(window) => {
+                self.window = window;
+                if let Some(window) = window {
+                    return iced::window::run(window, |window| {
+                        use raw_window_handle::RawWindowHandle;
+                        match window.window_handle().ok()?.as_raw() {
+                            RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as usize),
+                            _ => None,
+                        }
+                    })
+                    .map(Message::NativeWindow);
+                }
+            }
+            Message::NativeWindow(hwnd) => {
+                self.hwnd = hwnd;
+                if let (Some(event), Some(hwnd)) = (self.restore_event.take(), hwnd) {
+                    event.listen(hwnd as windows_sys::Win32::Foundation::HWND);
+                }
+                self.sync_tray();
+                let update = if self.settings.global().general.check_for_updates {
+                    self.update(Message::Preferences(settings_pages::Message::CheckStartup))
+                } else {
+                    Task::none()
+                };
+                if self.settings.persisted().general.start_minimized {
+                    if let (Some(hwnd), Some(_)) = (self.hwnd, &self.tray) {
+                        tray::hide_window(hwnd as windows_sys::Win32::Foundation::HWND);
+                    } else if let Some(window) = self.window {
+                        return Task::batch([iced::window::minimize(window, true), update]);
+                    }
+                }
+                return update;
+            }
+            Message::NavigateHistory(forward) => {
+                if !self.closing && self.error_message.is_empty() && !self.pending_editor() {
+                    if let Some(page) = self.navigation_history.travel(forward) {
+                        return self.update(Message::Page(page));
+                    }
+                }
+            }
+            Message::Page(page) => {
+                self.navigation_history.visit(page);
+                self.feature_info_expanded = false;
+                let path = navigation::breadcrumb_path(page);
+                self.breadcrumb = path;
+                self.page = page;
+                self.expanded_section = Some(page.section_landing_page());
+                if page == Page::Win32PrioritySeparation {
+                    self.priority_separation.refresh();
+                }
+                if page == Page::AdvancedPowerPlanTuning {
+                    self.power_tuning.ensure_plan(&self.power_plans);
+                }
+                let mut tasks = Vec::new();
+                if page_needs_power_plans(page) {
+                    tasks.push(self.load_power_plans());
+                }
+                if !self.processes.population_paused {
+                    if page == Page::ProcessList {
+                        tasks.push(
+                            self.processes
+                                .update(
+                                    process_list::Message::Refresh,
+                                    &mut self.settings,
+                                    &self.runtime,
+                                )
+                                .map(Message::Processes),
+                        );
+                    }
+                    if (page.supports_power_source_profiles() || page == Page::ActionLog)
+                        && !self.catalog_loading
+                    {
+                        self.catalog_loading = true;
+                        tasks.push(
+                            tasks::run({
+                                let cached = self.candidates.clone();
+                                move || super::app_picker::load(cached)
+                            })
+                            .map(|result| Message::Catalog(result.and_then(|result| result))),
+                        );
+                    }
+                }
+                return Task::batch(tasks);
+            }
+            Message::Processes(process_list::Message::Details(
+                process_list::details::Message::ReloadPlans,
+            )) => {
+                return self.load_power_plans();
+            }
+            Message::Processes(message) => {
+                if self.processes.population_paused
+                    && matches!(
+                        message,
+                        process_list::Message::Refresh | process_list::Message::Loaded(_)
+                    )
+                {
+                    self.processes.discard(message);
+                } else {
+                    return self
+                        .processes
+                        .update(message, &mut self.settings, &self.runtime)
+                        .map(Message::Processes);
+                }
+            }
+            Message::Tick => {
+                #[cfg(feature = "render-smoke")]
+                if let Some(task) = smoke::advance(self) {
+                    return task;
+                }
+                let mut tray_error = false;
+                for action in tray::take_menu_actions() {
+                    let result = match action {
+                        tray::MenuAction::MasterSwitch(enabled) => {
+                            self.settings.set_master_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature {
+                            id,
+                            profile,
+                            enabled,
+                        } => {
+                            let field = Page::sections()
+                                .iter()
+                                .flat_map(|section| section.pages)
+                                .find(|page| **page as usize == id)
+                                .and_then(|page| navigation::feature_toggle(*page));
+                            let Some(field) = field else {
+                                self.error_message = "Unknown tray feature toggle.".into();
+                                tray_error = true;
+                                continue;
+                            };
+                            self.settings.set_feature_enabled(profile, field, enabled)
+                        }
+                    };
+                    match result {
+                        Ok(_) => self.publish_settings(),
+                        Err(error) => {
+                            self.error_message = error.to_string();
+                            tray_error = true;
+                        }
+                    }
+                }
+                self.sync_tray();
+                if tray_error {
+                    return self.show_window();
+                }
+                if tray::take_quit_requested() {
+                    return self.update(Message::Close);
+                }
+                let restore = tray::take_restore_requested();
+                let hidden = tray::is_hidden_to_tray();
+                if hidden != self.hidden || restore {
+                    self.hidden = hidden;
+                    if let Some(window) = self.window {
+                        return iced::window::set_mode(
+                            window,
+                            if hidden {
+                                iced::window::Mode::Hidden
+                            } else {
+                                iced::window::Mode::Windowed
+                            },
+                        );
+                    }
+                }
+                if let Some(status) = self.runtime.status_snapshot_since(self.status.generation) {
+                    if status.appearance_change_generation
+                        != self.status.appearance_change_generation
+                    {
+                        self.appearance = settings_pages::theme(&self.settings.global().general);
+                    }
+                    self.processes.sync_suspended_processes(
+                        &status.feature_status.app_suspension.suspended_process_ids,
+                    );
+                    self.status = status;
+                }
+                if let Some(patch) = self
+                    .runtime
+                    .take_auto_exclusion_patch_since(&mut self.auto_exclusion_generation)
+                {
+                    if let Err(error) = self.settings.apply_auto_exclusion_patch(&patch) {
+                        self.error_message = error.to_string();
+                        self.runtime.requeue_auto_exclusion_patch(patch);
+                    } else {
+                        self.publish_settings();
+                    }
+                }
+                let mut work = Vec::new();
+                if !self.hidden && !self.processes.population_paused {
+                    if self.page == Page::ProcessList
+                        && self.process_sampled_at.elapsed() >= Duration::from_secs(1)
+                    {
+                        self.process_sampled_at = std::time::Instant::now();
+                        work.push(
+                            self.processes
+                                .update(
+                                    process_list::Message::Refresh,
+                                    &mut self.settings,
+                                    &self.runtime,
+                                )
+                                .map(Message::Processes),
+                        );
+                    }
+                    if (self.page.supports_power_source_profiles() || self.page == Page::ActionLog)
+                        && !self.catalog_loading
+                        && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
+                    {
+                        self.catalog_loading = true;
+                        self.catalog_sampled_at = std::time::Instant::now();
+                        work.push(
+                            tasks::run({
+                                let cached = self.candidates.clone();
+                                move || super::app_picker::load(cached)
+                            })
+                            .map(|r| Message::Catalog(r.and_then(|r| r))),
+                        );
+                    }
+                }
+                if self.page == Page::Home
+                    && !self.hidden
+                    && !self.home.metrics_paused
+                    && !self.sampling
+                    && self.sampled_at.elapsed() >= Duration::from_secs(1)
+                {
+                    self.sampling = true;
+                    self.sampled_at = std::time::Instant::now();
+                    let sampler = self.sampler.clone();
+                    work.push(
+                        tasks::run(move || {
+                            sampler
+                                .lock()
+                                .map_err(|e| e.to_string())
+                                .and_then(|mut sampler| sampler.sample())
+                        })
+                        .map(|r| Message::Sample(r.and_then(|r| r))),
+                    );
+                }
+                return Task::batch(work);
+            }
+            Message::WindowClose => {
+                if self.settings.global().general.hide_to_tray
+                    && self.tray.as_ref().is_some_and(|icon| icon.is_registered())
+                {
+                    if let Some(hwnd) = self.hwnd {
+                        tray::hide_window(hwnd as windows_sys::Win32::Foundation::HWND);
+                    }
+                    self.hidden = true;
+                    if let Some(window) = self.window {
+                        return iced::window::set_mode(window, iced::window::Mode::Hidden);
+                    }
+                } else {
+                    return self.update(Message::Close);
+                }
+            }
+            Message::Close => {
+                if !self.closing {
+                    self.error_message.clear();
+                }
+                self.closing = true;
+                return self.show_window();
+            }
+            Message::Save if self.pending_editor() => {
+                self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::Save if self.adaptive.validation_error().is_some() => {
+                self.error_message = self.adaptive.validation_error().unwrap_or_default();
+            }
+            Message::Save if self.cpu_limiter.has_invalid_inputs() => {
+                self.error_message = t!("cpu_limiter.invalid_limit").to_string();
+            }
+            Message::Save if !self.time_rules.valid() || !self.cpu_rules.valid() => {
+                self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::Save if !self.activity_inputs.valid() => {
+                self.error_message = t!("by_activity.invalid_timing").to_string();
+            }
+            Message::Save
+                if self.timer.has_invalid_inputs() || self.preferences.has_invalid_inputs() =>
+            {
+                self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::Save => match self.settings.save() {
+                Ok(outcome) => {
+                    if let Some(error) = outcome.startup_registration_error() {
+                        self.error_message = error.to_string();
+                    }
+                    self.publish_settings();
+                    if self.power_tuning.dirty && !self.power_tuning.apply() {
+                        self.error_message = self.power_tuning.status.clone();
+                        return Task::none();
+                    }
+                    self.reset_editors();
+                    if self.closing {
+                        return self.shutdown();
+                    }
+                }
+                Err(error) => self.error_message = error.to_string(),
+            },
+            Message::Cancel => {
+                self.settings.cancel();
+                if self.power_tuning.dirty {
+                    self.power_tuning.refresh();
+                }
+                self.reset_editors();
+                rust_i18n::set_locale(self.settings.global().general.language.locale());
+                self.publish_settings();
+                self.closing = false;
+            }
+            Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
+                settings.general.pause_power_plan_switching_while_plugged_in = value
+            }),
+            Message::Stay => {
+                self.closing = false;
+                self.error_message.clear();
+            }
+            Message::DiscardAndClose => {
+                self.settings.cancel();
+                if self.power_tuning.dirty {
+                    self.power_tuning.refresh();
+                }
+                return self.shutdown();
+            }
+            Message::SettingsFile(_) if self.pending_editor() || self.invalid_inputs() => {
+                self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::SettingsFile(mode) => {
+                let hwnd = self
+                    .hwnd
+                    .map(|hwnd| hwnd as windows_sys::Win32::Foundation::HWND);
+                return Task::perform(choose_settings_file(hwnd, mode), move |path| {
+                    Message::SettingsFileChosen(mode, path)
+                });
+            }
+            Message::SettingsFileChosen(mode, path) => {
+                if let Some(path) = path {
+                    match mode {
+                        FileDialogMode::Open => match self.settings.import_toml_from(&path) {
+                            Ok(outcome) => {
+                                self.reset_editors();
+                                if let Some(error) = outcome.startup_registration_error() {
+                                    self.error_message = error.to_string();
+                                }
+                                rust_i18n::set_locale(
+                                    self.settings.global().general.language.locale(),
+                                );
+                                self.publish_settings();
+                            }
+                            Err(error) => self.error_message = error.to_string(),
+                        },
+                        FileDialogMode::Save => {
+                            if let Err(error) = self.settings.export_toml_to(&path) {
+                                self.error_message = error.to_string();
+                            }
+                        }
+                    }
+                }
+            }
         }
-        app.schedule_tick(window, cx);
-        app
+        Task::none()
+    }
+
+    fn pending_changes(&self) -> bool {
+        self.settings.has_unsaved_changes()
+            || self.power_tuning.dirty
+            || self.pending_editor()
+            || self.invalid_inputs()
+    }
+    fn invalid_inputs(&self) -> bool {
+        self.cpu_limiter.has_invalid_inputs()
+            || self.timer.has_invalid_inputs()
+            || self.preferences.has_invalid_inputs()
+            || self.adaptive.validation_error().is_some()
+            || !self.activity_inputs.valid()
+            || !self.time_rules.valid()
+            || !self.cpu_rules.valid()
+    }
+    fn show_window(&mut self) -> Task<Message> {
+        self.hidden = false;
+        if let Some(hwnd) = self.hwnd {
+            tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
+        }
+        self.window
+            .map(|window| iced::window::set_mode(window, iced::window::Mode::Windowed))
+            .unwrap_or_else(Task::none)
+    }
+    fn pending_editor(&self) -> bool {
+        self.power_tuning.has_pending_editor()
+            || self.adaptive.has_pending_editor()
+            || self.soft_allocation.has_pending_editor()
+            || self.hard_allocation.has_pending_editor()
+            || self.cpu_limiter.has_pending_editor()
+            || self.time_rules.has_pending_editor()
+            || self.cpu_rules.has_pending_editor()
+    }
+    fn reset_editors(&mut self) {
+        self.preferences.reset_drafts();
+        self.power_tuning.discard_editor();
+        self.cpu_limiter = Default::default();
+        self.activity_inputs = Default::default();
+        self.foreground_plans = Default::default();
+        self.running_app_plans = Default::default();
+        self.priority = Default::default();
+        self.efficiency = Default::default();
+        self.soft_allocation.reset_drafts();
+        self.hard_allocation.reset_drafts();
+        self.adaptive.reset_drafts();
+        self.time_rules = Default::default();
+        self.cpu_rules = Default::default();
+        self.suspension = Default::default();
+        self.trim = Default::default();
+        self.timer = Default::default();
+        self.appearance = settings_pages::theme(&self.settings.global().general);
+    }
+    fn browse(&self, page: Page) -> Task<Message> {
+        let profile = self.power_source;
+        Task::perform(
+            crate::file_dialog::choose_executable_file(
+                self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
+            ),
+            move |path| Message::ExecutableChosen(page, profile, path),
+        )
+    }
+
+    fn publish_settings(&mut self) {
+        self.runtime
+            .replace_settings(&self.settings.runtime_settings_snapshot());
+    }
+
+    fn load_power_plans(&mut self) -> Task<Message> {
+        if self.power_plans_loading {
+            return Task::none();
+        }
+        self.power_plans_loading = true;
+        self.power_plans_loaded = false;
+        tasks::run(crate::power::list_plans)
+            .map(|result| Message::PowerPlans(result.and_then(|result| result)))
+    }
+
+    fn sync_tray(&mut self) {
+        let profile = if crate::backend::power_source::is_plugged_in() != Some(false) {
+            PowerSourceProfile::PluggedIn
+        } else {
+            PowerSourceProfile::OnBattery
+        };
+        let saved = self.settings.persisted();
+        let settings = if profile == PowerSourceProfile::OnBattery {
+            saved.battery_profile()
+        } else {
+            saved
+        };
+        tray::set_menu_state(tray::MenuState {
+            enabled: saved.general.enabled,
+            profile,
+            groups: Page::sections()
+                .iter()
+                .filter(|section| {
+                    section.landing_page != Page::AdvancedControls
+                        || saved.advanced.show_advanced_controls
+                })
+                .filter_map(|section| {
+                    let items: Vec<_> = section
+                        .pages
+                        .iter()
+                        .filter_map(|page| {
+                            navigation::feature_page_enabled(settings, *page).map(|enabled| {
+                                tray::FeatureToggle {
+                                    id: *page as usize,
+                                    label: page.label(),
+                                    enabled,
+                                }
+                            })
+                        })
+                        .collect();
+                    (!items.is_empty()).then(|| (section.landing_page.label(), items))
+                })
+                .collect(),
+        });
+        let intent = (
+            self.settings.global().general.hide_to_tray,
+            self.settings.persisted().general.start_minimized,
+        );
+        if !intent.0 && !intent.1 {
+            tray::set_hide_on_close(false);
+            self.tray = None;
+            self.tray_attempt = None;
+        } else {
+            if tray::take_taskbar_created() {
+                self.tray_attempt = None;
+                if let Some(icon) = &mut self.tray {
+                    icon.invalidate();
+                }
+            }
+            let missing = self.tray.as_ref().is_none_or(|icon| !icon.is_registered());
+            let now = std::time::Instant::now();
+            if missing && tray_retry_due(self.tray_attempt, intent, now) {
+                if let Some(hwnd) = self.hwnd {
+                    let first_attempt = self.tray_attempt.is_none();
+                    self.tray_attempt = Some((intent, now));
+                    let result = if let Some(icon) = &mut self.tray {
+                        icon.register()
+                    } else {
+                        tray::TrayIcon::install(hwnd as windows_sys::Win32::Foundation::HWND)
+                            .map(|icon| self.tray = Some(icon))
+                    };
+                    if let Err(error) = result {
+                        if first_attempt {
+                            self.error_message = error;
+                        }
+                    }
+                }
+            }
+        }
+        tray::set_hide_on_close(
+            intent.0 && self.tray.as_ref().is_some_and(|icon| icon.is_registered()),
+        );
+    }
+
+    fn shutdown(&mut self) -> Task<Message> {
+        // A confirmed subsequent quit hands the retained failure to the watchdog in main.
+        if !self.shutdown_failed {
+            if let Err(error) = self.runtime.shutdown() {
+                self.shutdown_failed = true;
+                self.error_message = error;
+                return self.show_window();
+            }
+        }
+        tray::set_hide_on_close(false);
+        self.tray = None;
+        iced::exit()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let content = self.view_content();
+        if self.closing || !self.error_message.is_empty() {
+            let mut actions =
+                row![iced::widget::Space::new().width(Fill)].spacing(design::space::SMALL);
+            let mut body = column![widgets::heading(
+                t!(if self.closing {
+                    "quit_prompt.title"
+                } else {
+                    "common.error"
+                })
+                .to_string(),
+                design::typography::DIALOG_TITLE,
+            )]
+            .spacing(design::space::LARGE);
+            if self.shutdown_failed {
+                body = body.push(text(t!("quit_prompt.recovery_handoff").to_string()));
+            }
+            if self.closing {
+                body = body.push(text(
+                    t!(if self.pending_changes() {
+                        "quit_prompt.unsaved"
+                    } else {
+                        "quit_prompt.message"
+                    })
+                    .to_string(),
+                ));
+                actions = actions.push(
+                    button(text(t!("common.cancel").to_string()))
+                        .style(widgets::tertiary_button)
+                        .on_press(Message::Stay),
+                );
+                if self.pending_changes() {
+                    actions = actions
+                        .push(
+                            button(text(t!("quit_prompt.save_and_quit").to_string()))
+                                .style(widgets::primary_button)
+                                .on_press(Message::Save),
+                        )
+                        .push(
+                            button(text(t!("quit_prompt.without_saving").to_string()))
+                                .style(widgets::danger_button)
+                                .on_press(Message::DiscardAndClose),
+                        );
+                } else {
+                    actions = actions.push(
+                        button(text(t!("tray.quit").to_string()))
+                            .style(widgets::danger_button)
+                            .on_press(Message::DiscardAndClose),
+                    );
+                }
+            } else {
+                actions = actions.push(
+                    button(text(t!("common.done").to_string()))
+                        .style(widgets::tertiary_button)
+                        .on_press(Message::DismissError),
+                );
+            }
+            if !self.error_message.is_empty() {
+                body = body.push(text(&self.error_message));
+            }
+            let dialog = container(body.push(actions))
+                .padding(design::space::LARGE as u16)
+                .max_width(640)
+                .style(widgets::surface);
+            return iced::widget::stack![
+                content,
+                iced::widget::opaque(iced::widget::stack![
+                    iced::widget::opaque(
+                        container(iced::widget::Space::new())
+                            .width(Fill)
+                            .height(Fill)
+                            .style(|_| container::Style {
+                                background: Some(
+                                    iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()
+                                ),
+                                ..Default::default()
+                            })
+                    ),
+                    container(iced::widget::opaque(dialog))
+                        .padding(16)
+                        .center_x(Fill)
+                        .center_y(Fill),
+                ]),
+            ]
+            .into();
+        }
+        if self.page == Page::ProcessList && self.processes.context_open() {
+            iced::widget::stack![
+                content,
+                iced::widget::opaque(
+                    iced::widget::mouse_area(iced::widget::Space::new().width(Fill).height(Fill))
+                        .on_press(Message::Processes(process_list::Message::CloseSelection))
+                        .on_right_press(Message::Processes(process_list::Message::CloseSelection))
+                        .on_middle_press(Message::Processes(process_list::Message::CloseSelection))
+                ),
+            ]
+            .into()
+        } else {
+            // Preserve the app subtree when the context-menu dismissal layer changes.
+            iced::widget::stack![content].into()
+        }
+    }
+
+    fn side_panel(&self, page: Page) -> Option<Element<'_, Message>> {
+        if page == Page::ProcessList {
+            Some(self.processes.side_panel().map(Message::Processes))
+        } else if page == Page::ActionLog {
+            Some(
+                self.action_log
+                    .side_panel(
+                        self.settings.global().advanced.action_log_mode,
+                        !self.status.action_log_entries.is_empty(),
+                        !self.status.action_log_summaries.is_empty(),
+                    )
+                    .map(Message::ActionLog),
+            )
+        } else if page == Page::AdaptiveEngine {
+            Some(
+                self.adaptive
+                    .side_panel(&self.settings, &self.status)
+                    .map(Message::Adaptive),
+            )
+        } else if page == Page::AdvancedPowerPlanTuning {
+            Some(
+                self.power_tuning
+                    .side_panel(&self.settings.advanced_power_plan_tuning_presets)
+                    .map(Message::PowerTuning),
+            )
+        } else if page == Page::CpuSetsSoft {
+            Some(
+                self.soft_allocation
+                    .side_panel(&self.settings, cpu_allocation::Kind::Soft, &self.status)
+                    .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
+            )
+        } else if page == Page::ProcessorAffinityHard {
+            Some(
+                self.hard_allocation
+                    .side_panel(&self.settings, cpu_allocation::Kind::Hard, &self.status)
+                    .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
+            )
+        } else {
+            status_rail::view(page, &self.settings, &self.status, &self.power_plans).map(|panel| {
+                let panel = panel.map(Message::Status);
+                if page == Page::MemoryTrim {
+                    column![
+                        panel,
+                        iced::widget::rule::horizontal(1),
+                        container(
+                            button(
+                                container(text(t!("memory_trim.trim_now").to_string()))
+                                    .center_x(Fill)
+                            )
+                            .width(Fill)
+                            .height(32)
+                            .style(widgets::primary_button)
+                            .on_press_maybe(
+                                self.settings
+                                    .memory_trim
+                                    .enabled
+                                    .then_some(Message::Trim(memory_trim::Message::TrimNow))
+                            )
+                        )
+                        .padding([design::space::MEDIUM as u16, 0])
+                    ]
+                    .height(Fill)
+                    .into()
+                } else if matches!(page, Page::ByTime | Page::ByCpuLoad) {
+                    let kind = if page == Page::ByTime {
+                        power_rules::Kind::Time
+                    } else {
+                        power_rules::Kind::CpuLoad
+                    };
+                    column![
+                        panel,
+                        iced::widget::rule::horizontal(1),
+                        container(
+                            button(container(text(t!("common.create").to_string())).center_x(Fill))
+                                .width(Fill)
+                                .height(32)
+                                .style(widgets::primary_button)
+                                .on_press(Message::PowerRules(kind, power_rules::Message::Add))
+                        )
+                        .padding([design::space::MEDIUM as u16, 0])
+                    ]
+                    .height(Fill)
+                    .into()
+                } else {
+                    panel
+                }
+            })
+        }
+    }
+
+    fn view_content(&self) -> Element<'_, Message> {
+        if self.preferences.show_update && !self.closing {
+            return (container(
+                column![
+                    text(t!("about.updates").to_string()).size(design::typography::DIALOG_TITLE),
+                    text(self.preferences.latest.clone().unwrap_or_default()),
+                    row![
+                        iced::widget::Space::new().width(Fill),
+                        button(text(t!("about.download_update").to_string())).on_press_maybe(
+                            self.preferences
+                                .download
+                                .clone()
+                                .map(|url| Message::Preferences(settings_pages::Message::Open(
+                                    url
+                                )))
+                        ),
+                        button(text(t!("common.cancel").to_string()))
+                            .style(crate::ui::widgets::tertiary_button)
+                            .on_press(Message::Preferences(settings_pages::Message::DismissUpdate))
+                    ]
+                    .spacing(design::space::SMALL)
+                ]
+                .spacing(design::space::LARGE),
+            )
+            .padding(design::space::SECTION as u16))
+            .into();
+        }
+        let collapsed = self.settings.global().general.navigation_collapsed;
+        let mut navigation = column![]
+            .spacing(design::space::TINY)
+            .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
+            .width(Fill);
+        if collapsed {
+            navigation = navigation.push(
+                button(
+                    container(navigation::glyph("icons/search.svg"))
+                        .center_x(Fill)
+                        .center_y(Fill),
+                )
+                .width(Fill)
+                .height(design::NAVIGATION_ROW_HEIGHT)
+                .on_press(Message::ToggleNavigation)
+                .style(widgets::quiet),
+            );
+        } else {
+            navigation = navigation.push(
+                container(widgets::search_field(
+                    text_input(&t!("home.search_placeholder"), &self.navigation_search)
+                        .padding(widgets::SEARCH_INPUT_PADDING)
+                        .on_input(Message::NavigationSearch),
+                    (!self.navigation_search.is_empty())
+                        .then(|| Message::NavigationSearch(String::new())),
+                ))
+                .center_y(design::NAVIGATION_ROW_HEIGHT),
+            );
+        }
+        let search_pages = navigation::dashboard_search_pages(
+            &self.navigation_search,
+            self.settings.global().advanced.show_advanced_controls,
+        );
+        let mut utilities = column![]
+            .spacing(design::space::TINY)
+            .padding([design::space::SMALL as u16, design::space::CONTROL as u16]);
+        for section in Page::sections() {
+            if section.landing_page == Page::AdvancedControls
+                && !self.settings.global().advanced.show_advanced_controls
+            {
+                continue;
+            }
+            let matches = |page: Page| {
+                self.navigation_search.is_empty()
+                    || search_pages.contains(&page)
+                    || page
+                        .label()
+                        .to_lowercase()
+                        .contains(&self.navigation_search.to_lowercase())
+            };
+            let visible =
+                matches(section.landing_page) || section.pages.iter().copied().any(matches);
+            let mut label = row![
+                widgets::active_indicator(self.page == section.landing_page),
+                navigation::icon(section.landing_page, self.page == section.landing_page)
+            ]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center);
+            if collapsed {
+                // Balance the selection marker so the icon remains centered.
+                label = label.push(iced::widget::Space::new().width(3));
+            } else {
+                label = label.push(navigation::label(section.landing_page));
+                if self
+                    .settings
+                    .global()
+                    .general
+                    .show_enabled_feature_counts_in_sidebar
+                {
+                    if let Some(count) = navigation::section_enabled_feature_count(
+                        &self.settings,
+                        section.landing_page,
+                    ) {
+                        label = label.push(
+                            container(text(count.to_string()).size(design::typography::BADGE))
+                                .padding([
+                                    design::space::TINY as u16,
+                                    design::space::CONTROL as u16,
+                                ])
+                                .style(move |theme| widgets::indicator_chip(theme, count > 0)),
+                        );
+                    }
+                }
+            }
+            let expandable = !collapsed && section.pages.iter().any(|p| *p != section.landing_page);
+            if expandable {
+                label = label.push(super::motion::wrap(
+                    navigation::glyph("icons/chevron-right.svg"),
+                    self.expanded_section == Some(section.landing_page),
+                    super::motion::Effect::Chevron,
+                ));
+            }
+            let section_header = button(container(label.height(Fill)).width(Fill).align_x(
+                if collapsed {
+                    iced::alignment::Horizontal::Center
+                } else {
+                    iced::Left
+                },
+            ))
+            .height(design::NAVIGATION_ROW_HEIGHT)
+            .padding(design::NAVIGATION_ROW_PADDING)
+            .width(Fill)
+            .on_press(if expandable {
+                Message::ToggleSection(section.landing_page)
+            } else {
+                Message::Page(section.landing_page)
+            })
+            .selected(self.page == section.landing_page, widgets::selected);
+            let section_header: Element<'_, Message> = if collapsed {
+                iced::widget::tooltip(
+                    section_header,
+                    text(section.landing_page.label()),
+                    iced::widget::tooltip::Position::Right,
+                )
+                .style(container::bordered_box)
+                .into()
+            } else {
+                section_header.into()
+            };
+            let mut children = Vec::new();
+            for page in section.pages.iter().filter(|p| **p != section.landing_page) {
+                let mut label = row![
+                    widgets::active_indicator(self.page == *page),
+                    navigation::icon(*page, self.page == *page),
+                    navigation::label(*page),
+                ]
+                .spacing(design::space::SMALL)
+                .height(Fill)
+                .align_y(iced::Center);
+                if navigation::feature_page_enabled(&self.settings, *page) == Some(true) {
+                    label = label.push(
+                        container(iced::widget::Space::new())
+                            .width(3)
+                            .height(18)
+                            .style(move |theme: &Theme| container::Style {
+                                background: Some(theme.palette().success.into()),
+                                border: iced::border::rounded(2),
+                                ..Default::default()
+                            }),
+                    );
+                }
+                children.push(super::motion::wrap(
+                    button(label)
+                        .width(Fill)
+                        .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
+                        .on_press(Message::Page(*page))
+                        .padding([design::space::SMALL as u16, design::space::MEDIUM as u16])
+                        .selected(self.page == *page, widgets::selected),
+                    matches(*page),
+                    super::motion::Effect::Visible,
+                ));
+            }
+            let section_content = super::motion::wrap(
+                navigation::section(
+                    section_header,
+                    children,
+                    !collapsed
+                        && (self.expanded_section == Some(section.landing_page)
+                            || !self.navigation_search.is_empty()),
+                ),
+                visible,
+                super::motion::Effect::Visible,
+            );
+            if matches!(
+                section.landing_page,
+                Page::ActionLog | Page::SettingsHome | Page::About
+            ) {
+                utilities = utilities.push(section_content);
+            } else {
+                navigation = navigation.push(section_content);
+            }
+        }
+        let mut toggle_content = row![];
+        toggle_content = toggle_content
+            .push(navigation::glyph(if collapsed {
+                "icons/panel-left-open.svg"
+            } else {
+                "icons/panel-left-close.svg"
+            }))
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center);
+        if !collapsed {
+            toggle_content = toggle_content.push(
+                text(t!("nav.collapse_navigation").to_string()).size(design::typography::SECONDARY),
+            );
+        }
+        let navigation_toggle =
+            widgets::sidebar_toggle(container(toggle_content.height(Fill)).width(Fill).align_x(
+                if collapsed {
+                    iced::alignment::Horizontal::Center
+                } else {
+                    iced::Left
+                },
+            ))
+            .on_press(Message::ToggleNavigation);
+        let navigation_toggle: Element<'_, Message> = if collapsed {
+            iced::widget::tooltip(
+                navigation_toggle,
+                text(t!("nav.expand_navigation").to_string()),
+                iced::widget::tooltip::Position::Right,
+            )
+            .into()
+        } else {
+            navigation_toggle.into()
+        };
+        utilities = utilities
+            .push(iced::widget::rule::horizontal(1))
+            .push(navigation_toggle);
+        const BREADCRUMB_TEXT_SIZE: u32 = design::typography::TITLE;
+        let mut header = row![].align_y(iced::Center);
+        for (index, page) in self.breadcrumb.iter().copied().enumerate() {
+            let mut item = row![].spacing(design::space::COMPACT).align_y(iced::Center);
+            if index > 0 {
+                item = item.push(navigation::glyph("icons/chevron-right.svg"));
+            }
+            let label: Element<'_, Message> = if index + 1 < self.breadcrumb.len() {
+                button(widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE))
+                    .padding(0)
+                    .style(widgets::quiet)
+                    .on_press(Message::Page(page))
+                    .into()
+            } else {
+                widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE).into()
+            };
+            item = item.push(label);
+            header = header.push(super::motion::wrap(
+                container(item).padding(iced::Padding {
+                    left: if index > 0 {
+                        design::space::COMPACT as f32
+                    } else {
+                        0.0
+                    },
+                    ..Default::default()
+                }),
+                index < self.breadcrumb.len(),
+                super::motion::Effect::Visible,
+            ));
+        }
+        let breadcrumb = scrollable(header)
+            .direction(iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::default(),
+            ))
+            .width(Fill);
+        let mut header = row![breadcrumb]
+            .spacing(design::space::COMPACT)
+            .align_y(iced::Center);
+        if self.page.supports_power_source_profiles() {
+            let plugged_in = crate::backend::power_source::is_plugged_in();
+            let mut tabs = row![].spacing(design::space::TIGHT);
+            for (profile, key, live) in [
+                (
+                    PowerSourceProfile::PluggedIn,
+                    "power_source.plugged_in",
+                    plugged_in == Some(true),
+                ),
+                (
+                    PowerSourceProfile::OnBattery,
+                    "power_source.on_battery",
+                    plugged_in == Some(false),
+                ),
+            ] {
+                let mut label = row![text(t!(key).to_string()).size(design::typography::BODY)]
+                    .spacing(design::space::TIGHT)
+                    .align_y(iced::Center);
+                label = label.push(
+                    container(iced::widget::Space::new())
+                        .width(6)
+                        .height(6)
+                        .style(move |theme: &Theme| container::Style {
+                            background: live.then(|| theme.palette().primary.into()),
+                            border: iced::border::rounded(3),
+                            ..Default::default()
+                        }),
+                );
+                tabs = tabs.push(
+                    button(container(label).center_y(Fill))
+                        .height(32)
+                        .on_press(Message::PowerSource(profile))
+                        .style(if self.power_source == profile {
+                            widgets::selected_control
+                        } else {
+                            widgets::quiet
+                        }),
+                );
+            }
+            header = header.push(
+                container(tabs)
+                    .padding(design::space::TIGHT as u16)
+                    .style(widgets::surface),
+            );
+        }
+        let description = navigation::page_feature_info(self.page);
+        if !description.is_empty() {
+            header = header.push(
+                button(
+                    row![
+                        navigation::glyph("icons/info.svg"),
+                        text(t!("common.feature_info").to_string())
+                            .size(design::typography::SECONDARY)
+                    ]
+                    .spacing(design::space::CONTROL)
+                    .align_y(iced::Center),
+                )
+                .style(if self.feature_info_expanded {
+                    widgets::selected
+                } else {
+                    widgets::quiet
+                })
+                .on_press(Message::ToggleFeatureInfo),
+            );
+        }
+        let header: Element<'_, Message> = header
+            .width(Fill)
+            .height(32 + 2 * design::space::TIGHT)
+            .into();
+        let mut heading = column![container(header)
+            .padding([design::space::SMALL as u16, 0])
+            .width(Fill)]
+        .spacing(0);
+        if !description.is_empty() {
+            heading = heading.push(widgets::optional_content(
+                container(
+                    row![
+                        navigation::glyph("icons/info.svg"),
+                        scrollable(text(description).width(Fill))
+                            .height(iced::Length::Shrink)
+                            .width(Fill),
+                        iced::widget::tooltip(
+                            button(navigation::glyph("icons/x.svg"))
+                                .style(widgets::quiet)
+                                .on_press(Message::ToggleFeatureInfo),
+                            text(t!("common.close").to_string()),
+                            iced::widget::tooltip::Position::Left,
+                        ),
+                    ]
+                    .spacing(design::space::MEDIUM),
+                )
+                .max_height(160)
+                .padding(design::space::MEDIUM as u16)
+                .width(Fill)
+                .style(widgets::surface),
+                self.feature_info_expanded,
+            ));
+        }
+        let mut body = column![heading].spacing(design::space::MEDIUM).height(Fill);
+        let content = self.page_view();
+        let side_panel = self.side_panel(self.page);
+        body = body.push(
+            container(
+                container(super::motion::wrap(
+                    super::motion::wrap(
+                        content,
+                        true,
+                        super::motion::Effect::Content(self.power_source as u64),
+                    ),
+                    true,
+                    super::motion::Effect::Content(widgets::stable_key(&self.page)),
+                ))
+                .max_width(design::CONTENT_WIDTH)
+                .width(Fill)
+                .height(Fill),
+            )
+            .center_x(Fill)
+            .height(Fill),
+        );
+        let layout = row![
+            super::motion::wrap(
+                container(
+                    container(column![scrollable(navigation).height(Fill), utilities].height(Fill))
+                        .width(Fill)
+                        .height(Fill)
+                        .style(widgets::navigation_surface)
+                )
+                .width(Fill),
+                !collapsed,
+                super::motion::Effect::Width {
+                    min: design::SIDEBAR_COLLAPSED_WIDTH,
+                    max: design::NAVIGATION_WIDTH
+                }
+            ),
+            container(body)
+                .padding([design::space::SECTION as u16, design::space::WIDE as u16])
+                .center_x(Fill)
+                .height(Fill)
+        ]
+        .spacing(design::space::SMALL)
+        .height(Fill);
+        let has_side_panel = side_panel.is_some();
+        let panel: Element<'_, Message> = if let Some(panel) = side_panel {
+            super::motion::wrap(
+                container(
+                    column![
+                        container(widgets::optional_content(panel, !self.status_collapsed))
+                            .height(Fill)
+                            .padding([0, design::space::CONTROL as u16]),
+                        iced::widget::rule::horizontal(1),
+                        widgets::sidebar_toggle(
+                            row![
+                                text(if self.status_collapsed {
+                                    String::new()
+                                } else {
+                                    t!("nav.collapse_side_panel").to_string()
+                                })
+                                .size(design::typography::SECONDARY)
+                                .width(Fill),
+                                navigation::glyph(if self.status_collapsed {
+                                    "icons/panel-right-open.svg"
+                                } else {
+                                    "icons/panel-right-close.svg"
+                                }),
+                            ]
+                            .height(Fill)
+                            .align_y(iced::Center)
+                        )
+                        .on_press(Message::ToggleStatus)
+                    ]
+                    .spacing(design::space::TINY)
+                    .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
+                    .height(Fill),
+                )
+                .width(Fill),
+                !self.status_collapsed,
+                super::motion::Effect::Width {
+                    min: design::SIDEBAR_COLLAPSED_WIDTH,
+                    max: design::SIDE_PANEL_WIDTH,
+                },
+            )
+        } else {
+            iced::widget::Space::new().into()
+        };
+        let layout: Element<'_, Message> = layout
+            .push(super::motion::wrap(
+                panel,
+                has_side_panel,
+                super::motion::Effect::Visible,
+            ))
+            .into();
+        let modal = match self.page {
+            Page::CpuSetsSoft => self
+                .soft_allocation
+                .modal(&self.settings)
+                .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m))),
+            Page::ProcessorAffinityHard => self
+                .hard_allocation
+                .modal(&self.settings)
+                .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m))),
+            Page::CpuLimiter => self
+                .cpu_limiter
+                .modal(&self.candidates, &self.status.feature_status.cpu_limiter)
+                .map(|modal| modal.map(Message::CpuLimiter)),
+            Page::AdvancedPowerPlanTuning => self
+                .power_tuning
+                .preset_modal(&self.settings.advanced_power_plan_tuning_presets)
+                .map(|modal| modal.map(Message::PowerTuning)),
+            Page::AdaptiveEngine if self.adaptive.has_pending_editor() => Some(
+                self.adaptive
+                    .preset_modal(&self.settings, &self.candidates)
+                    .map(Message::Adaptive),
+            ),
+            Page::ByTime => self
+                .time_rules
+                .modal(power_rules::Kind::Time, &self.power_plans)
+                .map(|modal| modal.map(|m| Message::PowerRules(power_rules::Kind::Time, m))),
+            Page::ByCpuLoad => self
+                .cpu_rules
+                .modal(power_rules::Kind::CpuLoad, &self.power_plans)
+                .map(|modal| modal.map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m))),
+            _ => None,
+        };
+        if let Some(modal) = modal {
+            return iced::widget::stack![
+                layout,
+                iced::widget::opaque(
+                    container(iced::widget::Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(|_| container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                            ..Default::default()
+                        })
+                ),
+                container(iced::widget::opaque(modal))
+                    .padding(16)
+                    .center_x(Fill)
+                    .center_y(Fill)
+            ]
+            .into();
+        }
+        iced::widget::stack![
+            layout,
+            container(super::motion::wrap(
+                widgets::settings_card(
+                    column![
+                        widgets::heading(t!("unsaved.title").to_string(), design::typography::BODY),
+                        text(t!("unsaved.message").to_string()),
+                        row![
+                            iced::widget::Space::new().width(Fill),
+                            button(text(t!("common.discard").to_string()))
+                                .style(crate::ui::widgets::tertiary_button)
+                                .on_press(Message::Cancel),
+                            button(text(t!("common.save").to_string()))
+                                .style(crate::ui::widgets::primary_button)
+                                .on_press(Message::Save)
+                        ]
+                        .spacing(design::space::SMALL)
+                    ]
+                    .spacing(design::space::MEDIUM)
+                )
+                .width(360),
+                self.pending_changes(),
+                super::motion::Effect::Visible
+            ))
+            .padding(design::space::LARGE as u16)
+            .width(Fill)
+            .height(Fill)
+            .align_x(iced::Right)
+            .align_y(iced::Bottom)
+        ]
+        .into()
+    }
+
+    fn page_view(&self) -> Element<'_, Message> {
+        let general = &self.settings.global().general;
+        let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
+            widgets::settings_card(widgets::setting_row(
+                label,
+                widgets::switch(value, Some(action)),
+            ))
+        };
+        match self.page {
+            Page::AppSuspension => self
+                .suspension
+                .view(
+                    &self.settings.app_suspension,
+                    &self.status.feature_status.app_suspension,
+                    &self.unavailable_candidates,
+                    &self.candidates,
+                )
+                .map(Message::Suspension),
+            Page::MemoryTrim => self
+                .trim
+                .view(&self.settings.memory_trim, &self.candidates)
+                .map(Message::Trim),
+            Page::TimerResolution => self
+                .timer
+                .view(
+                    &self.settings.timer_resolution,
+                    &self.status.feature_status.timer_resolution,
+                    &self.candidates,
+                )
+                .map(Message::Timer),
+            Page::Win32PrioritySeparation => self
+                .priority_separation
+                .view()
+                .map(Message::PrioritySeparation),
+            Page::AdvancedPowerPlanTuning => self
+                .power_tuning
+                .view(
+                    &self.settings.advanced_power_plan_tuning_presets,
+                    &self.power_plans,
+                    self.effective_power_mode
+                        .as_ref()
+                        .map_or(crate::power::EffectivePowerMode::Unknown, |monitor| {
+                            monitor.snapshot()
+                        }),
+                )
+                .map(Message::PowerTuning),
+
+            Page::ByTime => self
+                .time_rules
+                .view(
+                    power_rules::Kind::Time,
+                    &self.settings,
+                    &self.status.power_plan_status,
+                )
+                .map(|m| Message::PowerRules(power_rules::Kind::Time, m)),
+            Page::ByCpuLoad => self
+                .cpu_rules
+                .view(
+                    power_rules::Kind::CpuLoad,
+                    &self.settings,
+                    &self.status.power_plan_status,
+                )
+                .map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m)),
+            Page::BackgroundEfficiency => self
+                .efficiency
+                .view(&self.settings, &self.candidates)
+                .map(Message::Efficiency),
+            Page::CpuSetsSoft => self
+                .soft_allocation
+                .view(&self.settings, cpu_allocation::Kind::Soft, &self.candidates)
+                .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
+            Page::ProcessorAffinityHard => self
+                .hard_allocation
+                .view(&self.settings, cpu_allocation::Kind::Hard, &self.candidates)
+                .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
+            Page::AdaptiveEngine => self
+                .adaptive
+                .view(&self.settings, &self.candidates)
+                .map(Message::Adaptive),
+            Page::ProcessPriority => self
+                .priority
+                .view(
+                    &self.settings,
+                    priority_control::Kind::Process,
+                    &self.candidates,
+                )
+                .map(|m| Message::Priority(priority_control::Kind::Process, m)),
+            Page::ThreadPriority => self
+                .priority
+                .view(
+                    &self.settings,
+                    priority_control::Kind::Thread,
+                    &self.candidates,
+                )
+                .map(|m| Message::Priority(priority_control::Kind::Thread, m)),
+            Page::IoPriority => self
+                .priority
+                .view(&self.settings, priority_control::Kind::Io, &self.candidates)
+                .map(|m| Message::Priority(priority_control::Kind::Io, m)),
+            Page::GpuPriority => self
+                .priority
+                .view(
+                    &self.settings,
+                    priority_control::Kind::Gpu,
+                    &self.candidates,
+                )
+                .map(|m| Message::Priority(priority_control::Kind::Gpu, m)),
+            Page::MemoryPriority => self
+                .priority
+                .view(
+                    &self.settings,
+                    priority_control::Kind::Memory,
+                    &self.candidates,
+                )
+                .map(|m| Message::Priority(priority_control::Kind::Memory, m)),
+            Page::DynamicPriorityBoost => self
+                .priority
+                .view(
+                    &self.settings,
+                    priority_control::Kind::DynamicBoost,
+                    &self.candidates,
+                )
+                .map(|m| Message::Priority(priority_control::Kind::DynamicBoost, m)),
+
+            Page::ByForeground => self
+                .foreground_plans
+                .view(
+                    process_power_plans::Kind::Foreground,
+                    &self.settings,
+                    &self.power_plans,
+                    &self.candidates,
+                    &self.status.power_plan_status,
+                )
+                .map(|message| {
+                    Message::ProcessPowerPlans(process_power_plans::Kind::Foreground, message)
+                }),
+            Page::ByRunningApp => self
+                .running_app_plans
+                .view(
+                    process_power_plans::Kind::RunningApp,
+                    &self.settings,
+                    &self.power_plans,
+                    &self.candidates,
+                    &self.status.power_plan_status,
+                )
+                .map(|message| {
+                    Message::ProcessPowerPlans(process_power_plans::Kind::RunningApp, message)
+                }),
+            Page::ByActivity => {
+                by_activity::view(&self.settings, &self.power_plans, &self.activity_inputs)
+                    .map(Message::ByActivity)
+            }
+            Page::CpuLimiter => self
+                .cpu_limiter
+                .view(
+                    &self.settings.cpu_limiter,
+                    &self.candidates,
+                    self.settings.global().general.enabled,
+                    &self.status.feature_status.cpu_limiter,
+                )
+                .map(Message::CpuLimiter),
+            Page::ProcessList => self
+                .processes
+                .view(
+                    &self.settings,
+                    &self.status,
+                    if self.power_plans_loading {
+                        process_list::PlanCatalog::Loading
+                    } else if self.power_plans_loaded {
+                        process_list::PlanCatalog::Loaded(&self.power_plans)
+                    } else {
+                        process_list::PlanCatalog::Unavailable
+                    },
+                )
+                .map(Message::Processes),
+            Page::Home => self
+                .home
+                .view(&self.settings, &self.status.feature_status)
+                .map(Message::Home),
+            Page::WinderustBehaviour
+            | Page::LanguageAndAppearance
+            | Page::ExperimentalFeatures
+            | Page::About => self
+                .preferences
+                .view(self.page, self.settings.global())
+                .map(Message::Preferences),
+            Page::PowerPlanControl => column![
+                toggle(
+                    "power_plan_control.pause_plugged",
+                    general.pause_power_plan_switching_while_plugged_in,
+                    Message::PausePowerPlans
+                ),
+                self.child_pages(),
+            ]
+            .spacing(widgets::CARD_GAP)
+            .into(),
+            Page::ActionLog => self
+                .action_log
+                .view(&self.status.action_log_entries, &self.candidates)
+                .map(Message::ActionLog),
+            Page::WinderustFeatures
+            | Page::CpuControl
+            | Page::PriorityControl
+            | Page::SettingsHome
+            | Page::AdvancedControls => self.child_pages(),
+        }
+    }
+
+    fn child_pages(&self) -> Element<'_, Message> {
+        let mut pages = column![].spacing(widgets::CARD_GAP);
+        if self.page == Page::PowerPlanControl {
+            pages = pages.push(widgets::heading(
+                t!("power_plan_control.automation").to_string(),
+                design::typography::BODY,
+            ));
+        }
+        if let Some(children) = self.page.child_pages() {
+            for page in children.iter().filter(|page| **page != self.page) {
+                if self.page == Page::PowerPlanControl && *page == Page::AdvancedPowerPlanTuning {
+                    pages = pages.push(widgets::heading(
+                        t!("settings.advanced").to_string(),
+                        design::typography::BODY,
+                    ));
+                }
+                let mut heading = row![
+                    navigation::icon(*page, self.page == *page),
+                    widgets::heading(page.label(), design::typography::BODY).width(Fill)
+                ]
+                .spacing(design::space::COMPACT)
+                .align_y(iced::Center);
+                if self.settings.global().general.show_feature_status_on_cards {
+                    if let Some(enabled) = navigation::feature_page_enabled(&self.settings, *page) {
+                        heading = heading.push(
+                            text(
+                                if enabled {
+                                    t!("common.enabled")
+                                } else {
+                                    t!("common.disabled")
+                                }
+                                .to_string(),
+                            )
+                            .size(design::typography::CAPTION)
+                            .style(if enabled {
+                                text::success
+                            } else {
+                                text::secondary
+                            }),
+                        );
+                    }
+                }
+                heading = heading.push(navigation::glyph("icons/chevron-right.svg"));
+                pages = pages.push(widgets::card_button(heading).on_press(Message::Page(*page)));
+            }
+        }
+        scrollable(pages).height(Fill).into()
     }
 }
+
 impl Drop for WinderustApp {
     fn drop(&mut self) {
-        let _ = self.shutdown();
-    }
-}
-
-impl WinderustApp {
-    fn shutdown(&mut self) -> Result<(), String> {
-        if self.shutdown_started {
-            return Ok(());
+        if let Err(error) = self.runtime.shutdown() {
+            eprintln!("{error}");
         }
-        self.shutdown_started = true;
-
-        self.runtime_handle.shutdown()
     }
 }
 
-impl Render for WinderustApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.inputs.ensure_for_settings(window, cx, &self.settings);
-        self.ensure_rule_title_input_subscriptions(window, cx);
-        self.ensure_cpu_threshold_slider_subscriptions(window, cx);
-        self.ensure_cpu_limiter_slider_subscriptions(window, cx);
-        self.sync_input_values(cx);
-        UI_ANIMATIONS_ENABLED.store(
-            resolve_animation_enabled(self.settings.general.animation_mode),
-            Ordering::Relaxed,
-        );
-        self.clear_finished_breadcrumb_transition();
-        self.clear_finished_tab_content_motion();
-
-        let search_query = self.dashboard_search_query(cx);
-        let search_active = !search_query.is_empty();
-        let side_panel = self.render_animated_side_panel(search_active, cx);
-        let page_body = if search_active {
-            self.render_search_results_page(&search_query, cx)
-        } else {
-            self.render_page(window, cx)
-        };
-        let page_body = if !search_active && self.shell.page.supports_power_source_profiles() {
-            let profile = self.editing_power_source_profile;
-            let target = format!("power-source-{:?}-{profile:?}", self.shell.page);
-            self.animated_tab_content(page_body, &target)
-        } else {
-            page_body
-        };
-        let page_header = if search_active {
-            search_results_page_header().into_any_element()
-        } else {
-            self.page_header(self.shell.page, cx).into_any_element()
-        };
-        let page_uses_inner_scroll = !search_active && self.shell.page == Page::ProcessList;
-        let unsaved = self.has_pending_changes();
-        let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
-        let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
-        let page_content = animated_page_content_frame(
-            page_content_frame(page_header, page_body, page_uses_inner_scroll),
-            self.active_breadcrumb_transition(self.shell.page),
-        );
-        let page_scroll_area = if page_uses_inner_scroll {
-            v_flex()
-                .flex_1()
-                .h_full()
-                .min_w(px(0.0))
-                .min_h(px(0.0))
-                .overflow_hidden()
-                .child(page_content)
-                .into_any_element()
-        } else if self.shell.page == Page::About {
-            v_flex()
-                .id("about-page-scroll")
-                .flex_1()
-                .h_full()
-                .min_w(px(0.0))
-                .min_h(px(0.0))
-                .overflow_y_scroll()
-                .track_scroll(&self.about_page_scroll_handle)
-                .vertical_scrollbar(&self.about_page_scroll_handle)
-                .child(page_content)
-                .into_any_element()
-        } else {
-            v_flex()
-                .flex_1()
-                .h_full()
-                .min_w(px(0.0))
-                .min_h(px(0.0))
-                .overflow_y_scrollbar()
-                .child(page_content)
-                .into_any_element()
-        };
-
-        div()
-            .relative()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .font_family(FONT_UI)
-            .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
-                handle_navigation_mouse_button(app, event.button, cx);
-            }))
-            .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
-                if app.update.startup_modal_visible {
-                    app.dismiss_startup_update_modal(cx);
-                } else if app.advanced_power_plan_tuning_preset_editor.is_some() {
-                    app.close_advanced_power_plan_tuning_preset_editor(cx);
-                } else if app.adaptive_engine_preset_editor.is_some() {
-                    app.close_adaptive_engine_preset_editor(cx);
-                } else if app.cpu_allocation_preset_editor.is_some() {
-                    app.close_cpu_allocation_preset_editor(cx);
-                } else if app.process_list.details.is_some() {
-                    app.close_process_details(cx);
-                } else {
-                    clear_input(&app.inputs.dashboard_search, window, cx);
-                }
-                window.blur();
-                cx.notify();
-            }))
-            .on_mouse_down(
-                MouseButton::Navigate(NavigationDirection::Back),
-                cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                    app.navigate_back(cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Navigate(NavigationDirection::Forward),
-                cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                    app.navigate_forward(cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .child(self.render_title_bar(window, cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .w_full()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .items_start()
-                    .overflow_hidden()
-                    .child(self.render_navigation(window, cx))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .h_full()
-                            .min_w(px(0.0))
-                            .min_h(px(0.0))
-                            .overflow_hidden()
-                            .child(page_scroll_area),
-                    )
-                    .children(side_panel),
-            )
-            .child(if show_unsaved_popup {
-                self.render_unsaved_popup(unsaved_popup_vanish_progress, cx)
-                    .into_any_element()
-            } else {
-                div().into_any_element()
-            })
-            .child(self.render_settings_io_toast(cx))
-            .child(if self.process_list.details.is_some() {
-                self.render_process_details_modal(window, cx)
-            } else {
-                div().into_any_element()
-            })
-            .child(if self.cpu_allocation_preset_editor.is_some() {
-                self.render_cpu_allocation_preset_modal(window, cx)
-            } else {
-                div().into_any_element()
-            })
-            .child(if self.adaptive_engine_preset_editor.is_some() {
-                self.render_adaptive_engine_preset_modal(window, cx)
-            } else {
-                div().into_any_element()
-            })
-            .child(if self.advanced_power_plan_tuning_preset_editor.is_some() {
-                self.render_advanced_power_plan_tuning_preset_modal(window, cx)
-            } else {
-                div().into_any_element()
-            })
-            .child(if self.update.startup_modal_visible {
-                self.render_update_available_modal(cx)
-            } else {
-                div().into_any_element()
-            })
+fn priority_page(kind: priority_control::Kind) -> Page {
+    match kind {
+        priority_control::Kind::Process => Page::ProcessPriority,
+        priority_control::Kind::Thread => Page::ThreadPriority,
+        priority_control::Kind::Io => Page::IoPriority,
+        priority_control::Kind::Gpu => Page::GpuPriority,
+        priority_control::Kind::Memory => Page::MemoryPriority,
+        priority_control::Kind::DynamicBoost => Page::DynamicPriorityBoost,
     }
+}
+fn priority_kind(page: Page) -> Option<priority_control::Kind> {
+    match page {
+        Page::ProcessPriority => Some(priority_control::Kind::Process),
+        Page::ThreadPriority => Some(priority_control::Kind::Thread),
+        Page::IoPriority => Some(priority_control::Kind::Io),
+        Page::GpuPriority => Some(priority_control::Kind::Gpu),
+        Page::MemoryPriority => Some(priority_control::Kind::Memory),
+        Page::DynamicPriorityBoost => Some(priority_control::Kind::DynamicBoost),
+        _ => None,
+    }
+}
+
+fn tray_retry_due(
+    attempt: Option<((bool, bool), std::time::Instant)>,
+    intent: (bool, bool),
+    now: std::time::Instant,
+) -> bool {
+    attempt.is_none_or(|(previous, attempted)| {
+        previous != intent || now.duration_since(attempted) >= Duration::from_secs(5)
+    })
+}
+
+fn page_needs_power_plans(page: Page) -> bool {
+    page == Page::ProcessList || page.section_landing_page() == Page::PowerPlanControl
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn process_list_requests_its_power_plan_dependency() {
+        assert!(page_needs_power_plans(Page::ProcessList));
+        assert!(page_needs_power_plans(Page::PowerPlanControl));
+        assert!(!page_needs_power_plans(Page::Home));
+    }
+
     use super::*;
 
     #[test]
-    fn navigation_width_tracks_collapsed_state() {
-        assert_eq!(navigation_pane_width(false), NAV_PANE_WIDTH);
-        assert_eq!(navigation_pane_width(true), NAV_PANE_COMPACT_WIDTH);
-        assert_eq!(
-            navigation_pane_width_at_progress(0.0),
-            NAV_PANE_COMPACT_WIDTH
-        );
-        assert_eq!(navigation_pane_width_at_progress(1.0), NAV_PANE_WIDTH);
-    }
-
-    #[test]
-    fn side_panel_width_tracks_visibility_progress() {
-        assert_eq!(page_side_panel_width_at_progress(0.0, 1.0), 0.0);
-        assert_eq!(
-            page_side_panel_width_at_progress(1.0, 0.0),
-            PAGE_SIDE_PANEL_COMPACT_WIDTH
-        );
-        assert_eq!(
-            page_side_panel_width_at_progress(1.0, 1.0),
-            PAGE_SIDE_PANEL_WIDTH
-        );
-        assert_eq!(
-            page_side_panel_width_at_progress(2.0, 2.0),
-            PAGE_SIDE_PANEL_WIDTH
-        );
-    }
-
-    #[test]
-    fn memory_trim_status_localizes_structured_values_and_preserves_errors() {
-        assert_eq!(
-            localized_memory_trim_status(&memory_trim::MemoryTrimStatus::WaitingForMemoryLoad {
-                threshold_percent: 80,
-            }),
-            t!("runtime_status.memory_trim_waiting", threshold = 80).to_string()
-        );
-        assert_eq!(
-            localized_memory_trim_status(&memory_trim::MemoryTrimStatus::Error(
-                "Win32 error 5".to_owned()
-            )),
-            "Win32 error 5"
-        );
-    }
-
-    #[test]
-    fn app_suspension_status_localizes_typed_values_and_preserves_errors() {
-        assert_eq!(
-            localized_app_suspension_status(&app_suspension::AppSuspensionStatus::Active),
-            t!("runtime_status.app_suspension_active").to_string()
-        );
-        assert_eq!(
-            localized_app_suspension_status(&app_suspension::AppSuspensionStatus::Error(
-                "Win32 error 5".to_owned()
-            )),
-            "Win32 error 5"
-        );
-    }
-
-    #[test]
-    fn windows_accent_abgr_converts_to_rgb() {
-        assert_eq!(windows_abgr_to_rgb(0xffb16300), 0x0063b1);
-    }
-
-    #[test]
-    fn windows_accent_palette_uses_second_tint() {
-        let palette = [
-            0xc6, 0xe7, 0xeb, 0x00, 0xa5, 0xc7, 0xd1, 0x00, 0x66, 0x8f, 0xa7, 0x00,
-        ];
-        assert_eq!(windows_accent_palette_tint(&palette), Some(0xa5c7d1));
-        assert_eq!(windows_accent_palette_tint(&palette[..4]), None);
-    }
-
-    #[test]
-    fn app_suspension_indicator_reports_network_intent_before_suspended_state() {
-        let status = AppSuspensionSnapshot {
-            enabled: true,
-            network_wake_apps: vec!["vivaldi.exe".to_owned()],
-            suspended_apps: vec!["vivaldi.exe".to_owned()],
-            ..Default::default()
-        };
-
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
-
-        assert_eq!(
-            indicator.label,
-            t!("app_suspension.indicator.network").to_string()
-        );
-        assert_eq!(
-            indicator.hover,
-            t!("app_suspension.indicator.network_help").to_string()
-        );
-    }
-
-    #[test]
-    fn app_suspension_indicator_reports_unavailable_before_runtime_state() {
-        let status = AppSuspensionSnapshot {
-            enabled: true,
-            running_apps: vec!["service.exe".to_owned()],
-            ..Default::default()
-        };
-
-        let indicator = app_suspension_indicator(&status, "service.exe", true);
-
-        assert_eq!(
-            indicator.label,
-            t!("app_suspension.indicator.unavailable").to_string()
-        );
-        assert_eq!(
-            indicator.hover,
-            t!("app_suspension.indicator.unavailable_help").to_string()
-        );
-    }
-
-    #[test]
-    fn app_suspension_indicator_reports_running_before_not_running() {
-        let status = AppSuspensionSnapshot {
-            enabled: true,
-            running_apps: vec!["vivaldi.exe".to_owned()],
-            ..Default::default()
-        };
-
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
-
-        assert_eq!(
-            indicator.label,
-            t!("app_suspension.indicator.running").to_string()
-        );
-        assert_eq!(
-            indicator.hover,
-            t!("app_suspension.indicator.running_help").to_string()
-        );
-    }
-
-    #[test]
-    fn app_suspension_indicator_reports_unknown_before_stale_running_state() {
-        let status = AppSuspensionSnapshot {
-            enabled: true,
-            running_apps: vec!["vivaldi.exe".to_owned()],
-            status_unknown: true,
-            ..Default::default()
-        };
-
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
-
-        assert_eq!(
-            indicator.label,
-            t!("app_suspension.indicator.unknown").to_string()
-        );
-        assert_eq!(
-            indicator.hover,
-            t!("app_suspension.indicator.unknown_help").to_string()
-        );
-    }
-
-    #[test]
-    fn system_accent_keeps_neutral_surfaces() {
-        assert_eq!(
-            accent_surface_color_with_tint(COLOR_APP_BG, 0.5, 0xffffff, false),
-            COLOR_APP_BG
-        );
-        assert_ne!(
-            accent_surface_color_with_tint(COLOR_APP_BG, 0.5, 0xffffff, true),
-            COLOR_APP_BG
-        );
-    }
-
-    #[test]
-    fn built_in_adaptive_engine_presets_set_cpu_scheduler_values() {
-        let power_save = cpu_scheduler_preset_values(BuiltInAdaptiveEnginePreset::PowerSave);
-        let performance = cpu_scheduler_preset_values(BuiltInAdaptiveEnginePreset::Performance);
-        let speed = cpu_scheduler_preset_values(BuiltInAdaptiveEnginePreset::Speed);
-
-        assert_eq!(
-            power_save.background_priority,
-            ProcessPrioritySetting::BelowNormal
-        );
-        assert_eq!(
-            power_save.visible_window_priority,
-            ProcessPrioritySetting::Normal
-        );
-        assert_eq!(
-            performance.background_priority,
-            ProcessPrioritySetting::BelowNormal
-        );
-        assert_eq!(
-            performance.visible_window_priority,
-            ProcessPrioritySetting::Normal
-        );
-        assert_eq!(speed.background_priority, ProcessPrioritySetting::Idle);
-        assert_eq!(
-            speed.visible_window_priority,
-            ProcessPrioritySetting::BelowNormal
-        );
-        assert!(power_save.background_efficiency_enabled);
-        assert!(performance.background_efficiency_enabled);
-        assert!(speed.background_efficiency_enabled);
-        assert!(!power_save.io_priority_enabled);
-        assert!(performance.io_priority_enabled);
-        assert!(speed.io_priority_enabled);
-        assert!(!power_save.memory_priority_enabled);
-        assert!(performance.memory_priority_enabled);
-        assert!(speed.memory_priority_enabled);
-        assert_eq!(power_save.background_io_priority, ProcessIoPriority::Low);
-        assert_eq!(
-            performance.background_io_priority,
-            ProcessIoPriority::VeryLow
-        );
-        assert_eq!(speed.background_io_priority, ProcessIoPriority::VeryLow);
-        assert_eq!(
-            performance.focus_process_memory_priority,
-            ProcessMemoryPrioritySetting::Normal
-        );
-        assert_eq!(
-            performance.visible_window_memory_priority,
-            ProcessMemoryPrioritySetting::BelowNormal
-        );
-        assert_eq!(
-            speed.visible_window_memory_priority,
-            ProcessMemoryPrioritySetting::Medium
-        );
-        assert_eq!(power_save.maximum_restrained_apps, 4);
-        assert_eq!(performance.maximum_restrained_apps, 8);
-        assert_eq!(speed.maximum_restrained_apps, 12);
-        assert!(power_save.limit_background_processors_enabled);
-        assert!(performance.limit_background_processors_enabled);
-        assert!(speed.limit_background_processors_enabled);
-        assert!(!power_save.dynamic_resource_zones_enabled);
-        assert!(performance.dynamic_resource_zones_enabled);
-        assert!(speed.dynamic_resource_zones_enabled);
-        assert!(power_save.process_priority_enabled);
-        assert!(performance.process_priority_enabled);
-        assert!(speed.process_priority_enabled);
-        assert_eq!(
-            power_save.background_processor_selection,
-            BackgroundProcessorSelection::LeastUsed
-        );
-        assert_eq!(
-            performance.background_processor_selection,
-            BackgroundProcessorSelection::LeastUsed
-        );
-        assert_eq!(
-            speed.background_processor_selection,
-            BackgroundProcessorSelection::LeastUsed
-        );
-        assert_eq!(
-            power_save.focus_process_priority,
-            ProcessPrioritySetting::AboveNormal
-        );
-        assert_eq!(
-            performance.focus_process_priority,
-            ProcessPrioritySetting::AboveNormal
-        );
-        assert_eq!(
-            speed.focus_process_priority,
-            ProcessPrioritySetting::AboveNormal
-        );
-        assert!(
-            power_save.foreground_or_system_cpu_threshold_percent
-                > performance.foreground_or_system_cpu_threshold_percent
-        );
-        assert!(
-            performance.foreground_or_system_cpu_threshold_percent
-                > speed.foreground_or_system_cpu_threshold_percent
-        );
-        assert!(
-            power_save.background_app_cpu_threshold_percent
-                > performance.background_app_cpu_threshold_percent
-        );
-        assert!(
-            performance.background_app_cpu_threshold_percent
-                > speed.background_app_cpu_threshold_percent
-        );
-        for (values, expected) in [
-            (&power_save, (75, 10, 5, 1_500, 2, 4, 4)),
-            (&performance, (60, 8, 4, 750, 3, 5, 8)),
-            (&speed, (35, 4, 2, 500, 5, 8, 12)),
-        ] {
-            assert_eq!(
-                (
-                    values.foreground_or_system_cpu_threshold_percent,
-                    values.background_app_cpu_threshold_percent,
-                    values.cpu_recovery_threshold_percent,
-                    values.reaction_time_ms,
-                    values.cpu_restraint_time_seconds,
-                    values.cpu_recovery_time_seconds,
-                    values.maximum_restrained_apps,
-                ),
-                expected
-            );
-        }
-        assert_eq!(power_save.processor_limit_percent, 60);
-        assert_eq!(performance.processor_limit_percent, 75);
-        assert_eq!(speed.processor_limit_percent, 75);
-        assert!(!thread_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled);
-        assert!(
-            !dynamic_priority_boost_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled
-        );
-        assert!(!gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).enabled);
-        assert_eq!(
-            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::PowerSave).background_priority,
-            ProcessGpuPrioritySetting::BelowNormal
-        );
-        assert_eq!(
-            speed.focus_process_io_priority,
-            ProcessIoPrioritySetting::High
-        );
-        assert_eq!(
-            io_priority_preset_values(speed).visible_window_priority,
-            ProcessIoPrioritySetting::Normal
-        );
-        assert_eq!(
-            io_priority_preset_values(speed).background_priority,
-            ProcessIoPrioritySetting::VeryLow
-        );
-        assert_eq!(
-            thread_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).foreground_priority,
-            ProcessThreadPrioritySetting::Highest
-        );
-        assert_eq!(
-            thread_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed)
-                .visible_window_priority,
-            ProcessThreadPrioritySetting::Normal
-        );
-        assert_eq!(
-            thread_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).background_priority,
-            ProcessThreadPrioritySetting::Idle
-        );
-        let max_dynamic = dynamic_priority_boost_preset_values(BuiltInAdaptiveEnginePreset::Speed);
-        assert_eq!(
-            (
-                max_dynamic.foreground_boost,
-                max_dynamic.visible_window_boost,
-                max_dynamic.background_boost,
-            ),
-            (
-                ProcessDynamicPriorityBoostSetting::Enabled,
-                ProcessDynamicPriorityBoostSetting::Default,
-                ProcessDynamicPriorityBoostSetting::Disabled,
-            )
-        );
-        assert_eq!(
-            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).foreground_priority,
-            ProcessGpuPrioritySetting::High
-        );
-        assert_eq!(
-            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).visible_window_priority,
-            ProcessGpuPrioritySetting::Normal
-        );
-        assert_eq!(
-            gpu_priority_preset_values(BuiltInAdaptiveEnginePreset::Speed).background_priority,
-            ProcessGpuPrioritySetting::Idle
-        );
-    }
-
-    #[test]
-    fn adaptive_engine_default_keeps_cpu_scheduler_opt_in() {
-        let mut settings = Settings::default();
-
-        apply_adaptive_engine(&mut settings, true);
-
-        assert!(settings.adaptive_engine.enabled);
-        assert!(settings.adaptive_engine.processor_power_policy_enabled);
-        assert!(!settings.background_efficiency.enabled);
-        assert!(!settings.cpu_scheduler.cpu_pressure_restraint_enabled);
-    }
-
-    #[test]
-    fn adaptive_engine_presets_tune_without_changing_feature_ownership() {
-        let mut settings = Settings::default();
-        settings.background_efficiency.enabled = true;
-        settings.cpu_scheduler.cpu_pressure_restraint_enabled = true;
-
-        apply_built_in_adaptive_engine_preset(
-            &mut settings,
-            BuiltInAdaptiveEnginePreset::PowerSave,
-        );
-        assert!(matches_built_in_adaptive_engine_preset(
-            &settings,
-            BuiltInAdaptiveEnginePreset::PowerSave
+    fn unchanged_tray_intent_retries_without_polling_or_error_spam() {
+        let now = std::time::Instant::now();
+        let intent = (true, false);
+        assert!(tray_retry_due(None, intent, now));
+        let failed = Some((intent, now));
+        assert!(!tray_retry_due(
+            failed,
+            intent,
+            now + Duration::from_millis(250)
         ));
-        assert!(!settings.adaptive_engine.enabled);
-        assert!(settings.adaptive_engine.processor_power_policy_enabled);
-        assert!(settings.background_efficiency.enabled);
-        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
-
-        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
-        assert!(matches_built_in_adaptive_engine_preset(
-            &settings,
-            BuiltInAdaptiveEnginePreset::Balanced
-        ));
-        assert!(!settings.adaptive_engine.enabled);
-        assert!(settings.background_efficiency.enabled);
-        assert!(cpu_scheduler_matches_preset(
-            &settings.cpu_scheduler,
-            BuiltInAdaptiveEnginePreset::Balanced
-        ));
-
-        apply_built_in_adaptive_engine_preset(
-            &mut settings,
-            BuiltInAdaptiveEnginePreset::Performance,
-        );
-        assert!(matches_built_in_adaptive_engine_preset(
-            &settings,
-            BuiltInAdaptiveEnginePreset::Performance
-        ));
-        assert!(!settings.adaptive_engine.enabled);
-        assert!(settings.background_efficiency.enabled);
-        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
-        assert!(settings.adaptive_engine.processor_power_policy_enabled);
-        assert!(cpu_scheduler_matches_preset(
-            &settings.cpu_scheduler,
-            BuiltInAdaptiveEnginePreset::Performance
-        ));
-
-        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Speed);
-        assert!(matches_built_in_adaptive_engine_preset(
-            &settings,
-            BuiltInAdaptiveEnginePreset::Speed
-        ));
-        assert!(!settings.adaptive_engine.enabled);
-        assert!(settings.background_efficiency.enabled);
-        assert!(settings.cpu_scheduler.cpu_pressure_restraint_enabled);
-        assert!(settings.adaptive_engine.processor_power_policy_enabled);
-        assert!(cpu_scheduler_matches_preset(
-            &settings.cpu_scheduler,
-            BuiltInAdaptiveEnginePreset::Speed
-        ));
-    }
-
-    #[test]
-    fn adaptive_engine_custom_targets_make_preset_custom() {
-        let mut settings = Settings::default();
-
-        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
-        settings
-            .adaptive_engine
-            .base_processor_policy
-            .performance_max = 55;
-
-        assert!(!matches_built_in_adaptive_engine_preset(
-            &settings,
-            BuiltInAdaptiveEnginePreset::Balanced
-        ));
-        assert_eq!(
-            settings
-                .adaptive_engine
-                .base_processor_policy
-                .performance_max,
-            55
-        );
-
-        apply_built_in_adaptive_engine_preset(&mut settings, BuiltInAdaptiveEnginePreset::Balanced);
-        apply_cpu_scheduler_preset(
-            &mut settings.cpu_scheduler,
-            BuiltInAdaptiveEnginePreset::Performance,
-        );
-
-        assert!(!matches_built_in_adaptive_engine_preset(
-            &settings,
-            BuiltInAdaptiveEnginePreset::Balanced
-        ));
-        assert!(cpu_scheduler_matches_preset(
-            &settings.cpu_scheduler,
-            BuiltInAdaptiveEnginePreset::Performance
-        ));
-    }
-
-    #[test]
-    fn adaptive_engine_toggle_does_not_change_preset_match() {
-        let mut settings = Settings::default();
-
-        for preset in BuiltInAdaptiveEnginePreset::ALL {
-            apply_built_in_adaptive_engine_preset(&mut settings, preset);
-            let enabled = !settings.adaptive_engine.enabled;
-            apply_adaptive_engine(&mut settings, enabled);
-
-            assert!(matches_built_in_adaptive_engine_preset(&settings, preset));
-        }
-    }
-
-    #[test]
-    fn cpu_scheduler_preset_match_ignores_hidden_preserve_flags() {
-        let mut settings = CpuSchedulerSettings::default();
-        apply_cpu_scheduler_preset(&mut settings, BuiltInAdaptiveEnginePreset::Performance);
-        settings.io_priority.preserve_foreground_priority = false;
-        settings.thread_priority.preserve_background_priority = false;
-        settings.gpu_priority.foreground_detection_enabled = false;
-
-        assert!(cpu_scheduler_matches_preset(
-            &settings,
-            BuiltInAdaptiveEnginePreset::Performance
-        ));
-    }
-
-    #[test]
-    fn cpu_frequency_graph_uses_base_clock_as_floor() {
-        assert_eq!(
-            normalize_cpu_frequency_percent(Some(3_000), 3_000, Some(5_000)),
-            0.0
-        );
-        assert_eq!(
-            normalize_cpu_frequency_percent(Some(4_000), 3_000, Some(5_000)),
-            50.0
-        );
-        assert_eq!(
-            normalize_cpu_frequency_percent(Some(5_500), 3_000, Some(5_000)),
-            100.0
-        );
-        assert_eq!(
-            normalize_cpu_frequency_percent(None, 3_000, Some(5_000)),
-            0.0
-        );
-        assert_eq!(
-            normalize_cpu_frequency_percent(Some(4_000), 3_000, None),
-            0.0
-        );
-    }
-
-    #[test]
-    fn dashboard_dual_line_points_pad_and_keep_latest_samples() {
-        let points = dashboard_dual_line_points(
-            (0..(DASHBOARD_HISTORY_LEN + 2)).map(|index| (index as f32, (index * 2) as f32)),
-            |value| format!("{:?}", value),
-            |value| format!("{:?}", value),
-        );
-
-        assert_eq!(points.len(), DASHBOARD_HISTORY_LEN);
-        assert_eq!(points[0].first_value, 2.0);
-        assert_eq!(points[0].second_value, 4.0);
-        assert_eq!(
-            points[DASHBOARD_HISTORY_LEN - 1].first_value,
-            (DASHBOARD_HISTORY_LEN + 1) as f64
-        );
-
-        let padded = dashboard_dual_line_points(
-            [(7.0, 9.0)].into_iter(),
-            |value| format!("{:?}", value),
-            |value| format!("{:?}", value),
-        );
-        assert_eq!(padded.len(), DASHBOARD_HISTORY_LEN);
-        assert_eq!(padded[DASHBOARD_HISTORY_LEN - 2].first_value, 0.0);
-        assert_eq!(padded[DASHBOARD_HISTORY_LEN - 1].first_value, 7.0);
-    }
-
-    #[test]
-    fn memory_cache_percent_uses_total_memory_scale() {
-        assert_eq!(memory_bytes_percent(Some(4), Some(16)), Some(25.0));
-        assert_eq!(memory_bytes_percent(Some(32), Some(16)), Some(100.0));
-        assert_eq!(memory_bytes_percent(Some(4), Some(0)), None);
-        assert_eq!(memory_bytes_percent(None, Some(16)), None);
-    }
-
-    #[test]
-    fn refresh_due_advances_only_after_deadline() {
-        let now = Instant::now();
-        let mut next_refresh = now + Duration::from_secs(1);
-
-        assert!(!refresh_due(now, &mut next_refresh, Duration::from_secs(3)));
-        assert_eq!(next_refresh, now + Duration::from_secs(1));
-
-        assert!(refresh_due(
-            now + Duration::from_secs(1),
-            &mut next_refresh,
-            Duration::from_secs(3)
-        ));
-        assert_eq!(next_refresh, now + Duration::from_secs(4));
-    }
-
-    #[test]
-    fn active_plan_guid_returns_active_plan_only() {
-        let plans = vec![
-            PowerPlan {
-                guid: "balanced".to_owned(),
-                name: "Balanced".to_owned(),
-                active: false,
-            },
-            PowerPlan {
-                guid: "saver".to_owned(),
-                name: "Saver".to_owned(),
-                active: true,
-            },
-        ];
-
-        assert_eq!(active_plan_guid(&plans), Some("saver"));
-        assert_eq!(active_plan_guid(&[]), None);
+        assert!(tray_retry_due(failed, intent, now + Duration::from_secs(5)));
+        assert!(tray_retry_due(failed, (true, true), now));
     }
 }

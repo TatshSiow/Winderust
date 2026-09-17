@@ -3,6 +3,7 @@ use std::mem::size_of;
 use windows_sys::Win32::{
     Foundation::{
         ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     System::{
         Diagnostics::ToolHelp::{
@@ -10,9 +11,10 @@ use windows_sys::Win32::{
         },
         Threading::{
             GetProcessIdOfThread, GetThreadPriority, GetThreadTimes, OpenThread, SetThreadPriority,
-            THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_HIGHEST,
-            THREAD_PRIORITY_IDLE, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
-            THREAD_PRIORITY_TIME_CRITICAL, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
+            WaitForSingleObject, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL,
+            THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE, THREAD_PRIORITY_LOWEST,
+            THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL, THREAD_QUERY_INFORMATION,
+            THREAD_SET_INFORMATION, THREAD_SYNCHRONIZE,
         },
     },
 };
@@ -92,7 +94,7 @@ pub(crate) fn open_thread(thread_id: u32) -> Result<ThreadHandle, ThreadPriority
     // SAFETY: thread_id came from a current Toolhelp snapshot and the handle is not inheritable.
     let handle = unsafe {
         OpenThread(
-            THREAD_QUERY_INFORMATION | THREAD_SET_INFORMATION,
+            THREAD_QUERY_INFORMATION | THREAD_SET_INFORMATION | THREAD_SYNCHRONIZE,
             0,
             thread_id,
         )
@@ -104,6 +106,15 @@ pub(crate) fn open_thread(thread_id: u32) -> Result<ThreadHandle, ThreadPriority
         id: thread_id,
         handle: WinHandle::new(handle),
     })
+}
+
+pub(crate) fn ensure_active(thread: &ThreadHandle) -> Result<(), ThreadPriorityError> {
+    // SAFETY: thread owns a handle with SYNCHRONIZE access; zero timeout never blocks.
+    match unsafe { WaitForSingleObject(thread.raw(), 0) } {
+        WAIT_TIMEOUT => Ok(()),
+        WAIT_OBJECT_0 => Err(ThreadPriorityError::ThreadExited),
+        _ => Err(capture_thread_error("WaitForSingleObject", thread.id)),
+    }
 }
 
 pub(crate) fn owner_process_id(thread: &ThreadHandle) -> Result<u32, ThreadPriorityError> {
@@ -171,5 +182,30 @@ fn capture_thread_error(operation: &'static str, thread_id: u32) -> ThreadPriori
             thread_id: Some(thread_id),
             code,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_thread_handle_detects_exit_without_changing_priority() {
+        let (id_tx, id_rx) = std::sync::mpsc::channel();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            // SAFETY: GetCurrentThreadId takes no arguments and only reads the caller's ID.
+            let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+            id_tx.send(id).unwrap();
+            let _ = stop_rx.recv();
+        });
+        let handle = open_thread(id_rx.recv().unwrap()).unwrap();
+        assert_eq!(ensure_active(&handle), Ok(()));
+        drop(stop_tx);
+        worker.join().unwrap();
+        assert_eq!(
+            ensure_active(&handle),
+            Err(ThreadPriorityError::ThreadExited)
+        );
     }
 }
