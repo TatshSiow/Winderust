@@ -215,6 +215,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn translations_support_language_switching_and_interpolation() {
+        const CHILD: &str = "WINDERUST_TEST_LOCALE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::translations_support_language_switching_and_interpolation",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for (locale, home) in [
+            ("en", "Home"),
+            ("zh-TW", "\u{9996}\u{9801}"),
+            ("en", "Home"),
+        ] {
+            rust_i18n::set_locale(locale);
+            assert_eq!(rust_i18n::t!("nav.home"), home);
+        }
+        assert_eq!(rust_i18n::t!("common.rule", number = 7), "Rule 7");
+        assert_eq!(rust_i18n::t!("nav.home", locale = "unknown-locale"), "Home");
+    }
+
+    #[test]
     fn locale_labels_are_not_question_mark_placeholders() {
         for (locale, source) in [
             ("en", include_str!("../locales/en.yml")),
