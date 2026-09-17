@@ -2535,3 +2535,66 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
     notify_windows_event(&shared, WindowsAutomationEvent::AppearanceChanged);
     assert_eq!(lock_unpoisoned(&shared.state).change_generation, before);
 }
+
+#[test]
+fn idle_battery_worker_survives_source_changes_without_settings_updates() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let mut settings = Settings {
+        on_battery: Some(Box::new(Settings::default())),
+        ..Default::default()
+    };
+    settings.by_foreground.enabled = true;
+    settings.by_foreground.rules.push(ByForegroundRule {
+        enabled: true,
+        name: "nonexistent audit target".into(),
+        executable_path: r"C:\WinderustAuditNonexistent	arget.exe".into(),
+        power_plan_guid: Some("invalid-audit-plan".into()),
+    });
+    assert!(automation_worker_required(&settings));
+    assert!(!automation_worker_required(active_power_source_settings(
+        &settings,
+        Some(false)
+    )));
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.settings = Arc::new(settings);
+        state.worker_accepting_work = true;
+        state.windows_event_watcher_active = true;
+    }
+    let source = Arc::new(AtomicBool::new(false));
+    let source_reader = source.clone();
+    let shared = automation.shared.clone();
+    let (tx, rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        run_background_automation(shared, || {
+            let plugged_in = source_reader.load(Ordering::SeqCst);
+            tx.send(plugged_in).unwrap();
+            Some(plugged_in)
+        })
+    });
+    let result = || {
+        assert!(!rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        for plugged_in in [true, false, true] {
+            thread::sleep(Duration::from_millis(150));
+            assert!(!worker.is_finished(), "idle profile must retain the worker");
+            while rx.try_recv().is_ok() {}
+            source.store(plugged_in, Ordering::SeqCst);
+            notify_windows_event(&automation.shared, WindowsAutomationEvent::PowerChanged);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), plugged_in);
+        }
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(result));
+    {
+        let mut state = lock_unpoisoned(&automation.shared.state);
+        state.stop_requested = true;
+        automation.shared.changed.notify_all();
+    }
+    worker.join().unwrap().unwrap();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}

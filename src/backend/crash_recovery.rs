@@ -323,11 +323,9 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
             break;
         }
     }
-    for (_, entry) in pending {
-        compact_or_push(&mut entries, entry);
-    }
+    let committed_len = append_pending_intents(&mut entries, pending);
     if !entries.is_empty() {
-        if let Err(error) = recover_with_retry(&entries) {
+        if let Err(error) = recover_with_retry(&entries, committed_len) {
             eprintln!("Winderust crash recovery failed: {error}");
             std::process::exit(2);
         }
@@ -428,10 +426,21 @@ fn apply_watchdog_command_with_open_job(
     Ok(())
 }
 
-fn recover_with_retry(entries: &[RecoveryEntry]) -> Result<(), String> {
+// Pending intents may or may not have executed. Keep their edges and the committed
+// boundary intact so recovery can recognize either outcome without losing a baseline.
+fn append_pending_intents(
+    entries: &mut Vec<RecoveryEntry>,
+    pending: Vec<(u64, RecoveryEntry)>,
+) -> usize {
+    let committed_len = entries.len();
+    entries.extend(pending.into_iter().map(|(_, entry)| entry));
+    committed_len
+}
+
+fn recover_with_retry(entries: &[RecoveryEntry], committed_len: usize) -> Result<(), String> {
     let mut last_error = None;
     for attempt in 0..3 {
-        let recovery = recover_journal(entries);
+        let recovery = recover_journal_with_pending(entries, committed_len);
         let plan_cleanup = restore_stale_adaptive_plans();
         match (recovery, plan_cleanup) {
             (Ok(()), Ok(())) => return Ok(()),
@@ -885,13 +894,21 @@ fn compact_or_push(entries: &mut Vec<RecoveryEntry>, entry: RecoveryEntry) {
     entries.push(entry);
 }
 
+#[cfg(test)]
 fn recover_journal(entries: &[RecoveryEntry]) -> Result<(), String> {
+    recover_journal_with_pending(entries, entries.len())
+}
+
+fn recover_journal_with_pending(
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> Result<(), String> {
     let mut recovered = HashSet::new();
     let mut failures = Vec::new();
     for entry in entries.iter().rev() {
         let key = entry.key();
         if recovered.insert(key.clone()) {
-            if let Err(error) = recover_entry(entry, &key, entries) {
+            if let Err(error) = recover_entry(entry, &key, entries, committed_len) {
                 failures.push(error);
             }
         }
@@ -907,17 +924,25 @@ fn recover_entry(
     entry: &RecoveryEntry,
     key: &str,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> Result<(), String> {
     match entry {
         RecoveryEntry::Process {
             identity, expected, ..
-        } => recover_process_key(key, identity, expected, entries),
+        } => recover_process_key(key, identity, expected, entries, committed_len),
         RecoveryEntry::ThreadPriority {
             process,
             thread_id,
             thread_creation_time,
             ..
-        } => recover_thread_key(key, process, *thread_id, *thread_creation_time, entries),
+        } => recover_thread_key(
+            key,
+            process,
+            *thread_id,
+            *thread_creation_time,
+            entries,
+            committed_len,
+        ),
         RecoveryEntry::ThreadSuspension {
             process,
             thread_id,
@@ -931,7 +956,7 @@ fn recover_entry(
             *original_suspend_count,
             *expected_suspend_count,
         ),
-        RecoveryEntry::PowerPlan { .. } => recover_power_plan_key(key, entries),
+        RecoveryEntry::PowerPlan { .. } => recover_power_plan_key(key, entries, committed_len),
         RecoveryEntry::SuspendedJob { name, .. } => thaw_job(name),
     }
 }
@@ -941,12 +966,13 @@ fn recover_process_key(
     identity: &ProcessIdentity,
     value_kind: &ProcessValue,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> Result<(), String> {
     let Some(process) = open_matching_process(identity)? else {
         return Ok(());
     };
     let current = query_process_value(process.raw(), value_kind)?;
-    let desired = unwind_process_value(key, &current, entries);
+    let desired = unwind_process_value(key, &current, entries, committed_len);
     if desired != current {
         apply_process_value(process.raw(), &desired)?;
     }
@@ -957,16 +983,22 @@ fn unwind_process_value(
     key: &str,
     current: &ProcessValue,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> ProcessValue {
     let mut desired = current.clone();
-    for entry in entries.iter().rev().filter(|entry| entry.key() == key) {
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| entry.key() == key)
+    {
         if let RecoveryEntry::Process {
             original, expected, ..
         } = entry
         {
             if *expected == desired {
                 desired = original.clone();
-            } else {
+            } else if index < committed_len || *original != desired {
                 break;
             }
         }
@@ -980,6 +1012,7 @@ fn recover_thread_key(
     thread_id: u32,
     expected_creation_time: u64,
     entries: &[RecoveryEntry],
+    committed_len: usize,
 ) -> Result<(), String> {
     let Some(process_handle) = open_matching_process(process)? else {
         return Ok(());
@@ -1025,19 +1058,7 @@ fn recover_thread_key(
             last_error()
         ));
     }
-    let mut desired = current;
-    for entry in entries.iter().rev().filter(|entry| entry.key() == key) {
-        if let RecoveryEntry::ThreadPriority {
-            original, expected, ..
-        } = entry
-        {
-            if *expected == desired {
-                desired = *original;
-            } else {
-                break;
-            }
-        }
-    }
+    let desired = unwind_thread_priority(key, current, entries, committed_len);
     if desired != current {
         // SAFETY: desired was previously read from this validated thread instance.
         if unsafe { SetThreadPriority(thread.raw(), desired) } == 0 {
@@ -1048,6 +1069,33 @@ fn recover_thread_key(
         }
     }
     Ok(())
+}
+
+fn unwind_thread_priority(
+    key: &str,
+    current: i32,
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> i32 {
+    let mut desired = current;
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| entry.key() == key)
+    {
+        if let RecoveryEntry::ThreadPriority {
+            original, expected, ..
+        } = entry
+        {
+            if *expected == desired {
+                desired = *original;
+            } else if index < committed_len || *original != desired {
+                break;
+            }
+        }
+    }
+    desired
 }
 
 fn should_resume_thread_suspension(original: u16, expected: u16, current: u16) -> bool {
@@ -1119,10 +1167,32 @@ fn recoverable_thread_suspension_result<T>(
     }
 }
 
-fn recover_power_plan_key(key: &str, entries: &[RecoveryEntry]) -> Result<(), String> {
+fn recover_power_plan_key(
+    key: &str,
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> Result<(), String> {
     let current = active_plan()?.guid;
-    let mut desired = current.clone();
-    for entry in entries.iter().rev().filter(|entry| entry.key() == key) {
+    let desired = unwind_power_plan_guid(key, &current, entries, committed_len);
+    if !desired.eq_ignore_ascii_case(&current) {
+        set_active(&desired)?;
+    }
+    Ok(())
+}
+
+fn unwind_power_plan_guid(
+    key: &str,
+    current: &str,
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+) -> String {
+    let mut desired = current.to_owned();
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, entry)| entry.key() == key)
+    {
         if let RecoveryEntry::PowerPlan {
             original_guid,
             expected_guid,
@@ -1130,15 +1200,12 @@ fn recover_power_plan_key(key: &str, entries: &[RecoveryEntry]) -> Result<(), St
         {
             if expected_guid.eq_ignore_ascii_case(&desired) {
                 desired = original_guid.clone();
-            } else {
+            } else if index < committed_len || !original_guid.eq_ignore_ascii_case(&desired) {
                 break;
             }
         }
     }
-    if !desired.eq_ignore_ascii_case(&current) {
-        set_active(&desired)?;
-    }
-    Ok(())
+    desired
 }
 
 fn query_process_value(handle: HANDLE, kind: &ProcessValue) -> Result<ProcessValue, String> {
@@ -1935,11 +2002,21 @@ mod tests {
         assert_eq!(entries.len(), 2);
         let key = entries[0].key();
         assert_eq!(
-            unwind_process_value(&key, &ProcessValue::PriorityClass(3), &entries),
+            unwind_process_value(
+                &key,
+                &ProcessValue::PriorityClass(3),
+                &entries,
+                entries.len()
+            ),
             ProcessValue::PriorityClass(4)
         );
         assert_eq!(
-            unwind_process_value(&key, &ProcessValue::PriorityClass(2), &entries),
+            unwind_process_value(
+                &key,
+                &ProcessValue::PriorityClass(2),
+                &entries,
+                entries.len()
+            ),
             ProcessValue::PriorityClass(2)
         );
     }
@@ -2182,6 +2259,69 @@ mod tests {
         match record_thread_suspension(std::ptr::null_mut(), std::ptr::null_mut(), u16::MAX) {
             Ok(_) => panic!("overflow must be rejected before either handle is queried"),
             Err(error) => assert_eq!(error, "Thread suspend count cannot exceed 65535."),
+        }
+    }
+
+    #[test]
+    fn pending_intents_preserve_committed_baselines_at_eof() {
+        for (kind, pending_value) in (0..3).flat_map(|kind| [1, 3].map(|value| (kind, value))) {
+            let mut entries = Vec::new();
+            let mut pending = Vec::new();
+            let mut jobs = HashMap::new();
+            let entry = |original: u32, expected: u32| match kind {
+                0 => RecoveryEntry::Process {
+                    identity: identity(),
+                    original: ProcessValue::PriorityClass(original),
+                    expected: ProcessValue::PriorityClass(expected),
+                },
+                1 => RecoveryEntry::ThreadPriority {
+                    process: identity(),
+                    thread_id: 7,
+                    thread_creation_time: 8,
+                    original: original as i32,
+                    expected: expected as i32,
+                },
+                _ => RecoveryEntry::PowerPlan {
+                    original_guid: original.to_string(),
+                    expected_guid: expected.to_string(),
+                },
+            };
+            for command in [
+                RecoveryCommand::Begin {
+                    id: 1,
+                    entry: entry(1, 2),
+                },
+                RecoveryCommand::Commit { id: 1 },
+                RecoveryCommand::Begin {
+                    id: 2,
+                    entry: entry(2, pending_value),
+                },
+            ] {
+                apply_watchdog_command(command, &mut entries, &mut pending, &mut jobs).unwrap();
+            }
+            let committed_len = append_pending_intents(&mut entries, pending);
+            let key = entries[0].key();
+            for (actual, expected) in [(2, 1), (pending_value, 1), (4, 4)] {
+                match kind {
+                    0 => assert_eq!(
+                        unwind_process_value(
+                            &key,
+                            &ProcessValue::PriorityClass(actual),
+                            &entries,
+                            committed_len
+                        ),
+                        ProcessValue::PriorityClass(expected)
+                    ),
+                    1 => assert_eq!(
+                        unwind_thread_priority(&key, actual as i32, &entries, committed_len),
+                        expected as i32
+                    ),
+                    _ => assert_eq!(
+                        unwind_power_plan_guid(&key, &actual.to_string(), &entries, committed_len),
+                        expected.to_string()
+                    ),
+                }
+            }
         }
     }
 

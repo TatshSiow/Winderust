@@ -844,7 +844,7 @@ impl RuntimeHandle {
             let thread_shared = Arc::clone(&self.shared);
             lock_unpoisoned(&self.shared.state).worker_accepting_work = true;
             *thread = Some(thread::spawn(move || {
-                run_background_automation(thread_shared)
+                run_background_automation(thread_shared, power_source::is_plugged_in)
             }));
         }
     }
@@ -946,7 +946,10 @@ impl Drop for AutomationWorkerExitGuard<'_> {
     }
 }
 
-fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), String> {
+fn run_background_automation(
+    shared: Arc<SharedAutomationState>,
+    power_source: impl Fn() -> Option<bool>,
+) -> Result<(), String> {
     let _exit_guard = AutomationWorkerExitGuard { shared: &shared };
     let mut runner = RuntimeCore::default();
     let mut scheduler = RefreshScheduler::new(Instant::now());
@@ -956,10 +959,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
     while let Some(snapshot) = automation_snapshot(&shared) {
         runner.action_log.begin_batch();
         let configured_settings = snapshot.settings;
-        let settings = active_power_source_settings(
-            configured_settings.as_ref(),
-            power_source::is_plugged_in(),
-        );
+        let settings = active_power_source_settings(configured_settings.as_ref(), power_source());
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =
             runner.cpu_allocation_release_retry_pending();
@@ -1576,7 +1576,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
         if automation_worker_can_exit(
             wait_for,
-            automation_worker_required(settings),
+            automation_worker_required(configured_settings.as_ref()),
             runner.has_managed_process_control_state(),
         ) {
             if !worker_exit_is_still_idle(&shared, change_generation) {
