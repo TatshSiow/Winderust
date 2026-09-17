@@ -147,7 +147,7 @@ impl Editor {
         let outcome = self.service.apply_values(guid, values);
         if let Some(actual) = outcome.actual_values {
             self.values = Some(actual);
-            self.dirty = false;
+            self.dirty = !outcome.applied;
         }
         match outcome.error {
             Some(error) => {
