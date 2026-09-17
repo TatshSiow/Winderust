@@ -2356,3 +2356,47 @@ fn shutdown_retains_terminal_worker_results() {
         }
     }
 }
+
+#[test]
+fn unrelated_wakes_preserve_periodic_power_plan_checks() {
+    let start = Instant::now();
+    let mut scheduler = RefreshScheduler::new(start);
+    let mut checks = Vec::new();
+    for ms in [
+        0, 250, 370, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000,
+    ] {
+        let now = start + Duration::from_millis(ms);
+        let wait = run_scheduled_power_plan_check(&mut scheduler, now, || {
+            checks.push(ms);
+            Some(Duration::from_secs(1))
+        });
+        assert_eq!(wait, Some(Duration::from_millis(1000 - ms % 1000)));
+        scheduler.schedule_after(
+            RefreshDomain::ControllerActivity,
+            now,
+            Duration::from_millis(250),
+        );
+        assert!(
+            scheduler
+                .minimum_wait(
+                    wait,
+                    now,
+                    [(
+                        true,
+                        RefreshDomain::ControllerActivity,
+                        Duration::from_millis(250)
+                    )]
+                )
+                .unwrap()
+                <= Duration::from_millis(250)
+        );
+    }
+    assert_eq!(checks, [0, 1000, 2000, 3000]);
+    let now = start + Duration::from_millis(3100);
+    scheduler.invalidate(SchedulerEvent::SettingsChanged, now);
+    assert_eq!(
+        run_scheduled_power_plan_check(&mut scheduler, now, || None),
+        None
+    );
+    assert!(scheduler.is_due(RefreshDomain::PowerPlanCheck, now));
+}

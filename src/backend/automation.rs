@@ -1427,19 +1427,12 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
 
         let wait_now = Instant::now();
         let mut wait_for = if power_plan_checks_required {
-            if scheduler.is_due(RefreshDomain::PowerPlanCheck, wait_now) {
+            run_scheduled_power_plan_check(&mut scheduler, wait_now, || {
                 if let Err(error) = runner.run_check(settings, &mut observations) {
                     update_worker_error(&shared, Some(error));
                 }
-            }
-
-            if let Some(delay) = power_plan_check_delay(settings, windows_event_watcher_active) {
-                scheduler.schedule_after(RefreshDomain::PowerPlanCheck, wait_now, delay);
-                Some(delay)
-            } else {
-                scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
-                None
-            }
+                power_plan_check_delay(settings, windows_event_watcher_active)
+            })
         } else {
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
             None
@@ -1630,6 +1623,22 @@ fn automation_worker_can_exit(
     has_managed_process_state: bool,
 ) -> bool {
     wait_for.is_none() && !automation_required && !has_managed_process_state
+}
+
+fn run_scheduled_power_plan_check(
+    scheduler: &mut RefreshScheduler,
+    now: Instant,
+    check: impl FnOnce() -> Option<Duration>,
+) -> Option<Duration> {
+    if scheduler.is_due(RefreshDomain::PowerPlanCheck, now) {
+        let delay = check()?;
+        scheduler.schedule_after(RefreshDomain::PowerPlanCheck, now, delay);
+    }
+    scheduler.minimum_wait(
+        None,
+        now,
+        [(true, RefreshDomain::PowerPlanCheck, Duration::MAX)],
+    )
 }
 
 fn min_worker_wait(current: Option<Duration>, candidate: Duration) -> Duration {
