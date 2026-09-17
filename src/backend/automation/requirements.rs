@@ -65,13 +65,11 @@ fn app_suspension_input_hook_required(settings: &Settings) -> bool {
 }
 
 fn activity_input_hook_required(settings: &Settings) -> bool {
-    settings.by_activity.enabled
-        && settings.by_activity.switch_to_performance_on_resume
+    activity_power_plan_required(settings)
         && settings
             .by_activity
             .input_detection
             .keyboard_or_mouse_enabled()
-        && settings.by_activity.power_plans.performance_guid.is_some()
 }
 
 pub(super) fn adaptive_engine_process_refresh_interval(settings: &Settings) -> Duration {
@@ -525,6 +523,7 @@ pub(super) fn configured_check_interval(settings: &Settings) -> Duration {
 pub(super) fn power_plan_check_delay(
     settings: &Settings,
     windows_event_watcher_active: bool,
+    activity_idle_for: Option<Duration>,
 ) -> Option<Duration> {
     if !windows_event_watcher_active {
         return Some(configured_check_interval(settings));
@@ -543,13 +542,16 @@ pub(super) fn power_plan_check_delay(
     if by_running_app_required(settings) {
         delay = Some(min_worker_wait(delay, PERFORMANCE_MODE_REFRESH_INTERVAL));
     }
-    if let Some(activity_delay) = activity_idle_check_delay(settings) {
+    if let Some(activity_delay) = activity_idle_check_delay(settings, activity_idle_for) {
         delay = Some(min_worker_wait(delay, activity_delay));
     }
     delay
 }
 
-pub(super) fn activity_idle_check_delay(settings: &Settings) -> Option<Duration> {
+pub(super) fn activity_idle_check_delay(
+    settings: &Settings,
+    idle_for: Option<Duration>,
+) -> Option<Duration> {
     if !settings.general.enabled
         || !settings.by_activity.enabled
         || !has_idle_plan(&settings.by_activity.power_plans)
@@ -558,7 +560,7 @@ pub(super) fn activity_idle_check_delay(settings: &Settings) -> Option<Duration>
     }
 
     let timeout = Duration::from_secs(settings.by_activity.idle_timeout_seconds);
-    match input_tracker::last_input_elapsed() {
+    match idle_for {
         Some(idle_for) if idle_for < timeout => Some(timeout - idle_for),
         Some(_) => None,
         None => Some(configured_check_interval(settings)),

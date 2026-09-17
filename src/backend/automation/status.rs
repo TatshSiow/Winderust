@@ -5,6 +5,7 @@ pub(super) struct AutomationSnapshot {
     pub(super) change_generation: u64,
     pub(super) process_control_commands: VecDeque<ProcessControlCommand>,
     pub(super) action_log_clear_requested: bool,
+    pub(super) input_activity: InputActivityTracker,
     pub(super) wake_events: AutomationWakeEvents,
     pub(super) windows_event_watcher_active: bool,
 }
@@ -13,6 +14,7 @@ pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<Auto
     let mut state = lock_unpoisoned(&shared.state);
     (!state.stop_requested).then(|| AutomationSnapshot {
         settings: state.settings.clone(),
+        input_activity: state.input_activity,
         change_generation: state.change_generation,
         process_control_commands: std::mem::take(&mut state.process_control_commands),
         action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
@@ -50,7 +52,11 @@ pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: Window
 
 pub(super) fn notify_input_event(shared: &SharedAutomationState, events: InputHookEvents) {
     let mut state = lock_unpoisoned(&shared.state);
-    if state.stop_requested || !input_hook_should_check(&state.settings, events) {
+    if state.stop_requested {
+        return;
+    }
+    state.input_activity.record(events, Instant::now());
+    if !input_hook_should_check(&state.settings, events) {
         return;
     }
 
@@ -428,4 +434,12 @@ pub(super) fn bump_status_generation(
     shared
         .status_generation
         .store(state.status.generation, Ordering::Release);
+}
+
+pub(super) fn configure_input_activity(shared: &SharedAutomationState, config: InputHookConfig) {
+    let mut state = lock_unpoisoned(&shared.state);
+    state.input_activity.configure(config, Instant::now());
+    state.pending_events.input_activity = true;
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
 }

@@ -1960,8 +1960,8 @@ fn event_driven_power_checks_drop_idle_polling_for_foreground_only_rules() {
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(power_plan_check_delay(&settings, true).is_none());
-    assert!(power_plan_check_delay(&settings, false).is_some());
+    assert!(power_plan_check_delay(&settings, true, None).is_none());
+    assert!(power_plan_check_delay(&settings, false, None).is_some());
 }
 
 #[test]
@@ -1972,8 +1972,8 @@ fn activity_input_resume_waits_for_hook_event() {
 
     assert!(power_plan_checks_required(&settings));
     assert!(windows_event_watcher_required(&settings));
-    assert!(power_plan_check_delay(&settings, true).is_none());
-    assert!(power_plan_check_delay(&settings, false).is_some());
+    assert!(power_plan_check_delay(&settings, true, None).is_none());
+    assert!(power_plan_check_delay(&settings, false, None).is_some());
 }
 
 #[test]
@@ -2008,7 +2008,7 @@ fn schedule_checks_sleep_until_next_time_boundary() {
         power_plan_guid: Some("scheduled-guid".to_owned()),
     }];
 
-    let delay = power_plan_check_delay(&settings, true).unwrap();
+    let delay = power_plan_check_delay(&settings, true, None).unwrap();
 
     assert!(delay > configured_check_interval(&settings));
     assert!(delay <= Duration::from_secs(180));
@@ -2031,7 +2031,7 @@ fn schedule_checks_cap_long_sleeps() {
     }];
 
     assert_eq!(
-        power_plan_check_delay(&settings, true),
+        power_plan_check_delay(&settings, true, None),
         Some(SCHEDULE_RULE_MAX_SLEEP)
     );
 }
@@ -2416,6 +2416,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             process_control_commands: VecDeque::new(),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
+            input_activity: InputActivityTracker::default(),
             windows_event_watcher_active: true,
             worker_accepting_work: false,
             stop_requested: false,

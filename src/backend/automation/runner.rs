@@ -72,6 +72,8 @@ pub(super) struct RuntimeCore {
     next_adaptive_io_refresh: Option<Instant>,
     adaptive_foreground_process_id: Option<u32>,
     controller_activity_detector: ControllerActivityDetector,
+    controller_observed_since: Option<Instant>,
+    pub(super) input_activity: InputActivityTracker,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     background_efficiency_manager: BackgroundEfficiencyManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
@@ -261,11 +263,13 @@ impl RuntimeCore {
     }
 
     pub(super) fn poll_controller_activity(&mut self, now: Instant) -> bool {
+        self.controller_observed_since.get_or_insert(now);
         self.controller_activity_detector.poll(now)
     }
 
     pub(super) fn clear_controller_activity(&mut self) {
         self.controller_activity_detector.clear();
+        self.controller_observed_since = None;
     }
 
     pub(super) fn publish_action_log_if_changed(&mut self, shared: &SharedAutomationState) {
@@ -288,15 +292,16 @@ impl RuntimeCore {
         now: Instant,
     ) -> crate::activity::ActivitySnapshot {
         let idle_timeout = Duration::from_secs(settings.by_activity.idle_timeout_seconds);
-        let snapshot = activity_snapshot(idle_timeout);
-        let controller_idle_for = settings
-            .by_activity
-            .input_detection
-            .controller
-            .then(|| self.controller_activity_detector.idle_for(now))
-            .flatten();
-
-        merge_activity_snapshot(snapshot, controller_idle_for, idle_timeout)
+        let controller_idle_for = self.controller_activity_detector.idle_for(now).or_else(|| {
+            self.controller_observed_since
+                .map(|start| now.saturating_duration_since(start))
+        });
+        let idle_for = self.input_activity.idle_for(
+            &settings.by_activity.input_detection,
+            controller_idle_for,
+            now,
+        );
+        activity_snapshot(idle_for, idle_timeout)
     }
 
     pub(super) fn run_background_efficiency_update(
@@ -1303,5 +1308,89 @@ mod settings_tests {
                 assert!(!runner.note_settings(&settings, false));
             }
         }
+    }
+
+    #[test]
+    fn activity_classification_and_deadline_use_only_selected_sources() {
+        let start = Instant::now();
+        let now = start + Duration::from_secs(60);
+        let mut settings = Settings::default();
+        settings.by_activity.enabled = true;
+        settings.by_activity.idle_timeout_seconds = 30;
+        settings.by_activity.power_plans.power_save_guid = Some("idle".into());
+        settings.by_activity.switch_to_performance_on_resume = false;
+        assert!(input_hook_required(&settings));
+
+        for selected in 1..8 {
+            settings.by_activity.input_detection.keyboard = selected & 1 != 0;
+            settings.by_activity.input_detection.mouse = selected & 2 != 0;
+            settings.by_activity.input_detection.controller = selected & 4 != 0;
+            let mut runner = RuntimeCore::default();
+            runner.input_activity.configure(
+                InputHookConfig {
+                    keyboard: true,
+                    mouse: true,
+                },
+                start,
+            );
+            runner.controller_observed_since = Some(start);
+            // Recent events from disabled sources must not postpone idle.
+            runner.input_activity.record(
+                InputHookEvents {
+                    keyboard: selected & 1 == 0,
+                    mouse: selected & 2 == 0,
+                    ..Default::default()
+                },
+                now,
+            );
+            let snapshot = runner.activity_snapshot(&settings, now);
+            assert_eq!(snapshot.state, crate::activity::ActivityState::Idle);
+            assert_eq!(snapshot.idle_for, Some(Duration::from_secs(60)));
+            assert_eq!(
+                activity_idle_check_delay(&settings, snapshot.idle_for),
+                None
+            );
+
+            if selected & 3 != 0 {
+                runner.input_activity.record(
+                    InputHookEvents {
+                        keyboard: selected & 1 != 0,
+                        mouse: selected & 2 != 0,
+                        ..Default::default()
+                    },
+                    now - Duration::from_secs(5),
+                );
+                let snapshot = runner.activity_snapshot(&settings, now);
+                assert_eq!(snapshot.state, crate::activity::ActivityState::Active);
+                assert_eq!(snapshot.idle_for, Some(Duration::from_secs(5)));
+                assert_eq!(
+                    activity_idle_check_delay(&settings, snapshot.idle_for),
+                    Some(Duration::from_secs(25))
+                );
+            }
+
+            runner.input_activity.configure(
+                InputHookConfig {
+                    keyboard: true,
+                    mouse: true,
+                },
+                now,
+            );
+            runner.controller_observed_since = Some(now);
+            let snapshot = runner.activity_snapshot(&settings, now);
+            assert_eq!(snapshot.state, crate::activity::ActivityState::Active);
+            assert_eq!(
+                activity_idle_check_delay(&settings, snapshot.idle_for),
+                Some(Duration::from_secs(30))
+            );
+        }
+
+        let runner = RuntimeCore::default();
+        let snapshot = runner.activity_snapshot(&settings, now);
+        assert_eq!(snapshot.state, crate::activity::ActivityState::Unknown);
+        assert_eq!(
+            activity_idle_check_delay(&settings, snapshot.idle_for),
+            Some(configured_check_interval(&settings))
+        );
     }
 }

@@ -14,7 +14,7 @@ use std::{
 use crate::{
     action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
-        activity_snapshot, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
+        activity_snapshot, input_tracker::InputActivityTracker, ControllerActivityDetector,
         InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
     adaptive_engine_process::{
@@ -350,6 +350,7 @@ struct AutomationWorkerState {
     process_control_commands: VecDeque<ProcessControlCommand>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
+    input_activity: InputActivityTracker,
     windows_event_watcher_active: bool,
     worker_accepting_work: bool,
     stop_requested: bool,
@@ -400,6 +401,7 @@ impl RuntimeHandle {
                 process_control_commands: VecDeque::new(),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
+                input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: false,
                 worker_accepting_work: false,
                 stop_requested: false,
@@ -875,6 +877,7 @@ impl RuntimeHandle {
         let mut input_hook = lock_unpoisoned(&self.input_hook);
         if !input_hook_required(&settings.value) {
             input_hook.take();
+            configure_input_activity(&self.shared, InputHookConfig::default());
             return;
         }
 
@@ -886,12 +889,16 @@ impl RuntimeHandle {
             return;
         }
         input_hook.take();
+        configure_input_activity(&self.shared, InputHookConfig::default());
         let shared = Arc::clone(&self.shared);
         match InputHook::install(
             config,
             Arc::new(move |events| notify_input_event(&shared, events)),
         ) {
-            Ok(installed) => *input_hook = Some(installed),
+            Ok(installed) => {
+                *input_hook = Some(installed);
+                configure_input_activity(&self.shared, config);
+            }
             Err(error) => update_worker_error(&self.shared, Some(error)),
         }
     }
@@ -965,6 +972,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
             runner.action_log.clear();
         }
         let wake_events = snapshot.wake_events;
+        runner.input_activity = snapshot.input_activity;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
         let mut observations = CycleObservations::default();
         let hidden_to_tray = tray::is_hidden_to_tray();
@@ -1431,7 +1439,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
                 if let Err(error) = runner.run_check(settings, &mut observations) {
                     update_worker_error(&shared, Some(error));
                 }
-                power_plan_check_delay(settings, windows_event_watcher_active)
+                power_plan_check_delay(
+                    settings,
+                    windows_event_watcher_active,
+                    runner.activity_snapshot(settings, Instant::now()).idle_for,
+                )
             })
         } else {
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
