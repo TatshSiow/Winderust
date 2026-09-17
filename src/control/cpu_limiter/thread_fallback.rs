@@ -113,6 +113,7 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
     }
 
     pub(super) fn freeze_known_threads(&mut self) -> Result<(), CpuLimiterTargetError> {
+        self.remove_inactive_threads()?;
         let keys = self.threads.keys().copied().collect::<Vec<_>>();
         self.freeze_threads(&keys)
     }
@@ -241,23 +242,22 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
     fn remove_inactive_threads(&mut self) -> Result<(), CpuLimiterTargetError> {
         let keys = self.threads.keys().copied().collect::<Vec<_>>();
         for key in keys {
-            let active = {
-                let Some(thread) = self.threads.get(&key) else {
-                    return Err(missing_thread_state(key));
-                };
-                self.operations.is_thread_active(&thread.handle)?
-            };
-            if active {
-                continue;
-            }
-            let Some(thread) = self.threads.get_mut(&key) else {
-                return Err(missing_thread_state(key));
-            };
-            thread.owned_increment = false;
-            forget_thread(&mut self.operations, &self.process, thread)?;
-            self.threads.remove(&key);
+            self.remove_inactive_thread(key)?;
         }
         Ok(())
+    }
+
+    fn remove_inactive_thread(&mut self, key: (u32, u64)) -> Result<bool, CpuLimiterTargetError> {
+        let Some(thread) = self.threads.get_mut(&key) else {
+            return Err(missing_thread_state(key));
+        };
+        if self.operations.is_thread_active(&thread.handle)? {
+            return Ok(false);
+        }
+        thread.owned_increment = false;
+        forget_thread(&mut self.operations, &self.process, thread)?;
+        self.threads.remove(&key);
+        Ok(true)
     }
 
     fn freeze_threads(&mut self, keys: &[(u32, u64)]) -> Result<(), CpuLimiterTargetError> {
@@ -281,6 +281,11 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
                 )
             };
             if let Err(cause) = result {
+                let cause = match self.remove_inactive_thread(*key) {
+                    Ok(true) => continue,
+                    Ok(false) => cause,
+                    Err(cleanup) => combine_failure(Some(cause), cleanup),
+                };
                 let rollback = self.rollback_threads(&changed);
                 self.frozen = false;
                 return Err(match rollback {
@@ -825,6 +830,8 @@ mod tests {
                 Event::Snapshot,
                 Event::OpenThread(1),
                 Event::OpenThread(2),
+                Event::IsActive(1),
+                Event::IsActive(2),
                 Event::Begin(1),
                 Event::Suspend(1),
                 Event::Commit(1),
@@ -1157,5 +1164,40 @@ mod tests {
             code: 5,
         }
         .into()
+    }
+    #[test]
+    fn freeze_thaw_inventory_cycle_survives_exited_thread_generations() {
+        for exits_during_suspend in [false, true] {
+            let (operations, state) = harness([
+                vec![thread(1, 11, 0), thread(2, 22, 0)],
+                vec![thread(1, 33, 0), thread(2, 22, 0)],
+            ]);
+            let mut managed = prepare(operations).unwrap();
+            managed.freeze_known_threads().unwrap();
+            managed.adopt_new_threads(&BTreeSet::from([1, 2])).unwrap();
+            managed.thaw().unwrap();
+            let checks = if exits_during_suspend {
+                vec![Ok(true), Ok(false)]
+            } else {
+                vec![Ok(false)]
+            };
+            state.borrow_mut().active_results.insert(1, checks.into());
+            if exits_during_suspend {
+                state
+                    .borrow_mut()
+                    .suspend_results
+                    .insert(1, VecDeque::from([Err(failed_thread("SuspendThread", 1))]));
+            }
+            // Exercise the worker's freeze-before-inventory ordering, not cleanup directly.
+            managed.freeze_known_threads().unwrap();
+            managed.adopt_new_threads(&BTreeSet::from([1, 2])).unwrap();
+            assert!(!managed.threads.contains_key(&(1, 11)));
+            assert!(managed.threads[&(1, 33)].owned_increment);
+            assert!(managed.threads[&(2, 22)].owned_increment);
+            assert_eq!(state.borrow().recovery, BTreeSet::from([(1, 33), (2, 22)]));
+            managed.thaw().unwrap();
+            assert!(managed.release().unwrap());
+            assert!(state.borrow().recovery.is_empty());
+        }
     }
 }
