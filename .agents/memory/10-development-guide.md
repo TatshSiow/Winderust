@@ -55,6 +55,9 @@ If `target\release\winderust.exe` is locked because the app is running:
 
 ## Routine Chores
 
+- Dependabot version updates target `dev`; Iced and its renderer are grouped for review. GitHub reads Dependabot configuration from the default branch, so configuration changes must also reach `main` to take effect. Security updates retain GitHub's default-branch behavior.
+- CI and releases run the shared architecture and legacy-name scripts before Rust checks. CI supports manual runs and cancels superseded runs for the same PR or branch.
+
 For dependency PRs, review each update independently. Check the changed files,
 release notes, and whether the version is already required by the UI dependencies
 pinned in `Cargo.toml`; do not merge a major-version bump merely because
@@ -286,7 +289,7 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 Run this quick compatibility/naming check before handoff:
 
 ```powershell
-rg -n -i --glob '!target/**' --glob '!graphify-out/**' --glob '!.git/**' --glob '!.agents/**' --glob '!CONTRIBUTING.md' 'PowerLeaf|Smart Saver|Smart Trim|Background CPU Restriction|Core Steering|Soft CPU Sets|Hard CPU Affinity|background_cpu_restriction|core_steering|soft_cpu_sets|hard_cpu_affinity|serde.*alias|fill_missing_power_plan_mappings|Settings::power_plans' .
+.\scripts\check_legacy_names.ps1
 ```
 
 ## Runtime Safety

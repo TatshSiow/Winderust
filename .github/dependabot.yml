@@ -2,9 +2,18 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
+    target-branch: dev
+    commit-message:
+      prefix: "chore(deps)"
     schedule:
       interval: weekly
+    groups:
+      iced:
+        patterns: ["iced", "iced_tiny_skia"]
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
+    commit-message:
+      prefix: "chore(deps)"
     schedule:
       interval: weekly

@@ -832,3 +832,6 @@ Assert-NoSourceMatch `
     -Paths @('src/features', 'src/ui')
 
 Write-Host 'All architecture ownership gates passed.'
+
+# Successful negative searches return 1; do not propagate that as a CI failure.
+exit 0

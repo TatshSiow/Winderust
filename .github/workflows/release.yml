@@ -20,15 +20,32 @@ jobs:
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup default stable
 
       - name: Validate tag and package version
         shell: pwsh
         run: |
-          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ("v$version" -ne "${{ github.ref_name }}") {
               throw "Tag ${{ github.ref_name }} does not match Cargo version $version"
           }
+
+      - name: Ensure ripgrep is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+              choco install ripgrep --yes --no-progress
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          rg --version
+
+      - name: Check architecture ownership
+        run: .\scripts\check_architecture_ownership.ps1
+
+      - name: Check legacy names
+        run: .\scripts\check_legacy_names.ps1
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -47,13 +64,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist\Winderust | Out-Null
-          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $pattern = "(?ms)^## $([regex]::Escape($version)) - [^\r\n]+\r?\n.*?(?=^## |\z)"
           $section = [regex]::Match((Get-Content CHANGELOG.md -Raw), $pattern)
           if (-not $section.Success) {
               throw "CHANGELOG.md has no release section for $version"
           }
           git fetch --force --tags
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $previousTag = git tag --sort=-version:refname |
               Where-Object { $_ -ne "${{ github.ref_name }}" } |
               Select-Object -First 1
