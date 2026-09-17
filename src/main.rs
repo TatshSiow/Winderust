@@ -206,27 +206,8 @@ impl Drop for SingleInstanceGuard {
 }
 
 fn single_instance_object_name(kind: &str) -> String {
-    use std::os::windows::ffi::OsStrExt;
-
-    // Scope the mutex to this executable path so separate portable copies can run independently.
-    let digest = std::env::current_exe()
-        .ok()
-        .map(|path| path.canonicalize().unwrap_or(path))
-        .map(|path| fnv1a64(path.as_os_str().encode_wide()))
-        .unwrap_or(0x5f3f_2a4e_13a5_59f0);
-
-    format!("Local\\Winderust.{kind}.{digest:016x}")
-}
-
-fn fnv1a64(input: impl IntoIterator<Item = u16>) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for unit in input {
-        for byte in unit.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x00000100000001b3);
-        }
-    }
-    hash
+    // All builds and portable copies share one automation instance per Windows session.
+    format!("Local\\Winderust.{kind}")
 }
 
 #[cfg(test)]
@@ -253,8 +234,15 @@ mod tests {
     }
 
     #[test]
-    fn executable_path_hash_preserves_non_unicode_units() {
-        assert_ne!(fnv1a64([0xD800]), fnv1a64([0xFFFD]));
+    fn instance_names_are_session_scoped_and_independent_of_executable_path() {
+        assert_eq!(
+            single_instance_object_name("SingleInstance"),
+            r"Local\Winderust.SingleInstance"
+        );
+        assert_eq!(
+            single_instance_object_name("RestoreWindow"),
+            r"Local\Winderust.RestoreWindow"
+        );
     }
 
     #[test]
