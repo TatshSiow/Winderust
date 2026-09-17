@@ -132,6 +132,7 @@ struct SettingsCoordinator {
     persisted_revision: SettingsRevision,
     runtime_snapshot: RuntimeSettingsSnapshot,
     projected_draft_revision: u64,
+    load_error: Option<String>,
     storage: Box<dyn SettingsStorage>,
 }
 
@@ -152,7 +153,7 @@ pub(crate) enum SettingsCoordinatorError {
         patch_revision: SettingsRevision,
         persisted_revision: SettingsRevision,
     },
-    Load(String),
+    RecoveryRequired,
     Save(String),
     Export(String),
     Import(String),
@@ -175,7 +176,10 @@ impl std::fmt::Display for SettingsCoordinatorError {
                 formatter,
                 "Settings changed before a runtime patch could be applied (patch revision {patch_revision:?}, persisted revision {persisted_revision:?})."
             ),
-            Self::Load(error) | Self::Save(error) | Self::Export(error) | Self::Import(error) => {
+            Self::RecoveryRequired => formatter.write_str(
+                "Automatic saving is disabled because settings could not be loaded. Repair settings.toml and restart, or explicitly Save or Import settings to replace it.",
+            ),
+            Self::Save(error) | Self::Export(error) | Self::Import(error) => {
                 formatter.write_str(error)
             }
         }
@@ -185,9 +189,14 @@ impl std::fmt::Display for SettingsCoordinatorError {
 impl std::error::Error for SettingsCoordinatorError {}
 
 impl SettingsCoordinator {
-    fn load_from(storage: Box<dyn SettingsStorage>) -> SettingsResult<(Self, SettingsDraft)> {
-        let settings = storage.load().map_err(SettingsCoordinatorError::Load)?;
-        Ok(Self::from_loaded_settings(settings, storage))
+    fn load_from(storage: Box<dyn SettingsStorage>) -> (Self, SettingsDraft) {
+        let (settings, load_error) = match storage.load() {
+            Ok(settings) => (settings, None),
+            Err(error) => (Settings::default(), Some(error)),
+        };
+        let (mut coordinator, draft) = Self::from_loaded_settings(settings, storage);
+        coordinator.load_error = load_error;
+        (coordinator, draft)
     }
 
     fn from_loaded_settings(
@@ -206,6 +215,7 @@ impl SettingsCoordinator {
                 persisted_revision: revision,
                 runtime_snapshot,
                 projected_draft_revision: 0,
+                load_error: None,
                 storage,
             },
             SettingsDraft {
@@ -214,10 +224,6 @@ impl SettingsCoordinator {
                 edit_revision: 0,
             },
         )
-    }
-
-    fn with_settings(settings: Settings) -> (Self, SettingsDraft) {
-        Self::from_loaded_settings(settings, Box::new(ConfigStorage))
     }
 
     fn runtime_settings_snapshot(&mut self, draft: &SettingsDraft) -> RuntimeSettingsSnapshot {
@@ -283,6 +289,10 @@ impl SettingsCoordinator {
             return Ok(false);
         }
 
+        if self.load_error.is_some() {
+            return Err(SettingsCoordinatorError::RecoveryRequired);
+        }
+
         if persisted_changed {
             self.storage
                 .save(&persisted)
@@ -305,6 +315,7 @@ impl SettingsCoordinator {
         self.storage
             .save(&candidate)
             .map_err(SettingsCoordinatorError::Save)?;
+        self.load_error = None;
         let next_revision = self.persisted_revision.next();
         self.persisted = candidate;
         self.persisted_revision = next_revision;
@@ -327,6 +338,7 @@ impl SettingsCoordinator {
         self.storage
             .save(&imported)
             .map_err(SettingsCoordinatorError::Save)?;
+        self.load_error = None;
         let next_revision = self.persisted_revision.next();
         self.persisted = imported.clone();
         self.persisted_revision = next_revision;
@@ -381,27 +393,39 @@ impl SettingsEditor {
     fn load_from(
         storage: Box<dyn SettingsStorage>,
         startup_registration: Box<dyn StartupRegistration>,
-    ) -> SettingsResult<(Self, PersistentSettingsOutcome)> {
-        let (coordinator, draft) = SettingsCoordinator::load_from(storage)?;
+    ) -> (Self, PersistentSettingsOutcome) {
+        let (coordinator, draft) = SettingsCoordinator::load_from(storage);
         let editor = Self::from_parts(coordinator, draft, startup_registration);
-        let outcome = editor.reconcile_startup_registration();
-        Ok((editor, outcome))
+        let outcome = if editor.load_error().is_some() {
+            PersistentSettingsOutcome {
+                startup_registration_error: None,
+            }
+        } else {
+            editor.reconcile_startup_registration()
+        };
+        (editor, outcome)
     }
 
-    pub(crate) fn load() -> SettingsResult<(Self, PersistentSettingsOutcome)> {
+    pub(crate) fn load() -> (Self, PersistentSettingsOutcome) {
         Self::load_from(
             Box::new(ConfigStorage),
             Box::<WindowsStartupRegistration>::default(),
         )
     }
 
+    #[cfg(any(test, feature = "render-smoke"))]
     pub(crate) fn with_settings(settings: Settings) -> Self {
-        let (coordinator, draft) = SettingsCoordinator::with_settings(settings);
+        let (coordinator, draft) =
+            SettingsCoordinator::from_loaded_settings(settings, Box::new(ConfigStorage));
         Self::from_parts(
             coordinator,
             draft,
             Box::<WindowsStartupRegistration>::default(),
         )
+    }
+
+    pub(crate) fn load_error(&self) -> Option<&str> {
+        self.coordinator.load_error.as_deref()
     }
 
     pub(crate) fn base_revision(&self) -> SettingsRevision {
@@ -909,7 +933,7 @@ mod tests {
         let storage =
             FakeStorage::new(Settings::default(), Ok(Settings::default()), Ok(()), Ok(()));
         let storage_copy = storage.clone();
-        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage)).expect("load");
+        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage));
         (coordinator, draft, storage_copy)
     }
 
@@ -919,12 +943,170 @@ mod tests {
     ) -> (SettingsEditor, FakeStorage, FakeStartupRegistration) {
         let storage_probe = storage.clone();
         let startup_probe = startup.clone();
-        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage)).expect("load");
+        let (coordinator, draft) = SettingsCoordinator::load_from(Box::new(storage));
         (
             SettingsEditor::from_parts(coordinator, draft, Box::new(startup)),
             storage_probe,
             startup_probe,
         )
+    }
+
+    struct FileStorage {
+        path: PathBuf,
+        read_error: bool,
+        write_error: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SettingsStorage for FileStorage {
+        fn load(&self) -> Result<Settings, String> {
+            if self.read_error {
+                Err("Access denied".into())
+            } else {
+                config::storage::load_from_path(&self.path)
+            }
+        }
+        fn save(&self, settings: &Settings) -> Result<(), String> {
+            if self.write_error.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Access denied".into());
+            }
+            config::storage::export_toml_to(&self.path, settings)
+        }
+        fn import(&self, path: &Path) -> Result<Settings, String> {
+            config::storage::import_toml_from(path)
+        }
+        fn export(&self, path: &Path, settings: &Settings) -> Result<(), String> {
+            config::storage::export_toml_to(path, settings)
+        }
+    }
+
+    #[test]
+    fn failed_load_preserves_original_until_explicit_replacement_succeeds() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for read_error in [false, true] {
+            for import in [false, true] {
+                let path = std::env::temp_dir().join(format!(
+                    "winderust-recovery-{}-{read_error}-{import}.toml",
+                    std::process::id()
+                ));
+                let import_path = path.with_extension("import.toml");
+                let original = b"# Preserve this repairable configuration\ninvalid = [";
+                std::fs::write(&path, original).unwrap();
+                let write_error = Arc::new(AtomicBool::new(false));
+                let startup = FakeStartupRegistration::new(Ok(()));
+                let startup_probe = startup.clone();
+                let (mut editor, _) = SettingsEditor::load_from(
+                    Box::new(FileStorage {
+                        path: path.clone(),
+                        read_error,
+                        write_error: write_error.clone(),
+                    }),
+                    Box::new(startup),
+                );
+                assert!(editor.load_error().is_some());
+                assert!(startup_probe.applied_values().is_empty());
+                let patch = NavigationCollapsedPatch {
+                    base_revision: editor.base_revision(),
+                    navigation_collapsed: !editor.global().general.navigation_collapsed,
+                };
+                assert_eq!(
+                    editor.apply_navigation_collapsed_patch(patch),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                assert_eq!(
+                    editor.set_master_enabled(!editor.global().general.enabled),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                assert_eq!(
+                    editor.set_feature_enabled(
+                        PowerSourceProfile::PluggedIn,
+                        |s| &mut s.cpu_limiter.enabled,
+                        true
+                    ),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                let mut exclusions = AutoExclusionPatch {
+                    base_revision: editor.base_revision(),
+                    ..Default::default()
+                };
+                exclusions.cpu_limiter.push(r"C:\Apps\test.exe".into());
+                assert_eq!(
+                    editor.apply_auto_exclusion_patch(&exclusions),
+                    Err(SettingsCoordinatorError::RecoveryRequired)
+                );
+                editor.cancel();
+                assert!(editor.load_error().is_some());
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+
+                editor.edit_global(|settings| settings.general.check_interval_ms = 1234);
+                editor.export_toml_to(&import_path).unwrap();
+                write_error.store(true, Ordering::Relaxed);
+                assert!(if import {
+                    editor.import_toml_from(&import_path)
+                } else {
+                    editor.save()
+                }
+                .is_err());
+                assert!(editor.load_error().is_some());
+                assert!(startup_probe.applied_values().is_empty());
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+                write_error.store(false, Ordering::Relaxed);
+                if import {
+                    editor.import_toml_from(&import_path).unwrap();
+                } else {
+                    editor.save().unwrap();
+                }
+                assert!(editor.load_error().is_none());
+                assert_eq!(
+                    config::storage::load_from_path(&path)
+                        .unwrap()
+                        .general
+                        .check_interval_ms,
+                    1234
+                );
+                let patch = NavigationCollapsedPatch {
+                    base_revision: editor.base_revision(),
+                    ..patch
+                };
+                assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
+                assert_eq!(
+                    config::storage::load_from_path(&path)
+                        .unwrap()
+                        .general
+                        .navigation_collapsed,
+                    patch.navigation_collapsed
+                );
+                std::fs::remove_file(path).unwrap();
+                std::fs::remove_file(import_path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn missing_settings_allow_normal_automatic_persistence() {
+        let path =
+            std::env::temp_dir().join(format!("winderust-first-load-{}.toml", std::process::id()));
+        assert!(!path.exists());
+        let (mut editor, _) = SettingsEditor::load_from(
+            Box::new(FileStorage {
+                path: path.clone(),
+                read_error: false,
+                write_error: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }),
+            Box::new(FakeStartupRegistration::new(Ok(()))),
+        );
+        assert!(editor.load_error().is_none());
+        let patch = NavigationCollapsedPatch {
+            base_revision: editor.base_revision(),
+            navigation_collapsed: true,
+        };
+        assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
+        assert!(
+            config::storage::load_from_path(&path)
+                .unwrap()
+                .general
+                .navigation_collapsed
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1145,8 +1327,7 @@ mod tests {
             Err("permission denied".to_owned()),
             Ok(()),
         );
-        let (mut coordinator, mut draft) =
-            SettingsCoordinator::load_from(Box::new(storage)).expect("load");
+        let (mut coordinator, mut draft) = SettingsCoordinator::load_from(Box::new(storage));
         draft.general.check_interval_ms = 1_337;
         let original_draft = draft.clone();
         let patch = AutoExclusionPatch {
@@ -1358,7 +1539,7 @@ mod tests {
             Ok(()),
         );
         let (mut coordinator, mut draft) =
-            SettingsCoordinator::load_from(Box::new(storage.clone())).expect("load");
+            SettingsCoordinator::load_from(Box::new(storage.clone()));
 
         let err = coordinator.save(&mut draft).unwrap_err();
         assert!(matches!(err, SettingsCoordinatorError::Save(_)));
@@ -1392,7 +1573,7 @@ mod tests {
         let (mut coordinator, mut draft, storage_probe) = {
             let storage_copy = storage.clone();
             let (coordinator, draft) =
-                SettingsCoordinator::load_from(Box::new(storage_copy.clone())).expect("load");
+                SettingsCoordinator::load_from(Box::new(storage_copy.clone()));
             (coordinator, draft, storage_copy)
         };
 
@@ -1417,7 +1598,7 @@ mod tests {
         imported.cpu_limiter.enabled = false;
         let storage = FakeStorage::new(Settings::default(), Ok(imported.clone()), Ok(()), Ok(()));
         let (mut coordinator, mut draft) =
-            SettingsCoordinator::load_from(Box::new(storage.clone())).unwrap();
+            SettingsCoordinator::load_from(Box::new(storage.clone()));
         coordinator
             .import_toml_from(Path::new("import.toml"), &mut draft)
             .unwrap();
@@ -1519,8 +1700,7 @@ mod tests {
         let startup = FakeStartupRegistration::new(Ok(()));
         let startup_probe = startup.clone();
 
-        let (editor, outcome) =
-            SettingsEditor::load_from(Box::new(storage), Box::new(startup)).expect("load");
+        let (editor, outcome) = SettingsEditor::load_from(Box::new(storage), Box::new(startup));
 
         assert!(outcome.startup_registration_error().is_none());
         assert!(editor.persisted().general.startup_with_windows);

@@ -63,18 +63,12 @@ fn main() {
     }
     let restore_event = SingleInstanceRestoreEvent::create();
 
-    let (mut settings, settings_load_error) = match SettingsEditor::load() {
-        Ok((settings, outcome)) => (
-            settings,
-            outcome
-                .startup_registration_error()
-                .map(|error| format!("Startup registration reconciliation failed: {error}")),
-        ),
-        Err(error) => (
-            SettingsEditor::with_settings(config::Settings::default()),
-            Some(error.to_string()),
-        ),
-    };
+    let (mut settings, outcome) = SettingsEditor::load();
+    let settings_load_error = settings.load_error().map(str::to_owned).or_else(|| {
+        outcome
+            .startup_registration_error()
+            .map(|error| format!("Startup registration reconciliation failed: {error}"))
+    });
     let mut recovery_client = crash_recovery::RecoveryClient::start();
     let adaptive_plan_recovery_error = power::restore_stale_adaptive_plans()
         .err()

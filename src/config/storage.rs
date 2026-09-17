@@ -39,7 +39,7 @@ pub fn load() -> Result<Settings, String> {
     load_from_path(&config_path())
 }
 
-fn load_from_path(path: &Path) -> Result<Settings, String> {
+pub(crate) fn load_from_path(path: &Path) -> Result<Settings, String> {
     match fs::read_to_string(path) {
         Ok(raw) => parse_toml_settings(path, &raw),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Settings::default()),
