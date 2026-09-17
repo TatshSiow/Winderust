@@ -2434,6 +2434,12 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             &mut settings
         };
         profile.general.enabled = true;
+        profile.by_time.enabled = true;
+        profile.by_time.rules.push(crate::config::ByTimeRule {
+            enabled: true,
+            power_plan_guid: Some("time-plan".into()),
+            ..Default::default()
+        });
         profile.by_foreground.enabled = true;
         profile.by_foreground.rules.push(ByForegroundRule {
             enabled: true,
@@ -2447,6 +2453,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             WindowsAutomationEvent::ForegroundChanged,
             WindowsAutomationEvent::PowerChanged,
             WindowsAutomationEvent::SessionChanged,
+            WindowsAutomationEvent::ClockChanged,
         ] {
             let before = lock_unpoisoned(&shared.state).change_generation;
             notify_windows_event(&shared, event);

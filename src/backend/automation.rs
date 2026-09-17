@@ -363,6 +363,7 @@ struct AutomationWakeEvents {
     window_created: bool,
     power_changed: bool,
     session_changed: bool,
+    clock_changed: bool,
     appearance_changed: bool,
     input_activity: bool,
     app_switch: bool,
@@ -376,6 +377,7 @@ impl AutomationWakeEvents {
             WindowsAutomationEvent::WindowCreated => self.window_created = true,
             WindowsAutomationEvent::PowerChanged => self.power_changed = true,
             WindowsAutomationEvent::SessionChanged => self.session_changed = true,
+            WindowsAutomationEvent::ClockChanged => self.clock_changed = true,
             WindowsAutomationEvent::AppearanceChanged => self.appearance_changed = true,
         }
     }
@@ -1065,6 +1067,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) -> Result<(), S
         }
         if wake_events.power_changed {
             scheduler.invalidate(SchedulerEvent::PowerChanged, event_now);
+        }
+        if wake_events.clock_changed {
+            scheduler.invalidate(SchedulerEvent::ClockChanged, event_now);
         }
         if wake_events.session_changed {
             scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);

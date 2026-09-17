@@ -93,6 +93,10 @@ User-facing behavior:
 | `RegisterSuspendResumeNotification` | Delivers suspend and resume notifications to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registersuspendresumenotification |
 | `WTSRegisterSessionNotification` | Delivers current-session lock, unlock, logon, logoff, and related session changes. | https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsregistersessionnotification |
 
+## By Time clock invalidation
+
+`src/backend/windows_events.rs` forwards [WM_TIMECHANGE](https://learn.microsoft.com/en-us/windows/win32/sysinfo/wm-timechange) and [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange) as `ClockChanged`. All setting-change broadcasts conservatively recheck By Time, including time-zone changes, without dereferencing the optional message string. `src/backend/automation.rs` wakes configured By Time rules in either power profile and `src/runtime/scheduler.rs` invalidates only the power-plan deadline. Policy and the next local-time boundary are recomputed; elapsed-time domains retain monotonic deadlines. Existing local-time handling selects the earliest ambiguous boundary and skips nonexistent boundaries.
+
 ## Automation Input Hook
 
 `RuntimeHandle` owns `src/activity/input_hook.rs` as an RAII event source. The low-level keyboard and mouse hooks retain their dedicated Windows message-loop thread so hook installation, callback dispatch, unhooking, and thread exit remain paired. Callbacks ignore injected input, recognize activity and app-switch intent, coalesce one typed notification path, and never run feature policy or a Windows mutation. Dropping the source posts `WM_QUIT` and joins the thread.

@@ -104,6 +104,7 @@ pub(crate) enum SchedulerEvent {
     WindowCreated,
     PowerChanged,
     SessionChanged,
+    ClockChanged,
     InputActivity,
     AppSwitch,
     AppSwitchMouseClick,
@@ -154,7 +155,9 @@ impl RefreshScheduler {
             SchedulerEvent::WindowCreated => {
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
             }
-            SchedulerEvent::PowerChanged | SchedulerEvent::InputActivity => {
+            SchedulerEvent::PowerChanged
+            | SchedulerEvent::InputActivity
+            | SchedulerEvent::ClockChanged => {
                 self.schedule_now(RefreshDomain::PowerPlanCheck, now);
             }
             SchedulerEvent::SessionChanged => {
@@ -283,6 +286,7 @@ mod tests {
         let now = Instant::now();
         for event in [
             SchedulerEvent::PowerChanged,
+            SchedulerEvent::ClockChanged,
             SchedulerEvent::InputActivity,
             SchedulerEvent::ControllerActivity,
         ] {

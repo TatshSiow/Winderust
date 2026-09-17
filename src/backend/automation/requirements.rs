@@ -436,6 +436,7 @@ fn windows_event_wake_required_for_profile(
                 automation_worker_required_for_profile(settings)
             }
             WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
+            WindowsAutomationEvent::ClockChanged => by_time_rules_required(settings),
             WindowsAutomationEvent::AppearanceChanged => false,
         }
     } else {

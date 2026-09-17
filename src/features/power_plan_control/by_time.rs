@@ -354,4 +354,52 @@ mod tests {
         assert_eq!(starts_at.weekday(), chrono::Weekday::Mon);
         assert_eq!(starts_at.time(), NaiveTime::from_hms_opt(9, 0, 0).unwrap());
     }
+    #[test]
+    fn clock_changes_recheck_rules_without_waiting_for_monotonic_deadline() {
+        use crate::runtime::scheduler::{RefreshDomain, RefreshScheduler, SchedulerEvent};
+        use std::time::Instant;
+
+        let settings = ByTimeSettings {
+            enabled: true,
+            rules: vec![ByTimeRule {
+                enabled: true,
+                name: "Morning".into(),
+                days: vec![WeekdaySetting::Fri],
+                start_time: "09:00".into(),
+                end_time: "10:00".into(),
+                power_plan_guid: Some("plan".into()),
+            }],
+        };
+        let monotonic = Instant::now();
+        let mut scheduler = RefreshScheduler::new(monotonic);
+        // Wall time crosses both boundaries in both directions while monotonic time stays fixed.
+        for (hour, minute, active) in [
+            (8, 30, false),
+            (9, 30, true),
+            (10, 30, false),
+            (9, 30, true),
+            (8, 30, false),
+        ] {
+            scheduler.schedule_after(
+                RefreshDomain::PowerPlanCheck,
+                monotonic,
+                Duration::from_secs(1800),
+            );
+            assert!(!scheduler.is_due(RefreshDomain::PowerPlanCheck, monotonic));
+            scheduler.invalidate(SchedulerEvent::ClockChanged, monotonic);
+            assert!(scheduler.is_due(RefreshDomain::PowerPlanCheck, monotonic));
+            let wall = Local
+                .with_ymd_and_hms(2026, 5, 29, hour, minute, 0)
+                .unwrap();
+            assert_eq!(active_rule(&settings, wall).is_some(), active);
+            let next = next_change_at(&settings, wall).unwrap();
+            assert!(next > wall);
+            scheduler.schedule_after(
+                RefreshDomain::PowerPlanCheck,
+                monotonic,
+                (next - wall).to_std().unwrap(),
+            );
+            assert!(!scheduler.is_due(RefreshDomain::PowerPlanCheck, monotonic));
+        }
+    }
 }
