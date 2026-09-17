@@ -422,7 +422,14 @@ mod tests {
                 bounds,
             );
             let shot = renderer.screenshot(Size::new(24, 24), 1.0, iced::Color::BLACK);
-            assert!(shot.chunks_exact(4).filter(|pixel| pixel[0] > 0).count() > 10);
+            assert!(
+                shot.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[0] > 0)
+                    .count()
+                    > 10
+            );
             shots.push(shot);
         }
         assert_ne!(shots[0], shots[1]);
