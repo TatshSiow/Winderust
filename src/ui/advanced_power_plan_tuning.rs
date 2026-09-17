@@ -97,16 +97,24 @@ impl Editor {
             return;
         }
         if !plans.iter().any(|p| Some(&p.guid) == self.target.as_ref()) {
-            self.target = plans
+            let target = plans
                 .iter()
                 .find(|p| p.active)
                 .or_else(|| plans.first())
                 .map(|p| p.guid.clone());
-            self.refresh();
+            self.select_plan(target);
         } else if self.values.is_none() {
             self.refresh();
         }
     }
+    fn select_plan(&mut self, target: Option<String>) {
+        self.target = target;
+        self.values = None;
+        self.personality = None;
+        self.selected_presets = [None, None];
+        self.refresh();
+    }
+
     pub(super) fn refresh(&mut self) {
         let Some(guid) = &self.target else {
             self.values = None;
@@ -170,9 +178,7 @@ impl Editor {
                 if self.dirty {
                     self.status = t!("processor_power.save_before_changing_plan").to_string();
                 } else if plans.iter().any(|p| p.guid.eq_ignore_ascii_case(&guid)) {
-                    self.target = Some(guid);
-                    self.values = None;
-                    self.refresh();
+                    self.select_plan(Some(guid));
                 }
             }
             Message::Refresh => self.refresh(),
@@ -688,6 +694,42 @@ fn mode_label(mode: EffectivePowerMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retarget_read_failure_cannot_reuse_previous_plan_values() {
+        let values = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Performance);
+        let replacement = PowerPlan {
+            guid: "invalid-replacement-guid".into(),
+            name: "Replacement".into(),
+            active: true,
+        };
+        for automatic in [true, false] {
+            let mut editor = Editor {
+                target: Some("previous-plan".into()),
+                values: Some(ProcessorPowerSourceValues::same(values)),
+                personality: Some(PowerPlanPersonality::HighPerformance),
+                selected_presets: [Some(PresetChoice("Old selection".into(), values)), None],
+                ..Default::default()
+            };
+            let plans = [replacement.clone()];
+            if automatic {
+                editor.ensure_plan(&plans);
+            } else {
+                editor.update(&mut vec![], &plans, Message::Plan(replacement.guid.clone()));
+            }
+            assert_eq!(editor.target.as_deref(), Some(replacement.guid.as_str()));
+            assert!(editor.values.is_none());
+            assert!(editor.personality.is_none());
+            assert_eq!(editor.selected_presets, [None, None]);
+            editor.update(
+                &mut vec![],
+                &plans,
+                Message::Value(Source::Ac, Field::Minimum, 25),
+            );
+            assert!(!editor.dirty);
+            assert!(!editor.apply());
+        }
+    }
+
     #[test]
     fn identical_presets_keep_explicit_selection_for_each_source() {
         let mut editor = Editor::default();
