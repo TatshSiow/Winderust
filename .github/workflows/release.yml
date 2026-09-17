@@ -30,11 +30,14 @@ jobs:
               throw "Tag ${{ github.ref_name }} does not match Cargo version $version"
           }
 
-      - name: Verify source
-        run: |
-          cargo fmt -- --check
-          cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
-          cargo test --locked
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
+
+      - name: Run tests
+        run: cargo test --locked
 
       - name: Build release executable
         shell: pwsh
