@@ -2400,3 +2400,130 @@ fn unrelated_wakes_preserve_periodic_power_plan_checks() {
     );
     assert!(scheduler.is_due(RefreshDomain::PowerPlanCheck, now));
 }
+
+#[test]
+fn callbacks_deliver_events_for_either_profile_without_polling() {
+    let shared = SharedAutomationState {
+        state: Mutex::new(AutomationWorkerState {
+            settings: Arc::new(Settings::default()),
+            runtime_revision: SettingsRevision::initial(),
+            persisted_revision: SettingsRevision::initial(),
+            change_generation: 0,
+            status: RuntimeStatusSnapshot::default(),
+            pending_auto_exclusions: AutoExclusionPatch::default(),
+            pending_auto_exclusions_revision: None,
+            pending_auto_exclusions_retry_at: None,
+            process_control_commands: VecDeque::new(),
+            action_log_clear_requested: false,
+            pending_events: AutomationWakeEvents::default(),
+            windows_event_watcher_active: true,
+            worker_accepting_work: false,
+            stop_requested: false,
+        }),
+        changed: Condvar::new(),
+        status_generation: AtomicU64::new(0),
+        pending_auto_exclusions_generation: AtomicU64::new(0),
+    };
+    for battery_only in [true, false] {
+        let mut settings = Settings::default();
+        settings.battery_profile_mut();
+        let profile = if battery_only {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.general.enabled = true;
+        profile.by_foreground.enabled = true;
+        profile.by_foreground.rules.push(ByForegroundRule {
+            enabled: true,
+            executable_path: r"C:\Apps\test.exe".into(),
+            power_plan_guid: Some("test-plan".into()),
+            ..Default::default()
+        });
+        assert!(windows_event_watcher_required(&settings));
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        for event in [
+            WindowsAutomationEvent::ForegroundChanged,
+            WindowsAutomationEvent::PowerChanged,
+            WindowsAutomationEvent::SessionChanged,
+        ] {
+            let before = lock_unpoisoned(&shared.state).change_generation;
+            notify_windows_event(&shared, event);
+            assert_eq!(lock_unpoisoned(&shared.state).change_generation, before + 1);
+            assert!(!wait_for_wake(&shared, None, before));
+            let snapshot = automation_snapshot(&shared).unwrap();
+            let mut expected = AutomationWakeEvents::default();
+            expected.insert_windows_event(event);
+            assert_eq!(snapshot.wake_events, expected);
+            assert_eq!(snapshot.change_generation, before + 1);
+        }
+        let profile = if battery_only {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_foreground.enabled = false;
+        profile.process_priority.enabled = true;
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        notify_windows_event(&shared, WindowsAutomationEvent::PowerChanged);
+        assert!(
+            automation_snapshot(&shared)
+                .unwrap()
+                .wake_events
+                .power_changed
+        );
+
+        let profile = if battery_only {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_activity.enabled = true;
+        profile.by_activity.input_detection.keyboard = true;
+        profile.by_activity.input_detection.mouse = false;
+        profile.app_suspension.enabled = true;
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
+        notify_input_event(
+            &shared,
+            InputHookEvents {
+                mouse: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            automation_snapshot(&shared).unwrap().wake_events,
+            AutomationWakeEvents::default()
+        );
+        notify_input_event(
+            &shared,
+            InputHookEvents {
+                keyboard: true,
+                app_switch: true,
+                mouse_click: true,
+                ..Default::default()
+            },
+        );
+        let events = automation_snapshot(&shared).unwrap().wake_events;
+        assert!(events.input_activity && events.app_switch && events.app_switch_mouse_click);
+
+        settings.general.enabled = false;
+        settings.battery_profile_mut().general.enabled = false;
+        lock_unpoisoned(&shared.state).settings = Arc::new(settings);
+        let before = lock_unpoisoned(&shared.state).change_generation;
+        notify_windows_event(&shared, WindowsAutomationEvent::ForegroundChanged);
+        notify_input_event(
+            &shared,
+            InputHookEvents {
+                keyboard: true,
+                app_switch: true,
+                mouse_click: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(lock_unpoisoned(&shared.state).change_generation, before);
+    }
+    lock_unpoisoned(&shared.state).stop_requested = true;
+    let before = lock_unpoisoned(&shared.state).change_generation;
+    notify_windows_event(&shared, WindowsAutomationEvent::AppearanceChanged);
+    assert_eq!(lock_unpoisoned(&shared.state).change_generation, before);
+}

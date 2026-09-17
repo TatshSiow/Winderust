@@ -415,6 +415,15 @@ pub(super) fn windows_event_wake_required(
     settings: &Settings,
     event: WindowsAutomationEvent,
 ) -> bool {
+    std::iter::once(settings)
+        .chain(settings.on_battery.as_deref())
+        .any(|profile| windows_event_wake_required_for_profile(profile, event))
+}
+
+fn windows_event_wake_required_for_profile(
+    settings: &Settings,
+    event: WindowsAutomationEvent,
+) -> bool {
     if event == WindowsAutomationEvent::AppearanceChanged {
         return !settings.adaptive_engine.enabled && appearance_events_required(settings);
     }
@@ -425,7 +434,9 @@ pub(super) fn windows_event_wake_required(
                 power_plan_checks_required(settings) || event_driven_process_work_required(settings)
             }
             WindowsAutomationEvent::WindowCreated => event_driven_process_work_required(settings),
-            WindowsAutomationEvent::PowerChanged => power_plan_checks_required(settings),
+            WindowsAutomationEvent::PowerChanged => {
+                automation_worker_required_for_profile(settings)
+            }
             WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
             WindowsAutomationEvent::AppearanceChanged => false,
         }
