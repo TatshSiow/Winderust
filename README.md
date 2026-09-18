@@ -54,6 +54,19 @@ cargo build --release
 The executable is written to `target\*`
 
 
+## Diagnostic logs
+
+When reporting a crash or shutdown failure, attach `winderust-diagnostics.log`
+and `winderust-recovery.log` from beside the executable, plus any matching
+`*.previous.log` files. Each log is limited to 1 MiB with one backup.
+They record startup/version details, Rust panics with backtraces, and startup,
+shutdown, and recovery failures. No upload occurs automatically.
+
+Logs can contain process names and local paths; review them before sharing.
+The executable directory must be writable. Forced termination, native crashes,
+and power loss may leave no final entry. These diagnostics are separate from
+the in-memory Action Log, which still requires manual CSV export.
+
 ## Contributions
 
 Before contributing, run:

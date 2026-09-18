@@ -308,6 +308,7 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
     if std::env::args().nth(1).as_deref() != Some(WATCHDOG_ARGUMENT) {
         return false;
     }
+    super::diagnostics::initialize("winderust-recovery");
     let mut entries = Vec::new();
     let mut pending = Vec::new();
     let mut jobs = HashMap::new();
@@ -324,7 +325,10 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
             });
         let response = match result {
             Ok(()) => "ok".to_owned(),
-            Err(error) => format!("error:{error}"),
+            Err(error) => {
+                super::diagnostics::error(&error);
+                format!("error:{error}")
+            }
         };
         if writeln!(output, "{response}")
             .and_then(|()| output.flush())
@@ -336,10 +340,12 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
     let committed_len = append_pending_intents(&mut entries, pending);
     if !entries.is_empty() {
         if let Err(error) = recover_with_retry(&entries, committed_len) {
+            super::diagnostics::error(&format!("Crash recovery failed: {error}"));
             eprintln!("Winderust crash recovery failed: {error}");
             std::process::exit(2);
         }
     }
+    super::diagnostics::event("Recovery helper finished restoration.");
     true
 }
 
@@ -1661,6 +1667,7 @@ impl RecoveryTransport {
             Err(RecoveryTransportError::Rejected(error)) => Err(error),
             Err(RecoveryTransportError::Uncertain(error)) => {
                 let error = format!("{error} Command outcome is unknown; further recovery commands are blocked and outstanding recovery ownership is retained.");
+                super::diagnostics::error(&error);
                 self.failed = Some(error.clone());
                 Err(error)
             }
@@ -1726,6 +1733,7 @@ fn fnv1a64(input: impl IntoIterator<Item = u16>) -> u64 {
 }
 
 fn set_startup_error(error: String) {
+    super::diagnostics::error(&error);
     let _ = STARTUP_ERROR.set(error);
 }
 

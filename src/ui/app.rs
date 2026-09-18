@@ -1054,6 +1054,7 @@ impl WinderustApp {
             Message::ShutdownFinished(result) => {
                 self.exiting = false;
                 if let Err(error) = result {
+                    crate::backend::diagnostics::error(&error);
                     self.shutdown_failed = true;
                     self.error_message = error;
                     return self.show_window();
@@ -1278,6 +1279,7 @@ impl WinderustApp {
         if self.shutdown_failed {
             return self.finish_exit();
         }
+        crate::backend::diagnostics::event("Exit requested; restoring managed state.");
         self.exiting = true;
         self.closing = true;
         self.error_message.clear();
@@ -2300,6 +2302,7 @@ impl WinderustApp {
 impl Drop for WinderustApp {
     fn drop(&mut self) {
         if let Err(error) = self.runtime.shutdown() {
+            crate::backend::diagnostics::error(&error);
             eprintln!("{error}");
         }
     }

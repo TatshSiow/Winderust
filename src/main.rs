@@ -61,6 +61,7 @@ fn main() {
         privilege::relaunch_as_admin();
         return;
     }
+    backend::diagnostics::initialize("winderust-diagnostics");
     let restore_event = SingleInstanceRestoreEvent::create();
 
     let (mut settings, outcome) = SettingsEditor::load();
@@ -74,16 +75,22 @@ fn main() {
         .err()
         .map(|error| format!("Adaptive power plan recovery failed: {error}"));
     let settings_load_error = settings_load_error.or(adaptive_plan_recovery_error);
+    if let Some(error) = &settings_load_error {
+        backend::diagnostics::error(error);
+    }
     let runtime_settings = settings.runtime_settings_snapshot();
     let runtime_handle = automation::RuntimeHandle::start(&runtime_settings);
 
     if let Err(error) = app::run(settings, settings_load_error, runtime_handle, restore_event) {
+        backend::diagnostics::error(&error.to_string());
         eprintln!("{error}");
     }
 
     if let Err(error) = recovery_client.finish() {
+        backend::diagnostics::error(&error.to_string());
         eprintln!("{error}");
     }
+    backend::diagnostics::event("Application exit completed.");
 }
 
 struct SingleInstanceRestoreEvent {
