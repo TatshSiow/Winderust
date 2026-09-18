@@ -131,12 +131,17 @@ impl Model {
             ]
             .align_y(iced::Center)]
             .spacing(super::widgets::CARD_GAP);
+            let entries = enabled_features(settings, status, &self.latest);
+            let count = entries.iter().filter(|(_, active, _)| *active).count();
             let mut enabled = column![row![
                 super::widgets::heading(
                     t!("home.enabled_features").to_string(),
                     design::typography::BODY
-                )
-                .width(Fill),
+                ),
+                container(text(count.to_string()).size(design::typography::BADGE))
+                    .padding([design::space::TINY as u16, design::space::CONTROL as u16])
+                    .style(move |theme| super::widgets::indicator_chip(theme, count > 0)),
+                iced::widget::Space::new().width(Fill),
                 button(
                     text(
                         if settings.general.enabled {
@@ -157,13 +162,13 @@ impl Model {
                 .style(super::widgets::quiet)
                 .on_press(Message::Navigate(Page::WinderustBehaviour))
             ]
-            .spacing(design::space::SMALL)]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center)]
             .spacing(design::space::MEDIUM);
-            let mut count = 0;
-            for (page, active, detail) in enabled_features(settings, status, &self.latest) {
+            let mut features = column![];
+            for (page, active, detail) in entries {
                 if active {
-                    count += 1;
-                    enabled = enabled.push(
+                    features = features.push(
                         button(
                             row![
                                 super::navigation::icon(page, false),
@@ -171,10 +176,12 @@ impl Model {
                                 text(detail)
                             ]
                             .spacing(design::space::SMALL)
+                            .height(Fill)
                             .align_y(iced::Center),
                         )
                         .width(Fill)
-                        .padding(design::space::SMALL as u16)
+                        .height(36)
+                        .padding([0, design::space::SMALL as u16])
                         .style(super::widgets::quiet)
                         .on_press(Message::Navigate(page)),
                     );
@@ -183,6 +190,12 @@ impl Model {
             if count == 0 {
                 enabled = enabled
                     .push(text(t!("home.no_enabled_features").to_string()).style(text::secondary));
+            } else {
+                enabled = enabled.push(
+                    scrollable(features)
+                        .id("home-enabled-features")
+                        .height(Fill),
+                );
             }
             let enabled = container(enabled)
                 .padding(design::space::CHART_INSET as u16)
