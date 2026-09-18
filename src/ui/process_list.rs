@@ -994,6 +994,7 @@ impl ProcessList {
                 pick_list(choices, current, move |v| {
                     Message::Action(Action::Priority(v))
                 })
+                .option_color(Value::color)
                 .placeholder(t!("common.unknown").to_string())
                 .width(design::SELECT_WIDTH)
                 .into()
@@ -1595,13 +1596,20 @@ impl ProcessList {
                                     .into_iter()
                                     .filter(|value| !is_default(*value))
                                 {
+                                    let selected = self.current.contains(&value);
                                     levels = levels.push(
                                         button(text(value.to_string()))
                                             .width(Fill)
-                                            .style(if self.current.contains(&value) {
-                                                super::widgets::selected
-                                            } else {
-                                                super::widgets::quiet
+                                            .style(move |theme, status| {
+                                                let mut style = if selected {
+                                                    super::widgets::selected(theme, status)
+                                                } else {
+                                                    super::widgets::quiet(theme, status)
+                                                };
+                                                if let Some(color) = value.color(theme) {
+                                                    style.text_color = color;
+                                                }
+                                                style
                                             })
                                             .on_press_maybe(eligible.then_some(Message::Menu(
                                                 Box::new(Message::Action(Action::Priority(value))),

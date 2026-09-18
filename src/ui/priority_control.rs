@@ -51,6 +51,20 @@ pub(super) enum Value {
     Memory(ProcessMemoryPrioritySetting),
     DynamicBoost(ProcessDynamicPriorityBoostSetting),
 }
+impl Value {
+    pub(super) fn color(&self, theme: &iced::Theme) -> Option<iced::Color> {
+        match self {
+            Self::Process(ProcessPrioritySetting::High)
+            | Self::Io(ProcessIoPrioritySetting::High)
+            | Self::Gpu(ProcessGpuPrioritySetting::High) => Some(theme.palette().warning),
+            Self::Process(ProcessPrioritySetting::Realtime)
+            | Self::Thread(ProcessThreadPrioritySetting::TimeCritical)
+            | Self::Io(ProcessIoPrioritySetting::Critical)
+            | Self::Gpu(ProcessGpuPrioritySetting::Realtime) => Some(theme.palette().danger),
+            _ => None,
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
@@ -561,6 +575,7 @@ impl Editor {
                     Some(kind.value(settings, tier)),
                     move |value| Message::Default(tier, value),
                 )
+                .option_color(Value::color)
                 .width(design::SELECT_WIDTH)
                 .into()
             };
@@ -605,6 +620,7 @@ impl Editor {
                         Some(kind.rule_value(rule, tier)),
                         move |value| Message::RuleValue(index, tier, value),
                     )
+                    .option_color(Value::color)
                     .width(Fill)
                     .into()
                 };
@@ -788,6 +804,42 @@ fn localized(section: &str, field: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn priority_warning_colors_match_the_original_risk_mapping() {
+        for theme in [iced::Theme::Dark, iced::Theme::Light] {
+            let caution = [
+                Value::Process(ProcessPrioritySetting::High),
+                Value::Io(ProcessIoPrioritySetting::High),
+                Value::Gpu(ProcessGpuPrioritySetting::High),
+            ];
+            let danger = [
+                Value::Process(ProcessPrioritySetting::Realtime),
+                Value::Thread(ProcessThreadPrioritySetting::TimeCritical),
+                Value::Io(ProcessIoPrioritySetting::Critical),
+                Value::Gpu(ProcessGpuPrioritySetting::Realtime),
+            ];
+            for kind in [
+                Kind::Process,
+                Kind::Thread,
+                Kind::Io,
+                Kind::Gpu,
+                Kind::Memory,
+                Kind::DynamicBoost,
+            ] {
+                for value in kind.choices(true) {
+                    let expected = if caution.contains(&value) {
+                        Some(theme.palette().warning)
+                    } else if danger.contains(&value) {
+                        Some(theme.palette().danger)
+                    } else {
+                        None
+                    };
+                    assert_eq!(value.color(&theme), expected, "{value:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn priority_edits_preserve_tiers_and_enforce_advanced_values() {
         let mut settings = Settings::default();

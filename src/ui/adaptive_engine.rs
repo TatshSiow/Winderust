@@ -445,7 +445,7 @@ impl Editor {
                     editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
             ].spacing(design::space::SMALL).height(46).align_y(iced::Center)
         }};}
-        macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).width(Fill).into()}else{text($label(selected)).into()};control}};}
+        macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+ $(, $color:expr)?) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0)))$(.option_color($color))?.width(Fill).into()}else{text($label(selected)).into()};control}};}
         macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).height(46).align_y(iced::Center)};}
         if !preset {
             body = body.push(super::widgets::settings_card(toggle!(
@@ -804,7 +804,9 @@ impl Editor {
                                 &ProcessPrioritySetting::ALL
                             },
                             process_priority_setting_label,
-                            adaptive_engine_process.focus_process_priority
+                            adaptive_engine_process.focus_process_priority,
+                            |value, theme| super::priority_control::Value::Process(value.0)
+                                .color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -817,7 +819,9 @@ impl Editor {
                                 &ProcessPrioritySetting::ALL
                             },
                             process_priority_setting_label,
-                            adaptive_engine_process.visible_window_priority
+                            adaptive_engine_process.visible_window_priority,
+                            |value, theme| super::priority_control::Value::Process(value.0)
+                                .color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -830,7 +834,9 @@ impl Editor {
                                 &ProcessPrioritySetting::ALL
                             },
                             process_priority_setting_label,
-                            adaptive_engine_process.background_priority
+                            adaptive_engine_process.background_priority,
+                            |value, theme| super::priority_control::Value::Process(value.0)
+                                .color(theme)
                         ))
                         .width(Fill)
                     ]
@@ -1078,7 +1084,9 @@ impl Editor {
                                 &ProcessThreadPrioritySetting::ALL
                             },
                             process_thread_priority_setting_label,
-                            adaptive_engine_process.thread_priority.foreground_priority
+                            adaptive_engine_process.thread_priority.foreground_priority,
+                            |value, theme| super::priority_control::Value::Thread(value.0)
+                                .color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1093,7 +1101,9 @@ impl Editor {
                             process_thread_priority_setting_label,
                             adaptive_engine_process
                                 .thread_priority
-                                .visible_window_priority
+                                .visible_window_priority,
+                            |value, theme| super::priority_control::Value::Thread(value.0)
+                                .color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1106,7 +1116,9 @@ impl Editor {
                                 &ProcessThreadPrioritySetting::ALL
                             },
                             process_thread_priority_setting_label,
-                            adaptive_engine_process.thread_priority.background_priority
+                            adaptive_engine_process.thread_priority.background_priority,
+                            |value, theme| super::priority_control::Value::Thread(value.0)
+                                .color(theme)
                         ))
                         .width(Fill)
                     ]
@@ -1320,7 +1332,8 @@ impl Editor {
                                 &ProcessIoPrioritySetting::ALL
                             },
                             process_io_priority_setting_label,
-                            adaptive_engine_process.io_priority.foreground_priority
+                            adaptive_engine_process.io_priority.foreground_priority,
+                            |value, theme| super::priority_control::Value::Io(value.0).color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1333,7 +1346,8 @@ impl Editor {
                                 &ProcessIoPrioritySetting::ALL
                             },
                             process_io_priority_setting_label,
-                            adaptive_engine_process.io_priority.visible_window_priority
+                            adaptive_engine_process.io_priority.visible_window_priority,
+                            |value, theme| super::priority_control::Value::Io(value.0).color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1346,7 +1360,8 @@ impl Editor {
                                 &ProcessIoPrioritySetting::ALL
                             },
                             process_io_priority_setting_label,
-                            adaptive_engine_process.io_priority.background_priority
+                            adaptive_engine_process.io_priority.background_priority,
+                            |value, theme| super::priority_control::Value::Io(value.0).color(theme)
                         ))
                         .width(Fill)
                     ]
@@ -1468,7 +1483,9 @@ impl Editor {
                                 &ProcessGpuPrioritySetting::ALL
                             },
                             process_gpu_priority_setting_label,
-                            adaptive_engine_process.gpu_priority.foreground_priority
+                            adaptive_engine_process.gpu_priority.foreground_priority,
+                            |value, theme| super::priority_control::Value::Gpu(value.0)
+                                .color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1481,7 +1498,9 @@ impl Editor {
                                 &ProcessGpuPrioritySetting::ALL
                             },
                             process_gpu_priority_setting_label,
-                            adaptive_engine_process.gpu_priority.visible_window_priority
+                            adaptive_engine_process.gpu_priority.visible_window_priority,
+                            |value, theme| super::priority_control::Value::Gpu(value.0)
+                                .color(theme)
                         ))
                         .width(Fill),
                         iced::widget::container(selector!(
@@ -1494,7 +1513,9 @@ impl Editor {
                                 &ProcessGpuPrioritySetting::ALL
                             },
                             process_gpu_priority_setting_label,
-                            adaptive_engine_process.gpu_priority.background_priority
+                            adaptive_engine_process.gpu_priority.background_priority,
+                            |value, theme| super::priority_control::Value::Gpu(value.0)
+                                .color(theme)
                         ))
                         .width(Fill)
                     ]

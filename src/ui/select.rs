@@ -12,6 +12,8 @@ use iced::{
 };
 use std::rc::Rc;
 
+type OptionColor<T> = fn(&T, &Theme) -> Option<iced::Color>;
+
 type Field<'a, T, M> = PickList<'a, T, Vec<T>, T, M>;
 
 struct State {
@@ -34,6 +36,7 @@ pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
     field: Field<'a, T, M>,
     width: Length,
     options: Vec<T>,
+    option_color: Option<OptionColor<T>>,
     selected: Option<usize>,
     choose: Rc<dyn Fn(T) -> M + 'a>,
     menu: Option<(Option<usize>, Element<'a, usize>)>,
@@ -61,10 +64,23 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
             field,
             width: Length::Shrink,
             options,
+            option_color: None,
             selected: index,
             choose,
             menu: None,
         }
+    }
+    pub(super) fn option_color(mut self, color: OptionColor<T>) -> Self {
+        let selected = self.selected.map(|index| self.options[index].clone());
+        self.option_color = Some(color);
+        self.field = self.field.style(move |theme, status| {
+            let mut style = widgets::select_field(theme, status);
+            if let Some(color) = selected.as_ref().and_then(|value| color(value, theme)) {
+                style.text_color = color;
+            }
+            style
+        });
+        self
     }
     pub(super) fn width(mut self, width: impl Into<Length>) -> Self {
         self.width = width.into();
@@ -80,12 +96,18 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
         for (index, option) in self.options.iter().enumerate() {
             let selected = self.selected == Some(index);
             let marker = widgets::active_indicator(selected);
+            let option = option.clone();
+            let color = self.option_color;
             items = items.push(
                 widgets::button(
                     row![
                         marker,
                         text(option.to_string())
-                            .style(text::base)
+                            .style(move |theme| iced::widget::text::Style {
+                                color: color
+                                    .and_then(|color| color(&option, theme))
+                                    .or_else(|| text::base(theme).color),
+                            })
                             .wrapping(iced::widget::text::Wrapping::None)
                     ]
                     .spacing(9)
@@ -558,6 +580,68 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
 mod tests {
     use super::*;
     use iced::advanced::Overlay;
+
+    #[test]
+    fn priority_colors_are_rendered_in_fields_and_menu_options() {
+        use crate::config::ProcessPrioritySetting;
+        use crate::ui::priority_control::Value;
+        use iced::advanced::renderer::{Headless as _, Renderer as _};
+        for theme in [Theme::Dark, Theme::Light] {
+            for menu in [false, true] {
+                let select = Select::new(
+                    vec![
+                        Value::Process(ProcessPrioritySetting::High),
+                        Value::Process(ProcessPrioritySetting::Realtime),
+                    ],
+                    Some(Value::Process(ProcessPrioritySetting::High)),
+                    |v| v,
+                )
+                .option_color(Value::color)
+                .width(240);
+                let mut view: Element<'_, usize> = if menu {
+                    select.menu(None)
+                } else {
+                    Element::from(select).map(|_| 0)
+                };
+                let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+                let bounds = Rectangle::with_size(Size::new(240., 120.));
+                let mut tree = Tree::new(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, bounds.size()),
+                );
+                renderer.reset(bounds);
+                view.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &theme,
+                    &renderer::Style::default(),
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &bounds,
+                );
+                let pixels =
+                    renderer.screenshot(Size::new(240, 120), 1., theme.palette().background);
+                for color in [
+                    Some(theme.palette().warning),
+                    menu.then_some(theme.palette().danger),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let target = color.into_rgba8();
+                    assert!(
+                        pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[..3]
+                            .iter()
+                            .zip(&target[..3])
+                            .all(|(a, b)| a.abs_diff(*b) < 5)),
+                        "missing priority color in menu={menu}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn sized_fields_match_native_layout() {
