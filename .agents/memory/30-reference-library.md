@@ -766,3 +766,7 @@ Processor-value application in `src/power/powercfg.rs` treats failure to query t
 ### Single-instance window restoration
 
 `src/main.rs` uses `Local\Winderust.SingleInstance` and `Local\Winderust.RestoreWindow` for every build and executable location. The session-local mutex prevents debug, release, and separate portable copies from running automation together; duplicate launches signal the shared restore event. Elevation handoff and watchdog startup bypass remain unchanged. Reference: [Kernel object namespaces](https://learn.microsoft.com/en-us/windows/win32/termserv/kernel-object-namespaces).
+
+## Tray UI wakeups
+
+src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle hidden windows need no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.

@@ -400,6 +400,9 @@ pub(super) fn update_status_with_auto_exclusions<T: PartialEq>(
         shared
             .pending_auto_exclusions_generation
             .fetch_add(1, Ordering::Release);
+        if let Some(wake) = lock_unpoisoned(&shared.auto_exclusion_wake).as_ref() {
+            wake();
+        }
     }
 
     if current_status(state.status.feature_status.as_ref()) == &status {

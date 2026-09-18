@@ -1148,6 +1148,11 @@ fn runtime_settings_snapshot_revision_noop_update_does_not_bump_worker_settings(
 #[test]
 fn pending_auto_exclusions_are_taken_only_after_generation_change() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
+    let wakes = Arc::new(AtomicU64::new(0));
+    let wake_count = wakes.clone();
+    automation.set_auto_exclusion_wake(Arc::new(move || {
+        wake_count.fetch_add(1, Ordering::Relaxed);
+    }));
     let mut generation = 0;
 
     assert!(automation
@@ -1162,6 +1167,7 @@ fn pending_auto_exclusions_are_taken_only_after_generation_change() {
         },
     );
 
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
     let pending = automation
         .take_auto_exclusion_patch_since(&mut generation)
         .expect("new pending affinity exclusions should be visible");
@@ -1170,6 +1176,17 @@ fn pending_auto_exclusions_are_taken_only_after_generation_change() {
     assert!(automation
         .take_auto_exclusion_patch_since(&mut generation)
         .is_none());
+
+    automation.requeue_auto_exclusion_patch(pending);
+    assert!(automation
+        .take_auto_exclusion_patch_since(&mut generation)
+        .is_none());
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    lock_unpoisoned(&automation.shared.state).pending_auto_exclusions_retry_at =
+        Some(Instant::now());
+    assert!(automation
+        .take_auto_exclusion_patch_since(&mut generation)
+        .is_some());
 }
 
 #[test]
@@ -2424,6 +2441,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         changed: Condvar::new(),
         status_generation: AtomicU64::new(0),
         pending_auto_exclusions_generation: AtomicU64::new(0),
+        auto_exclusion_wake: Mutex::new(None),
     };
     for battery_only in [true, false] {
         let mut settings = Settings::default();

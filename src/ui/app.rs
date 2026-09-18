@@ -40,6 +40,9 @@ pub(crate) fn run(
                 unreachable!("Iced must initialize the application exactly once");
             };
             rust_i18n::set_locale(settings.general.language.locale());
+            let (wake, events) = ui_wake_channel();
+            runtime.set_auto_exclusion_wake(wake.clone());
+            tray::set_ui_wake(Some(wake));
             (
                 WinderustApp {
                     appearance: settings_pages::theme(&settings.general),
@@ -85,6 +88,7 @@ pub(crate) fn run(
                     restore_event,
                     window: None,
                     auto_exclusion_generation: 0,
+                    auto_exclusion_retry: false,
                     closing: false,
                     hwnd: None,
                     tray: None,
@@ -101,7 +105,10 @@ pub(crate) fn run(
                     running_app_plans: process_power_plans::Editor::default(),
                     activity_inputs: by_activity::Inputs::default(),
                 },
-                iced::window::latest().map(Message::Window),
+                Task::batch([
+                    iced::window::latest().map(Message::Window),
+                    Task::run(events, |_| Message::Wake),
+                ]),
             )
         },
         WinderustApp::update,
@@ -123,7 +130,12 @@ pub(crate) fn run(
     .theme(|app: &WinderustApp| app.appearance.clone())
     .subscription(|app: &WinderustApp| {
         Subscription::batch([
-            iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
+            ui_tick_interval(
+                app.hidden,
+                app.auto_exclusion_retry || app.tray_retry_pending(),
+            )
+            .map(|interval| iced::time::every(interval).map(|_| Message::Tick))
+            .unwrap_or_else(Subscription::none),
             iced::window::close_requests().map(|_| Message::WindowClose),
             iced::event::listen_with(|event, status, _| {
                 if status != iced::event::Status::Ignored {
@@ -216,6 +228,7 @@ struct WinderustApp {
     restore_event: Option<SingleInstanceRestoreEvent>,
     window: Option<iced::window::Id>,
     auto_exclusion_generation: u64,
+    auto_exclusion_retry: bool,
     closing: bool,
     hwnd: Option<usize>,
     tray: Option<tray::TrayIcon>,
@@ -235,6 +248,7 @@ struct WinderustApp {
 
 #[derive(Debug, Clone)]
 enum Message {
+    Wake,
     #[cfg(feature = "render-smoke")]
     SmokeScreenshot(iced::window::Screenshot),
     NavigationSearch(String),
@@ -364,6 +378,7 @@ impl WinderustApp {
                 self.settings
                     .edit_global(|settings| self.preferences.update(settings, message));
                 self.appearance = settings_pages::theme(&self.settings.global().general);
+                self.sync_tray();
             }
             Message::ActionLog(action_log::Message::LogMode(value)) => {
                 self.settings
@@ -767,6 +782,10 @@ impl WinderustApp {
                         .map(Message::Processes);
                 }
             }
+            Message::Wake => {
+                self.sync_tray();
+                return self.update(Message::Tick);
+            }
             Message::Tick => {
                 #[cfg(feature = "render-smoke")]
                 if let Some(task) = smoke::advance(self) {
@@ -804,7 +823,9 @@ impl WinderustApp {
                         }
                     }
                 }
-                self.sync_tray();
+                if self.tray_retry_pending() {
+                    self.sync_tray();
+                }
                 if tray_error {
                     return self.show_window();
                 }
@@ -813,17 +834,18 @@ impl WinderustApp {
                 }
                 let restore = tray::take_restore_requested();
                 let hidden = tray::is_hidden_to_tray();
+                let mut work = Vec::new();
                 if hidden != self.hidden || restore {
                     self.hidden = hidden;
                     if let Some(window) = self.window {
-                        return iced::window::set_mode(
+                        work.push(iced::window::set_mode(
                             window,
                             if hidden {
                                 iced::window::Mode::Hidden
                             } else {
                                 iced::window::Mode::Windowed
                             },
-                        );
+                        ));
                     }
                 }
                 if let Some(status) = self.runtime.status_snapshot_since(self.status.generation) {
@@ -844,11 +866,12 @@ impl WinderustApp {
                     if let Err(error) = self.settings.apply_auto_exclusion_patch(&patch) {
                         self.error_message = error.to_string();
                         self.runtime.requeue_auto_exclusion_patch(patch);
+                        self.auto_exclusion_retry = true;
                     } else {
+                        self.auto_exclusion_retry = false;
                         self.publish_settings();
                     }
                 }
-                let mut work = Vec::new();
                 if !self.hidden && !self.processes.population_paused {
                     if self.page == Page::ProcessList
                         && self.process_sampled_at.elapsed() >= Duration::from_secs(1)
@@ -1087,6 +1110,7 @@ impl WinderustApp {
     fn publish_settings(&mut self) {
         self.runtime
             .replace_settings(&self.settings.runtime_settings_snapshot());
+        self.sync_tray();
     }
 
     fn load_power_plans(&mut self) -> Task<Message> {
@@ -1097,6 +1121,12 @@ impl WinderustApp {
         self.power_plans_loaded = false;
         tasks::run(crate::power::list_plans)
             .map(|result| Message::PowerPlans(result.and_then(|result| result)))
+    }
+
+    fn tray_retry_pending(&self) -> bool {
+        (self.settings.global().general.hide_to_tray
+            || self.settings.persisted().general.start_minimized)
+            && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
     }
 
     fn sync_tray(&mut self) {
@@ -1189,6 +1219,7 @@ impl WinderustApp {
         }
         tray::set_hide_on_close(false);
         self.tray = None;
+        tray::set_ui_wake(None);
         iced::exit()
     }
 
@@ -2236,8 +2267,58 @@ fn page_needs_power_plans(page: Page) -> bool {
     page == Page::ProcessList || page.section_landing_page() == Page::PowerPlanControl
 }
 
+fn ui_wake_channel() -> (
+    std::sync::Arc<dyn Fn() + Send + Sync>,
+    iced::futures::channel::mpsc::Receiver<()>,
+) {
+    let (sender, events) = iced::futures::channel::mpsc::channel(1);
+    let sender = std::sync::Mutex::new(sender);
+    let wake = std::sync::Arc::new(move || {
+        let _ = sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .try_send(());
+    });
+    (wake, events)
+}
+
+fn ui_tick_interval(hidden: bool, retry_pending: bool) -> Option<Duration> {
+    if !hidden {
+        Some(Duration::from_millis(250))
+    } else if retry_pending {
+        Some(Duration::from_secs(5))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hidden_ui_sleeps_until_events_but_keeps_pending_retries() {
+        use iced::futures::{FutureExt, StreamExt};
+        assert_eq!(ui_tick_interval(true, false), None);
+        assert_eq!(ui_tick_interval(true, true), Some(Duration::from_secs(5)));
+        assert_eq!(
+            ui_tick_interval(false, false),
+            Some(Duration::from_millis(250))
+        );
+        let (wake, mut events) = ui_wake_channel();
+        assert!(events.next().now_or_never().is_none());
+        for _ in 0..100 {
+            wake();
+        }
+        assert_eq!(events.next().now_or_never(), Some(Some(())));
+        // Bursts coalesce in a bounded queue rather than rebuilding a page per event.
+        let mut queued = 0;
+        while events.next().now_or_never().is_some() {
+            queued += 1;
+        }
+        assert!(queued <= 1);
+        wake();
+        assert_eq!(events.next().now_or_never(), Some(Some(())));
+    }
+
     #[test]
     fn process_list_requests_its_power_plan_dependency() {
         assert!(page_needs_power_plans(Page::ProcessList));

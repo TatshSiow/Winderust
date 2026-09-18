@@ -329,6 +329,7 @@ struct SharedAutomationState {
     changed: Condvar,
     status_generation: AtomicU64,
     pending_auto_exclusions_generation: AtomicU64,
+    auto_exclusion_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -411,6 +412,7 @@ impl RuntimeHandle {
             changed: Condvar::new(),
             status_generation: AtomicU64::new(1),
             pending_auto_exclusions_generation: AtomicU64::new(0),
+            auto_exclusion_wake: Mutex::new(None),
         });
         let self_power = Arc::new(Mutex::new(SelfPowerController::default()));
         let self_power_error = {
@@ -572,6 +574,11 @@ impl RuntimeHandle {
         state.action_log_clear_requested = true;
         state.change_generation = state.change_generation.wrapping_add(1);
         self.shared.changed.notify_one();
+    }
+
+    /// The callback must only enqueue a wake; it runs while runtime state is locked.
+    pub(crate) fn set_auto_exclusion_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *lock_unpoisoned(&self.shared.auto_exclusion_wake) = Some(wake);
     }
 
     pub fn take_auto_exclusion_patch_since(

@@ -21,9 +21,10 @@ use windows_sys::Win32::{
             DestroyMenu, GetCursorPos, GetForegroundWindow, IsIconic, LoadImageW,
             RegisterWindowMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
             TrackPopupMenu, GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED,
-            MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSGFLT_ALLOW, SW_HIDE, SW_RESTORE,
-            SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK,
-            WM_LBUTTONUP, WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
+            MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE,
+            SW_HIDE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE,
+            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SHOWWINDOW,
+            WNDPROC,
         },
     },
 };
@@ -59,6 +60,26 @@ pub struct MenuState {
     pub enabled: bool,
     pub profile: crate::config::PowerSourceProfile,
     pub groups: Vec<(String, Vec<FeatureToggle>)>,
+}
+
+static UI_WAKE: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+pub(crate) fn set_ui_wake(wake: Option<Arc<dyn Fn() + Send + Sync>>) {
+    *UI_WAKE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+}
+
+fn wake_ui() {
+    let wake = UI_WAKE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(wake) = wake {
+        if catch_unwind(AssertUnwindSafe(|| wake())).is_err() {
+            eprintln!("Tray UI wake callback panicked.");
+        }
+    }
 }
 
 static MENU_STATE: Mutex<Option<MenuState>> = Mutex::new(None);
@@ -327,11 +348,16 @@ unsafe extern "system" fn tray_wnd_proc(
     if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) {
         TASKBAR_RECREATED.store(true, Ordering::Relaxed);
         HIDE_ON_CLOSE.store(false, Ordering::Relaxed);
+        wake_ui();
+    }
+    if message == WM_POWERBROADCAST && wparam == PBT_APMPOWERSTATUSCHANGE as usize {
+        wake_ui();
     }
     if message == WM_CLOSE {
         // SAFETY: hwnd belongs to this active window procedure callback.
         if unsafe { close_needs_prompt(IsIconic(hwnd) != 0, GetForegroundWindow() == hwnd) } {
             QUIT_REQUESTED.store(true, Ordering::Relaxed);
+            wake_ui();
             return 0;
         }
     }
@@ -378,6 +404,7 @@ unsafe extern "system" fn tray_wnd_proc(
 pub(crate) fn show_window(hwnd: HWND) {
     set_hidden_to_tray(false);
     RESTORE_REQUESTED.store(true, Ordering::Relaxed);
+    wake_ui();
     // SAFETY: hwnd is the live application window supplied by its window procedure callback or
     // captured when the single-instance restore listener starts.
     unsafe {
@@ -498,12 +525,16 @@ fn show_tray_menu(hwnd: HWND) {
             }
         }
     }
+    if command != 0 {
+        wake_ui();
+    }
 }
 
 fn set_hidden_to_tray(hidden: bool) {
     if HIDDEN_TO_TRAY.swap(hidden, Ordering::Relaxed) == hidden {
         return;
     }
+    wake_ui();
     let callback = VISIBILITY_CALLBACK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
