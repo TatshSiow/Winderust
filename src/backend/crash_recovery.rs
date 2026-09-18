@@ -7,7 +7,10 @@ use std::{
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     ptr::null_mut,
-    sync::{mpsc, Mutex, MutexGuard, OnceLock},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        mpsc, Mutex, MutexGuard, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -59,6 +62,13 @@ const PROCESS_IO_PRIORITY: u32 = 33;
 const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
 
 static RUNTIME: Mutex<Option<RecoveryRuntime>> = Mutex::new(None);
+// Read without RUNTIME: controllers may already hold a recovery intent's mutex.
+static WATCHDOG_PROCESS_ID: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn is_watchdog_process(process_id: u32) -> bool {
+    process_id != 0 && process_id == WATCHDOG_PROCESS_ID.load(Ordering::Relaxed)
+}
+
 static STARTUP_ERROR: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug)]
@@ -526,6 +536,7 @@ impl Drop for RecoveryClient {
 
 fn initialize_inner() -> Result<(), String> {
     let (child, stdin, stdout) = spawn_watchdog()?;
+    let watchdog_id = child.id();
     let runtime = RecoveryRuntime {
         child,
         transport: RecoveryTransport::start(stdin, stdout, Duration::from_secs(2))?,
@@ -536,6 +547,7 @@ fn initialize_inner() -> Result<(), String> {
         .lock()
         .map_err(|_| "Crash recovery state is poisoned.".to_owned())?
         .replace(runtime);
+    WATCHDOG_PROCESS_ID.store(watchdog_id, Ordering::Relaxed);
     Ok(())
 }
 
@@ -1762,6 +1774,44 @@ mod tests {
             },
         },
     };
+
+    #[test]
+    fn recovery_helper_is_rejected_by_every_process_control_acquisition() {
+        use crate::control::process::{self, ProcessControlError, ProcessControlTarget};
+        // Holding the journal lock also verifies protection never tries to re-lock it.
+        let _runtime = RUNTIME.lock().unwrap();
+        struct RestoreId(u32);
+        impl Drop for RestoreId {
+            fn drop(&mut self) {
+                WATCHDOG_PROCESS_ID.store(self.0, Ordering::Relaxed);
+            }
+        }
+        let _restore = RestoreId(WATCHDOG_PROCESS_ID.swap(u32::MAX, Ordering::Relaxed));
+        let target = ProcessControlTarget::automatic(
+            u32::MAX,
+            "renamed-helper.exe".into(),
+            r"C:/Apps/renamed-helper.exe".into(),
+            1,
+        );
+        assert!(is_watchdog_process(target.id));
+        assert!(!is_watchdog_process(0));
+        assert!(!is_watchdog_process(std::process::id()));
+        for acquire in [
+            process::open_process_for_set_information,
+            process::open_process_for_thread_control,
+            process::open_process_for_thread_snapshot,
+            process::open_process_for_working_set_trim,
+            process::open_process_for_termination,
+            process::open_process_for_job_assignment,
+        ] {
+            for cross_session in [false, true] {
+                assert!(matches!(
+                    acquire(&target, cross_session),
+                    Err(ProcessControlError::AccessDenied(_))
+                ));
+            }
+        }
+    }
 
     struct FrozenJobCleanup {
         job: WinHandle,

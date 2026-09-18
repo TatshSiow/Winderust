@@ -173,3 +173,5 @@ Read the relevant section before changing feature policy, ownership, restoration
   journal.
 
 - Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
+
+- The live recovery helper PID is protected at the shared process-control acquisition boundary, including manual actions, priority changes, CPU allocation, suspension, termination, and trimming. The PID is published when the helper starts and read without the recovery-journal mutex; acquiring protection must not deadlock a caller holding a recovery intent. Keep this protection through shutdown, including unconfirmed helper completion. Restoration and helper-owned recovery remain independent of new-mutation eligibility.

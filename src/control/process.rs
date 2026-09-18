@@ -295,7 +295,10 @@ fn open_process_with_access(
     action_access: ProcessActionAccess,
 ) -> Result<(ProcessIdentity, WinHandle), ProcessControlError> {
     let current_process_id = windows_process::current_process_id();
-    if target.id == 0 || target.id == current_process_id {
+    if target.id == 0
+        || target.id == current_process_id
+        || crate::crash_recovery::is_watchdog_process(target.id)
+    {
         return Err(ProcessControlError::AccessDenied(
             "Winderust cannot modify this process.".to_owned(),
         ));
