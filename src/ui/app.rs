@@ -77,7 +77,7 @@ pub(crate) fn run(
                     unavailable_candidates: Vec::new(),
                     catalog_loading: false,
                     settings,
-                    runtime,
+                    runtime: std::sync::Arc::new(runtime),
                     status: RuntimeStatusSnapshot::default(),
                     error_message: error
                         .or_else(crate::crash_recovery::startup_error)
@@ -95,6 +95,7 @@ pub(crate) fn run(
                     tray: None,
                     tray_attempt: None,
                     shutdown_failed: false,
+                    exiting: false,
                     hidden: false,
                     processes: process_list::ProcessList::default(),
                     cpu_limiter: cpu_limiter::CpuLimiter::default(),
@@ -220,7 +221,7 @@ struct WinderustApp {
     unavailable_candidates: Vec<String>,
     catalog_loading: bool,
     settings: SettingsEditor,
-    runtime: RuntimeHandle,
+    runtime: std::sync::Arc<RuntimeHandle>,
     status: RuntimeStatusSnapshot,
     error_message: String,
     page: Page,
@@ -236,6 +237,7 @@ struct WinderustApp {
     tray: Option<tray::TrayIcon>,
     tray_attempt: Option<((bool, bool), std::time::Instant)>,
     shutdown_failed: bool,
+    exiting: bool,
     hidden: bool,
     processes: process_list::ProcessList,
     cpu_limiter: cpu_limiter::CpuLimiter,
@@ -294,6 +296,7 @@ enum Message {
     SettingsFileChosen(FileDialogMode, Option<PathBuf>),
     Stay,
     DiscardAndClose,
+    ShutdownFinished(Result<(), String>),
     Processes(process_list::Message),
     CpuLimiter(cpu_limiter::Message),
     PowerSource(PowerSourceProfile),
@@ -304,6 +307,17 @@ enum Message {
 
 impl WinderustApp {
     fn update(&mut self, message: Message) -> Task<Message> {
+        if self.exiting
+            && !matches!(
+                message,
+                Message::ShutdownFinished(_)
+                    | Message::Sample(_)
+                    | Message::Catalog(_)
+                    | Message::PowerPlans(_)
+            )
+        {
+            return Task::none();
+        }
         match message {
             #[cfg(feature = "render-smoke")]
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
@@ -871,7 +885,7 @@ impl WinderustApp {
                 if tray_error {
                     return self.show_window();
                 }
-                if tray::take_quit_requested() {
+                if tray::take_exit_requested() {
                     return self.update(Message::Close);
                 }
                 let restore = tray::take_restore_requested();
@@ -1037,6 +1051,15 @@ impl WinderustApp {
             Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
                 settings.general.pause_power_plan_switching_while_plugged_in = value
             }),
+            Message::ShutdownFinished(result) => {
+                self.exiting = false;
+                if let Err(error) = result {
+                    self.shutdown_failed = true;
+                    self.error_message = error;
+                    return self.show_window();
+                }
+                return self.finish_exit();
+            }
             Message::Stay => {
                 self.closing = false;
                 self.error_message.clear();
@@ -1251,14 +1274,19 @@ impl WinderustApp {
     }
 
     fn shutdown(&mut self) -> Task<Message> {
-        // A confirmed subsequent quit hands the retained failure to the watchdog in main.
-        if !self.shutdown_failed {
-            if let Err(error) = self.runtime.shutdown() {
-                self.shutdown_failed = true;
-                self.error_message = error;
-                return self.show_window();
-            }
+        // A confirmed subsequent exit hands the retained failure to the watchdog in main.
+        if self.shutdown_failed {
+            return self.finish_exit();
         }
+        self.exiting = true;
+        self.closing = true;
+        self.error_message.clear();
+        let runtime = self.runtime.clone();
+        tasks::run(move || runtime.shutdown())
+            .map(|result| Message::ShutdownFinished(result.and_then(|result| result)))
+    }
+
+    fn finish_exit(&mut self) -> Task<Message> {
         tray::set_hide_on_close(false);
         self.tray = None;
         tray::set_ui_wake(None);
@@ -1271,8 +1299,10 @@ impl WinderustApp {
             let mut actions =
                 row![iced::widget::Space::new().width(Fill)].spacing(design::space::SMALL);
             let mut body = column![widgets::heading(
-                t!(if self.closing {
-                    "quit_prompt.title"
+                t!(if self.exiting {
+                    "exit_prompt.exiting"
+                } else if self.closing {
+                    "exit_prompt.title"
                 } else {
                     "common.error"
                 })
@@ -1281,14 +1311,16 @@ impl WinderustApp {
             )]
             .spacing(design::space::LARGE);
             if self.shutdown_failed {
-                body = body.push(text(t!("quit_prompt.recovery_handoff").to_string()));
+                body = body.push(text(t!("exit_prompt.recovery_handoff").to_string()));
             }
-            if self.closing {
+            if self.exiting {
+                body = body.push(text(t!("exit_prompt.processing").to_string()));
+            } else if self.closing {
                 body = body.push(text(
                     t!(if self.pending_changes() {
-                        "quit_prompt.unsaved"
+                        "exit_prompt.unsaved"
                     } else {
-                        "quit_prompt.message"
+                        "exit_prompt.message"
                     })
                     .to_string(),
                 ));
@@ -1300,18 +1332,18 @@ impl WinderustApp {
                 if self.pending_changes() {
                     actions = actions
                         .push(
-                            button(text(t!("quit_prompt.save_and_quit").to_string()))
+                            button(text(t!("exit_prompt.save_and_exit").to_string()))
                                 .style(widgets::primary_button)
                                 .on_press(Message::Save),
                         )
                         .push(
-                            button(text(t!("quit_prompt.without_saving").to_string()))
+                            button(text(t!("exit_prompt.without_saving").to_string()))
                                 .style(widgets::danger_button)
                                 .on_press(Message::DiscardAndClose),
                         );
                 } else {
                     actions = actions.push(
-                        button(text(t!("tray.quit").to_string()))
+                        button(text(t!("tray.exit").to_string()))
                             .style(widgets::danger_button)
                             .on_press(Message::DiscardAndClose),
                     );

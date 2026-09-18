@@ -6,7 +6,7 @@ app:
 
 tray:
   show_winderust: "Show Winderust"
-  quit: "Quit"
+  exit: "Exit"
 
 nav:
   collapse_navigation: "Hide sidebar"
@@ -696,7 +696,7 @@ app_suspension:
   download: "Download"
   upload: "Upload"
   intro_1: "App Suspension pauses selected background apps after a delay to reduce CPU usage."
-  intro_2: "Suspended apps are resumed automatically when you switch back to them or quit Winderust."
+  intro_2: "Suspended apps are resumed automatically when you switch back to them or exit Winderust."
   intro_3: "Use it only for apps that are safe to pause in the background."
   enable: "Enable app suspension"
   background_delay: "Background Suspension Delay"
@@ -1129,13 +1129,15 @@ settings_io_toast:
   export_failed: "Settings export failed"
   import_failed: "Settings import failed"
 
-quit_prompt:
-  recovery_handoff: "Automation has stopped. Quit again to let the recovery helper retry remaining restoration. Recovery may still fail."
-  title: "Quit Winderust?"
-  message: "Are you sure you want to quit Winderust?"
-  unsaved: "You have unsaved changes. Save them before quitting, or quit without saving."
-  save_and_quit: "Save and quit"
-  without_saving: "Quit without saving"
+exit_prompt:
+  exiting: "Exiting..."
+  processing: "Restoring managed changes and stopping background automation."
+  recovery_handoff: "Automation has stopped. Exit again to let the recovery helper retry remaining restoration. Recovery may still fail."
+  title: "Exit Winderust?"
+  message: "Are you sure you want to exit Winderust?"
+  unsaved: "You have unsaved changes. Save them before exiting, or exit without saving."
+  save_and_exit: "Save and exit"
+  without_saving: "Exit without saving"
 
 sidebar_status:
   paused: "Paused"

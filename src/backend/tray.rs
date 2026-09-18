@@ -34,7 +34,7 @@ use crate::win_util::wide_null;
 const TRAY_UID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
 const MENU_SHOW: usize = 1001;
-const MENU_QUIT: usize = 1002;
+const MENU_EXIT: usize = 1002;
 const MENU_MASTER: usize = 1003;
 const MENU_FEATURE_BASE: usize = 2000;
 
@@ -126,7 +126,7 @@ pub fn take_taskbar_created() -> bool {
 static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static HIDE_ON_CLOSE: AtomicBool = AtomicBool::new(false);
 static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTORE_REQUESTED: AtomicBool = AtomicBool::new(false);
 static VISIBILITY_CALLBACK: Mutex<Option<VisibilityCallback>> = Mutex::new(None);
 
@@ -233,8 +233,8 @@ impl Drop for TrayIcon {
     }
 }
 
-pub fn take_quit_requested() -> bool {
-    take_requested(&QUIT_REQUESTED)
+pub fn take_exit_requested() -> bool {
+    take_requested(&EXIT_REQUESTED)
 }
 
 pub fn take_restore_requested() -> bool {
@@ -356,7 +356,7 @@ unsafe extern "system" fn tray_wnd_proc(
     if message == WM_CLOSE {
         // SAFETY: hwnd belongs to this active window procedure callback.
         if unsafe { close_needs_prompt(IsIconic(hwnd) != 0, GetForegroundWindow() == hwnd) } {
-            QUIT_REQUESTED.store(true, Ordering::Relaxed);
+            EXIT_REQUESTED.store(true, Ordering::Relaxed);
             wake_ui();
             return 0;
         }
@@ -482,7 +482,7 @@ fn show_tray_menu(hwnd: HWND) {
             built
         })
         && append_menu(menu, 0, "", MF_SEPARATOR)
-        && append_menu(menu, MENU_QUIT, &t!("tray.quit"), MF_STRING);
+        && append_menu(menu, MENU_EXIT, &t!("tray.exit"), MF_STRING);
     if !built {
         // SAFETY: this call owns the menu and any successfully attached submenus.
         unsafe { DestroyMenu(menu) };
@@ -515,7 +515,7 @@ fn show_tray_menu(hwnd: HWND) {
     match command as usize {
         MENU_SHOW => show_window(hwnd),
         // The app restores its window and owns confirmation and shutdown.
-        MENU_QUIT => QUIT_REQUESTED.store(true, Ordering::Relaxed),
+        MENU_EXIT => EXIT_REQUESTED.store(true, Ordering::Relaxed),
         command => {
             if let Some(action) = menu_action(command, &state) {
                 MENU_ACTIONS
