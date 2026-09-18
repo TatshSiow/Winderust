@@ -1,6 +1,6 @@
 use super::design;
 use super::widgets::{self, Choice};
-use super::widgets::{button, pick_list, slider, text_input};
+use super::widgets::{button, pick_list, text_input};
 use crate::ui::scrolling::scrollable;
 use crate::{config::*, ui::Page};
 use iced::widget::{column, row, text};
@@ -12,7 +12,6 @@ pub(super) struct Editor {
     color: Option<String>,
     failure_threshold: Option<String>,
     accent_expanded: bool,
-    custom_color_open: bool,
     pub(super) checking: bool,
     notify_on_update: bool,
     pub(super) latest: Option<String>,
@@ -41,9 +40,10 @@ pub(super) enum Message {
     Theme(AppThemeMode),
     AccentSource(AccentColorSource),
     AccentHex(String),
-    ColorChannel(u32, u8),
     ToggleAccent,
-    ToggleCustomColor,
+    OpenColorPicker,
+    EditColor(u32),
+    ReplaceColor(u32, u32),
     Accent(u32),
     SaveColor,
     RemoveColor(usize),
@@ -118,17 +118,7 @@ impl Editor {
                 s.general.accent.source = value;
                 self.accent_expanded = value != AccentColorSource::Windows;
             }
-            Message::ToggleCustomColor => self.custom_color_open = !self.custom_color_open,
             Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
-            Message::ColorChannel(shift, value) => {
-                if [0, 8, 16].contains(&shift) {
-                    s.general.accent.custom_color = (s.general.accent.custom_color
-                        & !(255 << shift))
-                        | (u32::from(value) << shift);
-                    s.general.accent.source = AccentColorSource::Custom;
-                    self.color = None;
-                }
-            }
             Message::AccentHex(value) => {
                 if let Some(color) = parse_color(&value) {
                     s.general.accent.custom_color = color;
@@ -153,6 +143,22 @@ impl Editor {
                         .custom_colors
                         .retain(|stored| *stored != color);
                     s.general.accent.custom_colors.push(color);
+                }
+            }
+            Message::ReplaceColor(original, color) => {
+                if let Some(slot) = s
+                    .general
+                    .accent
+                    .custom_colors
+                    .iter_mut()
+                    .find(|v| **v == original)
+                {
+                    *slot = color;
+                    if s.general.accent.source == AccentColorSource::Custom
+                        && s.general.accent.custom_color == original
+                    {
+                        self.update(s, Message::Accent(color));
+                    }
                 }
             }
             Message::RemoveColor(index) => {
@@ -193,7 +199,11 @@ impl Editor {
                 }
             }
             Message::DismissUpdate => self.show_update = false,
-            Message::Open(_) | Message::Export | Message::Import => {}
+            Message::Open(_)
+            | Message::Export
+            | Message::Import
+            | Message::OpenColorPicker
+            | Message::EditColor(_) => {}
         }
     }
     pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
@@ -282,70 +292,79 @@ impl Editor {
                 let saved = column(s.general.accent.custom_colors.chunks(8).enumerate().map(
                     |(chunk_index, chunk)| {
                         row(chunk.iter().enumerate().map(|(i, color)| {
-                            column![
+                            super::popover::context_menu(
+                                u64::from(*color),
                                 color_button(
                                     *color,
                                     s.general.accent.source == AccentColorSource::Custom
-                                        && s.general.accent.custom_color == *color
-                                ),
-                                button(text(t!("common.remove").to_string()))
-                                    .on_press(Message::RemoveColor(chunk_index * 8 + i))
-                            ]
-                            .spacing(design::space::TIGHT)
-                            .into()
+                                        && s.general.accent.custom_color == *color,
+                                )
+                                .into(),
+                                iced::widget::container(
+                                    column![
+                                        button(text(t!("common.edit").to_string()))
+                                            .width(Fill)
+                                            .style(widgets::quiet)
+                                            .on_press(Message::EditColor(*color)),
+                                        button(text(t!("common.remove").to_string()))
+                                            .width(Fill)
+                                            .style(widgets::quiet)
+                                            .on_press(Message::RemoveColor(chunk_index * 8 + i)),
+                                    ]
+                                    .spacing(design::space::TINY),
+                                )
+                                .width(140)
+                                .padding(design::space::SMALL as u16)
+                                .style(|theme: &Theme| {
+                                    let mut style = widgets::surface(theme);
+                                    let palette = theme.extended_palette();
+                                    style.border.color = palette.background.strong.color;
+                                    style.border.width = 1.0;
+                                    if palette.is_dark {
+                                        style.background =
+                                            Some(palette.background.neutral.color.into());
+                                    }
+                                    style
+                                })
+                                .into(),
+                            )
                         }))
                         .spacing(design::space::CONTROL)
                         .into()
                     },
                 ))
                 .spacing(design::space::CONTROL);
-                let mut custom = column![
-                    text(t!("accent.custom").to_string()),
-                    button(super::navigation::glyph("icons/settings.svg"))
-                        .style(widgets::quiet)
-                        .on_press(Message::ToggleCustomColor),
+                let picker = color_button(s.general.accent.custom_color, false)
+                    .on_press(Message::OpenColorPicker);
+                let custom = column![
                     text(t!("accent.color_palette").to_string()),
                     colors,
+                    text(t!("accent.custom_colors").to_string()),
+                    row![
+                        picker,
+                        text_input(
+                            "#RRGGBB",
+                            &self.color.clone().unwrap_or_else(|| format!(
+                                "#{:06X}",
+                                s.general.accent.custom_color
+                            ))
+                        )
+                        .on_input(Message::AccentHex)
+                        .width(130),
+                        button(text(t!("common.save").to_string()))
+                            .style(widgets::primary_button)
+                            .on_press_maybe(
+                                self.color
+                                    .as_deref()
+                                    .is_none_or(|v| parse_color(v).is_some())
+                                    .then_some(Message::SaveColor)
+                            )
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
                     saved
                 ]
                 .spacing(design::space::COMPACT);
-                if self.custom_color_open {
-                    for (label, shift) in [("R", 16), ("G", 8), ("B", 0)] {
-                        let value = ((s.general.accent.custom_color >> shift) & 255) as u8;
-                        custom = custom.push(
-                            row![
-                                text(label).width(20),
-                                slider(0..=255, value, move |value| Message::ColorChannel(
-                                    shift, value
-                                )),
-                                text(value.to_string()).width(32)
-                            ]
-                            .spacing(design::space::SMALL),
-                        );
-                    }
-                    custom = custom.push(
-                        row![
-                            text_input(
-                                "#RRGGBB",
-                                &self.color.clone().unwrap_or_else(|| format!(
-                                    "#{:06X}",
-                                    s.general.accent.custom_color
-                                ))
-                            )
-                            .on_input(Message::AccentHex)
-                            .width(130),
-                            button(text(t!("common.save").to_string()))
-                                .style(crate::ui::widgets::primary_button)
-                                .on_press_maybe(
-                                    self.color
-                                        .as_deref()
-                                        .is_none_or(|v| parse_color(v).is_some())
-                                        .then_some(Message::SaveColor)
-                                )
-                        ]
-                        .spacing(design::space::SMALL),
-                    );
-                }
                 column![
                     super::widgets::settings_card(
                         row![
@@ -859,6 +878,26 @@ fn logo() -> iced::widget::image::Handle {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn editing_saved_colors_updates_only_the_matching_swatch_and_active_accent() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        settings.general.accent.custom_colors = vec![0x123456, 0xabcdef];
+        editor.update(&mut settings, Message::Accent(0x123456));
+        editor.update(&mut settings, Message::ReplaceColor(0xabcdef, 0x112233));
+        assert_eq!(settings.general.accent.custom_color, 0x123456);
+        editor.update(&mut settings, Message::ReplaceColor(0x123456, 0x445566));
+        assert_eq!(settings.general.accent.custom_color, 0x445566);
+        assert_eq!(
+            settings.general.accent.custom_colors,
+            vec![0x445566, 0x112233]
+        );
+        editor.update(&mut settings, Message::RemoveColor(0));
+        assert_eq!(settings.general.accent.custom_colors, vec![0x112233]);
+        editor.update(&mut settings, Message::ReplaceColor(0x445566, 0));
+        assert_eq!(settings.general.accent.custom_colors, vec![0x112233]);
+    }
+
     #[test]
     fn global_preference_messages_ignore_the_selected_feature_profile() {
         for existing_battery in [false, true] {

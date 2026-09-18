@@ -1,4 +1,4 @@
-mod popover;
+use super::popover;
 
 use super::design;
 use super::widgets::{button, checkbox, pick_list, Choice};

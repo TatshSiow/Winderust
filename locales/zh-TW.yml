@@ -146,6 +146,7 @@ theme:
 
 accent:
   recent_colors: "最近使用的色彩"
+  custom_colors: "自訂色彩"
   color_palette: "調色盤"
   source: "色彩來源"
   windows: "跟隨系統"

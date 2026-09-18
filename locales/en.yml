@@ -150,6 +150,7 @@ accent:
   custom: "Custom"
   palette: "Palette"
   recent_colors: "Recent colors"
+  custom_colors: "Custom colors"
   color_palette: "Color Palette"
   edit_color: "Edit color"
   remove_color: "Remove"

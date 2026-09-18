@@ -136,3 +136,44 @@ mod tests {
         assert!(!is_executable_file(Path::new(r"C:\Apps\Example")));
     }
 }
+
+/// Run on a worker thread: the modal loop must not block Iced's event loop.
+pub(crate) fn choose_color(owner: isize, color: u32, saved: &[u32]) -> Result<Option<u32>, String> {
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        ChooseColorW, CommDlgExtendedError, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW,
+    };
+    let mut custom = [0x00ff_ffff; 16];
+    for (slot, color) in custom.iter_mut().zip(saved) {
+        *slot = swap_red_blue(*color);
+    }
+    let mut dialog = CHOOSECOLORW {
+        lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+        hwndOwner: owner as HWND,
+        rgbResult: swap_red_blue(color),
+        lpCustColors: custom.as_mut_ptr(),
+        Flags: CC_FULLOPEN | CC_RGBINIT,
+        ..Default::default()
+    };
+    // SAFETY: the owner is borrowed from the live application window;
+    // dialog and the 16 writable custom colors remain valid throughout the modal call.
+    if unsafe { ChooseColorW(&mut dialog) } != 0 {
+        return Ok(Some(swap_red_blue(dialog.rgbResult)));
+    }
+    // SAFETY: queried immediately on the same thread after the common dialog returns.
+    let error = unsafe { CommDlgExtendedError() };
+    if error == 0 {
+        Ok(None)
+    } else {
+        Err(format!("Color dialog failed (0x{error:08X})"))
+    }
+}
+
+fn swap_red_blue(color: u32) -> u32 {
+    ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff)
+}
+
+#[test]
+fn native_color_channels_round_trip() {
+    assert_eq!(swap_red_blue(0x123456), 0x563412);
+    assert_eq!(swap_red_blue(swap_red_blue(0x123456)), 0x123456);
+}

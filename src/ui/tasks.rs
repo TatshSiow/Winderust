@@ -17,3 +17,22 @@ pub(super) fn run<T: Send + 'static>(
         Err(error) => Task::done(Err(error.to_string())),
     }
 }
+
+#[test]
+fn blocking_jobs_leave_the_calling_thread_free() {
+    let caller = std::thread::current().id();
+    let (started, worker) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let task = run(move || {
+        started.send(std::thread::current().id()).unwrap();
+        wait.recv_timeout(std::time::Duration::from_secs(5))
+    });
+    assert_ne!(
+        worker
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+        caller
+    );
+    release.send(()).unwrap();
+    drop(task);
+}

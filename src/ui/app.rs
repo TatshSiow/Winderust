@@ -91,6 +91,7 @@ pub(crate) fn run(
                     auto_exclusion_retry: false,
                     closing: false,
                     hwnd: None,
+                    color_dialog_open: false,
                     tray: None,
                     tray_attempt: None,
                     shutdown_failed: false,
@@ -231,6 +232,7 @@ struct WinderustApp {
     auto_exclusion_retry: bool,
     closing: bool,
     hwnd: Option<usize>,
+    color_dialog_open: bool,
     tray: Option<tray::TrayIcon>,
     tray_attempt: Option<((bool, bool), std::time::Instant)>,
     shutdown_failed: bool,
@@ -259,6 +261,7 @@ enum Message {
     ToggleFeatureInfo,
     ToggleStatus,
     Preferences(settings_pages::Message),
+    ColorChosen(Option<u32>, Result<Option<u32>, String>),
     Status(status_rail::Message),
     Home(home::Message),
     Sample(Result<home::Sample, String>),
@@ -373,6 +376,45 @@ impl WinderustApp {
                         r.and_then(|r| r),
                     ))
                 });
+            }
+            Message::Preferences(
+                message @ (settings_pages::Message::OpenColorPicker
+                | settings_pages::Message::EditColor(_)),
+            ) => {
+                let original = match message {
+                    settings_pages::Message::EditColor(color) => Some(color),
+                    _ => None,
+                };
+                if self.color_dialog_open {
+                    return Task::none();
+                }
+                if let Some(owner) = self.hwnd {
+                    let accent = &self.settings.global().general.accent;
+                    let color = original.unwrap_or(accent.custom_color);
+                    let custom_colors = accent.custom_colors.clone();
+                    self.color_dialog_open = true;
+                    return tasks::run(move || {
+                        crate::file_dialog::choose_color(owner as isize, color, &custom_colors)
+                    })
+                    .map(move |result| {
+                        Message::ColorChosen(original, result.and_then(|color| color))
+                    });
+                }
+            }
+            Message::ColorChosen(original, result) => {
+                self.color_dialog_open = false;
+                match result {
+                    Ok(Some(color)) => {
+                        return self.update(Message::Preferences(match original {
+                            Some(original) => {
+                                settings_pages::Message::ReplaceColor(original, color)
+                            }
+                            None => settings_pages::Message::Accent(color),
+                        }))
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.error_message = error,
+                }
             }
             Message::Preferences(message) => {
                 self.settings
