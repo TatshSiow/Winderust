@@ -154,6 +154,11 @@ impl Editor {
                     .find(|v| **v == original)
                 {
                     *slot = color;
+                    let mut seen = std::collections::HashSet::new();
+                    s.general
+                        .accent
+                        .custom_colors
+                        .retain(|value| seen.insert(*value));
                     if s.general.accent.source == AccentColorSource::Custom
                         && s.general.accent.custom_color == original
                     {
@@ -878,6 +883,20 @@ fn logo() -> iced::widget::image::Handle {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replacing_with_an_existing_color_keeps_the_palette_unique() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        settings.general.accent.custom_colors = vec![0x123456, 0xabcdef];
+        editor.update(&mut settings, Message::Accent(0x123456));
+        editor.update(&mut settings, Message::ReplaceColor(0x123456, 0xabcdef));
+        assert_eq!(settings.general.accent.custom_colors, vec![0xabcdef]);
+        assert_eq!(settings.general.accent.custom_color, 0xabcdef);
+        editor.update(&mut settings, Message::ReplaceColor(0xabcdef, 0x112233));
+        assert_eq!(settings.general.accent.custom_colors, vec![0x112233]);
+        assert_eq!(settings.general.accent.custom_color, 0x112233);
+    }
+
     #[test]
     fn editing_saved_colors_updates_only_the_matching_swatch_and_active_accent() {
         let mut editor = Editor::default();

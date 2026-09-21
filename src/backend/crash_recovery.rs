@@ -342,10 +342,12 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
         if let Err(error) = recover_with_retry(&entries, committed_len) {
             super::diagnostics::error(&format!("Crash recovery failed: {error}"));
             eprintln!("Winderust crash recovery failed: {error}");
+            super::diagnostics::finish();
             std::process::exit(2);
         }
     }
     super::diagnostics::event("Recovery helper finished restoration.");
+    super::diagnostics::finish();
     true
 }
 
@@ -1667,8 +1669,8 @@ impl RecoveryTransport {
             Err(RecoveryTransportError::Rejected(error)) => Err(error),
             Err(RecoveryTransportError::Uncertain(error)) => {
                 let error = format!("{error} Command outcome is unknown; further recovery commands are blocked and outstanding recovery ownership is retained.");
-                super::diagnostics::error(&error);
                 self.failed = Some(error.clone());
+                super::diagnostics::error(&error);
                 Err(error)
             }
         }

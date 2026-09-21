@@ -91,6 +91,7 @@ fn main() {
         eprintln!("{error}");
     }
     backend::diagnostics::event("Application exit completed.");
+    backend::diagnostics::finish();
 }
 
 struct SingleInstanceRestoreEvent {

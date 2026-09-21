@@ -3,12 +3,23 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{
+        mpsc::{self, SyncSender},
+        OnceLock,
+    },
+    time::Duration,
 };
 
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
-static LOG: OnceLock<Mutex<std::path::PathBuf>> = OnceLock::new();
+const QUEUE_CAPACITY: usize = 32;
+const FLUSH_TIMEOUT: Duration = Duration::from_millis(200);
+static LOG: OnceLock<SyncSender<Command>> = OnceLock::new();
+
+enum Command {
+    Record(String, String),
+    Flush(SyncSender<()>),
+}
 
 pub(crate) fn initialize(name: &str) {
     let path = match std::env::current_exe() {
@@ -18,17 +29,21 @@ pub(crate) fn initialize(name: &str) {
             return;
         }
     };
-    if LOG.set(Mutex::new(path)).is_err() {
+    let writer = match start_writer(move |header, message| append_record(&path, header, message)) {
+        Ok(writer) => writer,
+        Err(error) => {
+            eprintln!("Cannot start diagnostic writer: {error}");
+            return;
+        }
+    };
+    if LOG.set(writer).is_err() {
         return;
     }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
-        // A panic inside logging must not wait on its own lock.
-        record(
-            "PANIC",
-            &format!("{panic}\n{}", Backtrace::force_capture()),
-            true,
-        );
+        record("PANIC", &format!("{panic}\n{}", Backtrace::force_capture()));
+        // Best effort only: a stalled writer must not prevent panic handling.
+        finish();
         previous(panic);
     }));
     record(
@@ -39,41 +54,70 @@ pub(crate) fn initialize(name: &str) {
             std::env::consts::OS,
             std::env::consts::ARCH
         ),
-        false,
     );
 }
 
-pub(crate) fn error(message: &str) {
-    record("ERROR", message, false);
-}
-
-pub(crate) fn event(message: &str) {
-    record("INFO", message, false);
-}
-
-fn record(level: &str, message: &str, panicking: bool) {
-    let Some(log) = LOG.get() else { return };
-    let path = if panicking {
-        match log.try_lock() {
-            Ok(path) => path,
-            Err(_) => {
-                eprintln!("Diagnostic log busy: {message}");
-                return;
+fn start_writer(
+    mut write: impl FnMut(&str, &str) -> io::Result<()> + Send + 'static,
+) -> io::Result<SyncSender<Command>> {
+    let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+    std::thread::Builder::new()
+        .name("winderust-diagnostics".into())
+        .spawn(move || {
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    Command::Record(header, message) => {
+                        if let Err(error) = write(&header, &message) {
+                            eprintln!("Cannot write diagnostic log: {error}");
+                        }
+                    }
+                    Command::Flush(done) => {
+                        let _ = done.try_send(());
+                    }
+                }
             }
-        }
-    } else {
-        match log.lock() {
-            Ok(path) => path,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    };
+        })?;
+    Ok(sender)
+}
+
+pub(crate) fn error(message: &str) {
+    record("ERROR", message);
+}
+pub(crate) fn event(message: &str) {
+    record("INFO", message);
+}
+
+fn record(level: &str, message: &str) {
+    let Some(log) = LOG.get() else { return };
     let header = format!(
         "{} [{level}] pid={} ",
         chrono::Utc::now().to_rfc3339(),
         std::process::id()
     );
-    if let Err(error) = append_record(&path, &header, message) {
-        eprintln!("Cannot write diagnostic log {}: {error}", path.display());
+    let mut end = message.len().min(MAX_RECORD_BYTES);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut message_copy = message[..end].to_owned();
+    if end < message.len() {
+        message_copy.push_str("\n[truncated]");
+    }
+    // Drop new records when full/disconnected; never wait for capacity or disk I/O.
+    let _ = log.try_send(Command::Record(header, message_copy));
+}
+
+/// Called only at process exit or panic, never on recovery/UI submission paths.
+/// No writer join: disk stalls must not hold the process open indefinitely.
+pub(crate) fn finish() {
+    if let Some(log) = LOG.get() {
+        flush(log);
+    }
+}
+
+fn flush(log: &SyncSender<Command>) {
+    let (done, received) = mpsc::sync_channel(1);
+    if log.try_send(Command::Flush(done)).is_ok() {
+        let _ = received.recv_timeout(FLUSH_TIMEOUT);
     }
 }
 
@@ -110,6 +154,63 @@ fn append_record(path: &Path, header: &str, message: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stalled_writer_keeps_submission_bounded_and_flush_has_a_deadline() {
+        let (started, observed) = mpsc::sync_channel(1);
+        let (release, blocked) = mpsc::sync_channel(1);
+        let writer = start_writer(move |_, _| {
+            let _ = started.try_send(());
+            let _ = blocked.recv_timeout(Duration::from_secs(5));
+            Ok(())
+        })
+        .unwrap();
+        writer
+            .try_send(Command::Record(String::new(), "first".into()))
+            .unwrap();
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Even a queued flush returns while the sink remains blocked.
+        let before = std::time::Instant::now();
+        flush(&writer);
+        assert!(before.elapsed() < Duration::from_secs(2));
+        for _ in 1..QUEUE_CAPACITY {
+            writer
+                .try_send(Command::Record(String::new(), "queued".into()))
+                .unwrap();
+        }
+        assert!(matches!(
+            writer.try_send(Command::Record(String::new(), "overflow".into())),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+        flush(&writer); // A full queue is also nonblocking.
+        release.send(()).unwrap();
+        drop(release);
+        drop(writer);
+    }
+
+    #[test]
+    fn write_failures_do_not_prevent_later_records_or_flush() {
+        let (seen, records) = mpsc::channel();
+        let writer = start_writer(move |_, message| {
+            seen.send(message.to_owned()).unwrap();
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "fixture"))
+        })
+        .unwrap();
+        for message in ["first", "second"] {
+            writer
+                .try_send(Command::Record(String::new(), message.into()))
+                .unwrap();
+        }
+        flush(&writer);
+        assert_eq!(
+            records.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            records.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "second"
+        );
+    }
 
     #[test]
     fn panic_hook_persists_a_report_in_a_disposable_test_process() {

@@ -305,17 +305,27 @@ enum Message {
     PowerPlans(Result<Vec<crate::power::PowerPlan>, String>),
 }
 
+impl Message {
+    fn allowed_during_exit(&self) -> bool {
+        matches!(
+            self,
+            Self::ShutdownFinished(_)
+                | Self::Sample(_)
+                | Self::Catalog(_)
+                | Self::PowerPlans(_)
+                | Self::Processes(process_list::Message::Loaded(_))
+                | Self::Preferences(settings_pages::Message::Checked(..))
+        )
+    }
+}
+
 impl WinderustApp {
     fn update(&mut self, message: Message) -> Task<Message> {
-        if self.exiting
-            && !matches!(
-                message,
-                Message::ShutdownFinished(_)
-                    | Message::Sample(_)
-                    | Message::Catalog(_)
-                    | Message::PowerPlans(_)
-            )
-        {
+        if self.exiting && !message.allowed_during_exit() {
+            // Discard native picker edits, but release its pending flag.
+            if matches!(message, Message::ColorChosen(..)) {
+                self.color_dialog_open = false;
+            }
             return Task::none();
         }
         match message {
@@ -2371,6 +2381,40 @@ fn ui_tick_interval(hidden: bool, retry_pending: bool) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exit_guard_keeps_pending_completions_but_rejects_new_work() {
+        assert!(
+            Message::Processes(process_list::Message::Loaded(Err("fixture".into())))
+                .allowed_during_exit()
+        );
+        let mut editor = settings_pages::Editor::default();
+        let mut settings = crate::config::Settings::default();
+        let channel = settings.general.update_channel;
+        assert!(editor.begin_check(channel, false));
+        let completed = Message::Preferences(settings_pages::Message::Checked(
+            channel,
+            Err("fixture".into()),
+        ));
+        assert!(completed.allowed_during_exit());
+        if let Message::Preferences(message) = completed {
+            editor.update(&mut settings, message);
+        }
+        assert!(editor.begin_check(channel, false));
+        assert!(Message::ShutdownFinished(Err("fixture".into())).allowed_during_exit());
+        for message in [
+            Message::Processes(process_list::Message::Refresh),
+            Message::Processes(process_list::Message::ConfirmStop),
+            Message::Preferences(settings_pages::Message::SaveColor),
+            Message::Preferences(settings_pages::Message::Check),
+            Message::ColorChosen(None, Ok(Some(0xffffff))),
+            Message::Save,
+            Message::Stay,
+            Message::DiscardAndClose,
+        ] {
+            assert!(!message.allowed_during_exit());
+        }
+    }
+
     #[test]
     fn hidden_ui_sleeps_until_events_but_keeps_pending_retries() {
         use iced::futures::{FutureExt, StreamExt};
