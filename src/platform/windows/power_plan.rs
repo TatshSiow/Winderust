@@ -34,6 +34,7 @@ pub(crate) enum PowerSetting {
     PerformanceMaximum,
     BoostPolicy,
     BoostMode,
+    IdleDisable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -460,6 +461,10 @@ fn setting_guids(setting: PowerSetting) -> (GUID, GUID) {
             GUID_PROCESSOR_SETTINGS_SUBGROUP,
             GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
         ),
+        PowerSetting::IdleDisable => (
+            GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            GUID_PROCESSOR_IDLE_DISABLE,
+        ),
         PowerSetting::BoostMode => (
             GUID_PROCESSOR_SETTINGS_SUBGROUP,
             GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
@@ -608,6 +613,13 @@ const GUID_PROCESSOR_PERFORMANCE_BOOST_MODE: GUID = GUID {
     data2: 0x0d82,
     data3: 0x4146,
     data4: [0xa9, 0x60, 0x4f, 0x37, 0x49, 0xd4, 0x70, 0xc7],
+};
+
+const GUID_PROCESSOR_IDLE_DISABLE: GUID = GUID {
+    data1: 0x5d76a2ca,
+    data2: 0xe8c0,
+    data3: 0x402f,
+    data4: [0xa1, 0x33, 0x21, 0x58, 0x49, 0x2d, 0x58, 0xad],
 };
 
 #[cfg(test)]

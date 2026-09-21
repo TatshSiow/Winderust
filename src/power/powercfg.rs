@@ -55,12 +55,63 @@ pub fn create_adaptive_plan(source_guid: &str) -> Result<String, String> {
 
     if let Err(error) = windows_power::write_scheme_name(&duplicate_guid, ADAPTIVE_PLAN_NAME)
         .and_then(|()| windows_power::write_scheme_description(&duplicate_guid, &description))
+        .and_then(|()| {
+            enable_adaptive_idle_states(
+                |battery, value| {
+                    if battery {
+                        windows_power::write_dc_value(
+                            &duplicate_guid,
+                            PowerSetting::IdleDisable,
+                            value,
+                        )
+                    } else {
+                        windows_power::write_ac_value(
+                            &duplicate_guid,
+                            PowerSetting::IdleDisable,
+                            value,
+                        )
+                    }
+                },
+                |battery| {
+                    if battery {
+                        windows_power::read_dc_value(&duplicate_guid, PowerSetting::IdleDisable)
+                    } else {
+                        windows_power::read_ac_value(&duplicate_guid, PowerSetting::IdleDisable)
+                    }
+                },
+            )
+        })
     {
-        let _ = windows_power::delete_scheme(&duplicate_guid);
-        return Err(error);
+        return Err(match windows_power::delete_scheme(&duplicate_guid) {
+            Ok(()) => error,
+            Err(cleanup) => {
+                format!("{error}; failed to delete incomplete Adaptive plan: {cleanup}")
+            }
+        });
     }
 
     Ok(duplicate_guid)
+}
+
+// IdleDisable=0 permits CPU idle states, regardless of the cloned plan.
+// Set both sources before activation; profile changes preserve this policy.
+fn enable_adaptive_idle_states(
+    mut write: impl FnMut(bool, u32) -> Result<(), String>,
+    mut read: impl FnMut(bool) -> Result<u32, String>,
+) -> Result<(), String> {
+    for battery in [false, true] {
+        let source = if battery { "battery" } else { "A/C" };
+        write(battery, 0)
+            .map_err(|error| format!("Failed to enable {source} CPU idle states: {error}"))?;
+        let value = read(battery)
+            .map_err(|error| format!("Failed to verify {source} CPU idle states: {error}"))?;
+        if value != 0 {
+            return Err(format!(
+                "{source} CPU idle states remain disabled (IdleDisable={value})."
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn delete_plan(guid: &str) -> Result<(), String> {
@@ -337,6 +388,51 @@ mod tests {
     use crate::power::{EffectivePowerMode, PowerPlanPersonality, ProcessorPowerPreset};
 
     use super::*;
+
+    #[test]
+    fn adaptive_idle_states_override_both_sources_and_propagate_failures() {
+        let values = std::cell::Cell::new([1, 1]);
+        enable_adaptive_idle_states(
+            |battery, value| {
+                let mut current = values.get();
+                current[usize::from(battery)] = value;
+                values.set(current);
+                Ok(())
+            },
+            |battery| Ok(values.get()[usize::from(battery)]),
+        )
+        .unwrap();
+        assert_eq!(values.get(), [0, 0]);
+        for battery_failure in [false, true] {
+            assert!(enable_adaptive_idle_states(
+                |battery, _| {
+                    if battery == battery_failure {
+                        Err("write failed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_| Ok(0)
+            )
+            .is_err());
+            assert!(enable_adaptive_idle_states(
+                |_, _| Ok(()),
+                |battery| { Ok(u32::from(battery == battery_failure)) }
+            )
+            .is_err());
+            assert!(enable_adaptive_idle_states(
+                |_, _| Ok(()),
+                |battery| {
+                    if battery == battery_failure {
+                        Err("read failed".into())
+                    } else {
+                        Ok(0)
+                    }
+                }
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn recognizes_only_winderust_managed_adaptive_plan() {
