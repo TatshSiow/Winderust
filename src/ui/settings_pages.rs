@@ -79,7 +79,7 @@ impl Editor {
         self.show_update = false;
     }
 
-    pub(super) fn begin_check(&mut self, _channel: UpdateChannel, automatic: bool) -> bool {
+    pub(super) fn begin_check(&mut self, automatic: bool) -> bool {
         if self.checking {
             return false;
         }
@@ -87,6 +87,30 @@ impl Editor {
         self.notify_on_update = automatic;
         self.update_error = None;
         true
+    }
+
+    pub(super) fn update_ui(&mut self, current_channel: UpdateChannel, message: Message) {
+        match message {
+            Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
+            Message::DismissUpdate => self.show_update = false,
+            Message::Checked(channel, result) => {
+                if channel != current_channel {
+                    self.checking = false;
+                    return;
+                }
+                self.checking = false;
+                match result {
+                    Ok((version, url)) => {
+                        self.latest = Some(version);
+                        self.show_update = self.notify_on_update && url.is_some();
+                        self.download = url;
+                        self.update_error = None;
+                    }
+                    Err(error) => self.update_error = Some(error),
+                }
+            }
+            _ => unreachable!("Only UI preference messages belong in update_ui"),
+        }
     }
 
     pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
@@ -118,7 +142,6 @@ impl Editor {
                 s.general.accent.source = value;
                 self.accent_expanded = value != AccentColorSource::Windows;
             }
-            Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
             Message::AccentHex(value) => {
                 if let Some(color) = parse_color(&value) {
                     s.general.accent.custom_color = color;
@@ -187,23 +210,9 @@ impl Editor {
                 self.show_update = false;
             }
             Message::Check | Message::CheckStartup => {}
-            Message::Checked(channel, result) => {
-                if channel != s.general.update_channel {
-                    self.checking = false;
-                    return;
-                }
-                self.checking = false;
-                match result {
-                    Ok((version, url)) => {
-                        self.latest = Some(version);
-                        self.show_update = self.notify_on_update && url.is_some();
-                        self.download = url;
-                        self.update_error = None;
-                    }
-                    Err(error) => self.update_error = Some(error),
-                }
+            Message::Checked(..) | Message::DismissUpdate | Message::ToggleAccent => {
+                self.update_ui(s.general.update_channel, m);
             }
-            Message::DismissUpdate => self.show_update = false,
             Message::Open(_)
             | Message::Export
             | Message::Import
@@ -884,6 +893,25 @@ fn logo() -> iced::widget::image::Handle {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn ui_only_preferences_need_no_mutable_settings() {
+        let settings = Settings::default();
+        let channel = settings.general.update_channel;
+        let mut editor = Editor::default();
+        editor.update_ui(channel, Message::ToggleAccent);
+        assert!(editor.accent_expanded);
+        assert!(editor.begin_check(true));
+        editor.update_ui(
+            channel,
+            Message::Checked(channel, Ok(("next".into(), Some("url".into())))),
+        );
+        assert!(!editor.checking);
+        assert!(editor.show_update);
+        editor.update_ui(channel, Message::DismissUpdate);
+        assert!(!editor.show_update);
+        assert!(editor.begin_check(false));
+    }
+
+    #[test]
     fn replacing_with_an_existing_color_keeps_the_palette_unique() {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
@@ -1055,8 +1083,8 @@ mod tests {
         let mut e = Editor::default();
         let mut s = Settings::default();
         let channel = s.general.update_channel;
-        assert!(e.begin_check(channel, false));
-        assert!(!e.begin_check(channel, true));
+        assert!(e.begin_check(false));
+        assert!(!e.begin_check(true));
         e.update(
             &mut s,
             Message::Checked(
@@ -1065,7 +1093,7 @@ mod tests {
             ),
         );
         assert!(!e.show_update);
-        assert!(e.begin_check(channel, true));
+        assert!(e.begin_check(true));
         e.update(
             &mut s,
             Message::Checked(
@@ -1074,7 +1102,7 @@ mod tests {
             ),
         );
         assert!(e.show_update);
-        assert!(e.begin_check(channel, true));
+        assert!(e.begin_check(true));
         let other = if channel == UpdateChannel::Stable {
             UpdateChannel::PreRelease
         } else {

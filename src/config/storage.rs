@@ -110,6 +110,62 @@ mod tests {
     };
 
     #[test]
+    fn adaptive_runtime_benchmark_generated_settings_are_valid() {
+        if let Ok(raw) = std::env::var("WINDERUST_BENCHMARK_SETTINGS") {
+            parse_toml_settings(Path::new("benchmark settings"), &raw).unwrap();
+        }
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/adaptive_runtime_benchmark.ps1");
+        for arguments in [
+            vec![],
+            vec![
+                "-DisableBackgroundProcessorLimit",
+                "-ProcessRestraintThresholdPercent",
+                "100",
+                "-MaximumRestrainedApps",
+                "32",
+                "-ForegroundOrSystemCpuThresholdPercent",
+                "1",
+                "-BackgroundPressureAcBoostPolicy",
+                "0",
+                "-BackgroundPressureAcBoostMode",
+                "disabled",
+            ],
+        ] {
+            let output = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+                .arg(&script)
+                .arg("-SettingsOnly")
+                .args(&arguments)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let raw = String::from_utf8(output.stdout).unwrap();
+            let settings = parse_toml_settings(&script, &raw).unwrap();
+            assert!(settings.adaptive_engine.enabled);
+            assert!(settings.adaptive_engine.processor_power_policy_enabled);
+            assert!(
+                !settings
+                    .adaptive_engine_process
+                    .dynamic_resource_zones_enabled
+            );
+            assert_eq!(
+                settings
+                    .adaptive_engine_process
+                    .limit_background_processors_enabled,
+                arguments.is_empty()
+            );
+            assert!(!settings.adaptive_engine_process.custom_rules.is_empty());
+            let missing = raw.replace("dynamic_resource_zones_enabled = false", "");
+            assert!(parse_toml_settings(&script, &missing).is_err());
+        }
+    }
+
+    #[test]
     fn load_and_import_normalize_saved_colors_without_rewriting_the_file() {
         let path =
             std::env::temp_dir().join(format!("winderust-palette-{}.toml", std::process::id()));

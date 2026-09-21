@@ -128,11 +128,10 @@ pub(crate) fn can_add_memory_trim_exclusion(settings: &MemoryTrimSettings, proce
     can_add_process_candidate(
         process,
         |process| {
-            settings.exclusion_enabled_for(process)
-                || settings
-                    .exclusions
-                    .iter()
-                    .any(|rule| process_setting_matches(&rule.executable_path, process))
+            settings
+                .exclusions
+                .iter()
+                .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         memory_trim::is_builtin_excluded,
     )
@@ -185,5 +184,24 @@ pub(crate) fn new_timer_resolution_rule(process: &str, desired_100ns: u32) -> Ti
         enabled: true,
         executable_path: executable_path_key(Path::new(process)),
         desired_100ns,
+    }
+}
+
+#[test]
+fn memory_trim_add_rejects_enabled_and_disabled_equivalent_exclusions() {
+    let mut settings = MemoryTrimSettings::default();
+    assert!(can_add_memory_trim_exclusion(
+        &settings,
+        "C:/Apps/example.exe"
+    ));
+    settings
+        .exclusions
+        .push(new_process_exclusion_rule("C:/Apps/example.exe"));
+    for enabled in [true, false] {
+        settings.exclusions[0].enabled = enabled;
+        assert!(!can_add_memory_trim_exclusion(
+            &settings,
+            "c:/apps/EXAMPLE.exe"
+        ));
     }
 }

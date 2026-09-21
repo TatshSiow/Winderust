@@ -1,4 +1,5 @@
 param(
+    [switch]$SettingsOnly,
     [int]$Passes = 4,
     [int]$Rounds = 5,
     [int]$Iterations = 1000000,
@@ -33,29 +34,6 @@ if ($Passes -lt 4 -or ($Passes % 2) -ne 0) {
 if ($WorkerSeconds -le ($WarmupSeconds + 30)) {
     throw 'WorkerSeconds must exceed WarmupSeconds by more than 30 seconds so workers survive measurement.'
 }
-$benchmarkScript = Join-Path $PSScriptRoot 'adaptive_engine_process_benchmark.ps1'
-$env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
-try {
-    . $benchmarkScript `
-        -Passes $Passes `
-        -Rounds $Rounds `
-        -Iterations $Iterations `
-        -WorkerSeconds $WorkerSeconds `
-        -BackgroundWorkers ([Math]::Min([Math]::Ceiling([Environment]::ProcessorCount * 0.9), 24)) `
-        -ForegroundScenario $ForegroundScenario `
-        -WinderustExePath $WinderustExePath `
-        -SkipPower:$SkipPower
-} finally {
-    Remove-Item Env:WINDERUST_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
-}
-
-$balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
-$originalGuid = Get-ActiveSchemeGuid
-$sourceExePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
-$configDir = Join-Path ([IO.Path]::GetTempPath()) "winderust-adaptive-benchmark-$([guid]::NewGuid())"
-$exePath = Join-Path $configDir 'winderust.exe'
-$configPath = Join-Path $configDir 'settings.toml'
-$runtime = $null
 $backgroundProcessorLimitEnabled = !$DisableBackgroundProcessorLimit.IsPresent
 
 $settingsToml = @'
@@ -115,6 +93,8 @@ visible_window_memory_priority = "default"
 background_memory_priority = "low"
 cpu_pressure_restraint_enabled = true
 limit_background_processors_enabled = __LIMIT_BACKGROUND_PROCESSORS__
+# Keep dynamic allocation out of this fixed-policy comparison.
+dynamic_resource_zones_enabled = false
 cpu_allocation_method = "cpu_sets_soft"
 background_processor_selection = "least_used"
 processor_limit_percent = 75
@@ -172,6 +152,45 @@ $settingsToml = $settingsToml.Replace(
     $BackgroundPressureAcBoostMode
 )
 
+if ($SettingsOnly) {
+    $settingsToml
+    return
+}
+
+# Validate the real generated payload before importing workload helpers or changing plans.
+Push-Location (Split-Path $PSScriptRoot -Parent)
+try {
+    $env:WINDERUST_BENCHMARK_SETTINGS = $settingsToml
+    cargo test --locked adaptive_runtime_benchmark_generated_settings_are_valid
+    if ($LASTEXITCODE -ne 0) { throw 'Adaptive runtime benchmark settings validation failed.' }
+} finally {
+    Remove-Item Env:WINDERUST_BENCHMARK_SETTINGS -ErrorAction SilentlyContinue
+    Pop-Location
+}
+
+$benchmarkScript = Join-Path $PSScriptRoot 'adaptive_engine_process_benchmark.ps1'
+$env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
+try {
+    . $benchmarkScript `
+        -Passes $Passes `
+        -Rounds $Rounds `
+        -Iterations $Iterations `
+        -WorkerSeconds $WorkerSeconds `
+        -BackgroundWorkers ([Math]::Min([Math]::Ceiling([Environment]::ProcessorCount * 0.9), 24)) `
+        -ForegroundScenario $ForegroundScenario `
+        -WinderustExePath $WinderustExePath `
+        -SkipPower:$SkipPower
+} finally {
+    Remove-Item Env:WINDERUST_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
+}
+
+$balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
+$originalGuid = Get-ActiveSchemeGuid
+$sourceExePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
+$configDir = Join-Path ([IO.Path]::GetTempPath()) "winderust-adaptive-benchmark-$([guid]::NewGuid())"
+$exePath = Join-Path $configDir 'winderust.exe'
+$configPath = Join-Path $configDir 'settings.toml'
+$runtime = $null
 function Write-IsolatedSettings {
     [IO.Directory]::CreateDirectory($configDir) | Out-Null
     Copy-Item -LiteralPath $sourceExePath -Destination $exePath

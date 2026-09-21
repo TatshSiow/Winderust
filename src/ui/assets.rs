@@ -69,13 +69,6 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/zap.svg", icondata_lu::LuZap),
 ];
 
-static ICON_ASSET_BYTES: LazyLock<HashMap<&'static str, Vec<u8>>> = LazyLock::new(|| {
-    ICON_ASSETS
-        .iter()
-        .map(|(path, icon)| (*path, lucide_svg(icon).into_bytes()))
-        .collect()
-});
-
 fn lucide_svg(icon: &IconData) -> String {
     let mut svg = String::from(r#"<svg xmlns="http://www.w3.org/2000/svg""#);
     push_attr(&mut svg, "style", icon.style);
@@ -107,9 +100,14 @@ fn push_attr(svg: &mut String, name: &str, value: Option<&str>) {
 pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
     static HANDLES: LazyLock<HashMap<&'static str, iced::widget::svg::Handle>> =
         LazyLock::new(|| {
-            ICON_ASSET_BYTES
+            ICON_ASSETS
                 .iter()
-                .map(|(path, bytes)| (*path, iced::widget::svg::Handle::from_memory(bytes.clone())))
+                .map(|(path, icon)| {
+                    (
+                        *path,
+                        iced::widget::svg::Handle::from_memory(lucide_svg(icon).into_bytes()),
+                    )
+                })
                 .collect()
         });
     HANDLES.get(path).cloned()
@@ -145,6 +143,8 @@ mod tests {
         let mut paths = HashSet::new();
         for (path, _) in ICON_ASSETS {
             assert!(paths.insert(*path), "duplicate icon asset path: {path}");
+            let first = iced_icon(path).unwrap();
+            assert_eq!(first.id(), iced_icon(path).unwrap().id());
         }
     }
 }

@@ -6,7 +6,7 @@ a second automation engine.
 
 ## Components
 
-- `src/ui/app/shared/presets.rs` defines the visible Adaptive Engine presets and Adaptive Engine
+- `src/ui/adaptive_presets.rs` defines the visible Adaptive Engine presets and Adaptive Engine
   preset values.
 - `src/backend/automation/runner.rs` collects demand signals, selects the active processor-power
   profile, and coordinates feature policies and controllers.
@@ -24,7 +24,7 @@ a second automation engine.
 
 ## Presets
 
-The preset definitions live in `src/ui/app/shared/presets.rs` and combine processor values
+The preset definitions live in `src/ui/adaptive_presets.rs` and combine processor values
 with internal scheduling presets:
 
 | Preset | Processor policy | Scheduling preset |

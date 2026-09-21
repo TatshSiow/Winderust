@@ -47,7 +47,7 @@
 - Typography: Compact hierarchy with readable labels and muted supporting text.
 - Spacing/layout rhythm: Dense, stable rows using existing constants and setting groups.
 - Shape/radius/elevation: Existing Winderust surface and control radii; no new visual layer.
-- Motion: Existing bounded hover, expand/collapse, modal, and navigation motion respecting Animation Mode.
+- Motion: Small control transitions respect Animation Mode. Page, panel, and content-layout changes remain immediate; `.agents/memory/15-design-spec.md` is the authority for motion and scrolling.
 - Imagery/iconography: Bundled Lucide SVG navigation/action icons.
 
 ## Components
@@ -149,7 +149,7 @@ The source-mapped hierarchy corrections are implemented. See [the design integri
 - The latest user direction supersedes the earlier flat setting-group treatment. Follow the former GPUI setting_action_card and setting_group layout from commit cab3186.
 - Each standalone setting row has a full-width, small-radius card surface. Keep labels and their controls together, with consistent padding and vertical alignment.
 - Chevrons are passive indicators inside a shared clickable row/header, never separate icon buttons. Sidebar section rows navigate to their landing page and expand; clicking the current section toggles its children.
-- Each expandable group is one enclosing card containing its full-width clickable header, state chevron, and animated body. Preserve the existing collapse state and motion preferences.
+- Each expandable group is one enclosing card containing its full-width clickable header, state chevron, and body. Preserve the existing collapse state and motion preferences.
 - Use widgets::settings_card for standalone rows and widgets::setting_group for independent header actions and flat expandable bodies. Compose standard Iced containers/buttons; use Iced rounded_box styling without outlines and the existing hover styles. Do not restore GPUI dependencies or vendored code.
 - Custom rule and exclusion rows have card boundaries. Process List remains a dense table, matching the old GPUI design. Headers, explanatory text, and command bars do not need independent cards.
 

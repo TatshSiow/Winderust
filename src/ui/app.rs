@@ -386,7 +386,7 @@ impl WinderustApp {
             ) => {
                 let automatic = matches!(message, settings_pages::Message::CheckStartup);
                 let channel = self.settings.global().general.update_channel;
-                if !self.preferences.begin_check(channel, automatic) {
+                if !self.preferences.begin_check(automatic) {
                     return Task::none();
                 }
                 return tasks::run(move || {
@@ -440,11 +440,41 @@ impl WinderustApp {
                     Err(error) => self.error_message = error,
                 }
             }
+            Message::Preferences(
+                message @ (settings_pages::Message::ToggleAccent
+                | settings_pages::Message::DismissUpdate
+                | settings_pages::Message::Checked(..)),
+            ) => {
+                self.preferences
+                    .update_ui(self.settings.global().general.update_channel, message);
+            }
             Message::Preferences(message) => {
+                let appearance_changed = matches!(
+                    message,
+                    settings_pages::Message::Theme(_)
+                        | settings_pages::Message::AccentSource(_)
+                        | settings_pages::Message::AccentHex(_)
+                        | settings_pages::Message::Accent(_)
+                        | settings_pages::Message::ReplaceColor(..)
+                );
+                let tray_changed = matches!(
+                    message,
+                    settings_pages::Message::Language(_)
+                        | settings_pages::Message::Flag(
+                            settings_pages::Flag::Tray
+                                | settings_pages::Flag::Minimized
+                                | settings_pages::Flag::AdvancedControls,
+                            _
+                        )
+                );
                 self.settings
                     .edit_global(|settings| self.preferences.update(settings, message));
-                self.appearance = settings_pages::theme(&self.settings.global().general);
-                self.sync_tray();
+                if appearance_changed {
+                    self.appearance = settings_pages::theme(&self.settings.global().general);
+                }
+                if tray_changed {
+                    self.sync_tray();
+                }
             }
             Message::ActionLog(action_log::Message::LogMode(value)) => {
                 self.settings
@@ -2390,7 +2420,7 @@ mod tests {
         let mut editor = settings_pages::Editor::default();
         let mut settings = crate::config::Settings::default();
         let channel = settings.general.update_channel;
-        assert!(editor.begin_check(channel, false));
+        assert!(editor.begin_check(false));
         let completed = Message::Preferences(settings_pages::Message::Checked(
             channel,
             Err("fixture".into()),
@@ -2399,7 +2429,7 @@ mod tests {
         if let Message::Preferences(message) = completed {
             editor.update(&mut settings, message);
         }
-        assert!(editor.begin_check(channel, false));
+        assert!(editor.begin_check(false));
         assert!(Message::ShutdownFinished(Err("fixture".into())).allowed_during_exit());
         for message in [
             Message::Processes(process_list::Message::Refresh),
