@@ -217,8 +217,17 @@ pub struct AccentSettings {
     pub source: AccentColorSource,
     #[serde(default = "default_custom_accent_color")]
     pub custom_color: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_custom_colors")]
     pub custom_colors: Vec<u32>,
+}
+
+fn deserialize_custom_colors<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<u32>, D::Error> {
+    let mut colors = Vec::<u32>::deserialize(deserializer)?;
+    let mut seen = std::collections::HashSet::new();
+    colors.retain(|color| seen.insert(*color));
+    Ok(colors)
 }
 
 impl Default for AccentSettings {

@@ -110,6 +110,38 @@ mod tests {
     };
 
     #[test]
+    fn load_and_import_normalize_saved_colors_without_rewriting_the_file() {
+        let path =
+            std::env::temp_dir().join(format!("winderust-palette-{}.toml", std::process::id()));
+        let mut settings = Settings::default();
+        settings.general.accent.source = crate::config::AccentColorSource::Custom;
+        settings.general.accent.custom_color = 0xabcdef;
+        settings.general.accent.custom_colors =
+            vec![0xabcdef, 0xabcdef, 0x112233, 0xabcdef, 0x112233];
+        let raw = toml::to_string_pretty(&settings).unwrap();
+        fs::write(&path, &raw).unwrap();
+        for parsed in [
+            load_from_path(&path).unwrap(),
+            import_toml_from(&path).unwrap(),
+        ] {
+            assert_eq!(
+                parsed.general.accent.custom_colors,
+                vec![0xabcdef, 0x112233]
+            );
+            assert_eq!(parsed.general.accent.custom_color, 0xabcdef);
+            assert_eq!(
+                parsed.general.accent.source,
+                crate::config::AccentColorSource::Custom
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        }
+        fs::remove_file(path).unwrap();
+        let empty: AccentSettings = toml::from_str("").unwrap();
+        assert!(empty.custom_colors.is_empty());
+        assert!(toml::from_str::<AccentSettings>("custom_colors = [1, 'invalid']").is_err());
+    }
+
+    #[test]
     fn omitted_adaptive_priority_options_use_behavior_preserving_defaults() {
         let defaults = AdaptiveEngineProcessSettings::default();
         let raw = toml::to_string(&defaults).unwrap();
