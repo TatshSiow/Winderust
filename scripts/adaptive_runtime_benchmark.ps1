@@ -1,5 +1,6 @@
 param(
     [switch]$SettingsOnly,
+    [switch]$EnableDynamicResourceZones,
     [int]$Passes = 4,
     [int]$Rounds = 5,
     [int]$Iterations = 1000000,
@@ -93,8 +94,9 @@ visible_window_memory_priority = "default"
 background_memory_priority = "low"
 cpu_pressure_restraint_enabled = true
 limit_background_processors_enabled = __LIMIT_BACKGROUND_PROCESSORS__
-# Keep dynamic allocation out of this fixed-policy comparison.
-dynamic_resource_zones_enabled = false
+# Zoning is a separate opt-in scenario; the historical default stays off.
+dynamic_resource_zones_enabled = __DYNAMIC_RESOURCE_ZONES__
+dynamic_resource_zone_settings = { foreground_share_percent = 75, background_processor_selection = "least_used", specific_processors = [] }
 cpu_allocation_method = "cpu_sets_soft"
 background_processor_selection = "least_used"
 processor_limit_percent = 75
@@ -121,6 +123,7 @@ rules = []
 enabled = false
 rules = []
 '@
+$settingsToml = $settingsToml.Replace('__DYNAMIC_RESOURCE_ZONES__', $EnableDynamicResourceZones.IsPresent.ToString().ToLowerInvariant())
 $benchmarkHostPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $escapedBenchmarkHostPath = $benchmarkHostPath.Replace('\', '\\')
 $settingsToml = $settingsToml.Replace(
@@ -380,6 +383,8 @@ $report = [pscustomobject]@{
     foreground_iterations_per_round = $Iterations
     background_pressure_ac_boost_policy = $BackgroundPressureAcBoostPolicy
     background_pressure_ac_boost_mode = $BackgroundPressureAcBoostMode
+    dynamic_resource_zones_enabled = $EnableDynamicResourceZones.IsPresent
+    zone_foreground_share_percent = 75
     limit_background_processors_enabled = $backgroundProcessorLimitEnabled
     process_restraint_threshold_percent = $ProcessRestraintThresholdPercent
     maximum_restrained_apps = $MaximumRestrainedApps

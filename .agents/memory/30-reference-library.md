@@ -778,3 +778,11 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 ## Adaptive plan CPU idle states
 
 `src/power/powercfg.rs::create_adaptive_plan` enables and reads back CPU idle states on both A/C and battery before activating the temporary plan. The source plan remains unchanged. `src/platform/windows/power_plan.rs::PowerSetting::IdleDisable` maps SUB_PROCESSOR / GUID_PROCESSOR_IDLE_DISABLE (5d76a2ca-e8c0-402f-a133-2158492d58ad): 0 enables idle, 1 disables it, confirmed with Windows powercfg /qh metadata. Microsoft documents IdleDisable=1 for specialized real-time workloads: https://learn.microsoft.com/en-us/windows/iot/iot-enterprise/soft-real-time/soft-real-time-device . Existing PowerWriteACValueIndex/PowerWriteDCValueIndex and PowerReadACValueIndex/PowerReadDCValueIndex wrappers perform writes and verification. No undocumented API.
+
+### Dynamic Resource Zones allocation contract
+
+`src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background soft CPU Sets through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
+
+- https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount ? zero means failure; multiple groups are outside this mask domain.
+- https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets ? thread-selected sets and restrictive affinity still apply; placement is not exclusive physical-core ownership.
+- https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets ? a null list with zero count clears the process-default assignment.

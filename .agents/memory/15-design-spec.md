@@ -92,7 +92,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 ## Settings Pages
 
 - Adaptive Engine is the parent of Adaptive Engine. Adaptive Engine has no separate master switch;
-  CPU Pressure Restraint and Limit Background Processors own independent switches and retain their
+  CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
   configuration while Adaptive Engine is off.
 - Adaptive Engine uses the right-rail Status / Presets tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
 - Adaptive Engine and preset details share CPU Behaviour, Processor Power, and Priority Control tabs; the live page also exposes Custom Rules. Preset modal state is independent of the live page.
@@ -170,3 +170,5 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Keep breadcrumbs anchored at the top left. Power-source selectors and How it works align right on the same row.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
 - Avoid duplicated help text between inline descriptions, info popovers, and How it works.
+
+- Adaptive Engine CPU Behaviour presents shared detection/timing once, followed by three sibling policy groups. Zoning has its own live/preset expansion state and 1-99 foreground share. Limiter percentage always means background capacity; its allocation method stays visible when zones are enabled. Show zoning's throughput warning and verified status/counts, not configured enablement as proof of application.

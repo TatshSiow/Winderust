@@ -180,6 +180,70 @@ pub(super) fn view<'a>(
             .spacing(design::space::CONTROL),
         ));
     if page == Page::AdaptiveEngine {
+        use crate::adaptive_engine_process::ZoneStatus;
+        let zones = &runtime.feature_status.adaptive_engine_process.zones;
+        let (key, color) = match zones.status {
+            ZoneStatus::Disabled => ("common.inactive", "common.inactive"),
+            ZoneStatus::Waiting => ("common.waiting", "common.waiting"),
+            ZoneStatus::Applying => ("adaptive_engine_process.zone_applying", "common.waiting"),
+            ZoneStatus::Active => ("common.applied", "common.applied"),
+            ZoneStatus::Overridden => ("adaptive_engine_process.zone_overridden", "common.waiting"),
+            ZoneStatus::Degraded => ("adaptive_engine_process.zone_degraded", "common.error"),
+            ZoneStatus::Unavailable => ("common.unavailable", "common.unknown"),
+        };
+        let reason = if zones.reason.is_empty() {
+            String::new()
+        } else {
+            let key = format!("adaptive_engine_process.{}", zones.reason);
+            t!(&key).to_string()
+        };
+        body = body.push(section(
+            "adaptive_engine_process.dynamic_resource_zones",
+            column![
+                container(text(t!(key).to_string()).size(design::typography::CAPTION))
+                    .padding([4, 8])
+                    .style(move |theme| super::widgets::rule_status_chip(theme, color)),
+                text(reason).size(design::typography::CAPTION),
+                metric(
+                    "adaptive_engine_process.zone_foreground_cpus",
+                    zones.foreground_processors.to_string()
+                ),
+                metric(
+                    "adaptive_engine_process.zone_background_cpus",
+                    zones.background_processors.to_string()
+                ),
+                metric(
+                    "adaptive_engine_process.zone_foreground_targets",
+                    zones.foreground_targets.to_string()
+                ),
+                metric(
+                    "adaptive_engine_process.zone_background_targets",
+                    zones.background_targets.to_string()
+                ),
+            ]
+            .spacing(design::space::CONTROL),
+        ));
+        if settings
+            .adaptive_engine_process
+            .limit_background_processors_enabled
+        {
+            body = body.push(section(
+                "adaptive_engine_process.limit_background_processors",
+                column![text(
+                    t!(if zones.status == ZoneStatus::Active {
+                        "adaptive_engine_process.limit_waiting_zones"
+                    } else if zones.background_limit_targets > 0 {
+                        "common.applied"
+                    } else {
+                        "common.waiting"
+                    })
+                    .to_string()
+                )
+                .size(design::typography::CAPTION)],
+            ));
+        }
+    }
+    if page == Page::AdaptiveEngine {
         use crate::bottleneck_classifier::BottleneckState;
         let status = &runtime.feature_status.bottleneck_classifier;
         let key = match status.state {

@@ -175,3 +175,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
 
 - The live recovery helper PID is protected at the shared process-control acquisition boundary, including manual actions, priority changes, CPU allocation, suspension, termination, and trimming. The PID is published when the helper starts and read without the recovery-journal mutex; acquiring protection must not deadlock a caller holding a recovery intent. Keep this protection through shutdown, including unconfirmed helper completion. Restoration and helper-owned recovery remain independent of new-mutation eligibility.
+
+## Dynamic Resource Zones
+
+- CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones are independent Adaptive Engine producers. Zones-only work must keep AC/Battery automation alive without enabling priority/efficiency assists.
+- The limiter owns its existing percentage, selector, custom mask, and soft/hard method. `dynamic_resource_zone_settings` owns the separate zone share, selector, and custom mask. Speed defaults zoning off; Performance retains zoning on.
+- Zones require fresh eligible foreground and hot background competition outside startup grace. One combined Adaptive generation applies background first, requires verified effective placement, then applies foreground. Loss of competition withdraws foreground immediately on reconciliation; partial failure resolves to the independently eligible limiter or no allocation, retaining controller cleanup/backoff.
+- The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Adaptive precedence is unchanged. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
+- Disabled zoning may deserialize a missing zone block into inactive defaults without rewriting input. Enabled zoning with a missing block fails at deserialization for root, Battery, and presets. Do not infer zone values from the limiter or add a migration.

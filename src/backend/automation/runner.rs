@@ -244,6 +244,10 @@ impl RuntimeCore {
             self.last_settings = Some(settings.clone());
             self.power_plan_controller.clear_failures();
         }
+        if changed || explicitly_changed {
+            self.adaptive_engine_process_manager
+                .invalidate_allocation_selection();
+        }
         changed || explicitly_changed
     }
 

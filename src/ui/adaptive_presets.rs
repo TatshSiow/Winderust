@@ -201,6 +201,7 @@ pub(super) fn apply_adaptive_engine_process_preset(
     settings.background_memory_priority = values.background_memory_priority;
     settings.limit_background_processors_enabled = values.limit_background_processors_enabled;
     settings.dynamic_resource_zones_enabled = values.dynamic_resource_zones_enabled;
+    settings.dynamic_resource_zone_settings = DynamicResourceZoneSettings::default();
     settings.background_processor_selection = values.background_processor_selection;
     settings.processor_limit_percent = values.processor_limit_percent;
     settings.foreground_or_system_cpu_threshold_percent =
@@ -318,7 +319,7 @@ pub(super) fn adaptive_engine_process_preset_values(
             visible_window_memory_priority: ProcessMemoryPrioritySetting::Medium,
             background_memory_priority: ProcessMemoryPrioritySetting::VeryLow,
             limit_background_processors_enabled: true,
-            dynamic_resource_zones_enabled: true,
+            dynamic_resource_zones_enabled: false,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
             foreground_or_system_cpu_threshold_percent: 35,

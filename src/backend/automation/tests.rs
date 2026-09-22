@@ -2616,3 +2616,41 @@ fn idle_battery_worker_survives_source_changes_without_settings_updates() {
         std::panic::resume_unwind(error);
     }
 }
+
+#[test]
+fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently() {
+    for master in [false, true] {
+        for bits in 0..8 {
+            let mut settings = Settings::default();
+            settings.general.enabled = master;
+            settings.adaptive_engine.enabled = true;
+            settings.adaptive_engine.processor_power_policy_enabled = false;
+            let process = &mut settings.adaptive_engine_process;
+            process.cpu_pressure_restraint_enabled = bits & 1 != 0;
+            process.limit_background_processors_enabled = bits & 2 != 0;
+            process.dynamic_resource_zones_enabled = bits & 4 != 0;
+            assert_eq!(
+                feature_refresh_required(&settings, adaptive_engine_process_required(&settings)),
+                master && bits != 0
+            );
+            settings.adaptive_engine.enabled = false;
+            assert!(!adaptive_engine_process_required(&settings));
+        }
+    }
+    let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = false;
+    let battery = settings.battery_profile_mut();
+    battery.adaptive_engine.enabled = true;
+    battery.adaptive_engine.processor_power_policy_enabled = false;
+    battery
+        .adaptive_engine_process
+        .dynamic_resource_zones_enabled = true;
+    assert!(automation_worker_required(&settings));
+    assert!(windows_event_watcher_required(&settings));
+    assert!(!adaptive_engine_process_required(
+        active_power_source_settings(&settings, Some(true))
+    ));
+    assert!(adaptive_engine_process_required(
+        active_power_source_settings(&settings, Some(false))
+    ));
+}

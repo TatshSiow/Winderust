@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     ptr::{null_mut, read_unaligned},
     slice,
+    time::{Duration, Instant},
 };
 
 use windows_sys::Win32::System::{
@@ -21,9 +22,10 @@ use crate::{
     control::{
         cpu_allocation::{
             CpuAllocationApplyOutcome, CpuAllocationClaim, CpuAllocationCoordinator,
-            CpuAllocationReconciliationSummary, CpuAllocationReleaseSummary, CpuAllocationRequest,
+            CpuAllocationPlatform, CpuAllocationReconciliationSummary, CpuAllocationReleaseSummary,
+            CpuAllocationRequest,
         },
-        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     features::priority_control::PriorityProcessTier,
     foreground::{
@@ -83,9 +85,29 @@ struct LogicalProcessorInformationHeader {
     size: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ZoneAllocationFailure {
+    #[default]
+    Waiting,
+    Overridden,
+    Unavailable,
+    Degraded,
+}
+
+pub(crate) struct CpuAllocationGeneration {
+    pub snapshot: CpuAllocationSnapshot,
+    pub zone_counts: Option<(usize, usize)>,
+    pub fallback_count: usize,
+    pub zone_failure: ZoneAllocationFailure,
+}
+
 pub struct CpuAllocationManager {
     failure_suppression: ExecutionFailureTracker,
     action_log_feature: ActionLogFeature,
+    zone_generation: Vec<(ProcessTargetKey, u64)>,
+    zone_retry_after: Option<Instant>,
+    zone_error: Option<String>,
+    zone_failure: ZoneAllocationFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,10 +117,20 @@ pub(crate) enum CpuAllocationMode {
 }
 
 impl CpuAllocationManager {
+    pub(crate) fn invalidate_zone_generation(&mut self) {
+        self.zone_generation.clear();
+        self.zone_retry_after = None;
+        self.zone_error = None;
+    }
+
     pub fn with_action_log_feature(action_log_feature: ActionLogFeature) -> Self {
         Self {
             failure_suppression: ExecutionFailureTracker::default(),
             action_log_feature,
+            zone_generation: Vec::new(),
+            zone_retry_after: None,
+            zone_error: None,
+            zone_failure: ZoneAllocationFailure::Waiting,
         }
     }
 
@@ -328,28 +360,76 @@ impl CpuAllocationManager {
         allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
-        let active_targets = targets
-            .iter()
-            .map(cpu_allocation_target_key)
-            .collect::<BTreeSet<_>>();
+        self.reconcile_targets(
+            coordinator,
+            owner,
+            targets,
+            None,
+            scanned_processes,
+            message,
+            allow_cross_session_process_control,
+            action_log,
+        )
+        .snapshot
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one owner generation includes ordered zone roles and its independent fallback"
+    )]
+    pub(crate) fn reconcile_targets<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        owner: ControlOwner,
+        targets: Vec<CpuAllocationTarget>,
+        zones: Option<(Vec<CpuAllocationTarget>, Vec<CpuAllocationTarget>)>,
+        scanned_processes: usize,
+        message: String,
+        allow_cross_session_process_control: bool,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationGeneration {
+        let (background, foreground) = zones.unwrap_or_default();
         let active_target_names = targets
             .iter()
+            .chain(&background)
+            .chain(&foreground)
             .map(|target| process_failure_key(&target.executable_path))
-            .collect::<BTreeSet<_>>();
+            .collect();
         self.failure_suppression.retain_keys(&active_target_names);
-
+        let generation = background
+            .iter()
+            .chain(&foreground)
+            .map(|target| (cpu_allocation_target_key(target), target.core_mask))
+            .collect::<BTreeMap<_, _>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if generation != self.zone_generation {
+            self.zone_generation = generation;
+            self.zone_retry_after = None;
+            self.zone_error = None;
+        }
+        let attempt_zones = self
+            .zone_retry_after
+            .is_none_or(|deadline| Instant::now() >= deadline)
+            && !foreground.iter().any(|target| {
+                self.failure_suppression
+                    .is_key_suppressed(&process_failure_key(&target.executable_path))
+            });
         let mut failures = CpuAllocationFailures::default();
-        self.merge_release_summary(
-            coordinator.release_policy_except(owner, &active_targets),
-            owner,
-            action_log,
-            &format!("process no longer matches a {} rule", self.feature_label()),
-            &mut failures,
-        );
         let mut skipped_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
-
-        for target in targets {
+        let mut zone_failure = self.zone_failure;
+        if attempt_zones {
+            zone_failure = ZoneAllocationFailure::Waiting;
+        }
+        let fallback_label = if owner == ControlOwner::AdaptiveEngine {
+            "Limit Background Processors".to_owned()
+        } else {
+            self.feature_label().to_owned()
+        };
+        let mut apply = |target: CpuAllocationTarget, zone_role: Option<&str>| {
+            let role = zone_role.unwrap_or(&fallback_label);
+            let mut effective = false;
             let failure_process_name = target.process_name.clone();
             let failure_executable_path = target.executable_path.clone();
             let suppression = self.check_process_suppression(
@@ -363,7 +443,10 @@ impl CpuAllocationManager {
                 if suppression.newly_suppressed {
                     auto_excluded_processes.insert(failure_executable_path.clone());
                 }
-                continue;
+                if zone_role.is_some() {
+                    zone_failure = ZoneAllocationFailure::Degraded;
+                }
+                return false;
             }
 
             let request = match target.mode {
@@ -386,32 +469,52 @@ impl CpuAllocationManager {
             };
             match coordinator.apply_policy_claim(claim, allow_cross_session_process_control) {
                 Ok(CpuAllocationApplyOutcome::Applied) => {
-                    self.clear_process_failure(&failure_executable_path);
+                    effective = true;
+                    if zone_role.is_some() || self.zone_generation.is_empty() {
+                        self.clear_process_failure(&failure_executable_path);
+                    }
                     action_log.record(
                         self.action_log_feature,
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Applied,
                         format!(
-                            "Allowed CPU mask: {:#X} ({} logical CPUs).",
+                            "{role}: allowed CPU mask {:#X} ({} logical CPUs).",
                             target.core_mask,
                             target.core_mask.count_ones()
                         ),
                     );
                 }
                 Ok(CpuAllocationApplyOutcome::Unchanged) => {
-                    self.clear_process_failure(&failure_executable_path);
+                    effective = true;
+                    if zone_role.is_some() || self.zone_generation.is_empty() {
+                        self.clear_process_failure(&failure_executable_path);
+                    }
                 }
                 Ok(
-                    CpuAllocationApplyOutcome::Shadowed | CpuAllocationApplyOutcome::NoUsableTarget,
+                    outcome @ (CpuAllocationApplyOutcome::Shadowed
+                    | CpuAllocationApplyOutcome::NoUsableTarget),
                 ) => {
+                    if zone_role.is_some() && zone_failure != ZoneAllocationFailure::Degraded {
+                        zone_failure = if outcome == CpuAllocationApplyOutcome::Shadowed {
+                            ZoneAllocationFailure::Overridden
+                        } else {
+                            ZoneAllocationFailure::Unavailable
+                        };
+                    }
                     skipped_processes += 1;
-                    self.clear_process_failure(&failure_executable_path);
+                    if zone_role.is_some() || self.zone_generation.is_empty() {
+                        self.clear_process_failure(&failure_executable_path);
+                    }
                 }
                 Err(ProcessControlError::ProcessExited) => {
                     skipped_processes += 1;
                 }
                 Err(ProcessControlError::AccessDenied(message)) => {
+                    if zone_role.is_some() {
+                        zone_failure = ZoneAllocationFailure::Degraded;
+                        failures.last_error = Some(message.clone());
+                    }
                     skipped_processes += 1;
                     self.failure_suppression
                         .suppress_process_failure(&failure_executable_path);
@@ -424,6 +527,9 @@ impl CpuAllocationManager {
                     );
                 }
                 Err(error) => {
+                    if zone_role.is_some() {
+                        zone_failure = ZoneAllocationFailure::Degraded;
+                    }
                     self.record_process_failure(&failure_executable_path);
                     failures.record(
                         "Apply",
@@ -435,17 +541,76 @@ impl CpuAllocationManager {
                     );
                 }
             }
+            effective
+        };
+        let mut active_targets = BTreeSet::new();
+        let mut background_count = 0;
+        for target in background.into_iter().filter(|_| attempt_zones) {
+            let key = cpu_allocation_target_key(&target);
+            if apply(target, Some("Dynamic Resource Zones background")) {
+                background_count += 1;
+                active_targets.insert(key);
+            }
         }
+        let expected_foreground = foreground.len();
+        let mut foreground_count = 0;
+        if background_count > 0 {
+            for target in foreground {
+                let key = cpu_allocation_target_key(&target);
+                if apply(target, Some("Dynamic Resource Zones foreground")) {
+                    foreground_count += 1;
+                    active_targets.insert(key);
+                }
+            }
+        }
+        let zone_counts = (background_count > 0
+            && expected_foreground > 0
+            && foreground_count == expected_foreground)
+            .then_some((foreground_count, background_count));
+        let mut fallback_count = 0;
+        if zone_counts.is_none() {
+            active_targets.clear();
+            for target in targets {
+                active_targets.insert(cpu_allocation_target_key(&target));
+                fallback_count += usize::from(apply(target, None));
+            }
+        }
+        self.zone_failure = zone_failure;
+        if !self.zone_generation.is_empty() && zone_counts.is_none() {
+            if attempt_zones {
+                self.zone_retry_after = Some(Instant::now() + Duration::from_secs(3));
+                self.zone_error = failures.last_error.clone();
+            } else if failures.last_error.is_none() {
+                failures.last_error = self.zone_error.clone();
+            }
+        } else {
+            self.zone_retry_after = None;
+            self.zone_error = None;
+        }
+        // One combined lifecycle: failed/obsolete foreground roles are released even when
+        // the fallback keeps a background role. The coordinator retains failed cleanup.
+        self.merge_release_summary(
+            coordinator.release_policy_except(owner, &active_targets),
+            owner,
+            action_log,
+            &format!("process no longer matches a {} rule", self.feature_label()),
+            &mut failures,
+        );
 
-        CpuAllocationSnapshot {
-            enabled: true,
-            scanned_processes,
-            adjusted_processes: coordinator.policy_managed_process_count(owner),
-            skipped_processes,
-            failed_processes: failures.count,
-            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message,
-            last_error: failures.last_error,
+        CpuAllocationGeneration {
+            snapshot: CpuAllocationSnapshot {
+                enabled: true,
+                scanned_processes,
+                adjusted_processes: coordinator.policy_managed_process_count(owner),
+                skipped_processes,
+                failed_processes: failures.count,
+                auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
+                message,
+                last_error: failures.last_error,
+            },
+            zone_counts,
+            fallback_count,
+            zone_failure,
         }
     }
 
@@ -662,10 +827,7 @@ pub(crate) fn cpu_allocation_action_log_context(
 
 impl Default for CpuAllocationManager {
     fn default() -> Self {
-        Self {
-            failure_suppression: ExecutionFailureTracker::default(),
-            action_log_feature: ActionLogFeature::CpuSetsSoft,
-        }
+        Self::with_action_log_feature(ActionLogFeature::CpuSetsSoft)
     }
 }
 
@@ -755,6 +917,19 @@ pub fn contains_process(list: &[String], executable_path: &str) -> bool {
     })
 }
 
+pub(crate) fn zone_logical_processors() -> Option<Vec<LogicalProcessorInfo>> {
+    let groups = active_processor_group_count();
+    let processors = logical_processors_from_topology()?;
+    zone_domain_supported(groups, &processors).then_some(processors)
+}
+
+fn zone_domain_supported(groups: u16, processors: &[LogicalProcessorInfo]) -> bool {
+    groups == 1
+        && processors.len() >= 2
+        && processors.len() <= 64
+        && logical_processor_mask(processors).count_ones() as usize == processors.len()
+}
+
 pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
     logical_processors_from_topology().unwrap_or_else(fallback_logical_processors)
 }
@@ -762,9 +937,8 @@ pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
 pub fn logical_processor_mask(processors: &[LogicalProcessorInfo]) -> u64 {
     processors
         .iter()
-        .filter_map(|processor| {
-            (processor.index < u64::BITS as usize).then_some(1_u64 << processor.index)
-        })
+        .filter(|processor| processor.index < u64::BITS as usize)
+        .map(|processor| 1_u64 << processor.index)
         .fold(0, |mask, bit| mask | bit)
 }
 
@@ -775,9 +949,8 @@ pub fn logical_processor_kind_mask(
     processors
         .iter()
         .filter(|processor| processor.kind == kind)
-        .filter_map(|processor| {
-            (processor.index < u64::BITS as usize).then_some(1_u64 << processor.index)
-        })
+        .filter(|processor| processor.index < u64::BITS as usize)
+        .map(|processor| 1_u64 << processor.index)
         .fold(0, |mask, bit| mask | bit)
 }
 
@@ -1050,6 +1223,28 @@ fn cpu_allocation_rule_core_mask(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoning_declines_unknown_multigroup_and_unrepresentable_domains() {
+        let processors = (0..8)
+            .map(|index| LogicalProcessorInfo {
+                index,
+                core_index: index,
+                kind: LogicalProcessorKind::Standard,
+                efficiency_class: 0,
+            })
+            .collect::<Vec<_>>();
+        assert!(zone_domain_supported(1, &processors));
+        for groups in [0, 2, 4] {
+            assert!(!zone_domain_supported(groups, &processors));
+        }
+        assert!(!zone_domain_supported(1, &processors[..1]));
+        let mut invalid = processors.clone();
+        invalid[0].index = 64;
+        assert!(!zone_domain_supported(1, &invalid));
+        invalid[0].index = 1;
+        assert!(!zone_domain_supported(1, &invalid));
+    }
 
     #[test]
     fn rule_match_is_case_insensitive_and_ignores_disabled_or_empty_masks() {

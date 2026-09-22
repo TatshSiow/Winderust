@@ -773,3 +773,60 @@ fn memory_detection_falls_through_without_changing_default_semantics() {
         .priority()
         .is_none());
 }
+
+#[test]
+fn zoning_alone_reads_pressure_and_masks_never_create_empty_partitions() {
+    let settings = AdaptiveEngineProcessSettings {
+        dynamic_resource_zones_enabled: true,
+        foreground_or_system_cpu_threshold_percent: 50,
+        ..Default::default()
+    };
+    assert!(cpu_pressure_restraint_should_run(
+        &settings,
+        Some(60.0),
+        None
+    ));
+    assert!(!cpu_pressure_restraint_should_run(&settings, None, None));
+    assert!(!focus_and_launch_profile_enabled(&settings, true));
+    for count in [1, 2, 3, 8, 12, 16, 24] {
+        let processors = (0..count)
+            .map(|index| LogicalProcessorInfo {
+                index,
+                core_index: index,
+                kind: LogicalProcessorKind::Standard,
+                efficiency_class: 0,
+            })
+            .collect::<Vec<_>>();
+        let all = cpu_allocation::logical_processor_mask(&processors);
+        for share in [1, 25, 50, 75, 99] {
+            let background_count = (count * usize::from(100 - share)).div_ceil(100);
+            let mask =
+                load_aware_limited_core_mask(&processors, &vec![0.0; count], 100 - share, None)
+                    .unwrap();
+            let partition = dynamic_resource_zone_masks(all, mask);
+            if background_count == count {
+                assert!(partition.is_none());
+            } else {
+                let (foreground, background) = partition.unwrap();
+                assert_eq!(background.count_ones() as usize, background_count);
+                assert_eq!(foreground | background, all);
+                assert_eq!(foreground & background, 0);
+            }
+        }
+        assert!(load_aware_limited_core_mask(
+            &processors,
+            &vec![0.0; count],
+            25,
+            Some(LogicalProcessorKind::Efficiency)
+        )
+        .is_none());
+    }
+}
+
+#[test]
+fn foreground_capacity_is_not_held_by_stale_or_idle_background_demand() {
+    assert!(!fresh_background_competition(None, 4));
+    assert!(!fresh_background_competition(Some(0), 0));
+    assert!(!fresh_background_competition(Some(39), 4));
+    assert!(fresh_background_competition(Some(40), 4));
+}

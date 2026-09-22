@@ -80,7 +80,10 @@ pub(super) fn cpu_pressure_restraint_should_run(
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
-    if !settings.cpu_pressure_restraint_enabled && !settings.limit_background_processors_enabled {
+    if !settings.cpu_pressure_restraint_enabled
+        && !settings.limit_background_processors_enabled
+        && !settings.dynamic_resource_zones_enabled
+    {
         return false;
     }
     let threshold = f32::from(settings.foreground_or_system_cpu_threshold_percent.min(100));
@@ -338,4 +341,9 @@ pub(super) fn memory_priority_policy(
         settings.background_memory_priority
     };
     (priority, foreground, visible_window)
+}
+
+// Hold/recovery eligibility alone is not evidence of current competing demand.
+pub(super) fn fresh_background_competition(usage_tenths: Option<u16>, threshold: u8) -> bool {
+    usage_tenths.is_some_and(|usage| usage > 0 && usage >= u16::from(threshold) * 10)
 }

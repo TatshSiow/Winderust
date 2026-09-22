@@ -50,7 +50,7 @@ pub(super) struct Editor {
     read_only: bool,
     presets_tab: bool,
     tuning_tabs: [TuningTab; 2],
-    expanded: [[bool; 2]; 2],
+    expanded: [[bool; 3]; 2],
     priority_expanded: [[bool; 7]; 2],
     path: String,
     error: String,
@@ -75,6 +75,7 @@ pub(super) enum Message {
     ),
     Choice(fn(&mut Settings, usize), usize),
     Mask(u64),
+    ZoneMask(u64),
     BuiltIn(BuiltInAdaptiveEnginePreset),
     ViewBuiltIn(BuiltInAdaptiveEnginePreset),
     Apply(usize),
@@ -174,6 +175,14 @@ impl Editor {
             Message::Name(v) => self.name = v,
             Message::Save => {
                 if let Some(draft) = &self.draft {
+                    if let Err(error) = draft
+                        .adaptive_engine_process
+                        .dynamic_resource_zone_settings
+                        .validate(draft.adaptive_engine_process.dynamic_resource_zones_enabled)
+                    {
+                        self.error = error;
+                        return;
+                    }
                     let name = self.name.trim();
                     if !self.read_only
                         && self.invalid_numbers.is_empty()
@@ -289,6 +298,13 @@ impl Editor {
                         }
                     }
                     Message::Choice(f, v) => f(target, v),
+                    Message::ZoneMask(mask) => {
+                        target
+                            .adaptive_engine_process
+                            .dynamic_resource_zone_settings
+                            .specific_processors =
+                            (0..64).filter(|i| mask & (1u64 << i) != 0).collect()
+                    }
                     Message::Mask(mask) => {
                         target.adaptive_engine_process.specific_processors =
                             (0..64).filter(|i| mask & (1u64 << i) != 0).collect()
@@ -439,7 +455,7 @@ impl Editor {
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
             let key=stringify!($($field).+);
             let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
-            let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if $max==100 {"%"} else {""};
+            let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if key.ends_with("_percent") || $max==100 {"%"} else {""};
             row![setting_label_with_unit($key, unit).width(Fill),
                 super::widgets::stepper(&value, $min..=$max, 1,
                     editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
@@ -507,6 +523,12 @@ impl Editor {
             TuningTab::CpuBehaviour => {
                 let pressure = column![
                     number!(
+                        "adaptive_engine_process.background_app_cpu_threshold",
+                        1,
+                        100,
+                        adaptive_engine_process.background_app_cpu_threshold_percent
+                    ),
+                    number!(
                         "adaptive_engine_process.maximum_restrained_apps",
                         1,
                         64,
@@ -544,6 +566,11 @@ impl Editor {
                     )
                 ]
                 .spacing(design::space::MEDIUM);
+                body = body
+                    .push(text(
+                        t!("adaptive_engine_process.shared_detection").to_string(),
+                    ))
+                    .push(super::widgets::settings_card(pressure));
                 let action = super::widgets::switch(
                     s.adaptive_engine_process.cpu_pressure_restraint_enabled,
                     editable.then_some(|v| {
@@ -558,15 +585,12 @@ impl Editor {
                     self.expanded[usize::from(preset)][0],
                     Message::Collapse(0),
                     action,
-                    pressure,
+                    column![text(
+                        t!("adaptive_engine_process.cpu_pressure_restraint_help").to_string()
+                    )
+                    .style(text::secondary)],
                 ));
                 let mut allocation = column![
-                    number!(
-                        "adaptive_engine_process.background_app_cpu_threshold",
-                        1,
-                        100,
-                        adaptive_engine_process.background_app_cpu_threshold_percent
-                    ),
                     choice!(
                         s,
                         "adaptive_engine_process.processor_selection",
@@ -575,34 +599,22 @@ impl Editor {
                         background_processor_selection_label,
                         adaptive_engine_process.background_processor_selection
                     ),
-                    toggle!(
-                        "adaptive_engine_process.dynamic_resource_zones",
-                        adaptive_engine_process.dynamic_resource_zones_enabled
-                    )
-                ]
-                .spacing(design::space::MEDIUM);
-                if !s.adaptive_engine_process.dynamic_resource_zones_enabled {
-                    allocation = allocation.push(choice!(
+                    choice!(
                         s,
                         "adaptive_engine_process.cpu_allocation_method",
                         CpuAllocationMethod,
                         &CpuAllocationMethod::ALL,
                         allocation_label,
                         adaptive_engine_process.cpu_allocation_method
-                    ));
-                }
-                if matches!(
-                    s.adaptive_engine_process.background_processor_selection,
-                    BackgroundProcessorSelection::LeastUsed
-                        | BackgroundProcessorSelection::LeastUsedPerformanceCores
-                        | BackgroundProcessorSelection::LeastUsedEfficiencyCores
-                ) {
+                    )
+                ]
+                .spacing(design::space::MEDIUM);
+                if s.adaptive_engine_process
+                    .background_processor_selection
+                    .uses_percentage()
+                {
                     allocation = allocation.push(number!(
-                        if s.adaptive_engine_process.dynamic_resource_zones_enabled {
-                            "adaptive_engine_process.foreground_zone_share"
-                        } else {
-                            "adaptive_engine_process.processor_limit"
-                        },
+                        "adaptive_engine_process.processor_limit",
                         1,
                         100,
                         adaptive_engine_process.processor_limit_percent
@@ -653,6 +665,65 @@ impl Editor {
                         }),
                     ),
                     allocation,
+                ));
+                let zones = &s.adaptive_engine_process.dynamic_resource_zone_settings;
+                let mut zone_content = column![
+                    text(t!("adaptive_engine_process.zone_warning").to_string())
+                        .style(text::secondary),
+                    choice!(
+                        s,
+                        "adaptive_engine_process.zone_selection",
+                        BackgroundProcessorSelection,
+                        &BackgroundProcessorSelection::ALL,
+                        background_processor_selection_label,
+                        adaptive_engine_process
+                            .dynamic_resource_zone_settings
+                            .background_processor_selection
+                    )
+                ]
+                .spacing(design::space::MEDIUM);
+                if zones.background_processor_selection.uses_percentage() {
+                    zone_content = zone_content.push(number!(
+                        "adaptive_engine_process.foreground_zone_share",
+                        1,
+                        99,
+                        adaptive_engine_process
+                            .dynamic_resource_zone_settings
+                            .foreground_share_percent
+                    ));
+                }
+                if zones.background_processor_selection == BackgroundProcessorSelection::Custom {
+                    if editable {
+                        zone_content = zone_content.push(super::cpu_allocation::mask_selector(
+                            crate::cpu_allocation::logical_processor_indices_mask(
+                                &zones.specific_processors,
+                            ),
+                            &crate::cpu_allocation::logical_processors(),
+                            &s.cpu_allocation_presets,
+                            Message::ZoneMask,
+                        ));
+                    } else {
+                        zone_content = zone_content.push(text(format!(
+                            "{}: {:?}",
+                            t!("adaptive_engine_process.specific_processors"),
+                            zones.specific_processors
+                        )));
+                    }
+                }
+                body = body.push(super::widgets::setting_group(
+                    "adaptive_engine_process.dynamic_resource_zones".to_string(),
+                    self.expanded[usize::from(preset)][2],
+                    Message::Collapse(2),
+                    super::widgets::switch(
+                        s.adaptive_engine_process.dynamic_resource_zones_enabled,
+                        editable.then_some(|v| {
+                            Message::Toggle(
+                                |s, v| s.adaptive_engine_process.dynamic_resource_zones_enabled = v,
+                                v,
+                            )
+                        }),
+                    ),
+                    zone_content,
                 ));
             }
             TuningTab::ProcessorPower => {
@@ -2012,6 +2083,94 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn zone_preset_editing_is_independent_and_speed_keeps_background_limiting() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        editor.update(
+            &mut settings,
+            Message::BuiltIn(BuiltInAdaptiveEnginePreset::Speed),
+        );
+        assert!(
+            !settings
+                .adaptive_engine_process
+                .dynamic_resource_zones_enabled
+        );
+        assert!(
+            settings
+                .adaptive_engine_process
+                .limit_background_processors_enabled
+        );
+        assert_eq!(settings.adaptive_engine_process.processor_limit_percent, 75);
+        assert_eq!(
+            settings
+                .adaptive_engine_process
+                .foreground_or_system_cpu_threshold_percent,
+            35
+        );
+        let before = settings.clone();
+        editor.update(&mut settings, Message::New);
+        editor.update(&mut settings, Message::Collapse(2));
+        editor.update(&mut settings, Message::ZoneMask(10));
+        editor.update(
+            &mut settings,
+            Message::Number(
+                |s, v| {
+                    s.adaptive_engine_process
+                        .dynamic_resource_zone_settings
+                        .foreground_share_percent = v as u8
+                },
+                "65".into(),
+                1,
+                99,
+                "adaptive_engine_process.dynamic_resource_zone_settings.foreground_share_percent",
+                "adaptive_engine_process.foreground_zone_share",
+            ),
+        );
+        let draft = editor.draft.as_ref().unwrap();
+        assert_eq!(draft.adaptive_engine_process.processor_limit_percent, 75);
+        assert_eq!(
+            draft
+                .adaptive_engine_process
+                .dynamic_resource_zone_settings
+                .foreground_share_percent,
+            65
+        );
+        assert_eq!(
+            draft
+                .adaptive_engine_process
+                .dynamic_resource_zone_settings
+                .specific_processors,
+            vec![1, 3]
+        );
+        assert_eq!(editor.expanded[0], [false; 3]);
+        let preset = capture_adaptive_engine_preset(draft, "Zones".into());
+        let mut applied = settings.clone();
+        apply_adaptive_engine_preset(&mut applied, &preset);
+        assert_eq!(
+            applied
+                .adaptive_engine_process
+                .dynamic_resource_zone_settings,
+            draft.adaptive_engine_process.dynamic_resource_zone_settings
+        );
+        editor.update(&mut settings, Message::Cancel);
+        assert_eq!(settings, before);
+        editor.update(
+            &mut settings,
+            Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Performance),
+        );
+        let preview = editor.draft.clone();
+        editor.update(&mut settings, Message::ZoneMask(1));
+        assert_eq!(editor.draft, preview);
+        assert!(
+            preview
+                .unwrap()
+                .adaptive_engine_process
+                .dynamic_resource_zones_enabled
+        );
+    }
+
     #[test]
     fn explicit_custom_selection_wins_over_identical_builtin() {
         let mut editor = Editor::default();
@@ -2205,7 +2364,7 @@ mod tests {
             Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Balanced),
         );
         assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
-        assert_eq!(editor.expanded[1], [false; 2]);
+        assert_eq!(editor.expanded[1], [false; 3]);
         editor.update(&mut settings, Message::TuningTab(TuningTab::CustomRules));
         assert_eq!(editor.tuning_tabs[1], TuningTab::CpuBehaviour);
         editor.update(
@@ -2215,7 +2374,7 @@ mod tests {
         editor.update(&mut settings, Message::Collapse(1));
         editor.update(&mut settings, Message::Cancel);
         assert_eq!(editor.tuning_tabs[0], TuningTab::CustomRules);
-        assert_eq!(editor.expanded[0], [true, false]);
+        assert_eq!(editor.expanded[0], [true, false, false]);
         assert_eq!(settings, before);
     }
 

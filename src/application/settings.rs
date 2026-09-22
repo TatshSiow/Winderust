@@ -311,6 +311,9 @@ impl SettingsCoordinator {
     fn save(&mut self, draft: &mut SettingsDraft) -> SettingsResult<SettingsRevision> {
         ensure_draft_revision(self.persisted_revision, draft.base_revision)?;
         let mut candidate = draft.value.clone();
+        candidate
+            .validate_dynamic_resource_zones()
+            .map_err(SettingsCoordinatorError::Save)?;
         candidate.sync_shared_settings_to_battery();
         self.storage
             .save(&candidate)

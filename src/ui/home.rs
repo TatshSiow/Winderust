@@ -824,6 +824,9 @@ fn enabled_features(
                 && !settings
                     .adaptive_engine_process
                     .limit_background_processors_enabled
+                && !settings
+                    .adaptive_engine_process
+                    .dynamic_resource_zones_enabled
             {
                 t!("common.enabled").to_string()
             } else {

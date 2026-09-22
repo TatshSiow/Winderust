@@ -1762,6 +1762,7 @@ mod tests {
     struct FakeState {
         exit_on_apply: bool,
         deny_open: bool,
+        denied_processes: BTreeSet<u32>,
         processes: BTreeMap<u32, FakeProcessState>,
         events: Vec<String>,
         reject_disallowed_cross_session_open: bool,
@@ -1804,7 +1805,7 @@ mod tests {
             allow_cross_session_process_control: bool,
         ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
             let mut state = self.state.borrow_mut();
-            if state.deny_open {
+            if state.deny_open || state.denied_processes.contains(&target.key().id) {
                 return Err(ProcessControlError::AccessDenied("open denied".into()));
             }
             state
@@ -2043,6 +2044,257 @@ mod tests {
             .get(&42)
             .cloned()
             .expect("fake process should exist")
+    }
+
+    fn allocation_target(
+        id: u32,
+        mask: u64,
+        hard: bool,
+    ) -> crate::cpu_allocation::CpuAllocationTarget {
+        crate::cpu_allocation::CpuAllocationTarget {
+            process_id: id,
+            process_name: "worker.exe".into(),
+            executable_path: r"C:\Apps\worker.exe".into(),
+            creation_time: 7,
+            core_mask: mask,
+            mode: if hard {
+                crate::cpu_allocation::CpuAllocationMode::HardAffinity
+            } else {
+                crate::cpu_allocation::CpuAllocationMode::SoftCpuSets
+            },
+        }
+    }
+
+    #[test]
+    fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
+        use crate::{
+            action_log::{ActionLog, ActionLogFeature},
+            cpu_allocation::CpuAllocationManager,
+        };
+        let mut coordinator = coordinator();
+        let mut foreground = process_state(&coordinator);
+        foreground.identity = identity(43, 7);
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .processes
+            .insert(43, foreground);
+        let mut manager =
+            CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
+        let mut log = ActionLog::default();
+        let fallback = || vec![allocation_target(42, 3, true)];
+        manager.reconcile_targets(
+            &mut coordinator,
+            ControlOwner::AdaptiveEngine,
+            fallback(),
+            None,
+            2,
+            String::new(),
+            true,
+            &mut log,
+        );
+        assert_eq!(process_state(&coordinator).affinity, 3);
+        let zones = || {
+            Some((
+                vec![allocation_target(42, 1, false)],
+                vec![allocation_target(43, 14, false)],
+            ))
+        };
+        let result = manager.reconcile_targets(
+            &mut coordinator,
+            ControlOwner::AdaptiveEngine,
+            fallback(),
+            zones(),
+            2,
+            String::new(),
+            true,
+            &mut log,
+        );
+        assert_eq!(result.zone_counts, Some((1, 1)));
+        assert_eq!(process_state(&coordinator).affinity, 15);
+        let events = coordinator.platform.state.borrow().events.clone();
+        assert!(
+            events
+                .iter()
+                .position(|e| e == "apply-cpu-sets:[100]")
+                .unwrap()
+                < events
+                    .iter()
+                    .position(|e| e == "apply-cpu-sets:[101, 102, 103]")
+                    .unwrap()
+        );
+        let writes = events.len();
+        manager.reconcile_targets(
+            &mut coordinator,
+            ControlOwner::AdaptiveEngine,
+            fallback(),
+            zones(),
+            2,
+            String::new(),
+            true,
+            &mut log,
+        );
+        assert_eq!(
+            coordinator.platform.state.borrow().events.len(),
+            writes,
+            "unchanged placement must not write again"
+        );
+        manager.reconcile_targets(
+            &mut coordinator,
+            ControlOwner::AdaptiveEngine,
+            fallback(),
+            None,
+            2,
+            String::new(),
+            true,
+            &mut log,
+        );
+        assert_eq!(process_state(&coordinator).affinity, 3);
+        assert!(coordinator.platform.state.borrow().processes[&43]
+            .cpu_sets
+            .is_empty());
+        manager.reconcile_targets(
+            &mut coordinator,
+            ControlOwner::AdaptiveEngine,
+            Vec::new(),
+            None,
+            2,
+            String::new(),
+            true,
+            &mut log,
+        );
+        assert_eq!(process_state(&coordinator).affinity, 15);
+        assert!(process_state(&coordinator).cpu_sets.is_empty());
+    }
+
+    #[test]
+    fn failed_or_shadowed_background_never_narrows_foreground() {
+        use crate::{
+            action_log::{ActionLog, ActionLogFeature},
+            cpu_allocation::CpuAllocationManager,
+        };
+        for failure in 0..4 {
+            let mut coordinator = coordinator();
+            let mut foreground = process_state(&coordinator);
+            foreground.identity = identity(43, 7);
+            coordinator
+                .platform
+                .state
+                .borrow_mut()
+                .processes
+                .insert(43, foreground);
+            match failure {
+                0 => {
+                    coordinator
+                        .platform
+                        .state
+                        .borrow_mut()
+                        .fail_next_cpu_sets_apply = true
+                }
+                1 => coordinator.platform.state.borrow_mut().fail_next_commit = true,
+                2 => {
+                    coordinator
+                        .apply_policy_claim(
+                            claim(
+                                ControlOwner::CpuSetsSoft,
+                                CpuAllocationRequest::SoftCpuSets {
+                                    logical_processor_mask: 3,
+                                },
+                                7,
+                            ),
+                            true,
+                        )
+                        .unwrap();
+                }
+                _ => {
+                    coordinator
+                        .platform
+                        .state
+                        .borrow_mut()
+                        .denied_processes
+                        .insert(42);
+                }
+            }
+            let mut manager =
+                CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
+            let result = manager.reconcile_targets(
+                &mut coordinator,
+                ControlOwner::AdaptiveEngine,
+                Vec::new(),
+                Some((
+                    vec![allocation_target(42, 1, false)],
+                    vec![allocation_target(43, 14, false)],
+                )),
+                2,
+                String::new(),
+                true,
+                &mut ActionLog::default(),
+            );
+            assert_eq!(result.zone_counts, None);
+            assert!(coordinator.platform.state.borrow().processes[&43]
+                .cpu_sets
+                .is_empty());
+            assert!(!coordinator
+                .platform
+                .state
+                .borrow()
+                .events
+                .iter()
+                .any(|e| e == "apply-cpu-sets:[101, 102, 103]"));
+        }
+    }
+
+    #[test]
+    fn partial_foreground_failure_withdraws_successful_zone_roles() {
+        use crate::{
+            action_log::{ActionLog, ActionLogFeature},
+            cpu_allocation::CpuAllocationManager,
+        };
+        let mut coordinator = coordinator();
+        for id in [43, 44] {
+            let mut process = process_state(&coordinator);
+            process.identity = identity(id, 7);
+            coordinator
+                .platform
+                .state
+                .borrow_mut()
+                .processes
+                .insert(id, process);
+        }
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .denied_processes
+            .insert(44);
+        let mut manager =
+            CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
+        let result = manager.reconcile_targets(
+            &mut coordinator,
+            ControlOwner::AdaptiveEngine,
+            vec![allocation_target(42, 3, true)],
+            Some((
+                vec![allocation_target(42, 1, false)],
+                vec![
+                    allocation_target(43, 14, false),
+                    allocation_target(44, 14, false),
+                ],
+            )),
+            3,
+            String::new(),
+            true,
+            &mut ActionLog::default(),
+        );
+        assert_eq!(result.zone_counts, None);
+        assert!(coordinator.platform.state.borrow().processes[&43]
+            .cpu_sets
+            .is_empty());
+        // The failed foreground executable is suppressed; no successful zone claim is retained.
+        assert!(coordinator
+            .claims
+            .get(&ControlOwner::AdaptiveEngine)
+            .is_none_or(|claims| claims.keys().all(|key| *key == target(42, 7).key())));
     }
 
     #[test]

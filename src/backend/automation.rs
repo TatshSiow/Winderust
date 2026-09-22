@@ -1062,7 +1062,10 @@ fn run_background_automation(
             APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL,
         );
         let event_now = Instant::now();
-        let settings_changed = runner.note_settings(settings, wake_events.settings_changed);
+        let settings_changed = runner.note_settings(
+            settings,
+            wake_events.settings_changed || wake_events.power_changed,
+        );
         if settings_changed {
             scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }

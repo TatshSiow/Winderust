@@ -73,6 +73,9 @@ fn parse_toml_settings(path: &Path, raw: &str) -> Result<Settings, String> {
 }
 
 fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
+    settings
+        .validate_dynamic_resource_zones()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let raw = toml::to_string_pretty(settings)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     write_bytes_atomically(path, raw.as_bytes())
@@ -110,6 +113,103 @@ mod tests {
     };
 
     #[test]
+    fn independent_zone_settings_validate_root_battery_and_presets_without_rewriting() {
+        let mut settings = Settings::default();
+        settings.adaptive_engine_process.processor_limit_percent = 40;
+        settings.adaptive_engine_process.specific_processors = vec![0];
+        settings
+            .adaptive_engine_process
+            .dynamic_resource_zone_settings
+            .foreground_share_percent = 80;
+        settings
+            .adaptive_engine_process
+            .dynamic_resource_zone_settings
+            .specific_processors = vec![1];
+        let raw = toml::to_string(&settings).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&raw).unwrap(), settings);
+        let mut value = toml::Value::try_from(&settings).unwrap();
+        value["adaptive_engine_process"]
+            .as_table_mut()
+            .unwrap()
+            .remove("dynamic_resource_zone_settings");
+        let path = std::env::temp_dir().join(format!(
+            "winderust-zone-cutover-{}.toml",
+            std::process::id()
+        ));
+        for enabled in [false, true] {
+            value["adaptive_engine_process"]["dynamic_resource_zones_enabled"] =
+                toml::Value::Boolean(enabled);
+            let raw = toml::to_string(&value).unwrap();
+            fs::write(&path, &raw).unwrap();
+            for result in [load_from_path(&path), import_toml_from(&path)] {
+                if enabled {
+                    assert!(result
+                        .unwrap_err()
+                        .contains("explicit dynamic_resource_zone_settings block"));
+                } else {
+                    let parsed = result.unwrap();
+                    assert_eq!(parsed.adaptive_engine_process.processor_limit_percent, 40);
+                    assert_eq!(parsed.adaptive_engine_process.specific_processors, vec![0]);
+                    assert_eq!(
+                        parsed
+                            .adaptive_engine_process
+                            .dynamic_resource_zone_settings,
+                        Default::default()
+                    );
+                }
+                assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            }
+            assert_eq!(toml::from_str::<Settings>(&raw).is_err(), enabled);
+        }
+        fs::remove_file(path).unwrap();
+        let invalid_process = value["adaptive_engine_process"].clone();
+        let mut battery = toml::Value::try_from(&settings).unwrap();
+        battery["adaptive_engine_process"] = invalid_process.clone();
+        value = toml::Value::try_from(&settings).unwrap();
+        value
+            .as_table_mut()
+            .unwrap()
+            .insert("on_battery".into(), battery);
+        assert!(value.try_into::<Settings>().is_err());
+        let preset = AdaptiveEnginePreset {
+            name: "invalid zone".into(),
+            processor_power_policy_enabled: false,
+            base_processor_policy: settings.adaptive_engine.base_processor_policy,
+            background_pressure_profile: settings.adaptive_engine.background_pressure_profile,
+            focus_and_launch_profile: settings.adaptive_engine.focus_and_launch_profile,
+            adaptive_engine_process: settings.adaptive_engine_process.clone(),
+        };
+        let mut preset = toml::Value::try_from(preset).unwrap();
+        preset["adaptive_engine_process"] = invalid_process;
+        value = toml::Value::try_from(&settings).unwrap();
+        value["adaptive_engine_presets"] = toml::Value::Array(vec![preset]);
+        assert!(value.try_into::<Settings>().is_err());
+    }
+
+    #[test]
+    fn invalid_zone_configuration_is_rejected_before_save_or_deserialization() {
+        for (share, indices, enabled) in [
+            (0, vec![], false),
+            (100, vec![], false),
+            (75, vec![64], false),
+            (75, vec![], true),
+        ] {
+            let mut settings = Settings::default();
+            let process = &mut settings.adaptive_engine_process;
+            process.dynamic_resource_zones_enabled = enabled;
+            process
+                .dynamic_resource_zone_settings
+                .foreground_share_percent = share;
+            process
+                .dynamic_resource_zone_settings
+                .background_processor_selection = BackgroundProcessorSelection::Custom;
+            process.dynamic_resource_zone_settings.specific_processors = indices;
+            assert!(settings.validate_dynamic_resource_zones().is_err());
+            assert!(toml::from_str::<Settings>(&toml::to_string(&settings).unwrap()).is_err());
+        }
+    }
+
+    #[test]
     fn adaptive_runtime_benchmark_generated_settings_are_valid() {
         if let Ok(raw) = std::env::var("WINDERUST_BENCHMARK_SETTINGS") {
             parse_toml_settings(Path::new("benchmark settings"), &raw).unwrap();
@@ -118,6 +218,7 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/adaptive_runtime_benchmark.ps1");
         for arguments in [
             vec![],
+            vec!["-EnableDynamicResourceZones"],
             vec![
                 "-DisableBackgroundProcessorLimit",
                 "-ProcessRestraintThresholdPercent",
@@ -148,19 +249,24 @@ mod tests {
             let settings = parse_toml_settings(&script, &raw).unwrap();
             assert!(settings.adaptive_engine.enabled);
             assert!(settings.adaptive_engine.processor_power_policy_enabled);
-            assert!(
-                !settings
+            assert_eq!(
+                settings
                     .adaptive_engine_process
-                    .dynamic_resource_zones_enabled
+                    .dynamic_resource_zones_enabled,
+                arguments.contains(&"-EnableDynamicResourceZones")
             );
             assert_eq!(
                 settings
                     .adaptive_engine_process
                     .limit_background_processors_enabled,
-                arguments.is_empty()
+                !arguments.contains(&"-DisableBackgroundProcessorLimit")
             );
             assert!(!settings.adaptive_engine_process.custom_rules.is_empty());
-            let missing = raw.replace("dynamic_resource_zones_enabled = false", "");
+            let missing = raw
+                .lines()
+                .filter(|line| !line.starts_with("dynamic_resource_zones_enabled = "))
+                .collect::<Vec<_>>()
+                .join("\n");
             assert!(parse_toml_settings(&script, &missing).is_err());
         }
     }
@@ -586,6 +692,7 @@ mod tests {
                 cpu_pressure_restraint_enabled: true,
                 limit_background_processors_enabled: true,
                 dynamic_resource_zones_enabled: true,
+                dynamic_resource_zone_settings: Default::default(),
                 cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
                 background_processor_selection: BackgroundProcessorSelection::LeastUsed,
                 processor_limit_percent: 50,
