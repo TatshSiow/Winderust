@@ -183,3 +183,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Zones require fresh eligible foreground and hot background competition outside startup grace. One combined Adaptive generation applies background first, requires verified effective placement, then applies foreground. Loss of competition withdraws foreground immediately on reconciliation; partial failure resolves to the independently eligible limiter or no allocation, retaining controller cleanup/backoff.
 - The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Adaptive precedence is unchanged. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
 - Disabled zoning may deserialize a missing zone block into inactive defaults without rewriting input. Enabled zoning with a missing block fails at deserialization for root, Battery, and presets. Do not infer zone values from the limiter or add a migration.
+
+## Thread Priority discovery
+
+- Automatic Thread Priority reconciliation uses one lazy PID-indexed Toolhelp inventory per pass, including cached capture/enumeration failure. Discovery failure stops the pass without process failure suppression. Process List mutations and priority queries capture fresh operation-local inventories. No inventory survives on the controller.
+- Discovery is not mutation authorization: exact process/thread checks, priority readback, preservation, baselines and recovery remain controller-owned. Missing entries require exact exit/replacement verification before journal removal; live or uncertain identities remain owned. Release and shutdown never require discovery.

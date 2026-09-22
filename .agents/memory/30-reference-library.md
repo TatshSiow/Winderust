@@ -786,3 +786,11 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 - https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount ? zero means failure; multiple groups are outside this mask domain.
 - https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets ? thread-selected sets and restrictive affinity still apply; placement is not exclusive physical-core ownership.
 - https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets ? a null list with zero count clears the process-default assignment.
+
+## Shared Thread Priority inventory
+
+`src/platform/windows/thread_priority.rs::thread_inventory` captures all threads once and returns a complete PID-indexed map, rejecting partial traversal on error. `src/control/thread_priority.rs::ThreadInventory` scopes lazy discovery to one reconciliation or manual operation. The existing adapter still opens and validates threads and queries their live relative priority; snapshot base priority is not used for mutations or restoration. No new undocumented API.
+
+- https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot : TH32CS_SNAPTHREAD is system-wide and ignores the PID parameter.
+- https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32next : ERROR_NO_MORE_FILES marks successful exhaustion.
+- https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-threadentry32 : owner PID and TID are discovery fields; tpBasePri is a kernel base priority.

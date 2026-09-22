@@ -8,8 +8,9 @@ use crate::{
     control::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
         thread_priority::{
-            thread_priority_is_actionable, ThreadPriorityApplyOutcome, ThreadPriorityClaim,
-            ThreadPriorityController, ThreadPriorityPreservation, ThreadPriorityReleaseSummary,
+            thread_priority_is_actionable, ThreadInventory, ThreadPriorityApplyOutcome,
+            ThreadPriorityClaim, ThreadPriorityController, ThreadPriorityPreservation,
+            ThreadPriorityReleaseSummary,
         },
     },
     foreground::{
@@ -225,6 +226,7 @@ impl ThreadPriorityManager {
         let mut applied_threads = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
+        let mut inventory = ThreadInventory::default();
         for target in targets.into_values() {
             let process_id = target.claim.target.id;
             if self.is_process_suppressed(
@@ -237,12 +239,22 @@ impl ThreadPriorityManager {
                 skipped_processes += 1;
                 continue;
             }
-            match controller.apply_policy_claim(target.claim, allow_cross_session_process_control) {
+            match controller.apply_policy_claim(
+                &mut inventory,
+                target.claim,
+                allow_cross_session_process_control,
+            ) {
                 Ok(outcome) => {
                     applied_threads += outcome.applied_threads;
                     skipped_processes += usize::from(process_was_only_preserved(outcome));
                     self.failure_suppression
                         .clear_process_failure(&target.executable_path);
+                }
+                Err(error) if inventory.failed() => {
+                    // A shared observation failure is not a failure of any application.
+                    failures.count += 1;
+                    failures.last_error = Some(error.to_string());
+                    break;
                 }
                 Err(ProcessControlError::ProcessExited) => skipped_processes += 1,
                 Err(ProcessControlError::AccessDenied(message)) => {

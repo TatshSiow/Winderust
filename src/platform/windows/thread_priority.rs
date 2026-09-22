@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::{collections::BTreeMap, mem::size_of};
 
 use windows_sys::Win32::{
     Foundation::{
@@ -53,7 +53,7 @@ impl ThreadHandle {
     }
 }
 
-pub(crate) fn thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityError> {
+pub(crate) fn thread_inventory() -> Result<BTreeMap<u32, Vec<u32>>, ThreadPriorityError> {
     // SAFETY: TH32CS_SNAPTHREAD ignores the process id argument and returns an owned handle.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -68,13 +68,14 @@ pub(crate) fn thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityErro
         dwSize: size_of::<THREADENTRY32>() as u32,
         ..THREADENTRY32::default()
     };
-    let mut ids = Vec::new();
+    let mut inventory = BTreeMap::<u32, Vec<u32>>::new();
     // SAFETY: snapshot is live and entry declares its size and remains writable.
     let mut present = unsafe { Thread32First(snapshot.raw(), &mut entry) };
     while present != 0 {
-        if entry.th32OwnerProcessID == process_id {
-            ids.push(entry.th32ThreadID);
-        }
+        inventory
+            .entry(entry.th32OwnerProcessID)
+            .or_default()
+            .push(entry.th32ThreadID);
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
         // SAFETY: snapshot remains live and entry remains writable for the next record.
         present = unsafe { Thread32Next(snapshot.raw(), &mut entry) };
@@ -87,7 +88,7 @@ pub(crate) fn thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityErro
             code: error,
         });
     }
-    Ok(ids)
+    Ok(inventory)
 }
 
 pub(crate) fn open_thread(thread_id: u32) -> Result<ThreadHandle, ThreadPriorityError> {
@@ -188,6 +189,19 @@ fn capture_thread_error(operation: &'static str, thread_id: u32) -> ThreadPriori
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_contains_the_calling_thread_under_its_process() {
+        // SAFETY: These calls only read the current process and thread identifiers.
+        let (process_id, thread_id) = unsafe {
+            (
+                windows_sys::Win32::System::Threading::GetCurrentProcessId(),
+                windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+            )
+        };
+        let inventory = thread_inventory().unwrap();
+        assert!(inventory[&process_id].contains(&thread_id));
+    }
 
     #[test]
     fn retained_thread_handle_detects_exit_without_changing_priority() {
