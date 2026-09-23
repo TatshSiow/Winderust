@@ -426,3 +426,19 @@ After source changes, run:
 ```powershell
 graphify update .
 ```
+
+## Visibility and foreground thread policy
+
+Keep window visibility fixed when comparing builds or presets. Hiding to tray
+requests Idle process priority for Winderust as well as reducing UI work. Hidden
+mode or Adaptive Engine also requests execution-speed throttling; when Adaptive
+Engine is already enabled, hiding does not introduce a new throttling request.
+Record actual application outcomes, not only requested settings. Visible versus
+hidden is a comparison of complete operating modes, not an isolated UI benchmark.
+
+For a foreground Thread Priority experiment, compare Speed against the same
+configuration with only the foreground override set to Default. Confirm the old
+override has been restored, retain background policy, and record actual process
+and worker-thread priorities. Alternate runs with fixed visibility, power source,
+CPU-Z version and thread count. Retain raw results and report both single-thread
+and multi-thread distributions before deciding whether to change preset defaults.

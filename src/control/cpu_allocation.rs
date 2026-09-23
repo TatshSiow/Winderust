@@ -17,6 +17,26 @@ use super::process::{
     ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CpuAllocationApplyError {
+    Discovery(ProcessControlError),
+    Target(ProcessControlError),
+}
+
+impl From<ProcessControlError> for CpuAllocationApplyError {
+    fn from(error: ProcessControlError) -> Self {
+        Self::Target(error)
+    }
+}
+
+impl std::fmt::Display for CpuAllocationApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discovery(error) | Self::Target(error) => error.fmt(f),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct CpuSetInventory {
     result: Option<Result<Vec<(u8, u32)>, ProcessControlError>>,
@@ -316,7 +336,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         inventory: &mut CpuSetInventory,
         claim: CpuAllocationClaim,
         allow_cross_session_process_control: bool,
-    ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
+    ) -> Result<CpuAllocationApplyOutcome, CpuAllocationApplyError> {
         validate_owner(claim.owner)?;
         let owner = claim.owner;
         let key = claim.target.key();
@@ -345,7 +365,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             if self.pending_reconciliations.contains_key(&key) {
                 self.pending_reconciliations.insert(
                     key,
-                    if inventory.failed() {
+                    if matches!(&result, Err(CpuAllocationApplyError::Discovery(_))) {
                         PendingReconciliation::HandoffRetry
                     } else {
                         PendingReconciliation::ReleaseOnlyFirstAttempt {
@@ -365,7 +385,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         inventory: &mut CpuSetInventory,
         claim: CpuAllocationClaim,
         allow_cross_session_process_control: bool,
-    ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
+    ) -> Result<CpuAllocationApplyOutcome, CpuAllocationApplyError> {
         let (identity, process) = self
             .platform
             .open(&claim.target, allow_cross_session_process_control)?;
@@ -374,33 +394,33 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         match claim.request {
             CpuAllocationRequest::SoftCpuSets {
                 logical_processor_mask,
-            } => self.apply_soft_claim(
-                inventory,
-                &identity,
-                &process,
-                claim.owner,
-                logical_processor_mask,
-            ),
+            } => {
+                let desired = inventory
+                    .ids(&mut self.platform, logical_processor_mask)
+                    .map_err(CpuAllocationApplyError::Discovery)?;
+                self.apply_soft_claim(&identity, &process, claim.owner, desired)
+                    .map_err(Into::into)
+            }
             CpuAllocationRequest::HardAffinity {
                 logical_processor_mask,
-            } => self.apply_hard_claim(
-                &identity,
-                &process,
-                claim.owner,
-                HardAffinityRequest::Exact(logical_processor_mask),
-            ),
+            } => self
+                .apply_hard_claim(
+                    &identity,
+                    &process,
+                    claim.owner,
+                    HardAffinityRequest::Exact(logical_processor_mask),
+                )
+                .map_err(Into::into),
         }
     }
 
     fn apply_soft_claim(
         &mut self,
-        inventory: &mut CpuSetInventory,
         identity: &ProcessIdentity,
         process: &P::Process,
         owner: ControlOwner,
-        logical_processor_mask: u64,
+        mut desired: Vec<u32>,
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
-        let mut desired = inventory.ids(&mut self.platform, logical_processor_mask)?;
         normalize_cpu_set_ids(&mut desired);
         let released_affinity = self.release_affinity_for_switch(identity, process)?;
         if desired.is_empty() {
@@ -980,14 +1000,14 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                         );
                     }
                 }
-                Err(error) if inventory.failed() => {
+                Err(CpuAllocationApplyError::Discovery(error)) => {
                     summary
                         .failures
                         .push(reconciliation_failure_for_claim(&claim, error));
                     self.pending_reconciliations
                         .insert(key, PendingReconciliation::HandoffRetry);
                 }
-                Err(error) => {
+                Err(CpuAllocationApplyError::Target(error)) => {
                     summary
                         .failures
                         .push(reconciliation_failure_for_claim(&claim, error));
@@ -2132,6 +2152,134 @@ mod tests {
     }
 
     #[test]
+    fn pending_handoffs_keep_error_origin_after_shared_discovery_failure() {
+        let mut coordinator = coordinator();
+        let mut second = process_state(&coordinator);
+        second.identity = identity(43, 7);
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .processes
+            .insert(43, second);
+        for id in [42, 43] {
+            coordinator
+                .apply_policy_claim(
+                    &mut CpuSetInventory::default(),
+                    claim_for(
+                        id,
+                        ControlOwner::AdaptiveEngine,
+                        CpuAllocationRequest::HardAffinity {
+                            logical_processor_mask: 3,
+                        },
+                        7,
+                    ),
+                    true,
+                )
+                .unwrap();
+            let next = claim_for(
+                id,
+                ControlOwner::AdaptiveEngine,
+                if id == 42 {
+                    CpuAllocationRequest::SoftCpuSets {
+                        logical_processor_mask: 3,
+                    }
+                } else {
+                    CpuAllocationRequest::HardAffinity {
+                        logical_processor_mask: 12,
+                    }
+                },
+                7,
+            );
+            coordinator
+                .claims
+                .entry(ControlOwner::AdaptiveEngine)
+                .or_default()
+                .insert(next.target.key(), next.clone());
+            coordinator
+                .pending_reconciliations
+                .insert(next.target.key(), PendingReconciliation::Handoff);
+        }
+        coordinator.platform.state.borrow_mut().fail_inventory = true;
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .affinity_apply_failures_remaining = 1;
+        let outcome = coordinator.reconcile_pending(true, false);
+        assert_eq!(outcome.failures.len(), 2);
+        assert_eq!(
+            coordinator.platform.state.borrow().processes[&42].affinity,
+            3
+        );
+        assert_eq!(
+            coordinator.platform.state.borrow().processes[&43].affinity,
+            15
+        );
+        assert_eq!(coordinator.pending_reconciliations.len(), 1);
+        assert!(matches!(
+            coordinator.pending_reconciliations[&target(42, 7).key()],
+            PendingReconciliation::HandoffRetry
+        ));
+        coordinator.platform.state.borrow_mut().fail_inventory = false;
+        assert!(coordinator
+            .reconcile_pending(true, true)
+            .failures
+            .is_empty());
+        coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
+    }
+
+    #[test]
+    fn cached_discovery_failure_does_not_reclassify_later_target_errors() {
+        let mut coordinator = coordinator();
+        let mut inventory = CpuSetInventory::default();
+        coordinator.platform.state.borrow_mut().fail_inventory = true;
+        let soft = claim(
+            ControlOwner::AdaptiveEngine,
+            CpuAllocationRequest::SoftCpuSets {
+                logical_processor_mask: 3,
+            },
+            7,
+        );
+        let hard = claim(
+            ControlOwner::AdaptiveEngine,
+            CpuAllocationRequest::HardAffinity {
+                logical_processor_mask: 3,
+            },
+            7,
+        );
+        assert!(matches!(
+            coordinator.apply_policy_claim(&mut inventory, soft.clone(), true),
+            Err(CpuAllocationApplyError::Discovery(_))
+        ));
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .affinity_apply_failures_remaining = 1;
+        assert!(matches!(
+            coordinator.apply_policy_claim(&mut inventory, hard.clone(), true),
+            Err(CpuAllocationApplyError::Target(
+                ProcessControlError::Failed(_)
+            ))
+        ));
+        coordinator.platform.state.borrow_mut().deny_open = true;
+        assert!(matches!(
+            coordinator.apply_policy_claim(&mut inventory, soft, true),
+            Err(CpuAllocationApplyError::Target(
+                ProcessControlError::AccessDenied(_)
+            ))
+        ));
+        coordinator.platform.state.borrow_mut().deny_open = false;
+        assert!(coordinator
+            .apply_policy_claim(&mut inventory, hard, true)
+            .is_ok());
+        assert_eq!(process_state(&coordinator).affinity, 3);
+        coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
+        assert_eq!(process_state(&coordinator).affinity, 15);
+    }
+
+    #[test]
     fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
         use crate::{action_log::ActionLog, cpu_allocation::CpuAllocationManager};
         let mut coordinator = coordinator();
@@ -3086,7 +3234,12 @@ mod tests {
             ),
             false,
         );
-        assert!(matches!(result, Err(ProcessControlError::AccessDenied(_))));
+        assert!(matches!(
+            result,
+            Err(CpuAllocationApplyError::Target(
+                ProcessControlError::AccessDenied(_)
+            ))
+        ));
         assert_eq!(process_state(&coordinator).affinity, 0b1111);
         assert!(coordinator.managed_affinity.is_empty());
         assert_eq!(

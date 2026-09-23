@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 use crate::{
     backend::crash_recovery::{
@@ -135,6 +138,8 @@ pub(crate) struct IoPriorityController<P: IoPriorityPlatform = WindowsIoPriority
     platform: P,
     managed: BTreeMap<ProcessIdentity, ManagedIoPriority>,
     next_apply_sequence: u64,
+    pending_releases: BTreeSet<ProcessIdentity>,
+    next_release_retry: Option<Instant>,
 }
 
 impl Default for IoPriorityController {
@@ -149,6 +154,8 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             platform,
             managed: BTreeMap::new(),
             next_apply_sequence: 1,
+            pending_releases: BTreeSet::new(),
+            next_release_retry: None,
         }
     }
 
@@ -204,6 +211,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         for stale_identity in stale_identities {
             self.platform.relinquish(&stale_identity)?;
             self.managed.remove(&stale_identity);
+            self.pending_releases.remove(&stale_identity);
         }
 
         let mut managed = self.managed.remove(&identity);
@@ -226,6 +234,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 }
                 return Err(error);
             }
+            self.pending_releases.remove(&identity);
             managed = None;
         }
 
@@ -236,6 +245,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 self.managed.insert(identity.clone(), managed);
                 self.release_identity(&identity)?;
                 self.managed.remove(&identity);
+                self.pending_releases.remove(&identity);
             }
             return Ok(IoPriorityApplyOutcome::Preserved);
         }
@@ -244,6 +254,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             if let Some(mut managed) = managed {
                 if claim.owner.is_automatic() || managed.owner == ControlOwner::ProcessList {
                     managed.owner = claim.owner;
+                    self.pending_releases.remove(&identity);
                 }
                 managed.expected = current;
                 self.managed.insert(identity, managed);
@@ -261,6 +272,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             CommitFailureBehavior::Compensate,
         ) {
             Ok(()) => {
+                self.pending_releases.remove(&identity);
                 self.managed.insert(
                     identity,
                     ManagedIoPriority {
@@ -312,7 +324,40 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             })
             .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
             .collect::<Vec<_>>();
-        self.release_identities(identities)
+        self.pending_releases
+            .extend(identities.iter().map(|(_, identity)| identity.clone()));
+        let summary = self.release_identities(identities);
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| Instant::now() + Duration::from_secs(1));
+        summary
+    }
+
+    pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        (!self.pending_releases.is_empty()).then(|| {
+            self.next_release_retry
+                .map_or(Duration::ZERO, |due| due.saturating_duration_since(now))
+        })
+    }
+
+    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> IoPriorityReleaseSummary {
+        if self.release_retry_delay(now) != Some(Duration::ZERO) {
+            return IoPriorityReleaseSummary::default();
+        }
+        let identities = self
+            .pending_releases
+            .iter()
+            .filter_map(|identity| {
+                self.managed
+                    .get(identity)
+                    .map(|managed| (managed.apply_sequence, identity.clone()))
+            })
+            .collect();
+        let summary = self.release_identities(identities);
+        self.pending_releases
+            .retain(|identity| self.managed.contains_key(identity));
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| now + Duration::from_secs(1));
+        summary
     }
 
     pub(crate) fn release_all_policy(&mut self) -> IoPriorityReleaseSummary {
@@ -354,11 +399,13 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 Ok(restored) => {
                     summary.restored_processes += usize::from(restored);
                     self.managed.remove(&identity);
+                    self.pending_releases.remove(&identity);
                 }
                 Err(ProcessControlError::ProcessExited) => {
                     match self.platform.relinquish(&identity) {
                         Ok(()) => {
                             self.managed.remove(&identity);
+                            self.pending_releases.remove(&identity);
                         }
                         Err(error) => summary.failures.push(IoPriorityReleaseFailure {
                             process_id: identity.id,
@@ -876,6 +923,72 @@ mod tests {
             creation_time: target.creation_time,
             session_id: Some(1),
             is_service_account: Some(false),
+        }
+    }
+
+    #[test]
+    fn disabled_cleanup_survives_failed_replacement_and_respects_accepted_owner() {
+        for replace in [false, true] {
+            let mut controller = IoPriorityController::with_platform(FakePlatform::new(2));
+            controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::IoPriority,
+                        ProcessIoPriority::VeryLow,
+                        IoPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .unwrap();
+            controller.platform.fail_next(FakeFailure::Open);
+            assert_eq!(controller.release_all_policy().failures.len(), 1);
+            for failure in [
+                FakeFailure::Open,
+                FakeFailure::QueryDenied,
+                FakeFailure::Apply,
+            ] {
+                controller.platform.fail_next(failure);
+                assert!(controller
+                    .apply_process_list_action(&action_target(), ProcessIoPriority::Low, true)
+                    .is_err());
+                assert_eq!(controller.pending_releases.len(), 1);
+            }
+            let now = Instant::now();
+            assert_eq!(controller.retry_pending_releases(now).restored_processes, 0);
+            controller.platform.fail_next(FakeFailure::Open);
+            assert_eq!(
+                controller
+                    .retry_pending_releases(now + Duration::from_secs(2))
+                    .failures
+                    .len(),
+                1
+            );
+            assert_eq!(
+                controller.release_retry_delay(now + Duration::from_secs(2)),
+                Some(Duration::from_secs(1))
+            );
+            if replace {
+                controller
+                    .apply_process_list_action(&action_target(), ProcessIoPriority::Low, true)
+                    .unwrap();
+            }
+            assert_eq!(
+                controller
+                    .retry_pending_releases(now + Duration::from_secs(4))
+                    .restored_processes,
+                usize::from(!replace)
+            );
+            assert_eq!(
+                controller.platform.processes[&42].priority,
+                if replace { 1 } else { 2 }
+            );
+            assert!(controller.release_retry_delay(now).is_none());
+            controller.release_all_policy();
+            assert_eq!(
+                controller.platform.processes[&42].priority,
+                if replace { 1 } else { 2 }
+            );
+            controller.shutdown().unwrap();
         }
     }
 

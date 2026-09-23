@@ -345,9 +345,6 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 "This thread priority is not available as a process action.".to_owned(),
             )
         })?;
-        // A new claim supersedes an old pending release for this exact process.
-        self.pending_releases
-            .retain(|identity| identity.process.key() != claim.target.key());
         let (process_identity, process) = match self
             .platform
             .open_process(&claim.target, allow_cross_session_process_control)
@@ -435,6 +432,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 }
                 return Err(error);
             }
+            self.pending_releases.remove(&identity);
             managed = None;
         }
 
@@ -452,6 +450,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             if let Some(mut managed) = managed {
                 if owner.is_automatic() || managed.owner == ControlOwner::ProcessList {
                     managed.owner = owner;
+                    self.pending_releases.remove(&identity);
                 }
                 managed.expected = current;
                 self.managed.insert(identity, managed);
@@ -470,6 +469,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             CommitFailureBehavior::Compensate,
         ) {
             Ok(()) => {
+                self.pending_releases.remove(&identity);
                 self.managed.insert(
                     identity,
                     ManagedThreadPriority {
@@ -1367,6 +1367,73 @@ mod tests {
             session_id: Some(1),
             is_service_account: Some(false),
         }
+    }
+
+    #[test]
+    fn failed_and_partial_replacements_keep_exact_pending_releases() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[0, 0]));
+        controller
+            .apply_policy_claim(
+                &mut ThreadInventory::default(),
+                claim(
+                    ControlOwner::ThreadPriority,
+                    ProcessThreadPrioritySetting::BelowNormal,
+                    ThreadPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        assert_eq!(controller.release_all_policy().failures.len(), 2);
+        for failure in [FakeFailure::IdentityUnavailable, FakeFailure::Inventory] {
+            controller.platform.fail_next(failure);
+            assert!(controller
+                .apply_process_list_action(
+                    &action_target(),
+                    ProcessThreadPrioritySetting::AboveNormal,
+                    true
+                )
+                .is_err());
+            assert_eq!(controller.pending_releases.len(), 2);
+            assert!(controller.release_retry_delay(Instant::now()).is_some());
+        }
+        // The first thread fails; the second accepts the replacement.
+        controller.platform.fail_next(FakeFailure::QueryDenied);
+        assert!(controller
+            .apply_process_list_action(
+                &action_target(),
+                ProcessThreadPrioritySetting::AboveNormal,
+                true
+            )
+            .is_err());
+        assert_eq!(
+            controller
+                .pending_releases
+                .iter()
+                .map(|id| id.id)
+                .collect::<Vec<_>>(),
+            vec![100]
+        );
+        let now = Instant::now();
+        assert_eq!(controller.retry_pending_releases(now).restored_threads, 0);
+        assert_eq!(
+            controller
+                .retry_pending_releases(now + Duration::from_secs(2))
+                .restored_threads,
+            1
+        );
+        assert_eq!(controller.platform.process.threads[&100].priority, 0);
+        assert_eq!(
+            controller.platform.process.threads[&101].priority,
+            THREAD_PRIORITY_ABOVE_NORMAL
+        );
+        assert!(controller.release_retry_delay(now).is_none());
+        controller.shutdown().unwrap();
     }
 
     #[test]

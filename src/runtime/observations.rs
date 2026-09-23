@@ -136,7 +136,24 @@ impl CycleObservations {
                     }
                 };
             };
-            (self.sources.enrich_process_paths)(Arc::make_mut(processes));
+            let generations = processes
+                .iter()
+                .map(|p| p.creation_time)
+                .collect::<Vec<_>>();
+            let records = Arc::make_mut(processes);
+            (self.sources.enrich_process_paths)(records);
+            for (process, captured) in records.iter_mut().zip(generations) {
+                if process.creation_time != captured {
+                    // Enrichment cannot promote a new identity into an already-observed cycle.
+                    // Defer this target until a fresh process observation establishes its generation.
+                    process.creation_time = captured;
+                    process.image_path = None;
+                    process.user_name = None;
+                    process.is_service_account = None;
+                    process.is_critical = None;
+                    process.can_set_information = false;
+                }
+            }
             self.process_paths_enriched = true;
         }
         match &self.processes {
@@ -302,6 +319,79 @@ mod tests {
             name: "test.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Apps\test.exe")),
         }])
+    }
+
+    #[test]
+    fn enrichment_defers_new_generations_without_changing_cached_workload() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        fn initial() -> Result<Vec<ProcessInfo>, String> {
+            let root = processes()?.remove(0);
+            Ok(vec![
+                root.clone(),
+                ProcessInfo {
+                    id: 101,
+                    parent_id: Some(42),
+                    creation_time: None,
+                    ..root.clone()
+                },
+                ProcessInfo {
+                    id: 102,
+                    parent_id: Some(42),
+                    creation_time: Some(2),
+                    ..root
+                },
+            ])
+        }
+        fn enrich(records: &mut [ProcessInfo]) {
+            enrich_paths(records);
+            records[1].creation_time = Some(3);
+            records[2].creation_time = Some(4);
+        }
+        let mut observations = CycleObservations::with_sources(ObservationSources {
+            processes: initial,
+            enrich_process_paths: enrich,
+            foreground_process_id: foreground_id,
+            process_from_id: foreground_process,
+            visible_window_process_ids: visible_windows,
+            top_level_window_process_ids: top_level_windows,
+        });
+        let before = observations.processes().unwrap();
+        let workload = observations.adaptive_workload(&before);
+        assert_eq!(
+            *workload,
+            std::collections::BTreeMap::from([(42, 1), (102, 2)])
+        );
+        let after = observations.processes_with_paths().unwrap();
+        assert_eq!(after[1].creation_time, None);
+        assert_eq!(after[2].creation_time, Some(2));
+        assert_eq!(observations.adaptive_workload(&after), workload);
+        assert!(before[2].image_path.is_some());
+        for record in &after[1..] {
+            assert!(record.image_path.is_none());
+            assert_eq!(record.is_critical, None);
+            assert!(!record.can_set_information);
+        }
+        // The actual Thread Priority consumer must skip deferred targets before opening them.
+        let mut manager =
+            crate::features::priority_control::thread_priority::ThreadPriorityManager::default();
+        let result = manager.update(
+            &mut crate::control::thread_priority::ThreadPriorityController::default(),
+            crate::control::process::ControlOwner::AdaptiveEngine,
+            &crate::config::ThreadPrioritySettings {
+                enabled: true,
+                foreground_detection_enabled: true,
+                foreground_priority: crate::config::ProcessThreadPrioritySetting::Default,
+                background_priority: crate::config::ProcessThreadPrioritySetting::Idle,
+                ..Default::default()
+            },
+            true,
+            true,
+            Some(42),
+            &mut observations,
+            &mut ActionLog::default(),
+        );
+        assert_eq!(result.failed_processes, 0);
+        assert_eq!(result.adjusted_threads, 0);
     }
 
     #[test]

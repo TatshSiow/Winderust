@@ -122,7 +122,10 @@ pub(crate) fn owner_process_id(thread: &ThreadHandle) -> Result<u32, ThreadPrior
     // SAFETY: thread owns a live handle opened with query access.
     let process_id = unsafe { GetProcessIdOfThread(thread.handle.raw()) };
     if process_id == 0 {
-        Err(capture_thread_error("GetProcessIdOfThread", thread.id))
+        Err(capture_retained_thread_error(
+            "GetProcessIdOfThread",
+            thread,
+        ))
     } else {
         Ok(process_id)
     }
@@ -144,7 +147,7 @@ pub(crate) fn creation_time(thread: &ThreadHandle) -> Result<u64, ThreadPriority
         )
     };
     if ok == 0 {
-        Err(capture_thread_error("GetThreadTimes", thread.id))
+        Err(capture_retained_thread_error("GetThreadTimes", thread))
     } else {
         Ok(filetime_to_u64(creation))
     }
@@ -154,7 +157,7 @@ pub(crate) fn query_priority(thread: &ThreadHandle) -> Result<i32, ThreadPriorit
     // SAFETY: thread owns a live handle opened with query access.
     let priority = unsafe { GetThreadPriority(thread.handle.raw()) };
     if priority == PRIORITY_ERROR_RETURN {
-        Err(capture_thread_error("GetThreadPriority", thread.id))
+        Err(capture_retained_thread_error("GetThreadPriority", thread))
     } else {
         Ok(priority)
     }
@@ -168,16 +171,39 @@ pub(crate) fn set_priority(
     // or the raw value previously returned by Windows for this exact thread.
     let ok = unsafe { SetThreadPriority(thread.handle.raw(), priority) };
     if ok == 0 {
-        Err(capture_thread_error("SetThreadPriority", thread.id))
+        Err(capture_retained_thread_error("SetThreadPriority", thread))
     } else {
         Ok(())
     }
 }
 
 fn capture_thread_error(operation: &'static str, thread_id: u32) -> ThreadPriorityError {
-    match last_error() {
+    classify_thread_error(operation, thread_id, last_error(), false)
+}
+
+fn capture_retained_thread_error(
+    operation: &'static str,
+    thread: &ThreadHandle,
+) -> ThreadPriorityError {
+    let code = last_error();
+    // SAFETY: this retained handle has SYNCHRONIZE access; the zero-timeout check cannot block.
+    let terminated = unsafe { WaitForSingleObject(thread.raw(), 0) } == WAIT_OBJECT_0;
+    classify_thread_error(operation, thread.id, code, terminated)
+}
+
+fn classify_thread_error(
+    operation: &'static str,
+    thread_id: u32,
+    code: u32,
+    terminated: bool,
+) -> ThreadPriorityError {
+    // OpenThread uses a fixed valid access mask: invalid parameter identifies a vanished TID.
+    // Errors from operations on retained handles require an explicitly signaled object.
+    if terminated || (operation == "OpenThread" && code == ERROR_INVALID_PARAMETER) {
+        return ThreadPriorityError::ThreadExited;
+    }
+    match code {
         ERROR_ACCESS_DENIED => ThreadPriorityError::AccessDenied,
-        ERROR_INVALID_PARAMETER => ThreadPriorityError::ThreadExited,
         code => ThreadPriorityError::Failed {
             operation,
             thread_id: Some(thread_id),
@@ -189,6 +215,38 @@ fn capture_thread_error(operation: &'static str, thread_id: u32) -> ThreadPriori
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_handle_errors_require_positive_exit_evidence() {
+        // SAFETY: reads the calling thread ID only.
+        let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+        let handle = open_thread(id).unwrap();
+        for operation in [
+            "GetThreadTimes",
+            "SetThreadPriority",
+            "GetThreadPriority",
+            "GetProcessIdOfThread",
+        ] {
+            // SAFETY: modifies only the test thread's last-error slot to inject an API failure.
+            unsafe { windows_sys::Win32::Foundation::SetLastError(ERROR_INVALID_PARAMETER) };
+            assert_eq!(
+                capture_retained_thread_error(operation, &handle),
+                ThreadPriorityError::Failed {
+                    operation,
+                    thread_id: Some(id),
+                    code: ERROR_INVALID_PARAMETER,
+                }
+            );
+        }
+        assert!(matches!(
+            classify_thread_error("WaitForSingleObject", id, ERROR_INVALID_PARAMETER, false),
+            ThreadPriorityError::Failed { .. }
+        ));
+        assert_eq!(
+            classify_thread_error("GetThreadTimes", id, ERROR_ACCESS_DENIED, true),
+            ThreadPriorityError::ThreadExited
+        );
+    }
 
     #[test]
     fn inventory_contains_the_calling_thread_under_its_process() {
@@ -220,6 +278,12 @@ mod tests {
         assert_eq!(
             ensure_active(&handle),
             Err(ThreadPriorityError::ThreadExited)
+        );
+        // SAFETY: inject a failed query after the retained object has become signaled.
+        unsafe { windows_sys::Win32::Foundation::SetLastError(ERROR_ACCESS_DENIED) };
+        assert_eq!(
+            capture_retained_thread_error("GetThreadTimes", &handle),
+            ThreadPriorityError::ThreadExited
         );
     }
 }

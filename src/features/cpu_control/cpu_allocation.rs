@@ -21,9 +21,9 @@ use crate::{
     config::{CpuAllocationRule, CpuAllocationSettings},
     control::{
         cpu_allocation::{
-            CpuAllocationApplyOutcome, CpuAllocationClaim, CpuAllocationCoordinator,
-            CpuAllocationPlatform, CpuAllocationReconciliationSummary, CpuAllocationReleaseSummary,
-            CpuAllocationRequest, CpuSetInventory,
+            CpuAllocationApplyError, CpuAllocationApplyOutcome, CpuAllocationClaim,
+            CpuAllocationCoordinator, CpuAllocationPlatform, CpuAllocationReconciliationSummary,
+            CpuAllocationReleaseSummary, CpuAllocationRequest, CpuSetInventory,
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
@@ -518,10 +518,12 @@ impl CpuAllocationManager {
                         self.clear_process_failure(&failure_executable_path);
                     }
                 }
-                Err(ProcessControlError::ProcessExited) => {
+                Err(CpuAllocationApplyError::Target(ProcessControlError::ProcessExited)) => {
                     skipped_processes += 1;
                 }
-                Err(ProcessControlError::AccessDenied(message)) => {
+                Err(CpuAllocationApplyError::Target(ProcessControlError::AccessDenied(
+                    message,
+                ))) => {
                     if zone_role.is_some() {
                         zone_failure = ZoneAllocationFailure::Degraded;
                         failures.last_error = Some(message.clone());
@@ -537,14 +539,14 @@ impl CpuAllocationManager {
                         message,
                     );
                 }
-                Err(error) if inventory.failed() => {
+                Err(CpuAllocationApplyError::Discovery(error)) => {
                     zone_failure = ZoneAllocationFailure::Unavailable;
                     if failures.last_error.is_none() {
                         failures.count += 1;
                         failures.last_error = Some(error.to_string());
                     }
                 }
-                Err(error) => {
+                Err(CpuAllocationApplyError::Target(error)) => {
                     if zone_role.is_some() {
                         zone_failure = ZoneAllocationFailure::Degraded;
                     }

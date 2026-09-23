@@ -1069,6 +1069,18 @@ impl RuntimeCore {
                     )
                 }),
         );
+        errors.extend(
+            self.io_priority_controller
+                .retry_pending_releases(now)
+                .failures
+                .into_iter()
+                .map(|failure| {
+                    format!(
+                        "I/O Priority restoration failed for {} ({}): {}",
+                        failure.process_name, failure.process_id, failure.error
+                    )
+                }),
+        );
         if let Err(error) = self.power_plan_controller.retry_pending_cleanup(now) {
             errors.push(format!("Adaptive plan cleanup failed: {error}"));
         }
@@ -1079,6 +1091,7 @@ impl RuntimeCore {
         [
             self.priority_efficiency_controller.release_retry_delay(now),
             self.thread_priority_controller.release_retry_delay(now),
+            self.io_priority_controller.release_retry_delay(now),
             self.power_plan_controller.cleanup_retry_delay(now),
         ]
         .into_iter()

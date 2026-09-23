@@ -192,8 +192,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Runtime observation and cleanup contracts
 
 - Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
-- Thread Priority pending releases retain exact thread identities and retry independently of feature enablement. A new valid claim cancels its prior pending release.
+- Thread Priority and I/O Priority pending automatic releases retain exact identities and retry independently of feature enablement. Cancel pending cleanup only when that exact target accepts replacement ownership or completes restoration/relinquishment; failed or partially successful requests retain unresolved cleanup.
 - Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans.
 - Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
 - Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
 - CPU Set discovery is lazy and operation-local, including failure caching. Discovery failure preserves existing assignments and does not suppress individual applications; pending handoffs retry on the existing cleanup interval.
+
+- Process enrichment cannot replace the identity generation captured by the cycle. Newly available or changed generations are deferred (non-actionable) until a fresh cycle, preserving consistency with cached Adaptive membership and earlier consumers.
+- CPU allocation application errors distinguish shared discovery failure from target failure in their return type. A cached discovery error cannot reclassify a later acquisition, affinity, mutation or recovery failure.

@@ -801,3 +801,11 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 - `src/foreground/process_list.rs::query_process_image_path` preserves [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) errors. Successful path or creation mismatches remain identity failures.
 - `src/runtime/observations.rs::foreground_process_group_ids` validates creation times on ancestry edges. Parent PID can identify an exited or reused process: [Win32_Process](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process).
 - `src/platform/windows/cpu_allocation.rs::cpu_set_inventory` captures [GetSystemCpuSetInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation) with the existing null process argument. `src/control/cpu_allocation.rs::CpuSetInventory` shares one complete result or failure per operation. Partial records are rejected; the existing group-zero, 64-bit mask domain is unchanged. No undocumented API was introduced.
+
+## Thread operation errors and liveness
+
+`src/platform/windows/thread_priority.rs` captures the original native error before checking a retained handle with a zero-timeout wait. Only WAIT_OBJECT_0 establishes termination; timeout or failed liveness checks preserve the original operation failure. Error 87 from timing, owner, priority, set or wait operations is not classified as exit. The existing OpenThread-only interpretation of error 87 for a vanished TID with the fixed valid access mask remains a Windows behavior assumption, not a documented universal error-to-exit contract.
+
+- [GetThreadTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes): a failed query reports GetLastError.
+- [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject): signaled, timeout and failure are distinct outcomes.
+- [System error codes](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-): ERROR_INVALID_PARAMETER (87) is an invalid parameter, not generic exit evidence.
