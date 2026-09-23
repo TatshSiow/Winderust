@@ -1096,6 +1096,10 @@ fn process_token_user_buffer(process: &WinHandle) -> Option<Vec<usize>> {
 }
 
 fn process_image_path_from_handle(process: &WinHandle) -> Option<PathBuf> {
+    query_process_image_path(process).ok()
+}
+
+pub(crate) fn query_process_image_path(process: &WinHandle) -> Result<PathBuf, u32> {
     let mut buffer = vec![0u16; PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN];
     loop {
         let mut len = buffer.len() as u32;
@@ -1111,14 +1115,17 @@ fn process_image_path_from_handle(process: &WinHandle) -> Option<PathBuf> {
         };
 
         if ok != 0 {
-            return (len != 0).then(|| PathBuf::from(OsString::from_wide(&buffer[..len as usize])));
+            return if len != 0 {
+                Ok(PathBuf::from(OsString::from_wide(&buffer[..len as usize])))
+            } else {
+                Err(windows_sys::Win32::Foundation::ERROR_INVALID_DATA)
+            };
         }
 
         // SAFETY: GetLastError reads thread-local state immediately after the failed query.
-        if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
-            || buffer.len() >= PROCESS_IMAGE_PATH_MAX_BUFFER_LEN
-        {
-            return None;
+        let error = unsafe { GetLastError() };
+        if error != ERROR_INSUFFICIENT_BUFFER || buffer.len() >= PROCESS_IMAGE_PATH_MAX_BUFFER_LEN {
+            return Err(error);
         }
 
         buffer.resize((buffer.len() * 2).min(PROCESS_IMAGE_PATH_MAX_BUFFER_LEN), 0);

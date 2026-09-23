@@ -50,30 +50,8 @@ pub(super) fn should_skip_process(
         )
 }
 
-pub(super) fn foreground_process_group_ids(
-    processes: &[ProcessInfo],
-    foreground_process_id: Option<u32>,
-) -> BTreeSet<u32> {
-    let Some(foreground_process_id) = foreground_process_id else {
-        return BTreeSet::new();
-    };
-
-    let mut group = BTreeSet::from([foreground_process_id]);
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for process in processes {
-            if process
-                .parent_id
-                .is_some_and(|parent_id| group.contains(&parent_id))
-                && group.insert(process.id)
-            {
-                changed = true;
-            }
-        }
-    }
-    group
-}
+#[cfg(test)]
+pub(super) use crate::runtime::observations::foreground_process_group_ids;
 
 pub(super) fn cpu_pressure_restraint_should_run(
     settings: &AdaptiveEngineProcessSettings,

@@ -2,9 +2,9 @@ use std::{cmp::Ordering, fmt, path::PathBuf};
 
 use crate::{
     foreground::{
-        ensure_process_action_target_access_on_handle, executable_path_key,
-        process_handle_matches_executable_path, process_session_id, same_process_name,
-        ProcessActionAccess, ProcessActionTarget,
+        ensure_process_action_target_access_on_handle, executable_path_key, process_session_id,
+        query_process_image_path, same_executable_path, same_process_name, ProcessActionAccess,
+        ProcessActionTarget,
     },
     platform::windows::{
         process::{self as windows_process, ProcessAccess, ProcessOpenError},
@@ -309,14 +309,11 @@ fn open_process_with_access(
 
     let handle = windows_process::open(target.id, desired_access)
         .map_err(|error| open_process_error(target.id, error))?;
-    let creation_time = handle
-        .process_creation_time()
-        .ok_or(ProcessControlError::ProcessExited)?;
-    if target.creation_time != creation_time
-        || !process_handle_matches_executable_path(&handle, &target.executable_path)
-    {
-        return Err(ProcessControlError::ProcessExited);
-    }
+    let creation_time = validate_identity_observation(
+        target,
+        handle.process_times().map(|(creation, _)| creation),
+        || query_process_image_path(&handle),
+    )?;
 
     let session_id = process_session_id(target.id);
     if !allow_cross_session_process_control {
@@ -362,6 +359,28 @@ fn open_process_with_access(
     Ok((identity, handle))
 }
 
+fn validate_identity_observation(
+    target: &ProcessControlTarget,
+    creation: Result<u64, u32>,
+    path: impl FnOnce() -> Result<PathBuf, u32>,
+) -> Result<u64, ProcessControlError> {
+    let unavailable = |operation: &str, code| {
+        ProcessControlError::Unavailable(format!(
+            "{operation}({}) failed with error {code}.",
+            target.id
+        ))
+    };
+    let creation = creation.map_err(|code| unavailable("GetProcessTimes", code))?;
+    if creation != target.creation_time {
+        return Err(ProcessControlError::ProcessExited);
+    }
+    let path = path().map_err(|code| unavailable("QueryFullProcessImageNameW", code))?;
+    if !same_executable_path(&path, &target.executable_path) {
+        return Err(ProcessControlError::ProcessExited);
+    }
+    Ok(creation)
+}
+
 fn open_process_error(process_id: u32, error: ProcessOpenError) -> ProcessControlError {
     match error {
         ProcessOpenError::AccessDenied => {
@@ -398,6 +417,35 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn unavailable_identity_is_not_an_exit_but_verified_mismatch_is() {
+        let target = ProcessControlTarget::automatic(
+            42,
+            "app.exe".into(),
+            PathBuf::from(r"C:\Apps\app.exe"),
+            7,
+        );
+        assert!(
+            matches!(validate_identity_observation(&target, Err(5), || panic!("no path query after timing failure")), Err(ProcessControlError::Unavailable(message)) if message.contains("5"))
+        );
+        assert!(matches!(
+            validate_identity_observation(&target, Ok(7), || Err(5)),
+            Err(ProcessControlError::Unavailable(_))
+        ));
+        assert_eq!(
+            validate_identity_observation(&target, Ok(8), || panic!("known replacement")),
+            Err(ProcessControlError::ProcessExited)
+        );
+        assert_eq!(
+            validate_identity_observation(&target, Ok(7), || Ok(PathBuf::from(r"C:\other.exe"))),
+            Err(ProcessControlError::ProcessExited)
+        );
+        assert_eq!(
+            validate_identity_observation(&target, Ok(7), || Ok(target.executable_path.clone())),
+            Ok(7)
+        );
+    }
 
     #[test]
     fn process_identity_keys_include_the_instance_path_but_not_policy_metadata() {

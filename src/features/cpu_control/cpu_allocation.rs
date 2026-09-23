@@ -23,7 +23,7 @@ use crate::{
         cpu_allocation::{
             CpuAllocationApplyOutcome, CpuAllocationClaim, CpuAllocationCoordinator,
             CpuAllocationPlatform, CpuAllocationReconciliationSummary, CpuAllocationReleaseSummary,
-            CpuAllocationRequest,
+            CpuAllocationRequest, CpuSetInventory,
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
@@ -415,6 +415,13 @@ impl CpuAllocationManager {
                 self.failure_suppression
                     .is_key_suppressed(&process_failure_key(&target.executable_path))
             });
+        let mut inventory = CpuSetInventory::default();
+        let desired_keys = targets
+            .iter()
+            .chain(&background)
+            .chain(&foreground)
+            .map(cpu_allocation_target_key)
+            .collect::<BTreeSet<_>>();
         let mut failures = CpuAllocationFailures::default();
         let mut skipped_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
@@ -467,7 +474,11 @@ impl CpuAllocationManager {
                 owner,
                 request,
             };
-            match coordinator.apply_policy_claim(claim, allow_cross_session_process_control) {
+            match coordinator.apply_policy_claim(
+                &mut inventory,
+                claim,
+                allow_cross_session_process_control,
+            ) {
                 Ok(CpuAllocationApplyOutcome::Applied) => {
                     effective = true;
                     if zone_role.is_some() || self.zone_generation.is_empty() {
@@ -526,6 +537,13 @@ impl CpuAllocationManager {
                         message,
                     );
                 }
+                Err(error) if inventory.failed() => {
+                    zone_failure = ZoneAllocationFailure::Unavailable;
+                    if failures.last_error.is_none() {
+                        failures.count += 1;
+                        failures.last_error = Some(error.to_string());
+                    }
+                }
                 Err(error) => {
                     if zone_role.is_some() {
                         zone_failure = ZoneAllocationFailure::Degraded;
@@ -574,6 +592,9 @@ impl CpuAllocationManager {
                 active_targets.insert(cpu_allocation_target_key(&target));
                 fallback_count += usize::from(apply(target, None));
             }
+        }
+        if inventory.failed() {
+            active_targets.extend(desired_keys);
         }
         self.zone_failure = zone_failure;
         if !self.zone_generation.is_empty() && zone_counts.is_none() {

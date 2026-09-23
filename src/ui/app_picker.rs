@@ -11,7 +11,7 @@ use iced::{
     keyboard, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
 use rust_i18n::t;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub(super) struct Candidate {
@@ -21,13 +21,16 @@ pub(super) struct Candidate {
 
 pub(super) fn load(cached: Vec<Candidate>) -> Result<Vec<Candidate>, String> {
     crate::foreground::list_process_candidates().map(|items| {
+        let cached = cached
+            .into_iter()
+            .map(|candidate| (candidate.info.image_path, candidate.icon))
+            .collect::<HashMap<_, _>>();
         items
             .into_iter()
             .map(|info| {
                 let icon = cached
-                    .iter()
-                    .find(|old| old.info.image_path == info.image_path)
-                    .map(|old| old.icon.clone())
+                    .get(&info.image_path)
+                    .cloned()
                     .unwrap_or_else(|| crate::process_icon::load_process_icon(&info.image_path));
                 Candidate { info, icon }
             })

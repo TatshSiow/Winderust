@@ -1,10 +1,10 @@
-use std::{collections::BTreeSet, path::Path, time::Duration, time::Instant};
+use std::{path::Path, time::Duration, time::Instant};
 
 use windows_sys::Win32::{
     Foundation::FILETIME,
     System::{
         SystemInformation::GetSystemTimeAsFileTime,
-        Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
     },
 };
 
@@ -18,11 +18,6 @@ use crate::{
 
 use super::BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL;
 
-pub(super) fn process_cpu_sample(process_id: u32) -> Option<ProcessCpuSample> {
-    let process = ProcessHandle::open_query(process_id)?;
-    process.cpu_sample()
-}
-
 pub(super) fn process_cpu_sample_with_identity(
     process_id: u32,
     executable_path: &str,
@@ -31,8 +26,7 @@ pub(super) fn process_cpu_sample_with_identity(
     if !process.matches_executable_path(executable_path) {
         return None;
     }
-    let creation_time = process.creation_time_100ns()?;
-    Some((process.cpu_sample()?, creation_time))
+    process.cpu_sample_with_identity()
 }
 
 pub(super) fn process_age(process_id: u32) -> Option<Duration> {
@@ -47,19 +41,29 @@ pub(super) fn process_age(process_id: u32) -> Option<Duration> {
     Some(Duration::from_nanos(age_100ns.saturating_mul(100)))
 }
 
-pub(super) fn process_group_cpu_sample(process_ids: &BTreeSet<u32>) -> Option<ProcessCpuSample> {
+pub(super) fn process_group_cpu_sample(identities: &[(u32, u64)]) -> Option<ProcessCpuSample> {
+    sample_process_group(identities, |id| {
+        ProcessHandle::open_query(id)?.cpu_sample_with_identity()
+    })
+}
+
+fn sample_process_group(
+    identities: &[(u32, u64)],
+    mut sample: impl FnMut(u32) -> Option<(ProcessCpuSample, u64)>,
+) -> Option<ProcessCpuSample> {
+    if identities.is_empty() {
+        return None;
+    }
     let sampled_at = Instant::now();
     let mut cpu_time_100ns = 0u64;
-    let mut sampled_any = false;
-    for process_id in process_ids {
-        let Some(sample) = process_cpu_sample(*process_id) else {
-            continue;
-        };
-        cpu_time_100ns = cpu_time_100ns.saturating_add(sample.cpu_time_100ns);
-        sampled_any = true;
+    for &(id, creation) in identities {
+        let (sample, actual_creation) = sample(id)?;
+        if creation != actual_creation {
+            return None;
+        }
+        cpu_time_100ns = cpu_time_100ns.checked_add(sample.cpu_time_100ns)?;
     }
-
-    sampled_any.then_some(ProcessCpuSample {
+    Some(ProcessCpuSample {
         cpu_time_100ns,
         sampled_at,
     })
@@ -174,52 +178,46 @@ impl ProcessHandle {
         process_handle_matches_executable_path(&self.0, Path::new(expected))
     }
 
-    fn cpu_sample(&self) -> Option<ProcessCpuSample> {
-        let mut creation = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
-        // call.
-        let ok = unsafe {
-            GetProcessTimes(
-                self.0.raw(),
-                &mut creation,
-                &mut exit,
-                &mut kernel,
-                &mut user,
-            )
-        };
-        if ok == 0 {
-            None
-        } else {
-            Some(ProcessCpuSample {
-                cpu_time_100ns: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
+    fn cpu_sample_with_identity(&self) -> Option<(ProcessCpuSample, u64)> {
+        let (creation, cpu_time_100ns) = self.0.process_times().ok()?;
+        Some((
+            ProcessCpuSample {
+                cpu_time_100ns,
                 sampled_at: Instant::now(),
-            })
-        }
+            },
+            creation,
+        ))
     }
 
     fn creation_time_100ns(&self) -> Option<u64> {
-        let mut creation = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
-        // call.
-        let ok = unsafe {
-            GetProcessTimes(
-                self.0.raw(),
-                &mut creation,
-                &mut exit,
-                &mut kernel,
-                &mut user,
-            )
+        self.0.process_creation_time()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn group_samples_require_every_exact_member() {
+        let sample = |time| ProcessCpuSample {
+            cpu_time_100ns: time,
+            sampled_at: Instant::now(),
         };
-        if ok == 0 {
-            None
-        } else {
-            Some(filetime_to_u64(creation))
-        }
+        let group = [(1, 10), (2, 20)];
+        assert!(sample_process_group(&group, |id| (id == 1).then(|| (sample(100), 10))).is_none());
+        assert!(sample_process_group(&group, |id| Some((
+            sample(100),
+            if id == 1 { 10 } else { 21 }
+        )))
+        .is_none());
+        assert_eq!(
+            sample_process_group(&group, |id| Some((
+                sample(100 * u64::from(id)),
+                10 * u64::from(id)
+            )))
+            .unwrap()
+            .cpu_time_100ns,
+            300
+        );
     }
 }

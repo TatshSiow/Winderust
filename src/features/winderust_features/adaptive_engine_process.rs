@@ -97,7 +97,7 @@ pub struct DynamicResourceZoneSnapshot {
 
 pub struct AdaptiveEngineProcessManager {
     focus_process_candidate: Option<FocusProcessCandidate>,
-    foreground_cpu_sample: Option<(BTreeSet<u32>, ProcessCpuSample)>,
+    foreground_cpu_sample: Option<(Vec<(u32, u64)>, ProcessCpuSample)>,
     tracked_processes: BTreeMap<u32, AdaptiveEngineProcessProcess>,
     background_pressure_active: bool,
     cpu_allocation: CpuAllocationManager,
@@ -428,32 +428,27 @@ impl AdaptiveEngineProcessManager {
             .and_then(|id| processes_by_id.get(&id))
             .and_then(|process| cached_executable_path(process, &mut executable_paths))
             .is_some_and(|path| settings.custom_rule_enabled_for(&path));
+        let foreground_workload = observations.adaptive_workload(processes.as_ref());
         let foreground_process_group_ids =
-            foreground_process_group_ids(processes.as_ref(), foreground_process_id);
+            foreground_workload.keys().copied().collect::<BTreeSet<_>>();
         let visible_window_process_group_ids = processes
             .iter()
             .filter(|process| !foreground_process_group_ids.contains(&process.id))
             .filter_map(|process| {
-                process_executable_path(process).and_then(|path| {
+                cached_executable_path(process, &mut executable_paths).and_then(|path| {
                     visible_processes
-                        .contains(process.id, &path)
+                        .contains(process.id, Path::new(&path))
                         .then_some(process.id)
                 })
             })
             .collect::<BTreeSet<_>>();
-        let foreground_cpu_usage_percent =
-            self.update_foreground_cpu_usage(&foreground_process_group_ids);
-        let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
-
-        let foreground_identity = processes
+        let foreground_identity = foreground_workload
             .iter()
-            .filter(|p| foreground_process_group_ids.contains(&p.id))
-            .filter_map(|p| p.creation_time.map(|creation| (p.id, creation)))
+            .map(|(&id, &creation)| (id, creation))
             .collect::<Vec<_>>();
         let foreground_changed = self.allocation_foreground != foreground_identity;
-        if foreground_changed {
-            self.foreground_cpu_sample = None;
-        }
+        let foreground_cpu_usage_percent = self.update_foreground_cpu_usage(&foreground_identity);
+        let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
         if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
             self.invalidate_allocation_selection();
             self.allocation_settings = Some(settings.clone());
@@ -1075,6 +1070,7 @@ impl AdaptiveEngineProcessManager {
             let mut changed = false;
             let mut skipped = false;
             let mut hard_failure = false;
+            let mut access_denied = false;
             let target_key = control_target.key();
 
             if target.apply_background_efficiency {
@@ -1113,6 +1109,7 @@ impl AdaptiveEngineProcessManager {
                         }
                         Err(ProcessControlError::ProcessExited) => skipped = true,
                         Err(ProcessControlError::AccessDenied(error)) => {
+                            access_denied = true;
                             skipped = true;
                             self.failure_suppression
                                 .suppress_process_failure(&target.executable_path);
@@ -1159,6 +1156,7 @@ impl AdaptiveEngineProcessManager {
                     ) => {}
                     Err(ProcessControlError::ProcessExited) => skipped = true,
                     Err(ProcessControlError::AccessDenied(error)) => {
+                        access_denied = true;
                         skipped = true;
                         self.failure_suppression
                             .suppress_process_failure(&target.executable_path);
@@ -1184,9 +1182,7 @@ impl AdaptiveEngineProcessManager {
                 }
             }
 
-            if !hard_failure {
-                self.clear_process_failure(&target.executable_path);
-            }
+            self.finish_background_attempt(&target.executable_path, hard_failure, access_denied);
             if skipped {
                 skipped_processes += 1;
             }
@@ -1504,6 +1500,12 @@ impl AdaptiveEngineProcessManager {
     fn record_process_failure(&mut self, process_name: &str) {
         self.failure_suppression
             .record_process_failure(process_name);
+    }
+
+    fn finish_background_attempt(&mut self, path: &str, hard_failure: bool, access_denied: bool) {
+        if !hard_failure && !access_denied {
+            self.clear_process_failure(path);
+        }
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
@@ -1871,23 +1873,27 @@ impl AdaptiveEngineProcessManager {
 
     fn update_foreground_cpu_usage(
         &mut self,
-        foreground_process_ids: &BTreeSet<u32>,
+        foreground_process_ids: &[(u32, u64)],
     ) -> Option<f32> {
         if foreground_process_ids.is_empty() {
             self.foreground_cpu_sample = None;
             return None;
         }
 
-        let current = process_group_cpu_sample(foreground_process_ids)?;
+        let Some(current) = process_group_cpu_sample(foreground_process_ids) else {
+            self.foreground_cpu_sample = None;
+            return None;
+        };
         let usage = self
             .foreground_cpu_sample
             .as_ref()
             .and_then(|(previous_ids, previous)| {
-                (previous_ids == foreground_process_ids)
+                (previous_ids == foreground_process_ids
+                    && current.cpu_time_100ns >= previous.cpu_time_100ns)
                     .then_some(*previous)
                     .and_then(|previous| process_cpu_usage_percent(previous, current))
             });
-        self.foreground_cpu_sample = Some((foreground_process_ids.clone(), current));
+        self.foreground_cpu_sample = Some((foreground_process_ids.to_vec(), current));
         usage
     }
 

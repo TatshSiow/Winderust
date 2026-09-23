@@ -2654,3 +2654,18 @@ fn all_adaptive_allocation_gates_and_battery_only_zones_schedule_independently()
         active_power_source_settings(&settings, Some(false))
     ));
 }
+
+#[test]
+fn adaptive_dependency_changes_are_coalesced_and_include_process_generation() {
+    let mut runner = RuntimeCore::default();
+    runner.note_helper_dependencies(false, vec![(42, 1)]);
+    assert!(runner.take_helper_dependency_change());
+    runner.note_helper_dependencies(false, vec![(42, 1)]);
+    assert!(!runner.take_helper_dependency_change());
+    runner.note_helper_dependencies(true, vec![(42, 1)]);
+    assert!(runner.take_helper_dependency_change());
+    runner.note_helper_dependencies(true, vec![(42, 2)]);
+    assert!(runner.take_helper_dependency_change());
+    runner.note_helper_dependencies(false, vec![(42, 2)]);
+    assert!(runner.take_helper_dependency_change());
+}

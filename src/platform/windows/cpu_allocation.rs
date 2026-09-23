@@ -99,7 +99,7 @@ pub(crate) fn set_cpu_sets(process: &WinHandle, ids: &[u32]) -> Result<(), Proce
     }
 }
 
-pub(crate) fn cpu_set_ids_for_mask(rule_mask: u64) -> Result<Vec<u32>, ProcessOperationError> {
+pub(crate) fn cpu_set_inventory() -> Result<Vec<(u8, u32)>, ProcessOperationError> {
     let mut returned_length = 0;
     // SAFETY: a null buffer with zero length requests the required byte count.
     let probe_ok =
@@ -136,7 +136,7 @@ pub(crate) fn cpu_set_ids_for_mask(rule_mask: u64) -> Result<Vec<u32>, ProcessOp
         });
     }
     buffer.truncate(returned_length as usize);
-    Ok(cpu_set_ids_for_mask_from_bytes(&buffer, rule_mask))
+    cpu_set_inventory_from_bytes(&buffer)
 }
 
 #[repr(C)]
@@ -146,7 +146,7 @@ struct CpuSetInformationHeader {
     cpu_set_type: u32,
 }
 
-fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
+fn cpu_set_inventory_from_bytes(buffer: &[u8]) -> Result<Vec<(u8, u32)>, ProcessOperationError> {
     let mut ids = Vec::new();
     let mut offset = 0_usize;
     let header_size = size_of::<CpuSetInformationHeader>();
@@ -163,7 +163,16 @@ fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
         };
         let record_size = header.size as usize;
         if record_size < header_size || offset.saturating_add(record_size) > buffer.len() {
-            break;
+            return Err(ProcessOperationError::Failed {
+                operation: "CPU Set inventory record",
+                code: windows_sys::Win32::Foundation::ERROR_INVALID_DATA,
+            });
+        }
+        if header.cpu_set_type == 0 && record_size < size_of::<SYSTEM_CPU_SET_INFORMATION>() {
+            return Err(ProcessOperationError::Failed {
+                operation: "CPU Set inventory record",
+                code: windows_sys::Win32::Foundation::ERROR_INVALID_DATA,
+            });
         }
         if header.cpu_set_type == 0 && record_size >= size_of::<SYSTEM_CPU_SET_INFORMATION>() {
             // SAFETY: the record-size check guarantees a complete structure and the same packed
@@ -179,16 +188,18 @@ fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
             // SAFETY: cpu_set_type zero selects the CpuSet union member.
             let cpu_set = unsafe { info.Anonymous.CpuSet };
             if cpu_set.Group == 0 && cpu_set.LogicalProcessorIndex < 64 {
-                let bit = 1_u64 << cpu_set.LogicalProcessorIndex;
-                if rule_mask & bit != 0 {
-                    ids.push(cpu_set.Id);
-                }
+                ids.push((cpu_set.LogicalProcessorIndex, cpu_set.Id));
             }
         }
         offset += record_size;
     }
-    normalize_cpu_set_ids(&mut ids);
-    ids
+    if offset != buffer.len() {
+        return Err(ProcessOperationError::Failed {
+            operation: "CPU Set inventory record",
+            code: windows_sys::Win32::Foundation::ERROR_INVALID_DATA,
+        });
+    }
+    Ok(ids)
 }
 
 fn normalize_cpu_set_ids(ids: &mut Vec<u32>) {
@@ -201,7 +212,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn partial_cpu_set_inventory_is_rejected() {
+        assert!(cpu_set_inventory_from_bytes(&[0; 3]).is_err());
+        assert!(cpu_set_inventory_from_bytes(&[0; 8]).is_err());
+    }
+
+    #[test]
     fn empty_cpu_set_buffer_yields_no_ids() {
-        assert!(cpu_set_ids_for_mask_from_bytes(&[], 0b11).is_empty());
+        assert!(cpu_set_inventory_from_bytes(&[]).unwrap().is_empty());
     }
 }

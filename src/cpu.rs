@@ -268,7 +268,7 @@ fn process_cpu_time_percent(
 
     let cpu_delta = current
         .cpu_time_100ns
-        .saturating_sub(previous.cpu_time_100ns) as f64;
+        .checked_sub(previous.cpu_time_100ns)? as f64;
     Some(
         ((cpu_delta / (elapsed_100ns as f64 * processor_count.max(1) as f64)) * 100.0)
             .clamp(0.0, 100.0) as f32,
@@ -435,6 +435,20 @@ fn processor_usage_percent(previous: CpuTimeCounters, current: CpuTimeCounters) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_counter_regression_is_unavailable() {
+        let now = Instant::now();
+        let previous = ProcessCpuSample {
+            cpu_time_100ns: 20,
+            sampled_at: now,
+        };
+        let current = ProcessCpuSample {
+            cpu_time_100ns: 10,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        assert_eq!(process_cpu_time_percent(previous, current, 1), None);
+    }
 
     #[test]
     fn combines_filetime_parts() {

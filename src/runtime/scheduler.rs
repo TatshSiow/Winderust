@@ -99,6 +99,7 @@ const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 13] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchedulerEvent {
+    AdaptiveWorkloadChanged,
     SettingsChanged,
     ForegroundChanged,
     WindowCreated,
@@ -146,6 +147,16 @@ impl RefreshScheduler {
 
     pub(crate) fn invalidate(&mut self, event: SchedulerEvent, now: Instant) {
         match event {
+            SchedulerEvent::AdaptiveWorkloadChanged => self.schedule_domains_now(
+                &[
+                    RefreshDomain::ThreadPriority,
+                    RefreshDomain::IoPriority,
+                    RefreshDomain::GpuPriority,
+                    RefreshDomain::DynamicPriorityBoost,
+                    RefreshDomain::AdaptivePowerPlan,
+                ],
+                now,
+            ),
             SchedulerEvent::SettingsChanged => {
                 self.schedule_domains_now(&ALL_REFRESH_DOMAINS, now);
             }
@@ -214,6 +225,20 @@ impl RefreshScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_dependency_change_only_wakes_dependent_domains() {
+        let now = Instant::now();
+        let mut scheduler = RefreshScheduler::new(now);
+        for domain in ALL_REFRESH_DOMAINS {
+            scheduler.schedule_after(domain, now, Duration::from_secs(60));
+        }
+        scheduler.invalidate(SchedulerEvent::AdaptiveWorkloadChanged, now);
+        assert!(scheduler.is_due(RefreshDomain::ThreadPriority, now));
+        assert!(scheduler.is_due(RefreshDomain::IoPriority, now));
+        assert!(!scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now));
+        assert!(!scheduler.is_due(RefreshDomain::ProcessAppearance, now));
+    }
 
     const HOUR: Duration = Duration::from_secs(60 * 60);
 

@@ -14,8 +14,8 @@ use crate::{
         },
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        same_process_name, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_executable_path, process_failure_key, process_session_id, same_process_name,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -135,6 +135,8 @@ impl ThreadPriorityManager {
         } else {
             ProtectedProcesses::default()
         };
+        let adaptive_workload = (owner == ControlOwner::AdaptiveEngine)
+            .then(|| observations.adaptive_workload(processes.as_ref()));
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
                 processes
@@ -162,11 +164,13 @@ impl ThreadPriorityManager {
                 continue;
             };
             let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
+                && super::foreground_for_owner(
+                    owner,
+                    process,
                     &executable_path,
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
+                    adaptive_workload.as_deref(),
                 );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
@@ -452,6 +456,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::foreground::is_foreground_process;
     use std::path::Path;
 
     use super::*;

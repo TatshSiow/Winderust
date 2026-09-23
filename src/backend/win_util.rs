@@ -14,6 +14,11 @@ impl WinHandle {
     }
 
     pub(crate) fn process_creation_time(&self) -> Option<u64> {
+        self.process_times().ok().map(|(creation, _)| creation)
+    }
+
+    /// Creation time and accumulated kernel/user CPU time, in 100 ns units.
+    pub(crate) fn process_times(&self) -> Result<(u64, u64), u32> {
         let mut creation = FILETIME::default();
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
@@ -22,7 +27,14 @@ impl WinHandle {
         // duration of the call.
         let ok =
             unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
-        (ok != 0).then(|| filetime_to_u64(creation))
+        if ok == 0 {
+            Err(last_error())
+        } else {
+            Ok((
+                filetime_to_u64(creation),
+                filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
+            ))
+        }
     }
 }
 

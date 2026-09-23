@@ -17,6 +17,33 @@ use super::process::{
     ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
+#[derive(Default)]
+pub(crate) struct CpuSetInventory {
+    result: Option<Result<Vec<(u8, u32)>, ProcessControlError>>,
+}
+impl CpuSetInventory {
+    pub(crate) fn failed(&self) -> bool {
+        matches!(self.result, Some(Err(_)))
+    }
+    fn ids<P: CpuAllocationPlatform>(
+        &mut self,
+        platform: &mut P,
+        mask: u64,
+    ) -> Result<Vec<u32>, ProcessControlError> {
+        match self
+            .result
+            .get_or_insert_with(|| platform.cpu_set_inventory())
+        {
+            Ok(entries) => Ok(entries
+                .iter()
+                .filter(|(bit, _)| *bit < 64 && mask & (1u64 << bit) != 0)
+                .map(|(_, id)| *id)
+                .collect()),
+            Err(error) => Err(error.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CpuAllocationRequest {
     SoftCpuSets { logical_processor_mask: u64 },
@@ -85,6 +112,7 @@ struct CpuAllocationClaimFingerprint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingReconciliation {
     Handoff,
+    HandoffRetry,
     ReleaseOnlyFirstAttempt {
         failed_claim: Option<CpuAllocationClaimFingerprint>,
     },
@@ -125,7 +153,7 @@ pub(crate) trait CpuAllocationPlatform {
         process: &Self::Process,
     ) -> Result<(usize, usize), ProcessControlError>;
     fn query_cpu_sets(&mut self, process: &Self::Process) -> Result<Vec<u32>, ProcessControlError>;
-    fn cpu_set_ids_for_mask(&mut self, mask: u64) -> Result<Vec<u32>, ProcessControlError>;
+    fn cpu_set_inventory(&mut self) -> Result<Vec<(u8, u32)>, ProcessControlError>;
     fn begin_affinity_change(
         &mut self,
         process: &Self::Process,
@@ -184,8 +212,8 @@ impl CpuAllocationPlatform for WindowsCpuAllocationPlatform {
         windows_cpu_allocation::query_cpu_sets(process).map_err(map_cpu_allocation_error)
     }
 
-    fn cpu_set_ids_for_mask(&mut self, mask: u64) -> Result<Vec<u32>, ProcessControlError> {
-        windows_cpu_allocation::cpu_set_ids_for_mask(mask).map_err(map_cpu_allocation_error)
+    fn cpu_set_inventory(&mut self) -> Result<Vec<(u8, u32)>, ProcessControlError> {
+        windows_cpu_allocation::cpu_set_inventory().map_err(map_cpu_allocation_error)
     }
 
     fn begin_affinity_change(
@@ -285,6 +313,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
 
     pub(crate) fn apply_policy_claim(
         &mut self,
+        inventory: &mut CpuSetInventory,
         claim: CpuAllocationClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
@@ -304,7 +333,8 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         }
 
         let failed_claim = claim_fingerprint(&effective);
-        let result = self.apply_effective_claim(effective, allow_cross_session_process_control);
+        let result =
+            self.apply_effective_claim(inventory, effective, allow_cross_session_process_control);
         if result.is_err() {
             let owner_claims = self.claims.entry(owner).or_default();
             if let Some(previous) = previous {
@@ -315,8 +345,12 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             if self.pending_reconciliations.contains_key(&key) {
                 self.pending_reconciliations.insert(
                     key,
-                    PendingReconciliation::ReleaseOnlyFirstAttempt {
-                        failed_claim: Some(failed_claim),
+                    if inventory.failed() {
+                        PendingReconciliation::HandoffRetry
+                    } else {
+                        PendingReconciliation::ReleaseOnlyFirstAttempt {
+                            failed_claim: Some(failed_claim),
+                        }
                     },
                 );
             }
@@ -328,6 +362,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
 
     fn apply_effective_claim(
         &mut self,
+        inventory: &mut CpuSetInventory,
         claim: CpuAllocationClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
@@ -339,7 +374,13 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         match claim.request {
             CpuAllocationRequest::SoftCpuSets {
                 logical_processor_mask,
-            } => self.apply_soft_claim(&identity, &process, claim.owner, logical_processor_mask),
+            } => self.apply_soft_claim(
+                inventory,
+                &identity,
+                &process,
+                claim.owner,
+                logical_processor_mask,
+            ),
             CpuAllocationRequest::HardAffinity {
                 logical_processor_mask,
             } => self.apply_hard_claim(
@@ -353,12 +394,13 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
 
     fn apply_soft_claim(
         &mut self,
+        inventory: &mut CpuSetInventory,
         identity: &ProcessIdentity,
         process: &P::Process,
         owner: ControlOwner,
         logical_processor_mask: u64,
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
-        let mut desired = self.platform.cpu_set_ids_for_mask(logical_processor_mask)?;
+        let mut desired = inventory.ids(&mut self.platform, logical_processor_mask)?;
         normalize_cpu_set_ids(&mut desired);
         let released_affinity = self.release_affinity_for_switch(identity, process)?;
         if desired.is_empty() {
@@ -859,12 +901,14 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         allow_cross_session_process_control: bool,
         include_release_retries: bool,
     ) -> CpuAllocationReconciliationSummary {
+        let mut inventory = CpuSetInventory::default();
         let pending = take(&mut self.pending_reconciliations);
         let mut summary = CpuAllocationReconciliationSummary::default();
         for (key, reconciliation) in pending {
             if matches!(
                 reconciliation,
                 PendingReconciliation::ReleaseOnlyRetry { .. }
+                    | PendingReconciliation::HandoffRetry
             ) && !include_release_retries
             {
                 self.pending_reconciliations.insert(key, reconciliation);
@@ -906,7 +950,11 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 continue;
             };
             let failed_claim = claim_fingerprint(&claim);
-            match self.apply_effective_claim(claim.clone(), allow_cross_session_process_control) {
+            match self.apply_effective_claim(
+                &mut inventory,
+                claim.clone(),
+                allow_cross_session_process_control,
+            ) {
                 Ok(CpuAllocationApplyOutcome::Applied) => {
                     summary
                         .applications
@@ -931,6 +979,13 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                             },
                         );
                     }
+                }
+                Err(error) if inventory.failed() => {
+                    summary
+                        .failures
+                        .push(reconciliation_failure_for_claim(&claim, error));
+                    self.pending_reconciliations
+                        .insert(key, PendingReconciliation::HandoffRetry);
                 }
                 Err(error) => {
                     summary
@@ -965,9 +1020,13 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     }
 
     pub(crate) fn has_pending_release_retry(&self) -> bool {
-        self.pending_reconciliations
-            .values()
-            .any(|pending| matches!(pending, PendingReconciliation::ReleaseOnlyRetry { .. }))
+        self.pending_reconciliations.values().any(|pending| {
+            matches!(
+                pending,
+                PendingReconciliation::ReleaseOnlyRetry { .. }
+                    | PendingReconciliation::HandoffRetry
+            )
+        })
     }
 
     fn reconcile_policy_key(
@@ -978,7 +1037,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         if let Some(effective) = self.effective_claim(key) {
             let effective = claim_fingerprint(effective);
             let should_queue_handoff = match self.pending_reconciliations.get(key) {
-                Some(PendingReconciliation::Handoff) => false,
+                Some(PendingReconciliation::Handoff | PendingReconciliation::HandoffRetry) => false,
                 Some(
                     PendingReconciliation::ReleaseOnlyFirstAttempt {
                         failed_claim: Some(failed),
@@ -1769,6 +1828,7 @@ mod tests {
         open_cross_session_flags: Vec<bool>,
         affinity_apply_failures_remaining: usize,
         fail_next_cpu_sets_apply: bool,
+        fail_inventory: bool,
         fail_next_commit: bool,
         fail_next_affinity_relinquish: bool,
         fail_next_cpu_sets_relinquish: bool,
@@ -1854,11 +1914,17 @@ mod tests {
                 .ok_or(ProcessControlError::ProcessExited)
         }
 
-        fn cpu_set_ids_for_mask(&mut self, mask: u64) -> Result<Vec<u32>, ProcessControlError> {
-            Ok((0..64)
-                .filter(|bit| mask & (1_u64 << bit) != 0)
-                .map(|bit| 100 + bit)
-                .collect())
+        fn cpu_set_inventory(&mut self) -> Result<Vec<(u8, u32)>, ProcessControlError> {
+            self.state
+                .borrow_mut()
+                .events
+                .push("cpu-set-inventory".into());
+            if self.state.borrow().fail_inventory {
+                return Err(ProcessControlError::Failed(
+                    "CPU Set discovery failed".into(),
+                ));
+            }
+            Ok((0..64u8).map(|bit| (bit, 100 + u32::from(bit))).collect())
         }
 
         fn begin_affinity_change(
@@ -2066,6 +2132,105 @@ mod tests {
     }
 
     #[test]
+    fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
+        use crate::{action_log::ActionLog, cpu_allocation::CpuAllocationManager};
+        let mut coordinator = coordinator();
+        let mut second = process_state(&coordinator);
+        second.identity = identity(43, 7);
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .processes
+            .insert(43, second);
+        let mut manager = CpuAllocationManager::default();
+        let mut log = ActionLog::default();
+        let targets = || {
+            vec![
+                allocation_target(42, 3, false),
+                allocation_target(43, 12, false),
+            ]
+        };
+        let reconcile = |manager: &mut CpuAllocationManager,
+                         coordinator: &mut CpuAllocationCoordinator<FakePlatform>,
+                         log: &mut ActionLog| {
+            manager.reconcile_targets(
+                coordinator,
+                ControlOwner::CpuSetsSoft,
+                targets(),
+                None,
+                2,
+                String::new(),
+                true,
+                log,
+            )
+        };
+        reconcile(&mut manager, &mut coordinator, &mut log);
+        assert_eq!(
+            coordinator
+                .platform
+                .state
+                .borrow()
+                .events
+                .iter()
+                .filter(|e| *e == "cpu-set-inventory")
+                .count(),
+            1
+        );
+        coordinator.platform.state.borrow_mut().fail_inventory = true;
+        for _ in 0..4 {
+            coordinator.platform.state.borrow_mut().events.clear();
+            let result = reconcile(&mut manager, &mut coordinator, &mut log);
+            assert!(result.snapshot.auto_excluded_processes.is_empty());
+            assert!(result.snapshot.last_error.is_some());
+            assert_eq!(
+                coordinator
+                    .platform
+                    .state
+                    .borrow()
+                    .events
+                    .iter()
+                    .filter(|e| *e == "cpu-set-inventory")
+                    .count(),
+                1
+            );
+            assert_eq!(process_state(&coordinator).cpu_sets, vec![100, 101]);
+            assert_eq!(
+                coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+                2
+            );
+        }
+        let key = process_state(&coordinator).identity.key();
+        coordinator
+            .pending_reconciliations
+            .insert(key, PendingReconciliation::Handoff);
+        assert!(!coordinator
+            .reconcile_pending(true, false)
+            .failures
+            .is_empty());
+        assert!(!coordinator.has_pending_immediate_reconciliation());
+        assert!(coordinator.has_pending_release_retry());
+        reconcile(&mut manager, &mut coordinator, &mut log);
+        assert!(coordinator
+            .pending_reconciliations
+            .values()
+            .all(|pending| { matches!(pending, PendingReconciliation::HandoffRetry) }));
+        coordinator.platform.state.borrow_mut().events.clear();
+        coordinator.reconcile_pending(true, false);
+        assert!(coordinator.platform.state.borrow().events.is_empty());
+        coordinator.platform.state.borrow_mut().fail_inventory = false;
+        coordinator.reconcile_pending(true, true);
+        assert!(!coordinator.has_pending_reconciliation());
+        assert!(reconcile(&mut manager, &mut coordinator, &mut log)
+            .snapshot
+            .last_error
+            .is_none());
+        coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
+        coordinator.reconcile_pending(true, true);
+        assert!(process_state(&coordinator).cpu_sets.is_empty());
+    }
+
+    #[test]
     fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         use crate::{
             action_log::{ActionLog, ActionLogFeature},
@@ -2124,7 +2289,7 @@ mod tests {
                     .position(|e| e == "apply-cpu-sets:[101, 102, 103]")
                     .unwrap()
         );
-        let writes = events.len();
+        let writes = events.iter().filter(|e| *e != "cpu-set-inventory").count();
         manager.reconcile_targets(
             &mut coordinator,
             ControlOwner::AdaptiveEngine,
@@ -2136,7 +2301,14 @@ mod tests {
             &mut log,
         );
         assert_eq!(
-            coordinator.platform.state.borrow().events.len(),
+            coordinator
+                .platform
+                .state
+                .borrow()
+                .events
+                .iter()
+                .filter(|e| *e != "cpu-set-inventory")
+                .count(),
             writes,
             "unchanged placement must not write again"
         );
@@ -2196,6 +2368,7 @@ mod tests {
                 2 => {
                     coordinator
                         .apply_policy_claim(
+                            &mut CpuSetInventory::default(),
                             claim(
                                 ControlOwner::CpuSetsSoft,
                                 CpuAllocationRequest::SoftCpuSets {
@@ -2303,6 +2476,7 @@ mod tests {
         let workload_key = target(42, 7).key();
         assert_eq!(
             coordinator.apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::HardAffinity {
@@ -2318,6 +2492,7 @@ mod tests {
 
         assert_eq!(
             coordinator.apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2337,6 +2512,7 @@ mod tests {
 
         assert_eq!(
             coordinator.apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::ProcessorAffinityHard,
                     CpuAllocationRequest::HardAffinity {
@@ -2391,6 +2567,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2421,6 +2598,7 @@ mod tests {
         );
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim_for(
                     43,
                     ControlOwner::AdaptiveEngine,
@@ -2434,6 +2612,7 @@ mod tests {
             .unwrap();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim_for(
                     43,
                     ControlOwner::ProcessorAffinityHard,
@@ -2479,6 +2658,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::HardAffinity {
@@ -2491,6 +2671,7 @@ mod tests {
             .unwrap();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2503,6 +2684,7 @@ mod tests {
             .unwrap();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::ProcessorAffinityHard,
                     CpuAllocationRequest::HardAffinity {
@@ -2550,6 +2732,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::HardAffinity {
@@ -2562,6 +2745,7 @@ mod tests {
             .unwrap();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2594,6 +2778,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2606,6 +2791,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             coordinator.apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::ProcessorAffinityHard,
                     CpuAllocationRequest::HardAffinity {
@@ -2632,6 +2818,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::HardAffinity {
@@ -2649,6 +2836,7 @@ mod tests {
             .fail_next_cpu_sets_apply = true;
 
         let result = coordinator.apply_policy_claim(
+            &mut CpuSetInventory::default(),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
@@ -2675,6 +2863,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2692,6 +2881,7 @@ mod tests {
             .affinity_apply_failures_remaining = 1;
 
         let result = coordinator.apply_policy_claim(
+            &mut CpuSetInventory::default(),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
@@ -2714,6 +2904,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::HardAffinity {
@@ -2754,6 +2945,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::ProcessorAffinityHard,
                     CpuAllocationRequest::HardAffinity {
@@ -2792,6 +2984,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2830,6 +3023,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2882,6 +3076,7 @@ mod tests {
             .reject_disallowed_cross_session_open = true;
 
         let result = coordinator.apply_policy_claim(
+            &mut CpuSetInventory::default(),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
@@ -2905,6 +3100,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::HardAffinity {
@@ -2917,6 +3113,7 @@ mod tests {
             .unwrap();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -2979,6 +3176,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::ProcessorAffinityHard,
                     CpuAllocationRequest::HardAffinity {
@@ -3001,6 +3199,7 @@ mod tests {
 
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::ProcessorAffinityHard,
                     CpuAllocationRequest::HardAffinity {
@@ -3036,6 +3235,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator.platform.state.borrow_mut().fail_next_commit = true;
         let result = coordinator.apply_policy_claim(
+            &mut CpuSetInventory::default(),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
@@ -3062,6 +3262,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -3082,6 +3283,7 @@ mod tests {
         let mut coordinator = coordinator();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::CpuSetsSoft,
                     CpuAllocationRequest::SoftCpuSets {
@@ -3122,6 +3324,7 @@ mod tests {
         );
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim(
                     ControlOwner::ProcessorAffinityHard,
                     CpuAllocationRequest::HardAffinity {
@@ -3134,6 +3337,7 @@ mod tests {
             .unwrap();
         coordinator
             .apply_policy_claim(
+                &mut CpuSetInventory::default(),
                 claim_for(
                     43,
                     ControlOwner::CpuSetsSoft,
@@ -3226,6 +3430,7 @@ mod tests {
             let expected_affinity = available_affinity & available_affinity.wrapping_neg();
             coordinator
                 .apply_policy_claim(
+                    &mut CpuSetInventory::default(),
                     CpuAllocationClaim {
                         target: target.clone(),
                         owner: ControlOwner::ProcessorAffinityHard,
@@ -3276,9 +3481,8 @@ mod tests {
             .map_err(|error| error.to_string())?;
         normalize_cpu_set_ids(&mut baseline_cpu_sets);
         let soft_target = (0..64).find_map(|bit| {
-            let mut ids = coordinator
-                .platform
-                .cpu_set_ids_for_mask(1_u64 << bit)
+            let mut ids = CpuSetInventory::default()
+                .ids(&mut coordinator.platform, 1_u64 << bit)
                 .ok()?;
             normalize_cpu_set_ids(&mut ids);
             (!ids.is_empty() && ids != baseline_cpu_sets).then_some((1_u64 << bit, ids))
@@ -3286,6 +3490,7 @@ mod tests {
         if let Some((logical_processor_mask, expected_cpu_sets)) = soft_target {
             coordinator
                 .apply_policy_claim(
+                    &mut CpuSetInventory::default(),
                     CpuAllocationClaim {
                         target: target.clone(),
                         owner: ControlOwner::CpuSetsSoft,

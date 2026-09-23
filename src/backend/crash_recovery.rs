@@ -3009,9 +3009,12 @@ mod tests {
         original_ids.sort_unstable();
         original_ids.dedup();
         let expected_ids = (0..64).find_map(|bit| {
-            let mut ids =
-                crate::platform::windows::cpu_allocation::cpu_set_ids_for_mask(1_u64 << bit)
-                    .ok()?;
+            let mut ids = crate::platform::windows::cpu_allocation::cpu_set_inventory()
+                .ok()?
+                .into_iter()
+                .filter(|(index, _)| *index == bit)
+                .map(|(_, id)| id)
+                .collect::<Vec<_>>();
             ids.sort_unstable();
             ids.dedup();
             (!ids.is_empty() && ids != original_ids).then_some(ids)

@@ -123,6 +123,7 @@ pub(crate) struct PowerPlanController<P: PowerPlanPlatform = WindowsPowerPlanPla
     ordinary_original_guid: Option<String>,
     ordinary_expected_guid: Option<String>,
     adaptive_plan: Option<ActiveAdaptivePowerPlan>,
+    setup_cleanup_due: Option<Instant>,
     last_decision: Option<DecisionOutcome>,
     next_active_plan_refresh: Option<Instant>,
     last_switch_attempt: Option<(String, Instant)>,
@@ -144,6 +145,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             ordinary_original_guid: None,
             ordinary_expected_guid: None,
             adaptive_plan: None,
+            setup_cleanup_due: None,
             last_decision: None,
             next_active_plan_refresh: None,
             last_switch_attempt: None,
@@ -153,6 +155,23 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
 
     pub(crate) fn adaptive_active(&self) -> bool {
         self.adaptive_plan.as_ref().is_some_and(|plan| plan.active)
+    }
+
+    pub(crate) fn cleanup_retry_delay(&self, now: Instant) -> Option<Duration> {
+        self.setup_cleanup_due
+            .map(|due| due.saturating_duration_since(now))
+    }
+
+    pub(crate) fn retry_pending_cleanup(&mut self, now: Instant) -> Result<(), String> {
+        if self.cleanup_retry_delay(now) == Some(Duration::ZERO) {
+            self.setup_cleanup_due = Some(now + SWITCH_RETRY_INTERVAL);
+            self.release_adaptive(now)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_pending_cleanup(&self) -> bool {
+        self.adaptive_plan.is_some()
     }
 
     pub(crate) fn clear_failures(&mut self) {
@@ -294,6 +313,13 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         request: AdaptivePowerPlanRequest,
         now: Instant,
     ) -> Result<AdaptivePowerProfile, String> {
+        if let Some(due) = self.setup_cleanup_due {
+            if now < due {
+                return Err("Adaptive plan setup cleanup is pending.".to_owned());
+            }
+            self.setup_cleanup_due = Some(now + SWITCH_RETRY_INTERVAL);
+            self.release_adaptive(now)?;
+        }
         self.refresh_active_plan_if_due(now)?;
         self.cleanup_inactive_adaptive_plan()?;
 
@@ -315,16 +341,25 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 request.background_pressure_profile,
                 request.focus_and_launch_profile,
             );
+            // Own the GUID before any fallible setup or activation. Pending setup is not
+            // evidence that activation failed; cleanup must query the actual active plan.
+            self.adaptive_plan = Some(ActiveAdaptivePowerPlan {
+                original_guid: original_guid.clone(),
+                plan_guid: plan_guid.clone(),
+                profile: request.profile,
+                values: None,
+                lower_demand_since: None,
+                active: false,
+            });
+            self.setup_cleanup_due = Some(now + SWITCH_RETRY_INTERVAL);
             if let Err(error) = self
                 .platform
                 .apply_processor_values(&plan_guid, values)
                 .and_then(|()| switch_active_verified(&mut self.platform, &plan_guid).map(|_| ()))
             {
-                return Err(adaptive_plan_setup_error(
-                    error,
-                    self.platform.delete_plan(&plan_guid),
-                ));
+                return Err(adaptive_plan_setup_error(error, self.release_adaptive(now)));
             }
+            self.setup_cleanup_due = None;
             self.current_guid = Some(plan_guid.clone());
             self.last_verified_application = Some(plan_guid.clone());
             self.adaptive_plan = Some(ActiveAdaptivePowerPlan {
@@ -377,7 +412,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             return Ok(());
         };
 
-        if plan.active {
+        if plan.active || self.setup_cleanup_due.is_some() {
             let current_matches = self
                 .current_guid
                 .as_deref()
@@ -405,6 +440,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.adaptive_plan = Some(plan);
             return Err(error);
         }
+        self.setup_cleanup_due = None;
         Ok(())
     }
 
@@ -469,7 +505,14 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         let Some(plan) = self.adaptive_plan.as_ref().filter(|plan| !plan.active) else {
             return Ok(());
         };
+        if self.setup_cleanup_due.is_some() {
+            return Ok(());
+        }
         let guid = plan.plan_guid.clone();
+        let actual = self.platform.active_guid()?;
+        if same_guid(&actual, &guid) {
+            return Err("Inactive Adaptive plan is currently active; cleanup deferred.".to_owned());
+        }
         self.platform.delete_plan(&guid)?;
         self.adaptive_plan = None;
         Ok(())
@@ -723,12 +766,42 @@ mod tests {
         ) -> Result<(), String> {
             self.events.borrow_mut().push(format!("configure:{guid}"));
             if std::mem::take(&mut self.fail_partial_processor_write) {
-                self.processor_values.as_mut().unwrap().ac = values.ac;
+                self.processor_values.get_or_insert(values).ac = values.ac;
                 return Err("injected partial processor write".into());
             }
             self.processor_values = Some(values);
             Ok(())
         }
+    }
+
+    #[test]
+    fn failed_setup_keeps_the_guid_until_cleanup_succeeds() {
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.platform.failure = Some(FailurePoint::Delete);
+        controller.platform.fail_partial_processor_write = true;
+        let now = Instant::now();
+        assert!(controller
+            .reconcile_adaptive(adaptive_request(), now)
+            .is_err());
+        assert_eq!(
+            controller.adaptive_plan.as_ref().unwrap().plan_guid,
+            "adaptive-1"
+        );
+        assert!(controller
+            .reconcile_adaptive(adaptive_request(), now + Duration::from_secs(1))
+            .is_err());
+        assert_eq!(controller.platform.next_adaptive, 2);
+        assert!(controller
+            .retry_pending_cleanup(now + Duration::from_secs(16))
+            .is_err());
+        assert_eq!(controller.platform.next_adaptive, 2);
+        controller.platform.failure = None;
+        controller
+            .retry_pending_cleanup(now + Duration::from_secs(32))
+            .unwrap();
+        assert!(controller.adaptive_plan.is_none());
+        assert!(!controller.platform.plans.contains("adaptive-1"));
+        assert_eq!(controller.platform.active, "original");
     }
 
     fn decision(target: Option<&str>) -> DecisionOutcome {

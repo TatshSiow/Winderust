@@ -64,6 +64,7 @@ pub(crate) struct CycleObservations {
     sources: ObservationSources,
     processes: Observation<Arc<[ProcessInfo]>>,
     process_paths_enriched: bool,
+    adaptive_workload: Option<Arc<std::collections::BTreeMap<u32, u64>>>,
     foreground_process_id: Observation<Option<u32>>,
     foreground_process: Observation<Option<ForegroundProcess>>,
     visible_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
@@ -82,11 +83,29 @@ impl CycleObservations {
             sources,
             processes: Observation::NotRequested,
             process_paths_enriched: false,
+            adaptive_workload: None,
             foreground_process_id: Observation::NotRequested,
             foreground_process: Observation::NotRequested,
             visible_window_process_ids: Observation::NotRequested,
             top_level_window_process_ids: Observation::NotRequested,
         }
+    }
+
+    pub(crate) fn adaptive_workload(
+        &mut self,
+        processes: &[ProcessInfo],
+    ) -> Arc<std::collections::BTreeMap<u32, u64>> {
+        let root = self.foreground_process_id();
+        Arc::clone(self.adaptive_workload.get_or_insert_with(|| {
+            let ids = foreground_process_group_ids(processes, root);
+            Arc::new(
+                processes
+                    .iter()
+                    .filter(|p| ids.contains(&p.id))
+                    .filter_map(|p| p.creation_time.map(|creation| (p.id, creation)))
+                    .collect(),
+            )
+        }))
     }
 
     pub(crate) fn processes(&mut self) -> Result<Arc<[ProcessInfo]>, String> {
@@ -210,6 +229,38 @@ struct ObservationAvailabilitySnapshot {
     top_level_window_process_ids: ObservationAvailability,
 }
 
+/// Unknown or stale ancestry does not establish membership in the current workload.
+pub(crate) fn foreground_process_group_ids(
+    processes: &[ProcessInfo],
+    root: Option<u32>,
+) -> BTreeSet<u32> {
+    let by_id = processes
+        .iter()
+        .map(|p| (p.id, p))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let Some(root) = root.filter(|id| by_id.get(id).is_some_and(|p| p.creation_time.is_some()))
+    else {
+        return BTreeSet::new();
+    };
+    let mut group = BTreeSet::from([root]);
+    let mut pending = vec![root];
+    while let Some(parent) = pending.pop() {
+        let parent_created = by_id[&parent].creation_time;
+        for child in processes {
+            if child.parent_id == Some(parent)
+                && child
+                    .creation_time
+                    .zip(parent_created)
+                    .is_some_and(|(child, parent)| child >= parent)
+                && group.insert(child.id)
+            {
+                pending.push(child.id);
+            }
+        }
+    }
+    group
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -251,6 +302,58 @@ mod tests {
             name: "test.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Apps\test.exe")),
         }])
+    }
+
+    #[test]
+    fn adaptive_workload_rejects_reused_ancestry_and_preserves_standalone_matching() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let root = processes().unwrap().remove(0);
+        let make = |id, parent, creation, name: &str| ProcessInfo {
+            id,
+            parent_id: parent,
+            creation_time: creation,
+            name: name.into(),
+            image_path: Some(PathBuf::from(format!(r"C:\Apps\{name}"))),
+            ..root.clone()
+        };
+        let entries = vec![
+            make(42, None, Some(100), "root.exe"),
+            make(99, Some(42), Some(20), "stale.exe"),
+            make(101, Some(42), Some(110), "child.exe"),
+            make(102, Some(101), None, "unknown.exe"),
+            make(103, None, Some(120), "root.exe"),
+        ];
+        assert_eq!(
+            foreground_process_group_ids(&entries, Some(42)),
+            BTreeSet::from([42, 101])
+        );
+        assert!(foreground_process_group_ids(&entries, Some(999)).is_empty());
+        let group = std::collections::BTreeMap::from([(42, 100), (101, 110)]);
+        for (index, adaptive, standalone) in [(0, true, true), (2, true, false), (4, false, true)] {
+            let process = &entries[index];
+            for (owner, expected) in [
+                (
+                    crate::control::process::ControlOwner::AdaptiveEngine,
+                    adaptive,
+                ),
+                (
+                    crate::control::process::ControlOwner::ThreadPriority,
+                    standalone,
+                ),
+            ] {
+                assert_eq!(
+                    crate::features::priority_control::foreground_for_owner(
+                        owner,
+                        process,
+                        process.image_path.as_deref().unwrap(),
+                        Some(42),
+                        entries[0].image_path.as_deref(),
+                        Some(&group)
+                    ),
+                    expected
+                );
+            }
+        }
     }
 
     fn foreground_id() -> Option<u32> {

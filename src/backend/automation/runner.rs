@@ -89,6 +89,8 @@ pub(super) struct RuntimeCore {
     adaptive_engine_process_manager: AdaptiveEngineProcessManager,
     focus_and_launch_profile_active: bool,
     cpu_pressure_restraint_active: bool,
+    helper_workload: Vec<(u32, u64)>,
+    helper_dependencies_changed: bool,
     adaptive_engine_process_foreground_cpu_usage_tenths: Option<u16>,
     process_priority_manager: ProcessPriorityManager,
     priority_efficiency_controller: PriorityEfficiencyController,
@@ -589,10 +591,36 @@ impl RuntimeCore {
             &mut self.action_log,
         );
         self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
-        self.cpu_pressure_restraint_active = snapshot.cpu_pressure_restraint_active;
+        let workload = if settings.general.enabled && adaptive_engine_process_required(settings) {
+            observations
+                .processes()
+                .ok()
+                .map(|processes| observations.adaptive_workload(&processes))
+                .map(|group| {
+                    group
+                        .iter()
+                        .map(|(&id, &creation)| (id, creation))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        self.note_helper_dependencies(snapshot.cpu_pressure_restraint_active, workload);
         self.adaptive_engine_process_foreground_cpu_usage_tenths =
             snapshot.foreground_cpu_usage_tenths;
         snapshot
+    }
+
+    pub(super) fn note_helper_dependencies(&mut self, pressure: bool, workload: Vec<(u32, u64)>) {
+        self.helper_dependencies_changed |=
+            self.cpu_pressure_restraint_active != pressure || self.helper_workload != workload;
+        self.cpu_pressure_restraint_active = pressure;
+        self.helper_workload = workload;
+    }
+
+    pub(super) fn take_helper_dependency_change(&mut self) -> bool {
+        std::mem::take(&mut self.helper_dependencies_changed)
     }
 
     pub(super) fn run_bottleneck_classifier_update(
@@ -1016,32 +1044,51 @@ impl RuntimeCore {
         statuses
     }
 
-    pub(super) fn retry_priority_releases(&mut self, now: Instant) -> Option<String> {
-        let summary = self
+    pub(super) fn retry_control_releases(&mut self, now: Instant) -> Option<String> {
+        let mut errors = self
             .priority_efficiency_controller
-            .retry_pending_releases(now);
-        (!summary.failures.is_empty()).then(|| {
-            summary
+            .retry_pending_releases(now)
+            .failures
+            .into_iter()
+            .map(|failure| {
+                format!(
+                    "{} restoration failed for {} ({}): {}",
+                    failure.property, failure.process_name, failure.process_id, failure.error
+                )
+            })
+            .collect::<Vec<_>>();
+        errors.extend(
+            self.thread_priority_controller
+                .retry_pending_releases(now)
                 .failures
                 .into_iter()
                 .map(|failure| {
                     format!(
-                        "{} restoration failed for {} ({}): {}",
-                        failure.property, failure.process_name, failure.process_id, failure.error
+                        "Thread Priority restoration failed for {} ({}, thread {}): {}",
+                        failure.process_name, failure.process_id, failure.thread_id, failure.error
                     )
-                })
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
+                }),
+        );
+        if let Err(error) = self.power_plan_controller.retry_pending_cleanup(now) {
+            errors.push(format!("Adaptive plan cleanup failed: {error}"));
+        }
+        (!errors.is_empty()).then(|| errors.join("; "))
     }
 
-    pub(super) fn priority_release_retry_delay(&self, now: Instant) -> Option<Duration> {
-        self.priority_efficiency_controller.release_retry_delay(now)
+    pub(super) fn control_release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        [
+            self.priority_efficiency_controller.release_retry_delay(now),
+            self.thread_priority_controller.release_retry_delay(now),
+            self.power_plan_controller.cleanup_retry_delay(now),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub(super) fn has_managed_process_control_state(&self) -> bool {
         let app_suspension_active = self.app_suspension_active();
-        self.power_plan_controller.adaptive_active()
+        self.power_plan_controller.has_pending_cleanup()
             || self.cpu_allocation_coordinator.has_managed_state()
             || self.cpu_allocation_coordinator.has_pending_reconciliation()
             || self.dynamic_priority_boost_controller.has_managed_state()

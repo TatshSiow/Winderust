@@ -830,3 +830,20 @@ fn foreground_capacity_is_not_held_by_stale_or_idle_background_demand() {
     assert!(!fresh_background_competition(Some(39), 4));
     assert!(fresh_background_competition(Some(40), 4));
 }
+
+#[test]
+fn denial_is_not_cleared_by_another_propertys_success() {
+    let mut manager = AdaptiveEngineProcessManager::default();
+    let path = r"C:\Apps\denied.exe";
+    for hard_failure in [false, true] {
+        manager.failure_suppression.suppress_process_failure(path);
+        manager.finish_background_attempt(path, hard_failure, true);
+        assert!(manager
+            .failure_suppression
+            .is_key_suppressed(&process_failure_key(path)));
+    }
+    manager.finish_background_attempt(path, false, false);
+    assert!(!manager
+        .failure_suppression
+        .is_key_suppressed(&process_failure_key(path)));
+}

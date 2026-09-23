@@ -188,3 +188,12 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Automatic Thread Priority reconciliation uses one lazy PID-indexed Toolhelp inventory per pass, including cached capture/enumeration failure. Discovery failure stops the pass without process failure suppression. Process List mutations and priority queries capture fresh operation-local inventories. No inventory survives on the controller.
 - Discovery is not mutation authorization: exact process/thread checks, priority readback, preservation, baselines and recovery remain controller-owned. Missing entries require exact exit/replacement verification before journal removal; live or uncertain identities remain owned. Release and shutdown never require discovery.
+
+## Runtime observation and cleanup contracts
+
+- Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
+- Thread Priority pending releases retain exact thread identities and retry independently of feature enablement. A new valid claim cancels its prior pending release.
+- Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans.
+- Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
+- Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
+- CPU Set discovery is lazy and operation-local, including failure caching. Discovery failure preserves existing assignments and does not suppress individual applications; pending handoffs retry on the existing cleanup interval.

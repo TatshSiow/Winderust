@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 use crate::{
     backend::crash_recovery::{
@@ -275,6 +278,8 @@ pub(crate) struct ThreadPriorityController<
     platform: P,
     managed: BTreeMap<ThreadIdentity, ManagedThreadPriority>,
     next_apply_sequence: u64,
+    pending_releases: BTreeSet<ThreadIdentity>,
+    next_release_retry: Option<Instant>,
 }
 
 impl Default for ThreadPriorityController {
@@ -289,6 +294,8 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             platform,
             managed: BTreeMap::new(),
             next_apply_sequence: 1,
+            pending_releases: BTreeSet::new(),
+            next_release_retry: None,
         }
     }
 
@@ -338,6 +345,9 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 "This thread priority is not available as a process action.".to_owned(),
             )
         })?;
+        // A new claim supersedes an old pending release for this exact process.
+        self.pending_releases
+            .retain(|identity| identity.process.key() != claim.target.key());
         let (process_identity, process) = match self
             .platform
             .open_process(&claim.target, allow_cross_session_process_control)
@@ -434,6 +444,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 self.managed.insert(identity.clone(), managed);
                 self.release_identity(&identity)?;
                 self.managed.remove(&identity);
+                self.pending_releases.remove(&identity);
             }
             return Ok(ThreadApply::Preserved);
         }
@@ -527,13 +538,17 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
     ) -> Result<(), ProcessControlError> {
         let stale = self
             .managed
-            .keys()
-            .filter(|thread| {
-                thread.process == identity.process
-                    && thread.id == identity.id
-                    && thread.creation_time != identity.creation_time
-            })
-            .cloned()
+            .range(
+                ThreadIdentity {
+                    creation_time: 0,
+                    ..identity.clone()
+                }..=ThreadIdentity {
+                    creation_time: u64::MAX,
+                    ..identity.clone()
+                },
+            )
+            .filter(|(thread, _)| thread.creation_time != identity.creation_time)
+            .map(|(thread, _)| thread.clone())
             .collect::<Vec<_>>();
         self.relinquish_identities(stale)
     }
@@ -546,9 +561,19 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
     ) -> Result<(), ProcessControlError> {
         let stale = self
             .managed
-            .keys()
-            .filter(|thread| thread.process == *process && !seen_thread_ids.contains(&thread.id))
-            .cloned()
+            .range(
+                ThreadIdentity {
+                    process: process.clone(),
+                    id: 0,
+                    creation_time: 0,
+                }..=ThreadIdentity {
+                    process: process.clone(),
+                    id: u32::MAX,
+                    creation_time: u64::MAX,
+                },
+            )
+            .filter(|(thread, _)| !seen_thread_ids.contains(&thread.id))
+            .map(|(thread, _)| thread.clone())
             .collect::<Vec<_>>();
         let mut first_error = None;
         for identity in stale {
@@ -584,6 +609,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         for identity in identities {
             self.platform.relinquish(&identity)?;
             self.managed.remove(&identity);
+            self.pending_releases.remove(&identity);
         }
         Ok(())
     }
@@ -600,7 +626,40 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             })
             .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
             .collect::<Vec<_>>();
-        self.release_identities(identities)
+        self.pending_releases
+            .extend(identities.iter().map(|(_, identity)| identity.clone()));
+        let summary = self.release_identities(identities);
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| Instant::now() + Duration::from_secs(1));
+        summary
+    }
+
+    pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        (!self.pending_releases.is_empty()).then(|| {
+            self.next_release_retry
+                .map_or(Duration::ZERO, |due| due.saturating_duration_since(now))
+        })
+    }
+
+    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> ThreadPriorityReleaseSummary {
+        if self.release_retry_delay(now) != Some(Duration::ZERO) {
+            return ThreadPriorityReleaseSummary::default();
+        }
+        let identities = self
+            .pending_releases
+            .iter()
+            .filter_map(|identity| {
+                self.managed
+                    .get(identity)
+                    .map(|managed| (managed.apply_sequence, identity.clone()))
+            })
+            .collect();
+        let summary = self.release_identities(identities);
+        self.pending_releases
+            .retain(|identity| self.managed.contains_key(identity));
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| now + Duration::from_secs(1));
+        summary
     }
 
     pub(crate) fn release_all_policy(&mut self) -> ThreadPriorityReleaseSummary {
@@ -642,11 +701,13 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 Ok(restored) => {
                     summary.restored_threads += usize::from(restored);
                     self.managed.remove(&identity);
+                    self.pending_releases.remove(&identity);
                 }
                 Err(ProcessControlError::ProcessExited) => {
                     match self.platform.relinquish(&identity) {
                         Ok(()) => {
                             self.managed.remove(&identity);
+                            self.pending_releases.remove(&identity);
                         }
                         Err(error) => summary.failures.push(release_failure(&identity, error)),
                     }
@@ -1051,6 +1112,7 @@ mod tests {
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
+        IdentityUnavailable,
         Inventory,
         OpenExited,
         BeginExited,
@@ -1136,6 +1198,11 @@ mod tests {
             target: &ProcessControlTarget,
             _: bool,
         ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
+            if self.take_failure(FakeFailure::IdentityUnavailable) {
+                return Err(ProcessControlError::Unavailable(
+                    "identity unavailable".into(),
+                ));
+            }
             if target.id != self.process.identity.id
                 || target.creation_time != self.process.identity.creation_time
             {
@@ -1502,6 +1569,62 @@ mod tests {
             .apply_policy_claim(&mut old, policy, true)
             .unwrap();
         assert!(controller.managed.is_empty());
+    }
+
+    #[test]
+    fn uncertain_identity_keeps_recovery_and_disabled_cleanup_retries() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[0]));
+        let policy = claim(
+            ControlOwner::ThreadPriority,
+            ProcessThreadPrioritySetting::BelowNormal,
+            ThreadPriorityPreservation::Exact,
+        );
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
+        controller.platform.events.lock().unwrap().clear();
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        assert!(controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .is_err());
+        assert_eq!(controller.managed.len(), 1);
+        assert!(controller.platform.events.lock().unwrap().is_empty());
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        assert_eq!(controller.release_all_policy().failures.len(), 1);
+        let now = Instant::now();
+        assert!(controller.release_retry_delay(now).is_some());
+        assert_eq!(
+            controller
+                .retry_pending_releases(now + Duration::from_secs(2))
+                .restored_threads,
+            1
+        );
+        assert_eq!(controller.platform.process.threads[&100].priority, 0);
+        assert!(controller.managed.is_empty());
+        assert!(controller.release_retry_delay(now).is_none());
+
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        controller.release_all_policy();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy, true)
+            .unwrap();
+        assert!(controller.release_retry_delay(now).is_none());
+        assert_eq!(
+            controller
+                .retry_pending_releases(now + Duration::from_secs(5))
+                .restored_threads,
+            0
+        );
+        controller.shutdown().unwrap();
     }
 
     #[test]

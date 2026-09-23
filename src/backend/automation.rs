@@ -1227,6 +1227,9 @@ fn run_background_automation(
             let adaptive_engine_process_status =
                 runner.run_adaptive_engine_process_update(settings, &mut observations);
             update_adaptive_engine_process_status(&shared, adaptive_engine_process_status);
+            if runner.take_helper_dependency_change() {
+                scheduler.invalidate(SchedulerEvent::AdaptiveWorkloadChanged, now);
+            }
             scheduler.schedule_after(
                 RefreshDomain::AdaptiveEngineProcess,
                 now,
@@ -1449,7 +1452,7 @@ fn run_background_automation(
         }
 
         let wait_now = Instant::now();
-        if let Some(error) = runner.retry_priority_releases(wait_now) {
+        if let Some(error) = runner.retry_control_releases(wait_now) {
             update_worker_error(&shared, Some(error));
         }
         let mut wait_for = if power_plan_checks_required {
@@ -1611,7 +1614,7 @@ fn run_background_automation(
             continue;
         }
 
-        if let Some(delay) = runner.priority_release_retry_delay(Instant::now()) {
+        if let Some(delay) = runner.control_release_retry_delay(Instant::now()) {
             wait_for = Some(min_worker_wait(wait_for, delay));
         }
 
