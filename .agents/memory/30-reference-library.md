@@ -777,7 +777,9 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 
 ## Adaptive plan CPU idle states
 
-`src/power/powercfg.rs::create_adaptive_plan` enables and reads back CPU idle states on both A/C and battery before activating the temporary plan. The source plan remains unchanged. `src/platform/windows/power_plan.rs::PowerSetting::IdleDisable` maps SUB_PROCESSOR / GUID_PROCESSOR_IDLE_DISABLE (5d76a2ca-e8c0-402f-a133-2158492d58ad): 0 enables idle, 1 disables it, confirmed with Windows powercfg /qh metadata. Microsoft documents IdleDisable=1 for specialized real-time workloads: https://learn.microsoft.com/en-us/windows/iot/iot-enterprise/soft-real-time/soft-real-time-device . Existing PowerWriteACValueIndex/PowerWriteDCValueIndex and PowerReadACValueIndex/PowerReadDCValueIndex wrappers perform writes and verification. No undocumented API.
+`src/power/powercfg.rs::duplicate_adaptive_plan` returns the GUID immediately after [PowerDuplicateScheme](https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerduplicatescheme). The controller retains cleanup ownership before initialization and retries failed deletion through the existing lifecycle. Freeing the returned GUID allocation does not delete the scheme. The disposable watchdog test also installs its cleanup guard before initialization.
+
+`src/power/powercfg.rs::initialize_adaptive_plan` enables and reads back CPU idle states on both A/C and battery before activating the temporary plan. The source plan remains unchanged. `src/platform/windows/power_plan.rs::PowerSetting::IdleDisable` maps SUB_PROCESSOR / GUID_PROCESSOR_IDLE_DISABLE (5d76a2ca-e8c0-402f-a133-2158492d58ad): 0 enables idle, 1 disables it, confirmed with Windows powercfg /qh metadata. Microsoft documents IdleDisable=1 for specialized real-time workloads: https://learn.microsoft.com/en-us/windows/iot/iot-enterprise/soft-real-time/soft-real-time-device . Existing PowerWriteACValueIndex/PowerWriteDCValueIndex and PowerReadACValueIndex/PowerReadDCValueIndex wrappers perform writes and verification. No undocumented API.
 
 ### Dynamic Resource Zones allocation contract
 
@@ -804,6 +806,8 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 - [System error codes](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-): ERROR_INVALID_PARAMETER (87) is an invalid parameter, not generic exit evidence.
 
 ## Exact identity and CPU Set observations
+
+`src/cpu.rs::PerProcessorUsageMonitor` collects valid per-processor deltas into a complete vector or returns unavailable. Shared percentage calculation uses checked cumulative-counter arithmetic. [GetSystemTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes) includes idle in kernel time. The existing NT processor collector and index domain are unchanged.
 
 - `src/backend/win_util.rs::WinHandle::process_times` returns creation and CPU counters from one [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) call, preserving its native failure code. `src/control/process.rs` treats failed reads as unavailable rather than proof of exit.
 - `src/foreground/process_list.rs::query_process_image_path` preserves [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) errors. Successful path or creation mismatches remain identity failures.

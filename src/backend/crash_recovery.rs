@@ -3503,11 +3503,12 @@ mod tests {
     fn power_plan_recovery_restores_the_original_plan_and_deletes_the_disposable_plan(
     ) -> Result<(), String> {
         let original_guid = active_plan()?.guid;
-        let disposable_guid = crate::power::powercfg::create_adaptive_plan(&original_guid)?;
+        let disposable_guid = crate::power::powercfg::duplicate_adaptive_plan(&original_guid)?;
         let mut cleanup = PowerPlanCleanup {
             original_guid: original_guid.clone(),
             disposable_guid: Some(disposable_guid.clone()),
         };
+        crate::power::powercfg::initialize_adaptive_plan(&disposable_guid, &original_guid)?;
 
         set_active(&disposable_guid)?;
         recover_journal(&[RecoveryEntry::PowerPlan {

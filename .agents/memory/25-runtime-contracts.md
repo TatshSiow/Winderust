@@ -53,7 +53,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Power plans
 
-- Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans.
+- Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans. Ownership starts immediately after duplication, before metadata or idle-state initialization. A never-activated clone whose source remains active preserves the ordinary restoration chain; genuine external plan changes still invalidate it.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
@@ -104,6 +104,8 @@ Read the relevant section before changing feature policy, ownership, restoration
   CPU-rate state.
 
 ## Runtime observations
+
+- Per-processor placement samples are complete-or-unavailable: invalid intervals never become zero load or shift processor indices. Counter regression, overflow, inconsistent idle deltas and zero-length intervals are unavailable; failed/empty captures clear the baseline and domain-size changes re-prime it.
 
 - Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
 - Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.

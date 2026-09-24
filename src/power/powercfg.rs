@@ -49,48 +49,46 @@ pub fn set_active(guid: &str) -> Result<(), String> {
     windows_power::set_active(guid)
 }
 
-pub fn create_adaptive_plan(source_guid: &str) -> Result<String, String> {
-    let duplicate_guid = windows_power::duplicate_scheme(source_guid)?;
-    let description = format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{source_guid}");
+pub fn duplicate_adaptive_plan(source_guid: &str) -> Result<String, String> {
+    // Return the resource immediately. The controller must retain this GUID before
+    // initialization; even naming or idle-state verification can fail.
+    windows_power::duplicate_scheme(source_guid)
+}
 
-    if let Err(error) = windows_power::write_scheme_name(&duplicate_guid, ADAPTIVE_PLAN_NAME)
-        .and_then(|()| windows_power::write_scheme_description(&duplicate_guid, &description))
-        .and_then(|()| {
-            enable_adaptive_idle_states(
-                |battery, value| {
-                    if battery {
-                        windows_power::write_dc_value(
-                            &duplicate_guid,
-                            PowerSetting::IdleDisable,
-                            value,
-                        )
-                    } else {
-                        windows_power::write_ac_value(
-                            &duplicate_guid,
-                            PowerSetting::IdleDisable,
-                            value,
-                        )
-                    }
-                },
-                |battery| {
-                    if battery {
-                        windows_power::read_dc_value(&duplicate_guid, PowerSetting::IdleDisable)
-                    } else {
-                        windows_power::read_ac_value(&duplicate_guid, PowerSetting::IdleDisable)
-                    }
-                },
-            )
-        })
-    {
-        return Err(match windows_power::delete_scheme(&duplicate_guid) {
-            Ok(()) => error,
-            Err(cleanup) => {
-                format!("{error}; failed to delete incomplete Adaptive plan: {cleanup}")
+pub fn initialize_adaptive_plan(guid: &str, source_guid: &str) -> Result<(), String> {
+    initialize_adaptive_plan_with(
+        source_guid,
+        |name| windows_power::write_scheme_name(guid, name),
+        |description| windows_power::write_scheme_description(guid, description),
+        |battery, value| {
+            if battery {
+                windows_power::write_dc_value(guid, PowerSetting::IdleDisable, value)
+            } else {
+                windows_power::write_ac_value(guid, PowerSetting::IdleDisable, value)
             }
-        });
-    }
+        },
+        |battery| {
+            if battery {
+                windows_power::read_dc_value(guid, PowerSetting::IdleDisable)
+            } else {
+                windows_power::read_ac_value(guid, PowerSetting::IdleDisable)
+            }
+        },
+    )
+}
 
-    Ok(duplicate_guid)
+fn initialize_adaptive_plan_with(
+    source_guid: &str,
+    write_name: impl FnOnce(&str) -> Result<(), String>,
+    write_description: impl FnOnce(&str) -> Result<(), String>,
+    write_idle: impl FnMut(bool, u32) -> Result<(), String>,
+    read_idle: impl FnMut(bool) -> Result<u32, String>,
+) -> Result<(), String> {
+    let description = format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{source_guid}");
+    write_name(ADAPTIVE_PLAN_NAME)?;
+    write_description(&description)?;
+    // Cleanup belongs to the controller even when metadata is only partially written.
+    enable_adaptive_idle_states(write_idle, read_idle)
 }
 
 // IdleDisable=0 permits CPU idle states, regardless of the cloned plan.
@@ -388,6 +386,68 @@ mod tests {
     use crate::power::{EffectivePowerMode, PowerPlanPersonality, ProcessorPowerPreset};
 
     use super::*;
+
+    #[test]
+    fn adaptive_initialization_stops_at_each_failed_stage() {
+        use std::cell::RefCell;
+
+        let stages = [
+            "name",
+            "description",
+            "ac-write",
+            "ac-read",
+            "dc-write",
+            "dc-read",
+        ];
+        for fail_at in 0..=stages.len() {
+            let events = RefCell::new(Vec::new());
+            let step = |stage: &str| -> Result<(), String> {
+                let mut events = events.borrow_mut();
+                events.push(stage.to_owned());
+                if events.len() - 1 == fail_at {
+                    Err(format!("injected {stage} failure"))
+                } else {
+                    Ok(())
+                }
+            };
+            let result = initialize_adaptive_plan_with(
+                "original",
+                |name| {
+                    assert_eq!(name, ADAPTIVE_PLAN_NAME);
+                    step("name")
+                },
+                |description| {
+                    assert_eq!(
+                        description,
+                        format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}original")
+                    );
+                    step("description")
+                },
+                |battery, value| {
+                    assert_eq!(value, 0);
+                    step(if battery { "dc-write" } else { "ac-write" })
+                },
+                |battery| {
+                    step(if battery { "dc-read" } else { "ac-read" })?;
+                    Ok(0)
+                },
+            );
+            let expected_count = (fail_at + 1).min(stages.len());
+            assert_eq!(
+                events.borrow().as_slice(),
+                stages[..expected_count]
+                    .iter()
+                    .map(|stage| (*stage).to_owned())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            );
+            if fail_at < stages.len() {
+                assert!(result.unwrap_err().contains(stages[fail_at]));
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
 
     #[test]
     fn adaptive_idle_states_override_both_sources_and_propagate_failures() {
