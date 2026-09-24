@@ -28,6 +28,7 @@ beside the executable, with English and Traditional Chinese locales.
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Architecture](docs/architecture.md)
 - [Adaptive Engine implementation](docs/adaptive-engine-implementation.md)
 - [Release checklist](docs/release-checklist.md)

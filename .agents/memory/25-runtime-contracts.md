@@ -4,6 +4,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Application boundaries
 
+- Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
 - Update checks support Stable and Pre-release channels. Automatic checks are optional; manual checks remain available on About.
 - `SettingsEditor` is the application settings boundary. It privately owns draft/revision state,
   save/cancel/import/export/auto-patch merge, runtime publication, and persisted startup intent.
@@ -16,6 +17,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Restoration and process safety
 
+- Thread Priority and I/O Priority pending automatic releases retain exact identities and retry independently of feature enablement. Cancel pending cleanup only when that exact target accepts replacement ownership or completes restoration/relinquishment; failed or partially successful requests retain unresolved cleanup.
+- Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
+- The live recovery helper PID is protected at the shared process-control acquisition boundary, including manual actions, priority changes, CPU allocation, suspension, termination, and trimming. The PID is published when the helper starts and read without the recovery-journal mutex; acquiring protection must not deadlock a caller holding a recovery intent. Keep this protection through shutdown, including unconfirmed helper completion. Restoration and helper-owned recovery remain independent of new-mutation eligibility.
 - At watchdog EOF, unresolved intents remain separate from committed transitions. Recovery unwinds an expected value, or skips an unapplied pending edge only when the current value equals its original value. Committed mismatches and unrelated external values stop the chain; never compact pending intents into committed baselines.
 
 - Watchdog pipe I/O runs on one dedicated transport thread. Recovery callers wait at most two seconds for a reply; uncertain delivery/acknowledgment disables further commands on that connection, while an explicit rejection preserves protocol synchronization. Keep the connection and helper journal alive until runtime shutdown so a late reply cannot trigger premature recovery or acknowledge another command. Shutdown waits at most five seconds and reports unconfirmed recovery without killing the helper. A stalled I/O thread is not joined; parent process exit closes its remaining pipe handles. This bounds caller/shutdown waits, not recovery completion by a hung helper.
@@ -49,6 +53,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Power plans
 
+- Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
@@ -64,6 +69,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Failure handling
 
+- CPU allocation application errors distinguish shared discovery failure from target failure in their return type. A cached discovery error cannot reclassify a later acquisition, affinity, mutation or recovery failure.
 - Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
@@ -96,6 +102,13 @@ Read the relevant section before changing feature policy, ownership, restoration
   Suspension. Active limiter target and process-appearance refresh remain at one second even while
   hidden or under Adaptive Engine saver cadence. CPU Limiter does not own CPU allocation or Windows
   CPU-rate state.
+
+## Runtime observations
+
+- Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
+- Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
+- CPU Set discovery is lazy and operation-local, including failure caching. Discovery failure preserves existing assignments and does not suppress individual applications; pending handoffs retry on the existing cleanup interval.
+- Process enrichment cannot replace the identity generation captured by the cycle. Newly available or changed generations are deferred (non-actionable) until a fresh cycle, preserving consistency with cached Adaptive membership and earlier consumers.
 
 ## CPU allocation and Adaptive Engine
 
@@ -172,10 +185,6 @@ Read the relevant section before changing feature policy, ownership, restoration
   end period on replacement, disable, or shutdown. This process-lifetime state has no crash
   journal.
 
-- Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
-
-- The live recovery helper PID is protected at the shared process-control acquisition boundary, including manual actions, priority changes, CPU allocation, suspension, termination, and trimming. The PID is published when the helper starts and read without the recovery-journal mutex; acquiring protection must not deadlock a caller holding a recovery intent. Keep this protection through shutdown, including unconfirmed helper completion. Restoration and helper-owned recovery remain independent of new-mutation eligibility.
-
 ## Dynamic Resource Zones
 
 - CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones are independent Adaptive Engine producers. Zones-only work must keep AC/Battery automation alive without enabling priority/efficiency assists.
@@ -188,15 +197,3 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Automatic Thread Priority reconciliation uses one lazy PID-indexed Toolhelp inventory per pass, including cached capture/enumeration failure. Discovery failure stops the pass without process failure suppression. Process List mutations and priority queries capture fresh operation-local inventories. No inventory survives on the controller.
 - Discovery is not mutation authorization: exact process/thread checks, priority readback, preservation, baselines and recovery remain controller-owned. Missing entries require exact exit/replacement verification before journal removal; live or uncertain identities remain owned. Release and shutdown never require discovery.
-
-## Runtime observation and cleanup contracts
-
-- Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
-- Thread Priority and I/O Priority pending automatic releases retain exact identities and retry independently of feature enablement. Cancel pending cleanup only when that exact target accepts replacement ownership or completes restoration/relinquishment; failed or partially successful requests retain unresolved cleanup.
-- Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans.
-- Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
-- Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
-- CPU Set discovery is lazy and operation-local, including failure caching. Discovery failure preserves existing assignments and does not suppress individual applications; pending handoffs retry on the existing cleanup interval.
-
-- Process enrichment cannot replace the identity generation captured by the cycle. Newly available or changed generations are deferred (non-actionable) until a fresh cycle, preserving consistency with cached Adaptive membership and earlier consumers.
-- CPU allocation application errors distinguish shared discovery failure from target failure in their return type. A cached discovery error cannot reclassify a later acquisition, affinity, mutation or recovery failure.
