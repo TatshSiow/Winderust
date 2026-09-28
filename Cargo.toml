@@ -85,4 +85,4 @@ embed-resource = "3.0.9"
 
 [dev-dependencies]
 iced_tiny_skia = { version = "=0.14.1", default-features = false }
-tiny-skia = { version = "0.11", default-features = false }
+tiny-skia = { version = "0.12", default-features = false }
