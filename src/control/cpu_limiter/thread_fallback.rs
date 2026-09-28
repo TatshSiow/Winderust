@@ -4,7 +4,7 @@ use crate::{
     backend::crash_recovery::{forget_thread_suspension, record_thread_suspension, RecoveryIntent},
     control::{
         cpu_limiter::{CpuLimiterTarget, CpuLimiterTargetError},
-        process::{open_process_for_thread_control, ProcessIdentity},
+        process::{open_process_for_thread_snapshot, ProcessIdentity},
     },
     platform::windows::thread_suspension::{
         self, CapturedThread, ThreadHandle, ThreadSuspensionError,
@@ -113,6 +113,7 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
     }
 
     pub(super) fn freeze_known_threads(&mut self) -> Result<(), CpuLimiterTargetError> {
+        self.remove_inactive_threads()?;
         let keys = self.threads.keys().copied().collect::<Vec<_>>();
         self.freeze_threads(&keys)
     }
@@ -241,23 +242,22 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
     fn remove_inactive_threads(&mut self) -> Result<(), CpuLimiterTargetError> {
         let keys = self.threads.keys().copied().collect::<Vec<_>>();
         for key in keys {
-            let active = {
-                let Some(thread) = self.threads.get(&key) else {
-                    return Err(missing_thread_state(key));
-                };
-                self.operations.is_thread_active(&thread.handle)?
-            };
-            if active {
-                continue;
-            }
-            let Some(thread) = self.threads.get_mut(&key) else {
-                return Err(missing_thread_state(key));
-            };
-            thread.owned_increment = false;
-            forget_thread(&mut self.operations, &self.process, thread)?;
-            self.threads.remove(&key);
+            self.remove_inactive_thread(key)?;
         }
         Ok(())
+    }
+
+    fn remove_inactive_thread(&mut self, key: (u32, u64)) -> Result<bool, CpuLimiterTargetError> {
+        let Some(thread) = self.threads.get_mut(&key) else {
+            return Err(missing_thread_state(key));
+        };
+        if self.operations.is_thread_active(&thread.handle)? {
+            return Ok(false);
+        }
+        thread.owned_increment = false;
+        forget_thread(&mut self.operations, &self.process, thread)?;
+        self.threads.remove(&key);
+        Ok(true)
     }
 
     fn freeze_threads(&mut self, keys: &[(u32, u64)]) -> Result<(), CpuLimiterTargetError> {
@@ -281,6 +281,11 @@ impl<O: ThreadFallbackOperations> ThreadFallbackTarget<O> {
                 )
             };
             if let Err(cause) = result {
+                let cause = match self.remove_inactive_thread(*key) {
+                    Ok(true) => continue,
+                    Ok(false) => cause,
+                    Err(cleanup) => combine_failure(Some(cause), cleanup),
+                };
                 let rollback = self.rollback_threads(&changed);
                 self.frozen = false;
                 return Err(match rollback {
@@ -462,7 +467,7 @@ impl ThreadFallbackOperations for WindowsThreadFallbackOperations {
         &mut self,
         target: &CpuLimiterTarget,
     ) -> Result<(ProcessIdentity, Self::ProcessHandle), CpuLimiterTargetError> {
-        open_process_for_thread_control(
+        open_process_for_thread_snapshot(
             &target.suspension_target.process,
             target.allow_cross_session_process_control,
         )
@@ -536,6 +541,75 @@ mod tests {
     use crate::control::suspension::SuspensionTarget;
 
     use super::*;
+
+    #[test]
+    #[ignore = "freezes and thaws only its own disposable process; run in integration QA"]
+    fn live_thread_fallback_repeated_cycles_restore_counts() -> Result<(), String> {
+        use std::{
+            os::windows::process::CommandExt,
+            process::{Child, Command, Stdio},
+            time::Duration,
+        };
+        struct DisposableProcess(Child);
+        impl Drop for DisposableProcess {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot missing")?)
+            .join(r"System32\PING.EXE");
+        let child = DisposableProcess(
+            Command::new(&executable)
+                .args(["-t", "127.0.0.1"])
+                .creation_flags(0x0800_0000)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| e.to_string())?,
+        );
+        std::thread::sleep(Duration::from_millis(250));
+        let action =
+            crate::foreground::capture_process_action_target(child.0.id(), &executable, false)
+                .map_err(|e| e.to_string())?;
+        let target = CpuLimiterTarget {
+            suspension_target: SuspensionTarget::automatic(
+                action.id,
+                action.name,
+                action.executable_path,
+                action.creation_time,
+                action.is_service_account,
+            ),
+            allowed_cpu_time_percent: 50,
+            allow_cross_session_process_control: false,
+            ancestor_process_ids: Vec::new(),
+        };
+        let mut fallback = ThreadFallbackTarget::prepare(target).map_err(|e| e.to_string())?;
+        assert!(!fallback.threads.is_empty());
+        let counts = |fallback: &ThreadFallbackTarget| -> Result<BTreeMap<_, _>, String> {
+            Ok(
+                thread_suspension::capture_threads(fallback.process_handle.raw())
+                    .map_err(|e| format!("{e:?}"))?
+                    .into_iter()
+                    .map(|t| ((t.id, t.creation_time), t.suspend_count))
+                    .collect(),
+            )
+        };
+        let original = counts(&fallback)?;
+        for _ in 0..20 {
+            fallback.freeze_known_threads().map_err(|e| e.to_string())?;
+            let frozen = counts(&fallback)?;
+            for (key, count) in &original {
+                assert_eq!(frozen.get(key).copied(), count.checked_add(1));
+            }
+            fallback.thaw().map_err(|e| e.to_string())?;
+            assert_eq!(counts(&fallback)?, original);
+        }
+        fallback.freeze_known_threads().map_err(|e| e.to_string())?;
+        assert!(fallback.release().map_err(|e| e.to_string())?);
+        assert_eq!(counts(&fallback)?, original);
+        Ok(())
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
@@ -756,6 +830,8 @@ mod tests {
                 Event::Snapshot,
                 Event::OpenThread(1),
                 Event::OpenThread(2),
+                Event::IsActive(1),
+                Event::IsActive(2),
                 Event::Begin(1),
                 Event::Suspend(1),
                 Event::Commit(1),
@@ -1088,5 +1164,40 @@ mod tests {
             code: 5,
         }
         .into()
+    }
+    #[test]
+    fn freeze_thaw_inventory_cycle_survives_exited_thread_generations() {
+        for exits_during_suspend in [false, true] {
+            let (operations, state) = harness([
+                vec![thread(1, 11, 0), thread(2, 22, 0)],
+                vec![thread(1, 33, 0), thread(2, 22, 0)],
+            ]);
+            let mut managed = prepare(operations).unwrap();
+            managed.freeze_known_threads().unwrap();
+            managed.adopt_new_threads(&BTreeSet::from([1, 2])).unwrap();
+            managed.thaw().unwrap();
+            let checks = if exits_during_suspend {
+                vec![Ok(true), Ok(false)]
+            } else {
+                vec![Ok(false)]
+            };
+            state.borrow_mut().active_results.insert(1, checks.into());
+            if exits_during_suspend {
+                state
+                    .borrow_mut()
+                    .suspend_results
+                    .insert(1, VecDeque::from([Err(failed_thread("SuspendThread", 1))]));
+            }
+            // Exercise the worker's freeze-before-inventory ordering, not cleanup directly.
+            managed.freeze_known_threads().unwrap();
+            managed.adopt_new_threads(&BTreeSet::from([1, 2])).unwrap();
+            assert!(!managed.threads.contains_key(&(1, 11)));
+            assert!(managed.threads[&(1, 33)].owned_increment);
+            assert!(managed.threads[&(2, 22)].owned_increment);
+            assert_eq!(state.borrow().recovery, BTreeSet::from([(1, 33), (2, 22)]));
+            managed.thaw().unwrap();
+            assert!(managed.release().unwrap());
+            assert!(state.borrow().recovery.is_empty());
+        }
     }
 }

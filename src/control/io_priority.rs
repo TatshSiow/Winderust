@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 use crate::{
     backend::crash_recovery::{
@@ -11,8 +14,8 @@ use crate::{
 };
 
 use super::process::{
-    open_process_for_set_information, ControlOwner, ProcessControlError, ProcessControlTarget,
-    ProcessIdentity, ProcessTargetKey,
+    open_process_for_set_information, transition_failure_error, ControlOwner, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +138,8 @@ pub(crate) struct IoPriorityController<P: IoPriorityPlatform = WindowsIoPriority
     platform: P,
     managed: BTreeMap<ProcessIdentity, ManagedIoPriority>,
     next_apply_sequence: u64,
+    pending_releases: BTreeSet<ProcessIdentity>,
+    next_release_retry: Option<Instant>,
 }
 
 impl Default for IoPriorityController {
@@ -149,6 +154,8 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             platform,
             managed: BTreeMap::new(),
             next_apply_sequence: 1,
+            pending_releases: BTreeSet::new(),
+            next_release_retry: None,
         }
     }
 
@@ -204,6 +211,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         for stale_identity in stale_identities {
             self.platform.relinquish(&stale_identity)?;
             self.managed.remove(&stale_identity);
+            self.pending_releases.remove(&stale_identity);
         }
 
         let mut managed = self.managed.remove(&identity);
@@ -226,6 +234,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 }
                 return Err(error);
             }
+            self.pending_releases.remove(&identity);
             managed = None;
         }
 
@@ -236,6 +245,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 self.managed.insert(identity.clone(), managed);
                 self.release_identity(&identity)?;
                 self.managed.remove(&identity);
+                self.pending_releases.remove(&identity);
             }
             return Ok(IoPriorityApplyOutcome::Preserved);
         }
@@ -244,6 +254,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             if let Some(mut managed) = managed {
                 if claim.owner.is_automatic() || managed.owner == ControlOwner::ProcessList {
                     managed.owner = claim.owner;
+                    self.pending_releases.remove(&identity);
                 }
                 managed.expected = current;
                 self.managed.insert(identity, managed);
@@ -261,6 +272,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             CommitFailureBehavior::Compensate,
         ) {
             Ok(()) => {
+                self.pending_releases.remove(&identity);
                 self.managed.insert(
                     identity,
                     ManagedIoPriority {
@@ -275,9 +287,10 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             Err(mut failure) => {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish(&identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                         failure.uncertain = true;
                     }
                 }
@@ -294,7 +307,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 } else if let Some(managed) = managed {
                     self.managed.insert(identity, managed);
                 }
-                Err(ProcessControlError::Failed(failure.message))
+                Err(failure.error)
             }
         }
     }
@@ -311,7 +324,40 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             })
             .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
             .collect::<Vec<_>>();
-        self.release_identities(identities)
+        self.pending_releases
+            .extend(identities.iter().map(|(_, identity)| identity.clone()));
+        let summary = self.release_identities(identities);
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| Instant::now() + Duration::from_secs(1));
+        summary
+    }
+
+    pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        (!self.pending_releases.is_empty()).then(|| {
+            self.next_release_retry
+                .map_or(Duration::ZERO, |due| due.saturating_duration_since(now))
+        })
+    }
+
+    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> IoPriorityReleaseSummary {
+        if self.release_retry_delay(now) != Some(Duration::ZERO) {
+            return IoPriorityReleaseSummary::default();
+        }
+        let identities = self
+            .pending_releases
+            .iter()
+            .filter_map(|identity| {
+                self.managed
+                    .get(identity)
+                    .map(|managed| (managed.apply_sequence, identity.clone()))
+            })
+            .collect();
+        let summary = self.release_identities(identities);
+        self.pending_releases
+            .retain(|identity| self.managed.contains_key(identity));
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| now + Duration::from_secs(1));
+        summary
     }
 
     pub(crate) fn release_all_policy(&mut self) -> IoPriorityReleaseSummary {
@@ -353,11 +399,13 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                 Ok(restored) => {
                     summary.restored_processes += usize::from(restored);
                     self.managed.remove(&identity);
+                    self.pending_releases.remove(&identity);
                 }
                 Err(ProcessControlError::ProcessExited) => {
                     match self.platform.relinquish(&identity) {
                         Ok(()) => {
                             self.managed.remove(&identity);
+                            self.pending_releases.remove(&identity);
                         }
                         Err(error) => summary.failures.push(IoPriorityReleaseFailure {
                             process_id: identity.id,
@@ -404,6 +452,16 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.open(&identity.target(), true),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish(identity) {
                     Ok(()) => Ok(true),
@@ -413,12 +471,12 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -442,7 +500,7 @@ impl<P: IoPriorityPlatform> Drop for IoPriorityController<P> {
 }
 
 struct TransitionFailure {
-    message: String,
+    error: ProcessControlError,
     uncertain: bool,
     relinquish_recovery: bool,
     expected_preserved: bool,
@@ -464,18 +522,14 @@ fn apply_transition<P: IoPriorityPlatform>(
     let intent = platform
         .begin_change(process, original, expected)
         .map_err(|error| TransitionFailure {
-            message: error.to_string(),
+            error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
         })?;
     if let Err(error) = platform.apply(process, expected) {
         return Err(compensate_with_intent(
-            platform,
-            process,
-            original,
-            intent,
-            error.to_string(),
+            platform, process, original, intent, error,
         ));
     }
     match platform.query(process) {
@@ -486,16 +540,14 @@ fn apply_transition<P: IoPriorityPlatform>(
                 process,
                 original,
                 intent,
-                format!("I/O Priority verification returned {actual}, expected {expected}."),
+                ProcessControlError::Failed(format!(
+                    "I/O Priority verification returned {actual}, expected {expected}."
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_with_intent(
-                platform,
-                process,
-                original,
-                intent,
-                format!("I/O Priority verification failed: {error}"),
+                platform, process, original, intent, error,
             ));
         }
     }
@@ -507,7 +559,7 @@ fn apply_transition<P: IoPriorityPlatform>(
                 platform, process, original, message,
             )),
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -522,11 +574,11 @@ fn compensate_with_intent<P: IoPriorityPlatform>(
     process: &P::Process,
     original: u32,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -534,11 +586,7 @@ fn compensate_with_intent<P: IoPriorityPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -555,15 +603,15 @@ fn compensate_without_intent<P: IoPriorityPlatform>(
 ) -> TransitionFailure {
     match restore_and_verify(platform, process, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: ProcessControlError::Failed(primary_error),
             uncertain: false,
             relinquish_recovery: true,
             expected_preserved: false,
         },
         Err(compensation_error) => TransitionFailure {
-            message: transition_failure_message(
-                primary_error,
-                compensation_error.to_string(),
+            error: transition_failure_error(
+                ProcessControlError::Failed(primary_error),
+                compensation_error,
                 None,
             ),
             uncertain: true,
@@ -587,18 +635,6 @@ fn restore_and_verify<P: IoPriorityPlatform>(
             "Compensation returned {actual}, expected {original}."
         )))
     }
-}
-
-fn transition_failure_message(
-    primary_error: String,
-    compensation_error: String,
-    recovery_error: Option<String>,
-) -> String {
-    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
-    if let Some(recovery_error) = recovery_error {
-        message.push_str(&format!(" Recovery commit also failed: {recovery_error}."));
-    }
-    message
 }
 
 fn priority_is_preserved(
@@ -675,6 +711,9 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
+        BeginExited,
+        QueryDenied,
+        ApplyExited,
         Open,
         Verify,
         Begin,
@@ -773,6 +812,9 @@ mod tests {
         }
 
         fn query(&mut self, process: &Self::Process) -> Result<u32, ProcessControlError> {
+            if self.take_failure(FakeFailure::QueryDenied) {
+                return Err(ProcessControlError::AccessDenied("query denied".into()));
+            }
             let follows_apply = self
                 .events
                 .lock()
@@ -796,6 +838,9 @@ mod tests {
             _: u32,
         ) -> Result<Self::RecoveryIntent, ProcessControlError> {
             self.events.lock().unwrap().push("begin".to_owned());
+            if self.take_failure(FakeFailure::BeginExited) {
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Begin) {
                 return Err(ProcessControlError::Failed("begin failed".to_owned()));
             }
@@ -815,6 +860,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("apply:{process}:{priority}"));
+            if self.take_failure(FakeFailure::ApplyExited) {
+                self.processes.remove(process);
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Apply) {
                 return Err(ProcessControlError::Failed("apply failed".to_owned()));
             }
@@ -874,6 +923,72 @@ mod tests {
             creation_time: target.creation_time,
             session_id: Some(1),
             is_service_account: Some(false),
+        }
+    }
+
+    #[test]
+    fn disabled_cleanup_survives_failed_replacement_and_respects_accepted_owner() {
+        for replace in [false, true] {
+            let mut controller = IoPriorityController::with_platform(FakePlatform::new(2));
+            controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::IoPriority,
+                        ProcessIoPriority::VeryLow,
+                        IoPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .unwrap();
+            controller.platform.fail_next(FakeFailure::Open);
+            assert_eq!(controller.release_all_policy().failures.len(), 1);
+            for failure in [
+                FakeFailure::Open,
+                FakeFailure::QueryDenied,
+                FakeFailure::Apply,
+            ] {
+                controller.platform.fail_next(failure);
+                assert!(controller
+                    .apply_process_list_action(&action_target(), ProcessIoPriority::Low, true)
+                    .is_err());
+                assert_eq!(controller.pending_releases.len(), 1);
+            }
+            let now = Instant::now();
+            assert_eq!(controller.retry_pending_releases(now).restored_processes, 0);
+            controller.platform.fail_next(FakeFailure::Open);
+            assert_eq!(
+                controller
+                    .retry_pending_releases(now + Duration::from_secs(2))
+                    .failures
+                    .len(),
+                1
+            );
+            assert_eq!(
+                controller.release_retry_delay(now + Duration::from_secs(2)),
+                Some(Duration::from_secs(1))
+            );
+            if replace {
+                controller
+                    .apply_process_list_action(&action_target(), ProcessIoPriority::Low, true)
+                    .unwrap();
+            }
+            assert_eq!(
+                controller
+                    .retry_pending_releases(now + Duration::from_secs(4))
+                    .restored_processes,
+                usize::from(!replace)
+            );
+            assert_eq!(
+                controller.platform.processes[&42].priority,
+                if replace { 1 } else { 2 }
+            );
+            assert!(controller.release_retry_delay(now).is_none());
+            controller.release_all_policy();
+            assert_eq!(
+                controller.platform.processes[&42].priority,
+                if replace { 1 } else { 2 }
+            );
+            controller.shutdown().unwrap();
         }
     }
 
@@ -1202,6 +1317,45 @@ mod tests {
             )
             .is_err());
         assert!(controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_keeps_confirmed_exit_when_followup_query_is_denied() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::BeginExited);
+        controller.platform.fail_next(FakeFailure::QueryDenied);
+        assert!(controller.shutdown().is_ok());
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_cleans_up_exit_during_restoration() {
+        let platform = FakePlatform::new(2);
+        let mut controller = IoPriorityController::with_platform(platform);
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::ApplyExited);
+        assert!(controller.shutdown().is_ok());
+        assert!(!controller.has_managed_state());
     }
 
     #[test]

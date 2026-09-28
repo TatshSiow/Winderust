@@ -242,6 +242,34 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_retries_failed_release_and_reports_only_remaining_failure() {
+        for retry_fails in [false, true] {
+            let (mut controller, state) = controller();
+            controller.set_request(10_000).unwrap();
+            state.borrow_mut().release_results.extend([
+                Err("initial release failed".to_owned()),
+                if retry_fails {
+                    Err("still unavailable".to_owned())
+                } else {
+                    Ok(())
+                },
+            ]);
+            assert!(controller.release().is_err());
+            assert_eq!(controller.active_request_100ns(), Some(10_000));
+            let result = controller.shutdown();
+            assert_eq!(result.is_err(), retry_fails);
+            assert_eq!(
+                controller.active_request_100ns(),
+                retry_fails.then_some(10_000)
+            );
+            if retry_fails {
+                assert_eq!(result.unwrap_err(), "still unavailable");
+            }
+            assert_eq!(state.borrow().releases, vec![10_000, 10_000]);
+        }
+    }
+
+    #[test]
     fn shutdown_is_idempotent() {
         let (mut controller, state) = controller();
         controller.set_request(10_000).unwrap();

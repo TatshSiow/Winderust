@@ -12,7 +12,7 @@ pub(crate) enum RefreshDomain {
     CpuLimiter,
     CpuAllocationReconciliation,
     ByRunningApp,
-    CpuScheduler,
+    AdaptiveEngineProcess,
     BottleneckClassifier,
     AdaptivePowerPlan,
     ProcessPriority,
@@ -37,7 +37,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 22] = [
     RefreshDomain::CpuLimiter,
     RefreshDomain::CpuAllocationReconciliation,
     RefreshDomain::ByRunningApp,
-    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::BottleneckClassifier,
     RefreshDomain::AdaptivePowerPlan,
     RefreshDomain::ProcessPriority,
@@ -59,7 +59,7 @@ const FOREGROUND_DOMAINS: [RefreshDomain; 16] = [
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
-    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::AdaptivePowerPlan,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
@@ -87,7 +87,7 @@ const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 13] = [
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
     RefreshDomain::ByRunningApp,
-    RefreshDomain::CpuScheduler,
+    RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
     RefreshDomain::DynamicPriorityBoost,
@@ -99,11 +99,13 @@ const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 13] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchedulerEvent {
+    AdaptiveWorkloadChanged,
     SettingsChanged,
     ForegroundChanged,
     WindowCreated,
     PowerChanged,
     SessionChanged,
+    ClockChanged,
     InputActivity,
     AppSwitch,
     AppSwitchMouseClick,
@@ -145,6 +147,16 @@ impl RefreshScheduler {
 
     pub(crate) fn invalidate(&mut self, event: SchedulerEvent, now: Instant) {
         match event {
+            SchedulerEvent::AdaptiveWorkloadChanged => self.schedule_domains_now(
+                &[
+                    RefreshDomain::ThreadPriority,
+                    RefreshDomain::IoPriority,
+                    RefreshDomain::GpuPriority,
+                    RefreshDomain::DynamicPriorityBoost,
+                    RefreshDomain::AdaptivePowerPlan,
+                ],
+                now,
+            ),
             SchedulerEvent::SettingsChanged => {
                 self.schedule_domains_now(&ALL_REFRESH_DOMAINS, now);
             }
@@ -154,7 +166,9 @@ impl RefreshScheduler {
             SchedulerEvent::WindowCreated => {
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
             }
-            SchedulerEvent::PowerChanged | SchedulerEvent::InputActivity => {
+            SchedulerEvent::PowerChanged
+            | SchedulerEvent::InputActivity
+            | SchedulerEvent::ClockChanged => {
                 self.schedule_now(RefreshDomain::PowerPlanCheck, now);
             }
             SchedulerEvent::SessionChanged => {
@@ -211,6 +225,20 @@ impl RefreshScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_dependency_change_only_wakes_dependent_domains() {
+        let now = Instant::now();
+        let mut scheduler = RefreshScheduler::new(now);
+        for domain in ALL_REFRESH_DOMAINS {
+            scheduler.schedule_after(domain, now, Duration::from_secs(60));
+        }
+        scheduler.invalidate(SchedulerEvent::AdaptiveWorkloadChanged, now);
+        assert!(scheduler.is_due(RefreshDomain::ThreadPriority, now));
+        assert!(scheduler.is_due(RefreshDomain::IoPriority, now));
+        assert!(!scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now));
+        assert!(!scheduler.is_due(RefreshDomain::ProcessAppearance, now));
+    }
 
     const HOUR: Duration = Duration::from_secs(60 * 60);
 
@@ -283,6 +311,7 @@ mod tests {
         let now = Instant::now();
         for event in [
             SchedulerEvent::PowerChanged,
+            SchedulerEvent::ClockChanged,
             SchedulerEvent::InputActivity,
             SchedulerEvent::ControllerActivity,
         ] {

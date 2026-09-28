@@ -24,8 +24,7 @@ mod ui;
 use application::SettingsEditor;
 use backend::{
     audio_activity, automation, crash_recovery, dashboard_metrics, file_dialog, power_source,
-    privilege, process_icon, self_power, tray, update_checker, win_registry, win_util,
-    windows_events,
+    privilege, process_icon, self_power, tray, update_checker, win_util, windows_events,
 };
 use features::{
     advanced_controls::{app_suspension, timer_resolution},
@@ -34,19 +33,23 @@ use features::{
         dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
         thread_priority,
     },
-    winderust_features::{background_efficiency, cpu_scheduler, memory_trim},
+    winderust_features::{adaptive_engine_process, background_efficiency, memory_trim},
 };
-use ui::{app, assets};
+use ui::app;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() {
-    use gpui::{
-        px, size, App, AppContext, Application, Bounds, WindowBounds, WindowDecorations,
-        WindowOptions,
-    };
-
+    #[cfg(feature = "render-smoke")]
+    if std::env::args().any(|argument| argument == "--render-smoke") {
+        ui::app::smoke::render_all_pages();
+        return;
+    }
     if crash_recovery::run_watchdog_if_requested() {
+        return;
+    }
+    #[cfg(feature = "runtime-benchmark")]
+    if ui::runtime_benchmark::run_if_requested() {
         return;
     }
 
@@ -62,67 +65,37 @@ fn main() {
         privilege::relaunch_as_admin();
         return;
     }
+    backend::diagnostics::initialize("winderust-diagnostics");
     let restore_event = SingleInstanceRestoreEvent::create();
 
-    let (mut settings, settings_load_error) = match SettingsEditor::load() {
-        Ok((settings, outcome)) => (
-            settings,
-            outcome
-                .startup_registration_error()
-                .map(|error| format!("Startup registration reconciliation failed: {error}")),
-        ),
-        Err(error) => (
-            SettingsEditor::with_settings(config::Settings::default()),
-            Some(error.to_string()),
-        ),
-    };
+    let (mut settings, outcome) = SettingsEditor::load();
+    let settings_load_error = settings.load_error().map(str::to_owned).or_else(|| {
+        outcome
+            .startup_registration_error()
+            .map(|error| format!("Startup registration reconciliation failed: {error}"))
+    });
     let mut recovery_client = crash_recovery::RecoveryClient::start();
     let adaptive_plan_recovery_error = power::restore_stale_adaptive_plans()
         .err()
         .map(|error| format!("Adaptive power plan recovery failed: {error}"));
     let settings_load_error = settings_load_error.or(adaptive_plan_recovery_error);
+    if let Some(error) = &settings_load_error {
+        backend::diagnostics::error(error);
+    }
     let runtime_settings = settings.runtime_settings_snapshot();
     let runtime_handle = automation::RuntimeHandle::start(&runtime_settings);
 
-    Application::new()
-        .with_assets(assets::Assets)
-        .run(move |cx: &mut App| {
-            gpui_component::init(cx);
-
-            let bounds = Bounds::centered(None, size(px(1120.0), px(760.0)), cx);
-            cx.open_window(
-                WindowOptions {
-                    titlebar: None,
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_min_size: Some(size(px(900.0), px(620.0))),
-                    app_id: Some("Winderust".to_owned()),
-                    window_decorations: Some(WindowDecorations::Client),
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    window.set_window_title("Winderust");
-                    if let (Some(event), Some(hwnd)) =
-                        (restore_event, tray::hwnd_from_window(window))
-                    {
-                        event.listen(hwnd);
-                    }
-                    let view = cx.new(|cx| {
-                        app::WinderustApp::new(
-                            window,
-                            cx,
-                            settings,
-                            settings_load_error,
-                            runtime_handle,
-                        )
-                    });
-                    cx.new(|cx| gpui_component::Root::new(view, window, cx))
-                },
-            )
-            .expect("failed to open Winderust window");
-        });
-    if let Err(error) = recovery_client.finish() {
+    if let Err(error) = app::run(settings, settings_load_error, runtime_handle, restore_event) {
+        backend::diagnostics::error(&error.to_string());
         eprintln!("{error}");
     }
+
+    if let Err(error) = recovery_client.finish() {
+        backend::diagnostics::error(&error.to_string());
+        eprintln!("{error}");
+    }
+    backend::diagnostics::event("Application exit completed.");
+    backend::diagnostics::finish();
 }
 
 struct SingleInstanceRestoreEvent {
@@ -245,27 +218,8 @@ impl Drop for SingleInstanceGuard {
 }
 
 fn single_instance_object_name(kind: &str) -> String {
-    use std::os::windows::ffi::OsStrExt;
-
-    // Scope the mutex to this executable path so separate portable copies can run independently.
-    let digest = std::env::current_exe()
-        .ok()
-        .map(|path| path.canonicalize().unwrap_or(path))
-        .map(|path| fnv1a64(path.as_os_str().encode_wide()))
-        .unwrap_or(0x5f3f_2a4e_13a5_59f0);
-
-    format!("Local\\Winderust.{kind}.{digest:016x}")
-}
-
-fn fnv1a64(input: impl IntoIterator<Item = u16>) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for unit in input {
-        for byte in unit.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x00000100000001b3);
-        }
-    }
-    hash
+    // All builds and portable copies share one automation instance per Windows session.
+    format!("Local\\Winderust.{kind}")
 }
 
 #[cfg(test)]
@@ -273,8 +227,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn executable_path_hash_preserves_non_unicode_units() {
-        assert_ne!(fnv1a64([0xD800]), fnv1a64([0xFFFD]));
+    fn translations_support_language_switching_and_interpolation() {
+        const CHILD: &str = "WINDERUST_TEST_LOCALE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::translations_support_language_switching_and_interpolation",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for (locale, home) in [
+            ("en", "Home"),
+            ("zh-TW", "\u{9996}\u{9801}"),
+            ("en", "Home"),
+        ] {
+            rust_i18n::set_locale(locale);
+            assert_eq!(rust_i18n::t!("nav.home"), home);
+        }
+        assert_eq!(rust_i18n::t!("common.rule", number = 7), "Rule 7");
+        assert_eq!(rust_i18n::t!("nav.home", locale = "unknown-locale"), "Home");
+    }
+
+    #[test]
+    fn locale_labels_are_not_question_mark_placeholders() {
+        for (locale, source) in [
+            ("en", include_str!("../locales/en.yml")),
+            ("zh-TW", include_str!("../locales/zh-TW.yml")),
+        ] {
+            for (index, line) in source.lines().enumerate() {
+                if let Some((_, value)) = line.split_once(':') {
+                    let value = value.trim().trim_matches(['\"', '\'']);
+                    assert!(
+                        value.is_empty() || !value.chars().all(|c| c == '?'),
+                        "{locale}:{} contains a placeholder label",
+                        index + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn instance_names_are_session_scoped_and_independent_of_executable_path() {
+        assert_eq!(
+            single_instance_object_name("SingleInstance"),
+            r"Local\Winderust.SingleInstance"
+        );
+        assert_eq!(
+            single_instance_object_name("RestoreWindow"),
+            r"Local\Winderust.RestoreWindow"
+        );
     }
 
     #[test]
@@ -353,7 +366,7 @@ mod tests {
         let stale_plan_recovery = main_body
             .find("restore_stale_adaptive_plans")
             .expect("stale adaptive-plan recovery");
-        let application = main_body.find("Application::new").expect("GPUI startup");
+        let application = main_body.find("app::run(settings").expect("Iced startup");
         let runtime = main_body
             .find("RuntimeHandle::start")
             .expect("runtime startup");

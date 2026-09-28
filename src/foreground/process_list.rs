@@ -2,12 +2,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fmt,
-    os::windows::ffi::OsStringExt,
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
     time::Instant,
 };
+#[cfg(test)]
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     cpu::ProcessCpuSample,
@@ -32,13 +34,13 @@ use windows_sys::Win32::{
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::GetSystemWindowsDirectoryW,
         Threading::{
-            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
-            IsProcessCritical, OpenProcess, OpenProcessToken, ProcessPowerThrottling,
-            ProcessProtectionLevelInfo, QueryFullProcessImageNameW, IDLE_PRIORITY_CLASS,
-            PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-            PROCESS_PROTECTION_LEVEL_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROTECTION_LEVEL_NONE,
+            GetPriorityClass, GetProcessInformation, GetProcessTimes, IsProcessCritical,
+            OpenProcess, OpenProcessToken, ProcessPowerThrottling, ProcessProtectionLevelInfo,
+            QueryFullProcessImageNameW, IDLE_PRIORITY_CLASS, PROCESS_NAME_WIN32,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE, PROCESS_PROTECTION_LEVEL_INFORMATION,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
+            PROCESS_TERMINATE, PROTECTION_LEVEL_NONE,
         },
         WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION,
     },
@@ -243,9 +245,13 @@ impl ProcessActionAccess {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessActionTargetError {
     ProtectedProcess,
+    #[cfg(test)]
     CurrentSessionUnavailable,
+    #[cfg(test)]
     DifferentSession,
+    #[cfg(test)]
     ProcessChanged,
+    #[cfg(test)]
     ProcessUnavailable(u32),
     IdentityUnavailable,
 }
@@ -254,15 +260,19 @@ impl fmt::Display for ProcessActionTargetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ProtectedProcess => formatter.write_str("Winderust cannot modify this process."),
+            #[cfg(test)]
             Self::CurrentSessionUnavailable => {
                 formatter.write_str("Could not determine the current Windows session.")
             }
+            #[cfg(test)]
             Self::DifferentSession => {
                 formatter.write_str("Processes in another Windows session cannot be modified.")
             }
+            #[cfg(test)]
             Self::ProcessChanged => {
                 formatter.write_str("The selected process instance has changed.")
             }
+            #[cfg(test)]
             Self::ProcessUnavailable(error) => write!(
                 formatter,
                 "The selected process is no longer available (Win32 error {error})."
@@ -276,6 +286,7 @@ impl fmt::Display for ProcessActionTargetError {
 
 impl std::error::Error for ProcessActionTargetError {}
 
+#[cfg(test)]
 pub fn capture_process_action_target(
     process_id: u32,
     expected_executable_path: &Path,
@@ -289,13 +300,7 @@ pub fn capture_process_action_target(
     )
 }
 
-pub fn capture_process_action_target_for_owned_release(
-    process_id: u32,
-    expected_executable_path: &Path,
-) -> Result<ProcessActionTarget, ProcessActionTargetError> {
-    capture_process_action_target_inner(process_id, expected_executable_path, true, false)
-}
-
+#[cfg(test)]
 fn capture_process_action_target_inner(
     process_id: u32,
     expected_executable_path: &Path,
@@ -478,6 +483,7 @@ fn process_tree_ids_postorder(
     Ok(ordered)
 }
 
+#[cfg(test)]
 pub(crate) fn ensure_process_action_target_access(
     target: &ProcessActionTarget,
     access: ProcessActionAccess,
@@ -519,6 +525,46 @@ fn ensure_process_action_target_safety_on_handle(
         return Err("Windows protected processes cannot be modified.".to_owned());
     }
     Ok(())
+}
+
+pub fn open_process_properties(executable_path: &Path) -> Result<(), String> {
+    use windows_sys::Win32::{
+        System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+        UI::Shell::{SHObjectProperties, SHOP_FILEPATH},
+    };
+    if !executable_path.is_absolute() || !executable_path.is_file() {
+        return Err("The process executable path is unavailable.".to_owned());
+    }
+    let path = executable_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: No reserved pointer is supplied; this background thread owns the COM apartment.
+    let initialized = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+    if initialized < 0 {
+        return Err(format!(
+            "Could not initialize Windows properties: {initialized:#x}."
+        ));
+    }
+    // SAFETY: path is terminated UTF-16, no parent is required, and null selects the default page.
+    let opened = unsafe {
+        SHObjectProperties(
+            std::ptr::null_mut(),
+            SHOP_FILEPATH as u32,
+            path.as_ptr(),
+            std::ptr::null(),
+        )
+    };
+    // SAFETY: Balance the successful COM initialization on this same thread.
+    unsafe {
+        CoUninitialize();
+    }
+    if opened == 0 {
+        Err("Could not open the executable properties.".to_owned())
+    } else {
+        Ok(())
+    }
 }
 
 pub fn open_process_location(executable_path: &Path) -> Result<(), String> {
@@ -759,6 +805,18 @@ impl ProtectedProcesses {
                 .executable_paths
                 .iter()
                 .any(|protected_path| same_executable_path(protected_path, executable_path))
+    }
+
+    /// A name match only permits a path lookup; it never establishes membership.
+    pub(crate) fn may_contain(&self, process: &ProcessInfo) -> bool {
+        self.process_ids.contains(&process.id)
+            || self.foreground_process_id == Some(process.id)
+            || process.image_path.is_some()
+            || self.executable_paths.iter().any(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_none_or(|name| same_process_name(&process.name, name))
+            })
     }
 }
 
@@ -1050,6 +1108,10 @@ fn process_token_user_buffer(process: &WinHandle) -> Option<Vec<usize>> {
 }
 
 fn process_image_path_from_handle(process: &WinHandle) -> Option<PathBuf> {
+    query_process_image_path(process).ok()
+}
+
+pub(crate) fn query_process_image_path(process: &WinHandle) -> Result<PathBuf, u32> {
     let mut buffer = vec![0u16; PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN];
     loop {
         let mut len = buffer.len() as u32;
@@ -1065,14 +1127,17 @@ fn process_image_path_from_handle(process: &WinHandle) -> Option<PathBuf> {
         };
 
         if ok != 0 {
-            return (len != 0).then(|| PathBuf::from(OsString::from_wide(&buffer[..len as usize])));
+            return if len != 0 {
+                Ok(PathBuf::from(OsString::from_wide(&buffer[..len as usize])))
+            } else {
+                Err(windows_sys::Win32::Foundation::ERROR_INVALID_DATA)
+            };
         }
 
         // SAFETY: GetLastError reads thread-local state immediately after the failed query.
-        if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
-            || buffer.len() >= PROCESS_IMAGE_PATH_MAX_BUFFER_LEN
-        {
-            return None;
+        let error = unsafe { GetLastError() };
+        if error != ERROR_INSUFFICIENT_BUFFER || buffer.len() >= PROCESS_IMAGE_PATH_MAX_BUFFER_LEN {
+            return Err(error);
         }
 
         buffer.resize((buffer.len() * 2).min(PROCESS_IMAGE_PATH_MAX_BUFFER_LEN), 0);
@@ -1089,6 +1154,12 @@ pub(crate) fn process_handle_matches_executable_path(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn executable_properties_rejects_unavailable_paths() {
+        assert!(super::open_process_properties(std::path::Path::new("")).is_err());
+        assert!(super::open_process_properties(std::path::Path::new("relative.exe")).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -1252,6 +1323,17 @@ mod tests {
         assert!(protected.contains(77, Path::new(r"C:\Apps\helper.exe")));
         assert!(protected.contains(99, Path::new(r"c:\apps\visible\APP.EXE")));
         assert!(!protected.contains(99, Path::new(r"D:\Other\app.exe")));
+
+        let mut candidate = process(99, r"D:\Other\app.exe");
+        candidate.image_path = None;
+        assert!(protected.may_contain(&candidate));
+        candidate.name = "unrelated.exe".to_owned();
+        assert!(!protected.may_contain(&candidate));
+        candidate.id = 77;
+        assert!(protected.may_contain(&candidate));
+        candidate.id = 99;
+        candidate.image_path = Some(PathBuf::from(r"C:\Apps\Visible\app.exe"));
+        assert!(protected.may_contain(&candidate));
 
         let unprotected = ProtectedProcesses::capture(&processes, false, Some(42), BTreeSet::new());
         assert!(!unprotected.contains(42, Path::new(r"C:\Apps\Foreground\app.exe")));

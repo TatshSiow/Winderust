@@ -14,9 +14,8 @@ use crate::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget},
     },
     foreground::{
-        is_foreground_process, process_count_label, process_executable_path, process_failure_key,
-        process_session_id, same_process_name, unique_app_names, ProtectedProcesses,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_count_label, process_executable_path, process_failure_key, process_session_id,
+        same_process_name, unique_app_names, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -145,6 +144,8 @@ impl DynamicPriorityBoostManager {
         };
 
         let scanned_processes = processes.len();
+        let adaptive_workload = (owner == ControlOwner::AdaptiveEngine)
+            .then(|| observations.adaptive_workload(processes.as_ref()));
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
                 processes
@@ -176,11 +177,13 @@ impl DynamicPriorityBoostManager {
                 continue;
             };
             let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
+                && super::foreground_for_owner(
+                    owner,
+                    process,
                     &executable_path,
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
+                    adaptive_workload.as_deref(),
                 );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
@@ -296,7 +299,7 @@ impl DynamicPriorityBoostManager {
                         Some(process_id),
                         process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        "Access denied when opening process.",
                     );
                 }
                 Err(err) => {
@@ -310,10 +313,10 @@ impl DynamicPriorityBoostManager {
             action_log.record(
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
-                "Dynamic Priority Boost",
+                "",
                 ActionLogResult::Applied,
                 format!(
-                    "Applied dynamic priority boost defaults to {}.",
+                    "Priority boost updated for {}.",
                     process_count_label(applied_processes)
                 ),
             );
@@ -376,7 +379,7 @@ impl DynamicPriorityBoostManager {
             action_log.record(
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
-                "Dynamic Priority Boost",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored dynamic priority boost for {}: {reason}.",

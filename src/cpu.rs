@@ -219,17 +219,28 @@ impl Drop for CpuFrequencyCounter {
 
 impl PerProcessorUsageMonitor {
     pub fn sample(&mut self) -> Option<Vec<f32>> {
-        let current = read_processor_cpu_times()?;
+        self.sample_counters(read_processor_cpu_times())
+    }
+
+    fn sample_counters(&mut self, current: Option<Vec<CpuTimeCounters>>) -> Option<Vec<f32>> {
+        let Some(current) = current.filter(|times| !times.is_empty()) else {
+            self.previous_times = None;
+            return None;
+        };
         let usage = self.previous_times.as_ref().and_then(|previous| {
-            (previous.len() == current.len()).then(|| {
-                previous
-                    .iter()
-                    .zip(current.iter())
-                    .map(|(previous, current)| processor_usage_percent(*previous, *current))
-                    .collect::<Vec<_>>()
-            })
+            if previous.len() != current.len() {
+                return None;
+            }
+            // Keep processor indices intact. A missing interval for any processor makes
+            // the complete placement observation unavailable, not a partially idle CPU.
+            previous
+                .iter()
+                .zip(current.iter())
+                .map(|(previous, current)| processor_usage_percent(*previous, *current))
+                .collect::<Option<Vec<_>>>()
         });
 
+        // Re-prime after an observed processor-count change or invalid delta.
         self.previous_times = Some(current);
         usage
     }
@@ -268,7 +279,7 @@ fn process_cpu_time_percent(
 
     let cpu_delta = current
         .cpu_time_100ns
-        .saturating_sub(previous.cpu_time_100ns) as f64;
+        .checked_sub(previous.cpu_time_100ns)? as f64;
     Some(
         ((cpu_delta / (elapsed_100ns as f64 * processor_count.max(1) as f64)) * 100.0)
             .clamp(0.0, 100.0) as f32,
@@ -294,15 +305,15 @@ fn read_system_cpu_times() -> Option<CpuTimeCounters> {
 }
 
 fn cpu_usage_percent(previous: CpuTimeCounters, current: CpuTimeCounters) -> Option<f32> {
-    let idle_delta = current.idle.saturating_sub(previous.idle);
-    let kernel_delta = current.kernel.saturating_sub(previous.kernel);
-    let user_delta = current.user.saturating_sub(previous.user);
-    let total_delta = kernel_delta + user_delta;
+    let idle_delta = current.idle.checked_sub(previous.idle)?;
+    let kernel_delta = current.kernel.checked_sub(previous.kernel)?;
+    let user_delta = current.user.checked_sub(previous.user)?;
+    let total_delta = kernel_delta.checked_add(user_delta)?;
 
     if total_delta == 0 {
         None
     } else {
-        let used = total_delta.saturating_sub(idle_delta);
+        let used = total_delta.checked_sub(idle_delta)?;
         Some(((used as f32 / total_delta as f32) * 100.0).clamp(0.0, 100.0))
     }
 }
@@ -420,20 +431,136 @@ fn average_processor_power_frequency(
         }
     }
 
-    (count > 0).then_some(CpuFrequencySample {
-        frequency_mhz: (total / count) as u32,
-        base_frequency_mhz: (max_frequency_count > 0)
-            .then_some((max_frequency_total_mhz / max_frequency_count) as u32),
+    Some(CpuFrequencySample {
+        frequency_mhz: total.checked_div(count)? as u32,
+        base_frequency_mhz: max_frequency_total_mhz
+            .checked_div(max_frequency_count)
+            .map(|frequency| frequency as u32),
     })
 }
 
-fn processor_usage_percent(previous: CpuTimeCounters, current: CpuTimeCounters) -> f32 {
-    cpu_usage_percent(previous, current).unwrap_or_default()
+fn processor_usage_percent(previous: CpuTimeCounters, current: CpuTimeCounters) -> Option<f32> {
+    cpu_usage_percent(previous, current)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn counters(idle: u64, kernel: u64, user: u64) -> CpuTimeCounters {
+        CpuTimeCounters { idle, kernel, user }
+    }
+
+    #[test]
+    fn processor_usage_distinguishes_unavailable_idle_and_busy_intervals() {
+        let previous = counters(100, 140, 60);
+        assert_eq!(processor_usage_percent(previous, previous), None);
+        assert_eq!(
+            processor_usage_percent(previous, counters(110, 150, 60)),
+            Some(0.0)
+        );
+        assert_eq!(
+            processor_usage_percent(previous, counters(100, 140, 70)),
+            Some(100.0)
+        );
+    }
+
+    #[test]
+    fn cpu_usage_rejects_regression_inconsistent_idle_and_overflow() {
+        let previous = counters(100, 140, 60);
+        for current in [
+            counters(99, 150, 70),
+            counters(110, 139, 70),
+            counters(110, 150, 59),
+            counters(130, 150, 70),
+        ] {
+            assert_eq!(cpu_usage_percent(previous, current), None);
+        }
+        assert_eq!(
+            cpu_usage_percent(counters(0, 0, 0), counters(0, u64::MAX, 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn processor_monitor_requires_complete_intervals_without_shifting_indices() {
+        let mut monitor = PerProcessorUsageMonitor::default();
+        let initial = counters(0, 0, 0);
+        assert_eq!(monitor.sample_counters(Some(vec![initial, initial])), None);
+        assert_eq!(
+            monitor.sample_counters(Some(vec![counters(0, 0, 100), initial])),
+            None
+        );
+        assert_eq!(
+            monitor.sample_counters(Some(vec![counters(100, 100, 100), counters(0, 0, 100)])),
+            Some(vec![0.0, 100.0])
+        );
+    }
+
+    #[test]
+    fn processor_monitor_restarts_after_capture_failure_or_empty_capture() {
+        for unavailable in [None, Some(Vec::new())] {
+            let mut monitor = PerProcessorUsageMonitor::default();
+            assert_eq!(monitor.sample_counters(Some(vec![counters(0, 0, 0)])), None);
+            assert_eq!(
+                monitor.sample_counters(Some(vec![counters(0, 0, 100)])),
+                Some(vec![100.0])
+            );
+            assert_eq!(monitor.sample_counters(unavailable), None);
+            assert!(monitor.previous_times.is_none());
+            assert_eq!(
+                monitor.sample_counters(Some(vec![counters(0, 0, 200)])),
+                None
+            );
+            assert_eq!(
+                monitor.sample_counters(Some(vec![counters(0, 0, 300)])),
+                Some(vec![100.0])
+            );
+        }
+    }
+
+    #[test]
+    fn processor_monitor_reprimes_after_domain_size_change() {
+        let mut monitor = PerProcessorUsageMonitor::default();
+        let initial = counters(0, 0, 0);
+        assert_eq!(monitor.sample_counters(Some(vec![initial])), None);
+        assert_eq!(monitor.sample_counters(Some(vec![initial, initial])), None);
+        assert_eq!(
+            monitor.sample_counters(Some(vec![counters(0, 0, 100), counters(100, 100, 0)])),
+            Some(vec![100.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn processor_monitor_reprimes_after_counter_regression() {
+        let mut monitor = PerProcessorUsageMonitor::default();
+        assert_eq!(
+            monitor.sample_counters(Some(vec![counters(0, 0, 100)])),
+            None
+        );
+        assert_eq!(
+            monitor.sample_counters(Some(vec![counters(0, 0, 10)])),
+            None
+        );
+        assert_eq!(
+            monitor.sample_counters(Some(vec![counters(0, 0, 20)])),
+            Some(vec![100.0])
+        );
+    }
+
+    #[test]
+    fn process_counter_regression_is_unavailable() {
+        let now = Instant::now();
+        let previous = ProcessCpuSample {
+            cpu_time_100ns: 20,
+            sampled_at: now,
+        };
+        let current = ProcessCpuSample {
+            cpu_time_100ns: 10,
+            sampled_at: now + std::time::Duration::from_secs(1),
+        };
+        assert_eq!(process_cpu_time_percent(previous, current, 1), None);
+    }
 
     #[test]
     fn combines_filetime_parts() {
@@ -458,7 +585,7 @@ mod tests {
             user: 30,
         };
 
-        assert_eq!(processor_usage_percent(previous, current), 80.0);
+        assert_eq!(processor_usage_percent(previous, current), Some(80.0));
     }
 
     #[test]
@@ -476,6 +603,32 @@ mod tests {
 
         assert_eq!(cpu_usage_percent(previous, current), Some(80.0));
         assert_eq!(cpu_usage_percent(current, current), None);
+    }
+
+    #[test]
+    fn processor_frequency_handles_missing_readings_without_losing_valid_samples() {
+        assert_eq!(average_processor_power_frequency(&[]), None);
+        for max_mhz in [0, 4000] {
+            let record = PROCESSOR_POWER_INFORMATION {
+                MaxMhz: max_mhz,
+                ..Default::default()
+            };
+            assert_eq!(average_processor_power_frequency(&[record]), None);
+        }
+        let records = [
+            PROCESSOR_POWER_INFORMATION::default(),
+            PROCESSOR_POWER_INFORMATION {
+                CurrentMhz: 2400,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            average_processor_power_frequency(&records),
+            Some(CpuFrequencySample {
+                frequency_mhz: 2400,
+                base_frequency_mhz: None,
+            })
+        );
     }
 
     #[test]

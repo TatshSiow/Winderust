@@ -8,13 +8,14 @@ use crate::{
     control::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
         thread_priority::{
-            thread_priority_is_actionable, ThreadPriorityApplyOutcome, ThreadPriorityClaim,
-            ThreadPriorityController, ThreadPriorityPreservation, ThreadPriorityReleaseSummary,
+            thread_priority_is_actionable, ThreadInventory, ThreadPriorityApplyOutcome,
+            ThreadPriorityClaim, ThreadPriorityController, ThreadPriorityPreservation,
+            ThreadPriorityReleaseSummary,
         },
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        same_process_name, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_executable_path, process_failure_key, process_session_id, same_process_name,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -134,6 +135,8 @@ impl ThreadPriorityManager {
         } else {
             ProtectedProcesses::default()
         };
+        let adaptive_workload = (owner == ControlOwner::AdaptiveEngine)
+            .then(|| observations.adaptive_workload(processes.as_ref()));
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
                 processes
@@ -161,11 +164,13 @@ impl ThreadPriorityManager {
                 continue;
             };
             let foreground = settings.foreground_detection_enabled
-                && is_foreground_process(
-                    process.id,
+                && super::foreground_for_owner(
+                    owner,
+                    process,
                     &executable_path,
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
+                    adaptive_workload.as_deref(),
                 );
             let visible_window = !foreground
                 && settings.visible_window_detection_enabled
@@ -225,6 +230,7 @@ impl ThreadPriorityManager {
         let mut applied_threads = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
+        let mut inventory = ThreadInventory::default();
         for target in targets.into_values() {
             let process_id = target.claim.target.id;
             if self.is_process_suppressed(
@@ -237,12 +243,22 @@ impl ThreadPriorityManager {
                 skipped_processes += 1;
                 continue;
             }
-            match controller.apply_policy_claim(target.claim, allow_cross_session_process_control) {
+            match controller.apply_policy_claim(
+                &mut inventory,
+                target.claim,
+                allow_cross_session_process_control,
+            ) {
                 Ok(outcome) => {
                     applied_threads += outcome.applied_threads;
                     skipped_processes += usize::from(process_was_only_preserved(outcome));
                     self.failure_suppression
                         .clear_process_failure(&target.executable_path);
+                }
+                Err(error) if inventory.failed() => {
+                    // A shared observation failure is not a failure of any application.
+                    failures.count += 1;
+                    failures.last_error = Some(error.to_string());
+                    break;
                 }
                 Err(ProcessControlError::ProcessExited) => skipped_processes += 1,
                 Err(ProcessControlError::AccessDenied(message)) => {
@@ -274,9 +290,9 @@ impl ThreadPriorityManager {
             action_log.record(
                 ActionLogFeature::ThreadPriority,
                 None,
-                "Thread Priority",
+                "",
                 ActionLogResult::Applied,
-                format!("Applied thread priority to {applied_threads} thread(s)."),
+                format!("Priority updated for {applied_threads} thread(s)."),
             );
         }
 
@@ -399,7 +415,7 @@ fn record_release(
         action_log.record(
             ActionLogFeature::ThreadPriority,
             None,
-            "Thread Priority",
+            "",
             ActionLogResult::Restored,
             format!(
                 "Restored thread priority for {} thread(s): {reason}.",
@@ -440,6 +456,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::foreground::is_foreground_process;
     use std::path::Path;
 
     use super::*;

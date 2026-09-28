@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -20,10 +25,26 @@ jobs:
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup default stable
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+
+      - name: Ensure ripgrep is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+              choco install ripgrep --yes --no-progress
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          rg --version
+
+      - name: Check architecture ownership
+        run: .\scripts\check_architecture_ownership.ps1
+
+      - name: Check legacy names
+        run: .\scripts\check_legacy_names.ps1
 
       - name: Check formatting
         run: cargo fmt -- --check

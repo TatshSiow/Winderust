@@ -351,7 +351,7 @@ impl MemoryPriorityManager {
             action_log.record(
                 action_log_feature,
                 None,
-                memory_priority_summary_process_name(action_log_feature),
+                "",
                 ActionLogResult::Applied,
                 memory_priority_apply_summary_message(applied_processes),
             );
@@ -440,7 +440,7 @@ impl MemoryPriorityManager {
             action_log.record(
                 action_log_feature,
                 None,
-                memory_priority_summary_process_name(action_log_feature),
+                "",
                 ActionLogResult::Restored,
                 memory_priority_restore_summary_message(summary.restored_processes, reason),
             );
@@ -610,7 +610,10 @@ fn should_skip_process(
 }
 
 fn memory_priority_apply_summary_message(count: usize) -> String {
-    format!("Applied memory priority to {}.", process_count_label(count))
+    format!(
+        "Memory priority updated for {}.",
+        process_count_label(count)
+    )
 }
 
 fn memory_priority_restore_summary_message(count: usize, reason: &str) -> String {
@@ -618,13 +621,6 @@ fn memory_priority_restore_summary_message(count: usize, reason: &str) -> String
         "Restored previous memory priority for {}: {reason}.",
         process_count_label(count)
     )
-}
-
-fn memory_priority_summary_process_name(action_log_feature: ActionLogFeature) -> &'static str {
-    match action_log_feature {
-        ActionLogFeature::CpuScheduler => "CPU Scheduler",
-        _ => "Memory Priority",
-    }
 }
 
 #[cfg(test)]
@@ -667,7 +663,7 @@ mod tests {
         assert!(!manager.is_process_suppressed(
             42,
             r"C:\Apps\app.exe",
-            ActionLogFeature::CpuScheduler,
+            ActionLogFeature::AdaptiveEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
@@ -676,21 +672,21 @@ mod tests {
         assert!(manager.is_process_suppressed(
             42,
             r"C:\Apps\app.exe",
-            ActionLogFeature::CpuScheduler,
+            ActionLogFeature::AdaptiveEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
         assert!(manager.is_process_suppressed(
             43,
             r"C:/Apps/app.exe",
-            ActionLogFeature::CpuScheduler,
+            ActionLogFeature::AdaptiveEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::CpuScheduler);
+        assert_eq!(entries[0].feature, ActionLogFeature::AdaptiveEngine);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
             .reason
@@ -701,27 +697,15 @@ mod tests {
     fn memory_priority_summary_messages_use_process_count() {
         assert_eq!(
             memory_priority_apply_summary_message(1),
-            "Applied memory priority to 1 process."
+            "Memory priority updated for 1 process."
         );
         assert_eq!(
             memory_priority_apply_summary_message(5),
-            "Applied memory priority to 5 processes."
+            "Memory priority updated for 5 processes."
         );
         assert_eq!(
             memory_priority_restore_summary_message(1, "foreground app is unknown"),
             "Restored previous memory priority for 1 process: foreground app is unknown."
-        );
-    }
-
-    #[test]
-    fn memory_priority_summary_process_name_matches_feature_context() {
-        assert_eq!(
-            memory_priority_summary_process_name(ActionLogFeature::MemoryPriority),
-            "Memory Priority"
-        );
-        assert_eq!(
-            memory_priority_summary_process_name(ActionLogFeature::CpuScheduler),
-            "CPU Scheduler"
         );
     }
 }

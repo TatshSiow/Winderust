@@ -1,10 +1,12 @@
+#[cfg(test)]
+use crate::config::ProcessPrioritySetting;
 use std::{collections::BTreeSet, path::PathBuf};
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{ProcessPrioritySetting, ProcessPrioritySettings},
+    config::ProcessPrioritySettings,
     control::{
         priority_efficiency::{
             PriorityClassClaim, PriorityClassPreservation, PriorityClassValue,
@@ -285,9 +287,9 @@ impl ProcessPriorityManager {
             action_log.record(
                 ActionLogFeature::ProcessPriority,
                 None,
-                "Process Priority",
+                "",
                 ActionLogResult::Applied,
-                format!("Applied process priority defaults to {applied_processes} process(es)."),
+                format!("Priority updated for {applied_processes} process(es)."),
             );
         }
 
@@ -371,7 +373,7 @@ impl ProcessPriorityManager {
             action_log.record(
                 ActionLogFeature::ProcessPriority,
                 None,
-                "Process Priority",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored process priority for {} process(es): {reason}.",
@@ -485,6 +487,7 @@ fn priority_preservation(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn can_apply_once(priority: ProcessPrioritySetting) -> bool {
     matches!(
         priority,

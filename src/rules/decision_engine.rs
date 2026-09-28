@@ -31,6 +31,7 @@ pub struct DecisionInput {
 
 #[derive(Debug, Clone)]
 pub struct ByRunningAppDecision {
+    pub rule_index: usize,
     pub rule_name: String,
     pub process_name: String,
     pub power_plan_guid: String,
@@ -38,6 +39,7 @@ pub struct ByRunningAppDecision {
 
 #[derive(Debug, Clone)]
 pub struct DecisionOutcome {
+    pub rule_index: Option<usize>,
     pub power_plan_guid: Option<String>,
     pub state: DecisionState,
     pub reason: String,
@@ -65,7 +67,7 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     if let Some(foreground_executable_path) =
         foreground_executable_path.filter(|_| settings.by_foreground.enabled)
     {
-        for rule in &settings.by_foreground.rules {
+        for (rule_index, rule) in settings.by_foreground.rules.iter().enumerate() {
             if rule.enabled
                 && same_executable_path(
                     Path::new(&rule.executable_path),
@@ -73,7 +75,7 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 )
             {
                 if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
-                    return DecisionOutcome::with_power_plan(
+                    let mut outcome = DecisionOutcome::with_power_plan(
                         Some(power_plan_guid),
                         DecisionState::ByForeground,
                         format!(
@@ -81,6 +83,8 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                             rule.name
                         ),
                     );
+                    outcome.rule_index = Some(rule_index);
+                    return outcome;
                 }
                 break;
             }
@@ -88,7 +92,7 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     }
 
     if let Some(by_running_app) = input.by_running_app {
-        return DecisionOutcome::with_power_plan(
+        let mut outcome = DecisionOutcome::with_power_plan(
             Some(by_running_app.power_plan_guid),
             DecisionState::ByRunningApp,
             format!(
@@ -96,10 +100,12 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 by_running_app.process_name, by_running_app.rule_name
             ),
         );
+        outcome.rule_index = Some(by_running_app.rule_index);
+        return outcome;
     }
 
     if let Some(by_cpu_load_decision) = input.by_cpu_load {
-        return DecisionOutcome::with_power_plan(
+        let mut outcome = DecisionOutcome::with_power_plan(
             by_cpu_load_decision.power_plan_guid,
             DecisionState::ByCpuLoad,
             format!(
@@ -107,6 +113,8 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 by_cpu_load_decision.usage_percent, by_cpu_load_decision.rule_name
             ),
         );
+        outcome.rule_index = Some(by_cpu_load_decision.rule_index);
+        return outcome;
     }
 
     let deferred_activity_outcome = if settings.by_activity.enabled {
@@ -150,11 +158,13 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     };
 
     if let Some(by_time_decision) = input.by_time {
-        return DecisionOutcome::with_power_plan(
+        let mut outcome = DecisionOutcome::with_power_plan(
             by_time_decision.power_plan_guid,
             DecisionState::ByTime,
             format!("By Time rule '{}' is active.", by_time_decision.rule_name),
         );
+        outcome.rule_index = Some(by_time_decision.rule_index);
+        return outcome;
     }
 
     if let Some(outcome) = deferred_activity_outcome {
@@ -176,12 +186,14 @@ impl DecisionOutcome {
         let reason = reason.into();
         if power_plan_guid.is_some() {
             Self {
+                rule_index: None,
                 power_plan_guid,
                 state,
                 reason,
             }
         } else {
             Self {
+                rule_index: None,
                 power_plan_guid: None,
                 state: DecisionState::NoPowerPlanSelected,
                 reason: format!("{reason} Select the required power plan first."),
@@ -191,6 +203,7 @@ impl DecisionOutcome {
 
     fn without_power_plan(state: DecisionState, reason: impl Into<String>) -> Self {
         Self {
+            rule_index: None,
             power_plan_guid: None,
             state,
             reason: reason.into(),
@@ -231,10 +244,12 @@ mod tests {
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
+                    rule_index: 0,
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    rule_index: 0,
                     rule_name: "Low CPU".to_owned(),
                     power_plan_guid: Some("cpu-low-guid".to_owned()),
                     usage_percent: 10.0,
@@ -256,6 +271,7 @@ mod tests {
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
+                    rule_index: 0,
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
@@ -280,6 +296,7 @@ mod tests {
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
+                    rule_index: 0,
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
@@ -304,6 +321,7 @@ mod tests {
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
+                    rule_index: 0,
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
@@ -414,6 +432,7 @@ mod tests {
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
+                    rule_index: 0,
                     rule_name: "Quiet".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
@@ -435,6 +454,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: Some("cpu-custom".to_owned()),
                     usage_percent: 90.0,
@@ -481,6 +501,7 @@ mod tests {
         );
 
         assert_eq!(outcome.state, DecisionState::ByForeground);
+        assert_eq!(outcome.rule_index, Some(0));
         assert_eq!(outcome.power_plan_guid.as_deref(), Some("balanced-guid"));
     }
 
@@ -502,10 +523,12 @@ mod tests {
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
+                    rule_index: 0,
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: Some("cpu-high-guid".to_owned()),
                     usage_percent: 90.0,
@@ -536,6 +559,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: Some("cpu-high-guid".to_owned()),
                     usage_percent: 90.0,
@@ -556,15 +580,18 @@ mod tests {
                 foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: Some(ByRunningAppDecision {
+                    rule_index: 0,
                     rule_name: "Game".to_owned(),
                     process_name: "game.exe".to_owned(),
                     power_plan_guid: "by-running-app-guid".to_owned(),
                 }),
                 by_time: Some(ByTimeDecision {
+                    rule_index: 0,
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: Some("cpu-high-guid".to_owned()),
                     usage_percent: 90.0,
@@ -573,6 +600,7 @@ mod tests {
         );
 
         assert_eq!(outcome.state, DecisionState::ByRunningApp);
+        assert_eq!(outcome.rule_index, Some(0));
         assert_eq!(
             outcome.power_plan_guid.as_deref(),
             Some("by-running-app-guid")
@@ -596,6 +624,7 @@ mod tests {
                 foreground_executable_path: Some("game.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: Some(ByRunningAppDecision {
+                    rule_index: 0,
                     rule_name: "Game running".to_owned(),
                     process_name: "game.exe".to_owned(),
                     power_plan_guid: "by-running-app-guid".to_owned(),
@@ -606,6 +635,7 @@ mod tests {
         );
 
         assert_eq!(outcome.state, DecisionState::ByForeground);
+        assert_eq!(outcome.rule_index, Some(0));
         assert_eq!(outcome.power_plan_guid.as_deref(), Some("foreground-guid"));
     }
 

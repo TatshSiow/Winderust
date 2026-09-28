@@ -4,6 +4,7 @@ use crate::config::{ByCpuLoadRule, ByCpuLoadSettings};
 
 #[derive(Debug, Clone)]
 pub struct ByCpuLoadDecision {
+    pub rule_index: usize,
     pub rule_name: String,
     pub power_plan_guid: Option<String>,
     pub usage_percent: f32,
@@ -48,7 +49,7 @@ impl ByCpuLoadScheduler {
             }
 
             if else_decision.is_none() {
-                else_decision = else_decision_for_rule(rule);
+                else_decision = else_decision_for_rule(rule).map(|decision| (index, decision));
             }
 
             if rule.is_else() {
@@ -67,6 +68,7 @@ impl ByCpuLoadScheduler {
             {
                 if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
                     matching_decision = Some(ByCpuLoadDecision {
+                        rule_index: index,
                         rule_name: rule.name.clone(),
                         power_plan_guid: Some(power_plan_guid),
                         usage_percent,
@@ -76,11 +78,14 @@ impl ByCpuLoadScheduler {
         }
 
         matching_decision.or_else(|| {
-            else_decision.map(|(rule_name, power_plan_guid)| ByCpuLoadDecision {
-                rule_name,
-                power_plan_guid: Some(power_plan_guid),
-                usage_percent,
-            })
+            else_decision.map(
+                |(rule_index, (rule_name, power_plan_guid))| ByCpuLoadDecision {
+                    rule_index,
+                    rule_name,
+                    power_plan_guid: Some(power_plan_guid),
+                    usage_percent,
+                },
+            )
         })
     }
 }
@@ -104,6 +109,49 @@ fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String
 mod tests {
     use super::*;
     use crate::config::{ByCpuLoadRule, CpuUsageComparison};
+
+    #[test]
+    fn selected_rule_index_survives_else_branch_and_arbitration() {
+        let mut settings = crate::config::Settings::default();
+        settings.general.enabled = true;
+        settings.general.pause_power_plan_switching_while_plugged_in = false;
+        settings.by_cpu_load.enabled = true;
+        settings.by_cpu_load.rules = vec![
+            settings.by_cpu_load.rules[0].clone(),
+            ByCpuLoadRule {
+                enabled: true,
+                name: "Second".into(),
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: 75,
+                duration_seconds: 0,
+                power_plan_guid: Some("main".into()),
+                else_enabled: true,
+                else_power_plan_guid: Some("else".into()),
+                upper_threshold_percent: None,
+            },
+        ];
+        settings.by_cpu_load.rules[0].enabled = false;
+        let mut scheduler = ByCpuLoadScheduler::default();
+        for (usage, plan) in [(10.0, "else"), (90.0, "main")] {
+            let decision = scheduler
+                .current_decision(&settings.by_cpu_load, Some(usage))
+                .unwrap();
+            assert_eq!(decision.rule_index, 1);
+            let outcome = crate::rules::decide(
+                &settings,
+                crate::rules::DecisionInput {
+                    activity_state: crate::activity::ActivityState::Unknown,
+                    foreground_executable_path: None,
+                    plugged_in: Some(false),
+                    by_running_app: None,
+                    by_time: None,
+                    by_cpu_load: Some(decision),
+                },
+            );
+            assert_eq!(outcome.rule_index, Some(1));
+            assert_eq!(outcome.power_plan_guid.as_deref(), Some(plan));
+        }
+    }
 
     #[test]
     fn by_cpu_load_returns_matching_zero_duration_rule() {

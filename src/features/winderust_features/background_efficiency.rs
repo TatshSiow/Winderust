@@ -302,7 +302,7 @@ impl BackgroundEfficiencyManager {
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Applied,
-                        "Applied Background Efficiency: enabled EcoQoS and lowered priority.",
+                        "EcoQoS enabled; process priority lowered.",
                     );
                 }
                 Ok(
@@ -434,7 +434,7 @@ impl BackgroundEfficiencyManager {
             action_log.record(
                 ActionLogFeature::BackgroundEfficiency,
                 None,
-                "Background Efficiency",
+                "",
                 ActionLogResult::Restored,
                 format!(
                     "Restored Background Efficiency for {} process(es): {reason}.",

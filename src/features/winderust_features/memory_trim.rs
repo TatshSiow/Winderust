@@ -332,7 +332,7 @@ impl MemoryTrimManager {
                         Some(process_id),
                         process_name,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        "Access denied when opening process.",
                     );
                 }
                 Err(err) => {

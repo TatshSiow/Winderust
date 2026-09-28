@@ -290,3 +290,6 @@ mod tests {
         assert!(controller.platform.terminations.is_empty());
     }
 }
+
+#[cfg(test)]
+mod live_tests;

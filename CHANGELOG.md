@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## Unreleased
+
+## 0.9.0-alpha - 2026-09-28
+
+### Added
+
+- Add grouped feature toggles to the system tray menu and mouse back/forward navigation.
+- Add rotating diagnostic logs beside the executable for panic, startup, shutdown, and recovery failures.
+- Add a compact, scrollable Enabled Features list with a count badge on Home.
+- Add repeatable ST/MT benchmark tooling using production Adaptive Engine presets and verified restoration.
+
+### Changed
+
+- Rebuild the desktop UI with Iced and the tiny-skia software renderer, using the native Windows frame.
+- Standardize feature cards, rule tables, preset editors, dialogs, sidebar headings, accent colors, and status indicators. Allow settings to be edited while a feature is disabled.
+- Refine Process List with denser rows, a fixed header, resizable and auto-sized columns, sorting indicators, memory display options, and expanded process context menus.
+- Redesign Log with a virtualized table, checkbox filters, grouped process entries, and clearer feature names and reasons.
+- Improve scrolling, dropdowns, tab transitions, and expandable controls; retain On, Off, and Follow System animation options.
+- Use the native Windows color dialog and provide edit/remove context menus for custom colors.
+- Make dashboard and process-population pause controls immediate and temporary until the next launch.
+- Separate Dynamic Resource Zones settings from Limit Background Processors, and enable CPU idle states in Adaptive power plans.
+- Reduce background overhead through event-driven tray wakeups, shared thread discovery, fewer executable-path queries, and I/O sampling only when it can affect the Adaptive power profile.
+- Rename Quit to Exit and show progress during shutdown.
+
+### Fixed
+
+- Fix disk I/O and network-rate reporting, CPU sample validity, and dashboard chart artifacts and hover indicators.
+- Preserve custom preset selections, shared preset saves, unsaved editor drafts, and global settings across power profiles. Deduplicate saved custom colors.
+- Derive sidebar status from saved settings and runtime activity instead of unsaved toggle changes.
+- Fix close requests from the tray, taskbar, and minimized windows; enforce a single instance across debug/release builds and executable locations.
+- Handle exited processes and threads during restoration, retain pending cleanup after failures, and protect the recovery helper from process-control actions.
+- Bound recovery transport and shutdown waits, preserve recovery ownership and error details, and prevent diagnostic logging from blocking shutdown.
+- Harden Adaptive power-plan initialization, partial-write recovery, active-plan verification, and retry handling.
+- Correct By Activity input-source handling, By Time updates after clock changes, and automation wakeups across Plugged In and On Battery profiles.
+- Prevent automatic settings writes after a configuration-load failure.
+
+### Removed
+
+- Remove the GPUI implementation and vendored framework code, along with the redundant bottom status bar.
+
+### Upgrade notes
+
+- Settings and Adaptive Engine presets from earlier releases are not automatically migrated. Adaptive Engine configuration names changed, and enabled Dynamic Resource Zones now requires its own settings block. Back up existing settings and exported presets before upgrading, and recreate incompatible configurations in the new version.
+
 ## 0.8.0-alpha - 2026-09-01
 
 ### Added

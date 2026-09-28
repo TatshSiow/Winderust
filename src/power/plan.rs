@@ -499,6 +499,28 @@ mod adaptive_tests {
     }
 
     #[test]
+    fn io_cannot_change_a_profile_already_selected_by_cpu_demand() {
+        for cpu in [2.0, 8.0, 25.0, 100.0] {
+            let input = AdaptivePowerDemand {
+                foreground_cpu_percent: Some(cpu),
+                io_bytes_per_second: None,
+                ..demand()
+            };
+            let selected = AdaptivePowerProfile::for_demand(input);
+            assert_ne!(selected, AdaptivePowerProfile::Idle);
+            for io in [0.0, 8.0 * 1024.0 * 1024.0, f64::MAX] {
+                assert_eq!(
+                    AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
+                        io_bytes_per_second: Some(io),
+                        ..input
+                    }),
+                    selected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn adaptive_demand_selects_cpu_foreground_io_and_focus_and_launch_profiles() {
         assert_eq!(
             AdaptivePowerProfile::for_demand(demand()),

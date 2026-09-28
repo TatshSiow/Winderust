@@ -49,18 +49,67 @@ pub fn set_active(guid: &str) -> Result<(), String> {
     windows_power::set_active(guid)
 }
 
-pub fn create_adaptive_plan(source_guid: &str) -> Result<String, String> {
-    let duplicate_guid = windows_power::duplicate_scheme(source_guid)?;
+pub fn duplicate_adaptive_plan(source_guid: &str) -> Result<String, String> {
+    // Return the resource immediately. The controller must retain this GUID before
+    // initialization; even naming or idle-state verification can fail.
+    windows_power::duplicate_scheme(source_guid)
+}
+
+pub fn initialize_adaptive_plan(guid: &str, source_guid: &str) -> Result<(), String> {
+    initialize_adaptive_plan_with(
+        source_guid,
+        |name| windows_power::write_scheme_name(guid, name),
+        |description| windows_power::write_scheme_description(guid, description),
+        |battery, value| {
+            if battery {
+                windows_power::write_dc_value(guid, PowerSetting::IdleDisable, value)
+            } else {
+                windows_power::write_ac_value(guid, PowerSetting::IdleDisable, value)
+            }
+        },
+        |battery| {
+            if battery {
+                windows_power::read_dc_value(guid, PowerSetting::IdleDisable)
+            } else {
+                windows_power::read_ac_value(guid, PowerSetting::IdleDisable)
+            }
+        },
+    )
+}
+
+fn initialize_adaptive_plan_with(
+    source_guid: &str,
+    write_name: impl FnOnce(&str) -> Result<(), String>,
+    write_description: impl FnOnce(&str) -> Result<(), String>,
+    write_idle: impl FnMut(bool, u32) -> Result<(), String>,
+    read_idle: impl FnMut(bool) -> Result<u32, String>,
+) -> Result<(), String> {
     let description = format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{source_guid}");
+    write_name(ADAPTIVE_PLAN_NAME)?;
+    write_description(&description)?;
+    // Cleanup belongs to the controller even when metadata is only partially written.
+    enable_adaptive_idle_states(write_idle, read_idle)
+}
 
-    if let Err(error) = windows_power::write_scheme_name(&duplicate_guid, ADAPTIVE_PLAN_NAME)
-        .and_then(|()| windows_power::write_scheme_description(&duplicate_guid, &description))
-    {
-        let _ = windows_power::delete_scheme(&duplicate_guid);
-        return Err(error);
+// IdleDisable=0 permits CPU idle states, regardless of the cloned plan.
+// Set both sources before activation; profile changes preserve this policy.
+fn enable_adaptive_idle_states(
+    mut write: impl FnMut(bool, u32) -> Result<(), String>,
+    mut read: impl FnMut(bool) -> Result<u32, String>,
+) -> Result<(), String> {
+    for battery in [false, true] {
+        let source = if battery { "battery" } else { "A/C" };
+        write(battery, 0)
+            .map_err(|error| format!("Failed to enable {source} CPU idle states: {error}"))?;
+        let value = read(battery)
+            .map_err(|error| format!("Failed to verify {source} CPU idle states: {error}"))?;
+        if value != 0 {
+            return Err(format!(
+                "{source} CPU idle states remain disabled (IdleDisable={value})."
+            ));
+        }
     }
-
-    Ok(duplicate_guid)
+    Ok(())
 }
 
 pub fn delete_plan(guid: &str) -> Result<(), String> {
@@ -113,6 +162,7 @@ pub(crate) enum ProcessorPowerApplyStage {
     BatteryBoostPolicy,
     AcBoostMode,
     BatteryBoostMode,
+    QueryActivePlan,
     ReactivatePlan,
 }
 
@@ -130,6 +180,7 @@ impl std::fmt::Display for ProcessorPowerApplyStage {
             Self::BatteryBoostPolicy => "write battery boost policy",
             Self::AcBoostMode => "write A/C boost mode",
             Self::BatteryBoostMode => "write battery boost mode",
+            Self::QueryActivePlan => "query the active plan",
             Self::ReactivatePlan => "refresh the active plan",
         })
     }
@@ -247,15 +298,22 @@ pub(crate) fn apply_processor_power_values_staged(
         windows_power::write_dc_value,
     )?;
 
-    if windows_power::active_scheme_guid()
-        .ok()
-        .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(guid))
-    {
-        set_active(guid).map_err(|error| {
+    reactivate_if_active(guid, windows_power::active_scheme_guid, set_active)
+}
+
+fn reactivate_if_active(
+    guid: &str,
+    active_guid: impl FnOnce() -> Result<String, String>,
+    activate: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), ProcessorPowerApplyError> {
+    let active = active_guid().map_err(|error| {
+        ProcessorPowerApplyError::at(ProcessorPowerApplyStage::QueryActivePlan, error)
+    })?;
+    if active.eq_ignore_ascii_case(guid) {
+        activate(guid).map_err(|error| {
             ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ReactivatePlan, error)
         })?;
     }
-
     Ok(())
 }
 
@@ -328,6 +386,113 @@ mod tests {
     use crate::power::{EffectivePowerMode, PowerPlanPersonality, ProcessorPowerPreset};
 
     use super::*;
+
+    #[test]
+    fn adaptive_initialization_stops_at_each_failed_stage() {
+        use std::cell::RefCell;
+
+        let stages = [
+            "name",
+            "description",
+            "ac-write",
+            "ac-read",
+            "dc-write",
+            "dc-read",
+        ];
+        for fail_at in 0..=stages.len() {
+            let events = RefCell::new(Vec::new());
+            let step = |stage: &str| -> Result<(), String> {
+                let mut events = events.borrow_mut();
+                events.push(stage.to_owned());
+                if events.len() - 1 == fail_at {
+                    Err(format!("injected {stage} failure"))
+                } else {
+                    Ok(())
+                }
+            };
+            let result = initialize_adaptive_plan_with(
+                "original",
+                |name| {
+                    assert_eq!(name, ADAPTIVE_PLAN_NAME);
+                    step("name")
+                },
+                |description| {
+                    assert_eq!(
+                        description,
+                        format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}original")
+                    );
+                    step("description")
+                },
+                |battery, value| {
+                    assert_eq!(value, 0);
+                    step(if battery { "dc-write" } else { "ac-write" })
+                },
+                |battery| {
+                    step(if battery { "dc-read" } else { "ac-read" })?;
+                    Ok(0)
+                },
+            );
+            let expected_count = (fail_at + 1).min(stages.len());
+            assert_eq!(
+                events.borrow().as_slice(),
+                stages[..expected_count]
+                    .iter()
+                    .map(|stage| (*stage).to_owned())
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            );
+            if fail_at < stages.len() {
+                assert!(result.unwrap_err().contains(stages[fail_at]));
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn adaptive_idle_states_override_both_sources_and_propagate_failures() {
+        let values = std::cell::Cell::new([1, 1]);
+        enable_adaptive_idle_states(
+            |battery, value| {
+                let mut current = values.get();
+                current[usize::from(battery)] = value;
+                values.set(current);
+                Ok(())
+            },
+            |battery| Ok(values.get()[usize::from(battery)]),
+        )
+        .unwrap();
+        assert_eq!(values.get(), [0, 0]);
+        for battery_failure in [false, true] {
+            assert!(enable_adaptive_idle_states(
+                |battery, _| {
+                    if battery == battery_failure {
+                        Err("write failed".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_| Ok(0)
+            )
+            .is_err());
+            assert!(enable_adaptive_idle_states(
+                |_, _| Ok(()),
+                |battery| { Ok(u32::from(battery == battery_failure)) }
+            )
+            .is_err());
+            assert!(enable_adaptive_idle_states(
+                |_, _| Ok(()),
+                |battery| {
+                    if battery == battery_failure {
+                        Err("read failed".into())
+                    } else {
+                        Ok(0)
+                    }
+                }
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn recognizes_only_winderust_managed_adaptive_plan() {
@@ -422,5 +587,40 @@ mod tests {
         assert_eq!(values.battery.performance_min, 20);
         assert_eq!(values.battery.performance_max, 20);
         assert_eq!(values.battery.boost_policy, 30);
+    }
+    #[test]
+    fn active_query_failure_is_incomplete_and_retry_does_not_activate_an_inactive_plan() {
+        let error = reactivate_if_active(
+            "plan",
+            || Err("query failed".into()),
+            |_| panic!("must not activate an unknown plan"),
+        )
+        .unwrap_err();
+        assert_eq!(error.stage(), ProcessorPowerApplyStage::QueryActivePlan);
+        assert!(reactivate_if_active(
+            "plan",
+            || Ok("other".into()),
+            |_| panic!("must not activate an inactive plan")
+        )
+        .is_ok());
+        let error = reactivate_if_active(
+            "plan",
+            || Ok("PLAN".into()),
+            |_| Err("activation failed".into()),
+        )
+        .unwrap_err();
+        assert_eq!(error.stage(), ProcessorPowerApplyStage::ReactivatePlan);
+        let mut activated = false;
+        reactivate_if_active(
+            "plan",
+            || Ok("PLAN".into()),
+            |guid| {
+                assert_eq!(guid, "plan");
+                activated = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(activated);
     }
 }

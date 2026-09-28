@@ -11,8 +11,8 @@ use crate::rules::{
 
 pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
 pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
-pub const CPU_SCHEDULER_REACTION_INTERVAL_MIN_MS: u64 = 250;
-pub const CPU_SCHEDULER_REACTION_INTERVAL_MAX_MS: u64 = 5_000;
+pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MIN_MS: u64 = 250;
+pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MAX_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -42,7 +42,7 @@ pub struct Settings {
     pub cpu_limiter: CpuLimiterSettings,
     #[serde(default)]
     pub by_running_app: ByRunningAppSettings,
-    pub cpu_scheduler: CpuSchedulerSettings,
+    pub adaptive_engine_process: AdaptiveEngineProcessSettings,
     #[serde(default)]
     pub process_priority: ProcessPrioritySettings,
     #[serde(default)]
@@ -71,6 +71,27 @@ pub enum PowerSourceProfile {
 }
 
 impl Settings {
+    pub fn validate_dynamic_resource_zones(&self) -> Result<(), String> {
+        let process = &self.adaptive_engine_process;
+        process
+            .dynamic_resource_zone_settings
+            .validate(process.dynamic_resource_zones_enabled)?;
+        for preset in &self.adaptive_engine_presets {
+            preset
+                .adaptive_engine_process
+                .dynamic_resource_zone_settings
+                .validate(
+                    preset
+                        .adaptive_engine_process
+                        .dynamic_resource_zones_enabled,
+                )
+                .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
+        }
+        if let Some(battery) = &self.on_battery {
+            battery.validate_dynamic_resource_zones()?;
+        }
+        Ok(())
+    }
     pub fn battery_profile(&self) -> &Self {
         self.on_battery.as_deref().unwrap_or(self)
     }
@@ -110,10 +131,6 @@ pub struct AdvancedSettings {
     pub expose_all_priority_values: bool,
     #[serde(default)]
     pub show_advanced_controls: bool,
-    #[serde(default)]
-    pub pause_dashboard_metrics: bool,
-    #[serde(default)]
-    pub pause_process_population: bool,
 }
 
 impl AdvancedSettings {
@@ -159,13 +176,13 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub language: AppLanguage,
     #[serde(default)]
-    pub animation_mode: AnimationMode,
-    #[serde(default)]
     pub navigation_collapsed: bool,
     #[serde(default = "default_true")]
     pub show_enabled_feature_counts_in_sidebar: bool,
     #[serde(default = "default_true")]
     pub show_feature_status_on_cards: bool,
+    #[serde(default)]
+    pub animation_mode: AnimationMode,
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
@@ -199,14 +216,20 @@ impl AppThemeMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnimationMode {
-    #[default]
-    System,
     On,
     Off,
+    #[default]
+    System,
 }
-
 impl AnimationMode {
-    pub const ALL: [Self; 3] = [Self::System, Self::On, Self::Off];
+    pub const ALL: [Self; 3] = [Self::On, Self::Off, Self::System];
+    pub fn enabled(self, system: bool) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::System => system,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,8 +238,17 @@ pub struct AccentSettings {
     pub source: AccentColorSource,
     #[serde(default = "default_custom_accent_color")]
     pub custom_color: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_custom_colors")]
     pub custom_colors: Vec<u32>,
+}
+
+fn deserialize_custom_colors<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<u32>, D::Error> {
+    let mut colors = Vec::<u32>::deserialize(deserializer)?;
+    let mut seen = std::collections::HashSet::new();
+    colors.retain(|color| seen.insert(*color));
+    Ok(colors)
 }
 
 impl Default for AccentSettings {
@@ -235,10 +267,6 @@ pub enum AccentColorSource {
     #[default]
     Windows,
     Custom,
-}
-
-impl AccentColorSource {
-    pub const ALL: [Self; 2] = [Self::Windows, Self::Custom];
 }
 
 fn default_custom_accent_color() -> u32 {
@@ -379,7 +407,7 @@ pub struct AdaptiveEnginePreset {
     pub base_processor_policy: ProcessorPowerValues,
     pub background_pressure_profile: AdaptivePowerBoostValues,
     pub focus_and_launch_profile: AdaptivePowerBoostValues,
-    pub cpu_scheduler: CpuSchedulerSettings,
+    pub adaptive_engine_process: AdaptiveEngineProcessSettings,
 }
 
 impl Default for AdaptiveEngineSettings {
@@ -503,6 +531,13 @@ pub enum BackgroundProcessorSelection {
 }
 
 impl BackgroundProcessorSelection {
+    pub fn uses_percentage(self) -> bool {
+        matches!(
+            self,
+            Self::LeastUsed | Self::LeastUsedPerformanceCores | Self::LeastUsedEfficiencyCores
+        )
+    }
+
     pub const ALL: [Self; 8] = [
         Self::LeastUsed,
         Self::LeastUsedPerformanceCores,
@@ -513,13 +548,6 @@ impl BackgroundProcessorSelection {
         Self::PerformanceCoresNoSmt,
         Self::Custom,
     ];
-
-    pub const fn is_least_used(self) -> bool {
-        matches!(
-            self,
-            Self::LeastUsed | Self::LeastUsedPerformanceCores | Self::LeastUsedEfficiencyCores
-        )
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -942,9 +970,19 @@ pub struct ByRunningAppRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CpuSchedulerSettings {
+#[serde(try_from = "AdaptiveEngineProcessSettingsWire")]
+pub struct AdaptiveEngineProcessSettings {
     pub process_priority_enabled: bool,
+    #[serde(default = "default_true")]
+    pub process_priority_foreground_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub process_priority_visible_window_detection_enabled: bool,
+    #[serde(default)]
+    pub process_priority_preserve_foreground: bool,
+    #[serde(default)]
+    pub process_priority_preserve_visible_window: bool,
+    #[serde(default)]
+    pub process_priority_preserve_background: bool,
     pub background_efficiency_enabled: bool,
     pub focus_process_background_efficiency_override_enabled: bool,
     pub visible_window_background_efficiency_override_enabled: bool,
@@ -959,12 +997,23 @@ pub struct CpuSchedulerSettings {
     pub dynamic_priority_boost: DynamicPriorityBoostSettings,
     pub gpu_priority: GpuPrioritySettings,
     pub memory_priority_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_foreground_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_visible_window_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_foreground: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_visible_window: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_background: bool,
     pub focus_process_memory_priority: ProcessMemoryPrioritySetting,
     pub visible_window_memory_priority: ProcessMemoryPrioritySetting,
     pub background_memory_priority: ProcessMemoryPrioritySetting,
     pub cpu_pressure_restraint_enabled: bool,
     pub limit_background_processors_enabled: bool,
     pub dynamic_resource_zones_enabled: bool,
+    pub dynamic_resource_zone_settings: DynamicResourceZoneSettings,
     pub cpu_allocation_method: CpuAllocationMethod,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
@@ -977,6 +1026,173 @@ pub struct CpuSchedulerSettings {
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
     pub custom_rules: Vec<ProcessExclusionRule>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdaptiveEngineProcessSettingsWire {
+    pub process_priority_enabled: bool,
+    #[serde(default = "default_true")]
+    pub process_priority_foreground_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub process_priority_visible_window_detection_enabled: bool,
+    #[serde(default)]
+    pub process_priority_preserve_foreground: bool,
+    #[serde(default)]
+    pub process_priority_preserve_visible_window: bool,
+    #[serde(default)]
+    pub process_priority_preserve_background: bool,
+    pub background_efficiency_enabled: bool,
+    pub focus_process_background_efficiency_override_enabled: bool,
+    pub visible_window_background_efficiency_override_enabled: bool,
+    pub focus_process_background_efficiency_mode: bool,
+    pub visible_window_background_efficiency_mode: bool,
+    pub background_efficiency_mode: bool,
+    pub focus_process_priority: ProcessPrioritySetting,
+    pub background_priority: ProcessPrioritySetting,
+    pub visible_window_priority: ProcessPrioritySetting,
+    pub io_priority: IoPrioritySettings,
+    pub thread_priority: ThreadPrioritySettings,
+    pub dynamic_priority_boost: DynamicPriorityBoostSettings,
+    pub gpu_priority: GpuPrioritySettings,
+    pub memory_priority_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_foreground_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_visible_window_detection_enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_foreground: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_visible_window: bool,
+    #[serde(default = "default_true")]
+    pub memory_priority_preserve_background: bool,
+    pub focus_process_memory_priority: ProcessMemoryPrioritySetting,
+    pub visible_window_memory_priority: ProcessMemoryPrioritySetting,
+    pub background_memory_priority: ProcessMemoryPrioritySetting,
+    pub cpu_pressure_restraint_enabled: bool,
+    pub limit_background_processors_enabled: bool,
+    pub dynamic_resource_zones_enabled: bool,
+    #[serde(default)]
+    pub dynamic_resource_zone_settings: Option<DynamicResourceZoneSettings>,
+    pub cpu_allocation_method: CpuAllocationMethod,
+    pub background_processor_selection: BackgroundProcessorSelection,
+    pub processor_limit_percent: u8,
+    pub specific_processors: Vec<u8>,
+    pub foreground_or_system_cpu_threshold_percent: u8,
+    pub background_app_cpu_threshold_percent: u8,
+    pub cpu_recovery_threshold_percent: u8,
+    pub reaction_time_ms: u64,
+    pub cpu_restraint_time_seconds: u64,
+    pub cpu_recovery_time_seconds: u64,
+    pub maximum_restrained_apps: u8,
+    pub custom_rules: Vec<ProcessExclusionRule>,
+}
+
+impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSettings {
+    type Error = String;
+    fn try_from(wire: AdaptiveEngineProcessSettingsWire) -> Result<Self, Self::Error> {
+        let zones = match wire.dynamic_resource_zone_settings {
+            Some(zones) => zones,
+            None if !wire.dynamic_resource_zones_enabled => DynamicResourceZoneSettings::default(),
+            None => return Err("Dynamic Resource Zones requires an explicit dynamic_resource_zone_settings block. Disable dynamic_resource_zones_enabled or provide foreground_share_percent, background_processor_selection and specific_processors.".into()),
+        };
+        zones.validate(wire.dynamic_resource_zones_enabled)?;
+        Ok(Self {
+            dynamic_resource_zone_settings: zones,
+            process_priority_enabled: wire.process_priority_enabled,
+            process_priority_foreground_detection_enabled: wire
+                .process_priority_foreground_detection_enabled,
+            process_priority_visible_window_detection_enabled: wire
+                .process_priority_visible_window_detection_enabled,
+            process_priority_preserve_foreground: wire.process_priority_preserve_foreground,
+            process_priority_preserve_visible_window: wire.process_priority_preserve_visible_window,
+            process_priority_preserve_background: wire.process_priority_preserve_background,
+            background_efficiency_enabled: wire.background_efficiency_enabled,
+            focus_process_background_efficiency_override_enabled: wire
+                .focus_process_background_efficiency_override_enabled,
+            visible_window_background_efficiency_override_enabled: wire
+                .visible_window_background_efficiency_override_enabled,
+            focus_process_background_efficiency_mode: wire.focus_process_background_efficiency_mode,
+            visible_window_background_efficiency_mode: wire
+                .visible_window_background_efficiency_mode,
+            background_efficiency_mode: wire.background_efficiency_mode,
+            focus_process_priority: wire.focus_process_priority,
+            background_priority: wire.background_priority,
+            visible_window_priority: wire.visible_window_priority,
+            io_priority: wire.io_priority,
+            thread_priority: wire.thread_priority,
+            dynamic_priority_boost: wire.dynamic_priority_boost,
+            gpu_priority: wire.gpu_priority,
+            memory_priority_enabled: wire.memory_priority_enabled,
+            memory_priority_foreground_detection_enabled: wire
+                .memory_priority_foreground_detection_enabled,
+            memory_priority_visible_window_detection_enabled: wire
+                .memory_priority_visible_window_detection_enabled,
+            memory_priority_preserve_foreground: wire.memory_priority_preserve_foreground,
+            memory_priority_preserve_visible_window: wire.memory_priority_preserve_visible_window,
+            memory_priority_preserve_background: wire.memory_priority_preserve_background,
+            focus_process_memory_priority: wire.focus_process_memory_priority,
+            visible_window_memory_priority: wire.visible_window_memory_priority,
+            background_memory_priority: wire.background_memory_priority,
+            cpu_pressure_restraint_enabled: wire.cpu_pressure_restraint_enabled,
+            limit_background_processors_enabled: wire.limit_background_processors_enabled,
+            dynamic_resource_zones_enabled: wire.dynamic_resource_zones_enabled,
+            cpu_allocation_method: wire.cpu_allocation_method,
+            background_processor_selection: wire.background_processor_selection,
+            processor_limit_percent: wire.processor_limit_percent,
+            specific_processors: wire.specific_processors,
+            foreground_or_system_cpu_threshold_percent: wire
+                .foreground_or_system_cpu_threshold_percent,
+            background_app_cpu_threshold_percent: wire.background_app_cpu_threshold_percent,
+            cpu_recovery_threshold_percent: wire.cpu_recovery_threshold_percent,
+            reaction_time_ms: wire.reaction_time_ms,
+            cpu_restraint_time_seconds: wire.cpu_restraint_time_seconds,
+            cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
+            maximum_restrained_apps: wire.maximum_restrained_apps,
+            custom_rules: wire.custom_rules,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicResourceZoneSettings {
+    pub foreground_share_percent: u8,
+    pub background_processor_selection: BackgroundProcessorSelection,
+    pub specific_processors: Vec<u8>,
+}
+impl Default for DynamicResourceZoneSettings {
+    fn default() -> Self {
+        Self {
+            foreground_share_percent: 75,
+            background_processor_selection: BackgroundProcessorSelection::LeastUsed,
+            specific_processors: Vec::new(),
+        }
+    }
+}
+impl DynamicResourceZoneSettings {
+    pub fn validate(&self, enabled: bool) -> Result<(), String> {
+        if !(1..=99).contains(&self.foreground_share_percent) {
+            return Err(
+                "Dynamic Resource Zones foreground share must be between 1 and 99 percent.".into(),
+            );
+        }
+        if self.specific_processors.iter().any(|index| *index >= 64) {
+            return Err(
+                "Dynamic Resource Zones supports logical processor indices 0 through 63 only."
+                    .into(),
+            );
+        }
+        if enabled
+            && self.background_processor_selection == BackgroundProcessorSelection::Custom
+            && self.specific_processors.is_empty()
+        {
+            return Err(
+                "Dynamic Resource Zones requires a nonempty custom background selection.".into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1167,16 +1383,7 @@ pub enum ProcessIoPrioritySetting {
 
 impl ProcessIoPrioritySetting {
     pub const ALL: [Self; 4] = [Self::Default, Self::VeryLow, Self::Low, Self::Normal];
-    pub const CUSTOM_RULE_ALL: [Self; 4] = [Self::Default, Self::VeryLow, Self::Low, Self::Normal];
     pub const ADVANCED_ALL: [Self; 6] = [
-        Self::Default,
-        Self::VeryLow,
-        Self::Low,
-        Self::Normal,
-        Self::High,
-        Self::Critical,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 6] = [
         Self::Default,
         Self::VeryLow,
         Self::Low,
@@ -1249,23 +1456,7 @@ impl ProcessGpuPrioritySetting {
         Self::Normal,
         Self::AboveNormal,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 5] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-    ];
     pub const ADVANCED_ALL: [Self; 7] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::High,
-        Self::Realtime,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
         Self::Default,
         Self::Idle,
         Self::BelowNormal,
@@ -1319,6 +1510,7 @@ pub enum ProcessMemoryPriority {
     Normal,
 }
 
+#[cfg(test)]
 impl ProcessMemoryPriority {
     pub const ALL: [Self; 5] = [
         Self::VeryLow,
@@ -1343,14 +1535,6 @@ pub enum ProcessMemoryPrioritySetting {
 
 impl ProcessMemoryPrioritySetting {
     pub const ALL: [Self; 6] = [
-        Self::Default,
-        Self::VeryLow,
-        Self::Low,
-        Self::Medium,
-        Self::BelowNormal,
-        Self::Normal,
-    ];
-    pub const CUSTOM_RULE_ALL: [Self; 6] = [
         Self::Default,
         Self::VeryLow,
         Self::Low,
@@ -1420,26 +1604,7 @@ impl ProcessThreadPrioritySetting {
         Self::AboveNormal,
         Self::Highest,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 7] = [
-        Self::Default,
-        Self::Idle,
-        Self::Lowest,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::Highest,
-    ];
     pub const ADVANCED_ALL: [Self; 8] = [
-        Self::Default,
-        Self::Idle,
-        Self::Lowest,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::Highest,
-        Self::TimeCritical,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 8] = [
         Self::Default,
         Self::Idle,
         Self::Lowest,
@@ -1466,24 +1631,8 @@ impl ProcessPrioritySetting {
         Self::Normal,
         Self::AboveNormal,
     ];
-    pub const CUSTOM_RULE_ALL: [Self; 5] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-    ];
 
     pub const ADVANCED_ALL: [Self; 7] = [
-        Self::Default,
-        Self::Idle,
-        Self::BelowNormal,
-        Self::Normal,
-        Self::AboveNormal,
-        Self::High,
-        Self::Realtime,
-    ];
-    pub const CUSTOM_RULE_ADVANCED_ALL: [Self; 7] = [
         Self::Default,
         Self::Idle,
         Self::BelowNormal,
@@ -1512,7 +1661,6 @@ pub enum ProcessDynamicPriorityBoostSetting {
 
 impl ProcessDynamicPriorityBoostSetting {
     pub const ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
-    pub const CUSTOM_RULE_ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
 
     pub const fn disabled_flag(self) -> Option<bool> {
         match self {
@@ -1609,10 +1757,10 @@ impl Default for Settings {
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
-                animation_mode: AnimationMode::System,
                 navigation_collapsed: false,
                 show_enabled_feature_counts_in_sidebar: true,
                 show_feature_status_on_cards: true,
+                animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
             },
@@ -1647,7 +1795,7 @@ impl Default for Settings {
             advanced_power_plan_tuning_presets: Vec::new(),
             cpu_limiter: CpuLimiterSettings::default(),
             by_running_app: ByRunningAppSettings::default(),
-            cpu_scheduler: CpuSchedulerSettings::default(),
+            adaptive_engine_process: AdaptiveEngineProcessSettings::default(),
             process_priority: ProcessPrioritySettings::default(),
             thread_priority: ThreadPrioritySettings::default(),
             dynamic_priority_boost: DynamicPriorityBoostSettings::default(),
@@ -1669,8 +1817,6 @@ impl Default for AdvancedSettings {
                 default_execution_failure_suppression_threshold(),
             expose_all_priority_values: false,
             show_advanced_controls: false,
-            pause_dashboard_metrics: false,
-            pause_process_population: false,
         }
     }
 }
@@ -1981,10 +2127,15 @@ impl Default for CpuLimiterSettings {
     }
 }
 
-impl Default for CpuSchedulerSettings {
+impl Default for AdaptiveEngineProcessSettings {
     fn default() -> Self {
         Self {
             process_priority_enabled: default_true(),
+            process_priority_foreground_detection_enabled: true,
+            process_priority_visible_window_detection_enabled: true,
+            process_priority_preserve_foreground: false,
+            process_priority_preserve_visible_window: false,
+            process_priority_preserve_background: false,
             background_efficiency_enabled: default_true(),
             focus_process_background_efficiency_override_enabled: default_true(),
             visible_window_background_efficiency_override_enabled: default_true(),
@@ -1999,12 +2150,18 @@ impl Default for CpuSchedulerSettings {
             dynamic_priority_boost: default_dynamic_priority_boost_settings(),
             gpu_priority: default_gpu_priority_settings(),
             memory_priority_enabled: false,
+            memory_priority_foreground_detection_enabled: true,
+            memory_priority_visible_window_detection_enabled: true,
+            memory_priority_preserve_foreground: true,
+            memory_priority_preserve_visible_window: true,
+            memory_priority_preserve_background: true,
             focus_process_memory_priority: ProcessMemoryPrioritySetting::Default,
             visible_window_memory_priority: ProcessMemoryPrioritySetting::Default,
             background_memory_priority: ProcessMemoryPrioritySetting::Low,
             cpu_pressure_restraint_enabled: false,
             limit_background_processors_enabled: false,
             dynamic_resource_zones_enabled: false,
+            dynamic_resource_zone_settings: DynamicResourceZoneSettings::default(),
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
@@ -2151,18 +2308,6 @@ impl IoPrioritySettings {
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            process_exclusion_rule_matches(rule, process_name)
-                && rule.io_foreground_priority.unwrap_or_default()
-                    == ProcessIoPrioritySetting::Default
-                && rule.io_visible_window_priority.unwrap_or_default()
-                    == ProcessIoPrioritySetting::Default
-                && rule.io_background_priority.unwrap_or_default()
-                    == ProcessIoPrioritySetting::Default
-        })
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2239,18 +2384,6 @@ impl GpuPrioritySettings {
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            process_exclusion_rule_matches(rule, process_name)
-                && rule.gpu_foreground_priority.unwrap_or_default()
-                    == ProcessGpuPrioritySetting::Default
-                && rule.gpu_visible_window_priority.unwrap_or_default()
-                    == ProcessGpuPrioritySetting::Default
-                && rule.gpu_background_priority.unwrap_or_default()
-                    == ProcessGpuPrioritySetting::Default
-        })
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2268,18 +2401,6 @@ impl MemoryPrioritySettings {
         self.exclusions
             .iter()
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            process_exclusion_rule_matches(rule, process_name)
-                && rule.memory_foreground_priority.unwrap_or_default()
-                    == ProcessMemoryPrioritySetting::Default
-                && rule.memory_visible_window_priority.unwrap_or_default()
-                    == ProcessMemoryPrioritySetting::Default
-                && rule.memory_background_priority.unwrap_or_default()
-                    == ProcessMemoryPrioritySetting::Default
-        })
     }
 
     pub fn override_for(
@@ -2422,7 +2543,7 @@ impl CpuAllocationSettings {
     }
 }
 
-impl CpuSchedulerSettings {
+impl AdaptiveEngineProcessSettings {
     pub const fn background_efficiency_mode_for(&self, focus: bool, visible_window: bool) -> bool {
         if focus && self.focus_process_background_efficiency_override_enabled {
             self.focus_process_background_efficiency_mode
@@ -2431,12 +2552,6 @@ impl CpuSchedulerSettings {
         } else {
             self.background_efficiency_mode
         }
-    }
-
-    pub fn contains_custom_rule(&self, process_name: &str) -> bool {
-        self.custom_rules
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
@@ -2459,12 +2574,6 @@ impl InputDetectionSettings {
 
     pub const fn keyboard_or_mouse_enabled(&self) -> bool {
         self.keyboard || self.mouse
-    }
-
-    pub fn ensure_any_enabled(&mut self) {
-        if !self.any_enabled() {
-            self.keyboard = true;
-        }
     }
 }
 
@@ -2603,9 +2712,30 @@ mod tests {
         settings.gpu_priority.exclusions.push(rule.clone());
         settings.memory_priority.exclusions.push(rule);
 
-        assert!(!settings.io_priority.exclusion_enabled_for(path));
-        assert!(!settings.gpu_priority.exclusion_enabled_for(path));
-        assert!(!settings.memory_priority.exclusion_enabled_for(path));
+        assert_eq!(
+            settings.io_priority.override_for(path, false, true),
+            Some(Some(ProcessIoPrioritySetting::Low))
+        );
+        assert_eq!(
+            settings.io_priority.override_for(path, true, false),
+            Some(None)
+        );
+        assert_eq!(
+            settings.gpu_priority.override_for(path, false, true),
+            Some(Some(ProcessGpuPrioritySetting::BelowNormal))
+        );
+        assert_eq!(
+            settings.gpu_priority.override_for(path, true, false),
+            Some(None)
+        );
+        assert_eq!(
+            settings.memory_priority.override_for(path, false, true),
+            Some(Some(ProcessMemoryPrioritySetting::Low))
+        );
+        assert_eq!(
+            settings.memory_priority.override_for(path, true, false),
+            Some(None)
+        );
     }
 
     #[test]
@@ -2684,7 +2814,7 @@ mod tests {
 
     #[test]
     fn custom_rules_match_only_the_configured_executable_path() {
-        let settings = CpuSchedulerSettings {
+        let settings = AdaptiveEngineProcessSettings {
             custom_rules: vec![
                 ProcessExclusionRule {
                     enabled: true,

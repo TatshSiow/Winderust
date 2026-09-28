@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 use crate::{
     backend::crash_recovery::{
@@ -11,8 +14,8 @@ use crate::{
 };
 
 use super::process::{
-    open_process_for_thread_control, ControlOwner, ProcessControlError, ProcessControlTarget,
-    ProcessIdentity, ProcessTargetKey,
+    open_process_for_thread_control, transition_failure_error, ControlOwner, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 #[cfg(test)]
@@ -110,6 +113,32 @@ impl ThreadPriorityRecoveryIntent for RecoveryIntent {
     }
 }
 
+/// One operation's discovery, including a cached failure. Never stored on the controller.
+#[derive(Default)]
+pub(crate) struct ThreadInventory {
+    result: Option<Result<BTreeMap<u32, Vec<u32>>, ProcessControlError>>,
+}
+
+impl ThreadInventory {
+    pub(crate) fn failed(&self) -> bool {
+        matches!(self.result, Some(Err(_)))
+    }
+
+    fn ids<P: ThreadPriorityPlatform>(
+        &mut self,
+        platform: &mut P,
+        process_id: u32,
+    ) -> Result<&[u32], ProcessControlError> {
+        match self
+            .result
+            .get_or_insert_with(|| platform.thread_inventory())
+        {
+            Ok(inventory) => Ok(inventory.get(&process_id).map_or(&[], Vec::as_slice)),
+            Err(error) => Err(error.clone()),
+        }
+    }
+}
+
 pub(crate) trait ThreadPriorityPlatform {
     type Process;
     type Thread;
@@ -120,11 +149,7 @@ pub(crate) trait ThreadPriorityPlatform {
         target: &ProcessControlTarget,
         allow_cross_session_process_control: bool,
     ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError>;
-    fn thread_ids(
-        &mut self,
-        process: &Self::Process,
-        identity: &ProcessIdentity,
-    ) -> Result<Vec<u32>, ProcessControlError>;
+    fn thread_inventory(&mut self) -> Result<BTreeMap<u32, Vec<u32>>, ProcessControlError>;
     fn open_thread(
         &mut self,
         process: &Self::Process,
@@ -153,6 +178,7 @@ pub(crate) struct WindowsThread {
 
 impl WindowsThread {
     fn validate(&self) -> Result<(), ProcessControlError> {
+        windows_thread_priority::ensure_active(&self.handle).map_err(map_thread_priority_error)?;
         let owner_process_id = windows_thread_priority::owner_process_id(&self.handle)
             .map_err(map_thread_priority_error)?;
         if owner_process_id != self.identity.process.id {
@@ -180,12 +206,8 @@ impl ThreadPriorityPlatform for WindowsThreadPriorityPlatform {
         open_process_for_thread_control(target, allow_cross_session_process_control)
     }
 
-    fn thread_ids(
-        &mut self,
-        _: &Self::Process,
-        identity: &ProcessIdentity,
-    ) -> Result<Vec<u32>, ProcessControlError> {
-        windows_thread_priority::thread_ids(identity.id).map_err(map_thread_priority_error)
+    fn thread_inventory(&mut self) -> Result<BTreeMap<u32, Vec<u32>>, ProcessControlError> {
+        windows_thread_priority::thread_inventory().map_err(map_thread_priority_error)
     }
 
     fn open_thread(
@@ -256,6 +278,8 @@ pub(crate) struct ThreadPriorityController<
     platform: P,
     managed: BTreeMap<ThreadIdentity, ManagedThreadPriority>,
     next_apply_sequence: u64,
+    pending_releases: BTreeSet<ThreadIdentity>,
+    next_release_retry: Option<Instant>,
 }
 
 impl Default for ThreadPriorityController {
@@ -270,11 +294,14 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             platform,
             managed: BTreeMap::new(),
             next_apply_sequence: 1,
+            pending_releases: BTreeSet::new(),
+            next_release_retry: None,
         }
     }
 
     pub(crate) fn apply_policy_claim(
         &mut self,
+        inventory: &mut ThreadInventory,
         claim: ThreadPriorityClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<ThreadPriorityApplyOutcome, ProcessControlError> {
@@ -286,7 +313,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 "This owner cannot control Thread Priority policy.".to_owned(),
             ));
         }
-        self.apply_process_claim(claim, allow_cross_session_process_control)
+        self.apply_process_claim(inventory, claim, allow_cross_session_process_control)
     }
 
     pub(crate) fn apply_process_list_action(
@@ -296,6 +323,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         allow_cross_session_process_control: bool,
     ) -> Result<ThreadPriorityApplyOutcome, ProcessControlError> {
         self.apply_process_claim(
+            &mut ThreadInventory::default(),
             ThreadPriorityClaim {
                 target: ProcessControlTarget::from_action_target(target),
                 owner: ControlOwner::ProcessList,
@@ -308,6 +336,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
 
     fn apply_process_claim(
         &mut self,
+        inventory: &mut ThreadInventory,
         claim: ThreadPriorityClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<ThreadPriorityApplyOutcome, ProcessControlError> {
@@ -328,15 +357,12 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             Err(error) => return Err(error),
         };
         self.relinquish_reused_process_identities(&process_identity)?;
-        let thread_ids = self.platform.thread_ids(&process, &process_identity)?;
-        if thread_ids.is_empty() {
-            return Err(ProcessControlError::ProcessExited);
-        }
+        let thread_ids = inventory.ids(&mut self.platform, process_identity.id)?;
 
         let seen_thread_ids = thread_ids.iter().copied().collect::<BTreeSet<_>>();
         let mut outcome = ThreadPriorityApplyOutcome::default();
         let mut first_error = None;
-        for thread_id in thread_ids {
+        for &thread_id in thread_ids {
             let result = self
                 .platform
                 .open_thread(&process, &process_identity, thread_id)
@@ -361,13 +387,15 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 }
             }
         }
-        if let Err(error) = self.relinquish_missing_threads(&process_identity, &seen_thread_ids) {
+        if let Err(error) =
+            self.relinquish_missing_threads(&process, &process_identity, &seen_thread_ids)
+        {
             first_error.get_or_insert(error);
         }
         if let Some(error) = first_error {
             Err(error)
-        } else if outcome.applied_threads + outcome.unchanged_threads + outcome.preserved_threads
-            == 0
+        } else if !thread_ids.is_empty()
+            && outcome.applied_threads + outcome.unchanged_threads + outcome.preserved_threads == 0
         {
             Err(ProcessControlError::ProcessExited)
         } else {
@@ -404,6 +432,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 }
                 return Err(error);
             }
+            self.pending_releases.remove(&identity);
             managed = None;
         }
 
@@ -413,6 +442,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 self.managed.insert(identity.clone(), managed);
                 self.release_identity(&identity)?;
                 self.managed.remove(&identity);
+                self.pending_releases.remove(&identity);
             }
             return Ok(ThreadApply::Preserved);
         }
@@ -420,6 +450,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             if let Some(mut managed) = managed {
                 if owner.is_automatic() || managed.owner == ControlOwner::ProcessList {
                     managed.owner = owner;
+                    self.pending_releases.remove(&identity);
                 }
                 managed.expected = current;
                 self.managed.insert(identity, managed);
@@ -438,6 +469,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             CommitFailureBehavior::Compensate,
         ) {
             Ok(()) => {
+                self.pending_releases.remove(&identity);
                 self.managed.insert(
                     identity,
                     ManagedThreadPriority {
@@ -452,9 +484,10 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             Err(mut failure) => {
                 if failure.relinquish_recovery {
                     if let Err(error) = self.platform.relinquish(&identity) {
-                        failure
-                            .message
-                            .push_str(&format!(" Recovery journal relinquish failed: {error}."));
+                        failure.error = ProcessControlError::Failed(format!(
+                            "{} Recovery journal relinquish failed: {error}.",
+                            failure.error
+                        ));
                         failure.uncertain = true;
                     }
                 }
@@ -471,7 +504,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 } else if let Some(managed) = managed {
                     self.managed.insert(identity, managed);
                 }
-                Err(ProcessControlError::Failed(failure.message))
+                Err(failure.error)
             }
         }
     }
@@ -505,29 +538,68 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
     ) -> Result<(), ProcessControlError> {
         let stale = self
             .managed
-            .keys()
-            .filter(|thread| {
-                thread.process == identity.process
-                    && thread.id == identity.id
-                    && thread.creation_time != identity.creation_time
-            })
-            .cloned()
+            .range(
+                ThreadIdentity {
+                    creation_time: 0,
+                    ..identity.clone()
+                }..=ThreadIdentity {
+                    creation_time: u64::MAX,
+                    ..identity.clone()
+                },
+            )
+            .filter(|(thread, _)| thread.creation_time != identity.creation_time)
+            .map(|(thread, _)| thread.clone())
             .collect::<Vec<_>>();
         self.relinquish_identities(stale)
     }
 
     fn relinquish_missing_threads(
         &mut self,
+        process_handle: &P::Process,
         process: &ProcessIdentity,
         seen_thread_ids: &BTreeSet<u32>,
     ) -> Result<(), ProcessControlError> {
         let stale = self
             .managed
-            .keys()
-            .filter(|thread| thread.process == *process && !seen_thread_ids.contains(&thread.id))
-            .cloned()
+            .range(
+                ThreadIdentity {
+                    process: process.clone(),
+                    id: 0,
+                    creation_time: 0,
+                }..=ThreadIdentity {
+                    process: process.clone(),
+                    id: u32::MAX,
+                    creation_time: u64::MAX,
+                },
+            )
+            .filter(|(thread, _)| !seen_thread_ids.contains(&thread.id))
+            .map(|(thread, _)| thread.clone())
             .collect::<Vec<_>>();
-        self.relinquish_identities(stale)
+        let mut first_error = None;
+        for identity in stale {
+            // Absence from an earlier snapshot is not proof of exit. Keep live or uncertain
+            // identities owned; only discard confirmed exits or replacement generations.
+            let check = self
+                .platform
+                .open_thread(process_handle, process, identity.id)
+                .and_then(|(current, thread)| {
+                    if current != identity {
+                        Err(ProcessControlError::ProcessExited)
+                    } else {
+                        self.platform.query(&thread).map(|_| ())
+                    }
+                });
+            let result = match check {
+                Err(ProcessControlError::ProcessExited) => {
+                    self.relinquish_identities(vec![identity])
+                }
+                other => other,
+            };
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     fn relinquish_identities(
@@ -537,6 +609,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         for identity in identities {
             self.platform.relinquish(&identity)?;
             self.managed.remove(&identity);
+            self.pending_releases.remove(&identity);
         }
         Ok(())
     }
@@ -553,7 +626,40 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             })
             .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
             .collect::<Vec<_>>();
-        self.release_identities(identities)
+        self.pending_releases
+            .extend(identities.iter().map(|(_, identity)| identity.clone()));
+        let summary = self.release_identities(identities);
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| Instant::now() + Duration::from_secs(1));
+        summary
+    }
+
+    pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
+        (!self.pending_releases.is_empty()).then(|| {
+            self.next_release_retry
+                .map_or(Duration::ZERO, |due| due.saturating_duration_since(now))
+        })
+    }
+
+    pub(crate) fn retry_pending_releases(&mut self, now: Instant) -> ThreadPriorityReleaseSummary {
+        if self.release_retry_delay(now) != Some(Duration::ZERO) {
+            return ThreadPriorityReleaseSummary::default();
+        }
+        let identities = self
+            .pending_releases
+            .iter()
+            .filter_map(|identity| {
+                self.managed
+                    .get(identity)
+                    .map(|managed| (managed.apply_sequence, identity.clone()))
+            })
+            .collect();
+        let summary = self.release_identities(identities);
+        self.pending_releases
+            .retain(|identity| self.managed.contains_key(identity));
+        self.next_release_retry =
+            (!self.pending_releases.is_empty()).then(|| now + Duration::from_secs(1));
+        summary
     }
 
     pub(crate) fn release_all_policy(&mut self) -> ThreadPriorityReleaseSummary {
@@ -595,11 +701,13 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                 Ok(restored) => {
                     summary.restored_threads += usize::from(restored);
                     self.managed.remove(&identity);
+                    self.pending_releases.remove(&identity);
                 }
                 Err(ProcessControlError::ProcessExited) => {
                     match self.platform.relinquish(&identity) {
                         Ok(()) => {
                             self.managed.remove(&identity);
+                            self.pending_releases.remove(&identity);
                         }
                         Err(error) => summary.failures.push(release_failure(&identity, error)),
                     }
@@ -640,6 +748,16 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             CommitFailureBehavior::KeepExpected,
         ) {
             Ok(()) => Ok(true),
+            // Preserve a confirmed exit; otherwise recheck for exit during restoration.
+            Err(failure)
+                if failure.error == ProcessControlError::ProcessExited
+                    || matches!(
+                        self.platform.query(&thread),
+                        Err(ProcessControlError::ProcessExited)
+                    ) =>
+            {
+                Err(ProcessControlError::ProcessExited)
+            }
             Err(failure) if failure.expected_preserved => {
                 match self.platform.relinquish(identity) {
                     Ok(()) => Ok(true),
@@ -649,12 +767,12 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
                         }
                         Err(ProcessControlError::Failed(format!(
                             "{} Recovery journal relinquish failed: {error}.",
-                            failure.message
+                            failure.error
                         )))
                     }
                 }
             }
-            Err(failure) => Err(ProcessControlError::Failed(failure.message)),
+            Err(failure) => Err(failure.error),
         }
     }
 
@@ -703,7 +821,7 @@ enum ThreadApply {
 }
 
 struct TransitionFailure {
-    message: String,
+    error: ProcessControlError,
     uncertain: bool,
     relinquish_recovery: bool,
     expected_preserved: bool,
@@ -726,18 +844,14 @@ fn apply_transition<P: ThreadPriorityPlatform>(
     let intent = platform
         .begin_change(process, thread, original, expected)
         .map_err(|error| TransitionFailure {
-            message: error.to_string(),
+            error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
         })?;
     if let Err(error) = platform.apply(thread, expected) {
         return Err(compensate_with_intent(
-            platform,
-            thread,
-            original,
-            intent,
-            error.to_string(),
+            platform, thread, original, intent, error,
         ));
     }
     match platform.query(thread) {
@@ -748,20 +862,16 @@ fn apply_transition<P: ThreadPriorityPlatform>(
                 thread,
                 original,
                 intent,
-                format!(
+                ProcessControlError::Failed(format!(
                     "Thread Priority verification returned {}, expected {}.",
                     thread_priority_label(actual),
                     thread_priority_label(expected)
-                ),
+                )),
             ));
         }
         Err(error) => {
             return Err(compensate_with_intent(
-                platform,
-                thread,
-                original,
-                intent,
-                format!("Thread Priority verification failed: {error}"),
+                platform, thread, original, intent, error,
             ));
         }
     }
@@ -772,7 +882,7 @@ fn apply_transition<P: ThreadPriorityPlatform>(
                 platform, thread, original, message,
             )),
             CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
-                message,
+                error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
                 expected_preserved: true,
@@ -787,11 +897,11 @@ fn compensate_with_intent<P: ThreadPriorityPlatform>(
     thread: &P::Thread,
     original: i32,
     intent: P::RecoveryIntent,
-    primary_error: String,
+    primary_error: ProcessControlError,
 ) -> TransitionFailure {
     match restore_and_verify(platform, thread, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: primary_error,
             uncertain: false,
             relinquish_recovery: false,
             expected_preserved: false,
@@ -799,11 +909,7 @@ fn compensate_with_intent<P: ThreadPriorityPlatform>(
         Err(compensation_error) => {
             let recovery_error = intent.commit().err();
             TransitionFailure {
-                message: transition_failure_message(
-                    primary_error,
-                    compensation_error.to_string(),
-                    recovery_error,
-                ),
+                error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
                 relinquish_recovery: false,
                 expected_preserved: false,
@@ -820,15 +926,15 @@ fn compensate_without_intent<P: ThreadPriorityPlatform>(
 ) -> TransitionFailure {
     match restore_and_verify(platform, thread, original) {
         Ok(()) => TransitionFailure {
-            message: primary_error,
+            error: ProcessControlError::Failed(primary_error),
             uncertain: false,
             relinquish_recovery: true,
             expected_preserved: false,
         },
         Err(compensation_error) => TransitionFailure {
-            message: transition_failure_message(
-                primary_error,
-                compensation_error.to_string(),
+            error: transition_failure_error(
+                ProcessControlError::Failed(primary_error),
+                compensation_error,
                 None,
             ),
             uncertain: true,
@@ -854,18 +960,6 @@ fn restore_and_verify<P: ThreadPriorityPlatform>(
             thread_priority_label(priority)
         )))
     }
-}
-
-fn transition_failure_message(
-    primary_error: String,
-    compensation_error: String,
-    recovery_error: Option<String>,
-) -> String {
-    let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
-    if let Some(recovery_error) = recovery_error {
-        message.push_str(&format!(" Crash recovery commit failed: {recovery_error}."));
-    }
-    message
 }
 
 fn release_failure(
@@ -901,14 +995,15 @@ pub(crate) fn current_process_thread_priority(
     let (identity, process) = platform
         .open_process(&target, allow_cross_session_process_control)
         .map_err(|error| error.to_string())?;
-    let thread_ids = platform
-        .thread_ids(&process, &identity)
+    let mut inventory = ThreadInventory::default();
+    let thread_ids = inventory
+        .ids(&mut platform, identity.id)
         .map_err(|error| error.to_string())?;
     if thread_ids.is_empty() {
         return Err(ProcessControlError::ProcessExited.to_string());
     }
     let mut current = None;
-    for thread_id in thread_ids {
+    for &thread_id in thread_ids {
         let (_, thread) = platform
             .open_thread(&process, &identity, thread_id)
             .map_err(|error| error.to_string())?;
@@ -1017,7 +1112,12 @@ mod tests {
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
+        IdentityUnavailable,
+        Inventory,
         OpenExited,
+        BeginExited,
+        QueryDenied,
+        ApplyExited,
         Begin,
         Apply,
         Verify,
@@ -1043,6 +1143,7 @@ mod tests {
 
     struct FakePlatform {
         process: FakeProcess,
+        other_threads: BTreeMap<u32, Vec<u32>>,
         failures: VecDeque<FakeFailure>,
         events: Arc<Mutex<Vec<String>>>,
     }
@@ -1067,6 +1168,7 @@ mod tests {
                     identity: process_identity(7),
                     threads,
                 },
+                other_threads: BTreeMap::new(),
                 failures: VecDeque::new(),
                 events: Arc::new(Mutex::new(Vec::new())),
             }
@@ -1096,6 +1198,11 @@ mod tests {
             target: &ProcessControlTarget,
             _: bool,
         ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
+            if self.take_failure(FakeFailure::IdentityUnavailable) {
+                return Err(ProcessControlError::Unavailable(
+                    "identity unavailable".into(),
+                ));
+            }
             if target.id != self.process.identity.id
                 || target.creation_time != self.process.identity.creation_time
             {
@@ -1104,12 +1211,17 @@ mod tests {
             Ok((self.process.identity.clone(), target.id))
         }
 
-        fn thread_ids(
-            &mut self,
-            _: &Self::Process,
-            _: &ProcessIdentity,
-        ) -> Result<Vec<u32>, ProcessControlError> {
-            Ok(self.process.threads.keys().copied().collect())
+        fn thread_inventory(&mut self) -> Result<BTreeMap<u32, Vec<u32>>, ProcessControlError> {
+            self.events.lock().unwrap().push("inventory".into());
+            if self.take_failure(FakeFailure::Inventory) {
+                return Err(ProcessControlError::Failed("inventory failed".into()));
+            }
+            let mut inventory = self.other_threads.clone();
+            inventory.insert(
+                self.process.identity.id,
+                self.process.threads.keys().copied().collect(),
+            );
+            Ok(inventory)
         }
 
         fn open_thread(
@@ -1137,6 +1249,9 @@ mod tests {
         }
 
         fn query(&mut self, thread: &Self::Thread) -> Result<i32, ProcessControlError> {
+            if self.take_failure(FakeFailure::QueryDenied) {
+                return Err(ProcessControlError::AccessDenied("query denied".into()));
+            }
             let priority = self
                 .process
                 .threads
@@ -1158,6 +1273,9 @@ mod tests {
             _: i32,
         ) -> Result<Self::RecoveryIntent, ProcessControlError> {
             self.events.lock().unwrap().push("begin".to_owned());
+            if self.take_failure(FakeFailure::BeginExited) {
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Begin) {
                 return Err(ProcessControlError::Failed("begin failed".to_owned()));
             }
@@ -1177,6 +1295,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("apply:{thread}:{priority}"));
+            if self.take_failure(FakeFailure::ApplyExited) {
+                self.process.threads.remove(thread);
+                return Err(ProcessControlError::ProcessExited);
+            }
             if self.take_failure(FakeFailure::Apply) {
                 return Err(ProcessControlError::Failed("apply failed".to_owned()));
             }
@@ -1248,6 +1370,331 @@ mod tests {
     }
 
     #[test]
+    fn failed_and_partial_replacements_keep_exact_pending_releases() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[0, 0]));
+        controller
+            .apply_policy_claim(
+                &mut ThreadInventory::default(),
+                claim(
+                    ControlOwner::ThreadPriority,
+                    ProcessThreadPrioritySetting::BelowNormal,
+                    ThreadPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        assert_eq!(controller.release_all_policy().failures.len(), 2);
+        for failure in [FakeFailure::IdentityUnavailable, FakeFailure::Inventory] {
+            controller.platform.fail_next(failure);
+            assert!(controller
+                .apply_process_list_action(
+                    &action_target(),
+                    ProcessThreadPrioritySetting::AboveNormal,
+                    true
+                )
+                .is_err());
+            assert_eq!(controller.pending_releases.len(), 2);
+            assert!(controller.release_retry_delay(Instant::now()).is_some());
+        }
+        // The first thread fails; the second accepts the replacement.
+        controller.platform.fail_next(FakeFailure::QueryDenied);
+        assert!(controller
+            .apply_process_list_action(
+                &action_target(),
+                ProcessThreadPrioritySetting::AboveNormal,
+                true
+            )
+            .is_err());
+        assert_eq!(
+            controller
+                .pending_releases
+                .iter()
+                .map(|id| id.id)
+                .collect::<Vec<_>>(),
+            vec![100]
+        );
+        let now = Instant::now();
+        assert_eq!(controller.retry_pending_releases(now).restored_threads, 0);
+        assert_eq!(
+            controller
+                .retry_pending_releases(now + Duration::from_secs(2))
+                .restored_threads,
+            1
+        );
+        assert_eq!(controller.platform.process.threads[&100].priority, 0);
+        assert_eq!(
+            controller.platform.process.threads[&101].priority,
+            THREAD_PRIORITY_ABOVE_NORMAL
+        );
+        assert!(controller.release_retry_delay(now).is_none());
+        controller.shutdown().unwrap();
+    }
+
+    #[test]
+    fn inventory_is_lazy_shared_and_fresh_between_operations() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[0]));
+        let policy = claim(
+            ControlOwner::ThreadPriority,
+            ProcessThreadPrioritySetting::BelowNormal,
+            ThreadPriorityPreservation::Exact,
+        );
+        let mut inventory = ThreadInventory::default();
+        assert!(controller.platform.events.lock().unwrap().is_empty());
+        controller
+            .apply_policy_claim(&mut inventory, policy.clone(), true)
+            .unwrap();
+        let writes = controller
+            .platform
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.starts_with("apply:"))
+            .count();
+        let outcome = controller
+            .apply_policy_claim(&mut inventory, policy.clone(), true)
+            .unwrap();
+        assert_eq!(outcome.unchanged_threads, 1);
+        assert!(inventory
+            .ids(&mut controller.platform, 999)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            controller
+                .platform
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| *e == "inventory")
+                .count(),
+            1
+        );
+        assert_eq!(
+            controller
+                .platform
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.starts_with("apply:"))
+                .count(),
+            writes
+        );
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy, true)
+            .unwrap();
+        assert_eq!(
+            controller
+                .platform
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| *e == "inventory")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn multiple_process_targets_share_discovery_but_not_thread_candidates() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[0]));
+        controller.platform.other_threads.insert(99, vec![200]);
+        let mut policy = claim(
+            ControlOwner::ThreadPriority,
+            ProcessThreadPrioritySetting::BelowNormal,
+            ThreadPriorityPreservation::Exact,
+        );
+        let mut inventory = ThreadInventory::default();
+        assert_eq!(
+            controller
+                .apply_policy_claim(&mut inventory, policy.clone(), true)
+                .unwrap()
+                .applied_threads,
+            1
+        );
+        controller.platform.process.identity.id = 99;
+        controller.platform.process.threads = BTreeMap::from([(
+            200,
+            FakeThread {
+                creation_time: 2000,
+                priority: 0,
+            },
+        )]);
+        policy.target.id = 99;
+        assert_eq!(
+            controller
+                .apply_policy_claim(&mut inventory, policy, true)
+                .unwrap()
+                .applied_threads,
+            1
+        );
+        assert_eq!(controller.managed.len(), 2);
+        assert_eq!(
+            controller
+                .platform
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| *e == "inventory")
+                .count(),
+            1
+        );
+        assert_eq!(
+            controller.platform.process.threads[&200].priority,
+            THREAD_PRIORITY_BELOW_NORMAL
+        );
+        controller.shutdown().unwrap();
+    }
+
+    #[test]
+    fn inventory_failure_is_cached_and_does_not_block_release() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[0]));
+        let policy = claim(
+            ControlOwner::ThreadPriority,
+            ProcessThreadPrioritySetting::BelowNormal,
+            ThreadPriorityPreservation::Exact,
+        );
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
+        controller.platform.events.lock().unwrap().clear();
+        controller.platform.fail_next(FakeFailure::Inventory);
+        let mut inventory = ThreadInventory::default();
+        for _ in 0..3 {
+            assert!(controller
+                .apply_policy_claim(&mut inventory, policy.clone(), true)
+                .is_err());
+            assert_eq!(controller.managed.len(), 1);
+        }
+        assert!(inventory.failed());
+        assert_eq!(
+            controller
+                .platform
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| *e == "inventory")
+                .count(),
+            1
+        );
+        assert!(controller.release_all_policy().failures.is_empty());
+        assert_eq!(controller.platform.process.threads[&100].priority, 0);
+        assert!(controller.managed.is_empty());
+    }
+
+    #[test]
+    fn stale_empty_inventory_retains_new_live_and_uncertain_threads() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[]));
+        let policy = claim(
+            ControlOwner::ThreadPriority,
+            ProcessThreadPrioritySetting::BelowNormal,
+            ThreadPriorityPreservation::Exact,
+        );
+        let mut old = ThreadInventory::default();
+        assert_eq!(
+            controller
+                .apply_policy_claim(&mut old, policy.clone(), true)
+                .unwrap(),
+            ThreadPriorityApplyOutcome::default()
+        );
+        controller.platform.process.threads.insert(
+            100,
+            FakeThread {
+                creation_time: 1000,
+                priority: 0,
+            },
+        );
+        controller
+            .apply_process_list_action(
+                &action_target(),
+                ProcessThreadPrioritySetting::BelowNormal,
+                true,
+            )
+            .unwrap();
+        controller
+            .apply_policy_claim(&mut old, policy.clone(), true)
+            .unwrap();
+        assert_eq!(controller.managed.len(), 1);
+        controller.platform.fail_next(FakeFailure::QueryDenied);
+        assert!(matches!(
+            controller.apply_policy_claim(&mut old, policy.clone(), true),
+            Err(ProcessControlError::AccessDenied(_))
+        ));
+        assert_eq!(controller.managed.len(), 1);
+        controller.platform.process.threads.remove(&100);
+        controller
+            .apply_policy_claim(&mut old, policy, true)
+            .unwrap();
+        assert!(controller.managed.is_empty());
+    }
+
+    #[test]
+    fn uncertain_identity_keeps_recovery_and_disabled_cleanup_retries() {
+        let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[0]));
+        let policy = claim(
+            ControlOwner::ThreadPriority,
+            ProcessThreadPrioritySetting::BelowNormal,
+            ThreadPriorityPreservation::Exact,
+        );
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
+        controller.platform.events.lock().unwrap().clear();
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        assert!(controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .is_err());
+        assert_eq!(controller.managed.len(), 1);
+        assert!(controller.platform.events.lock().unwrap().is_empty());
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        assert_eq!(controller.release_all_policy().failures.len(), 1);
+        let now = Instant::now();
+        assert!(controller.release_retry_delay(now).is_some());
+        assert_eq!(
+            controller
+                .retry_pending_releases(now + Duration::from_secs(2))
+                .restored_threads,
+            1
+        );
+        assert_eq!(controller.platform.process.threads[&100].priority, 0);
+        assert!(controller.managed.is_empty());
+        assert!(controller.release_retry_delay(now).is_none());
+
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
+        controller
+            .platform
+            .fail_next(FakeFailure::IdentityUnavailable);
+        controller.release_all_policy();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy, true)
+            .unwrap();
+        assert!(controller.release_retry_delay(now).is_none());
+        assert_eq!(
+            controller
+                .retry_pending_releases(now + Duration::from_secs(5))
+                .restored_threads,
+            0
+        );
+        controller.shutdown().unwrap();
+    }
+
+    #[test]
     fn priority_mapping_uses_thread_offsets() {
         assert_eq!(
             thread_priority_value(ProcessThreadPrioritySetting::TimeCritical),
@@ -1270,6 +1717,7 @@ mod tests {
 
         let result = controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::Normal,
@@ -1321,6 +1769,7 @@ mod tests {
             .unwrap();
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1342,6 +1791,7 @@ mod tests {
         let mut controller = ThreadPriorityController::with_platform(platform);
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1352,6 +1802,7 @@ mod tests {
             .unwrap();
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     ProcessThreadPrioritySetting::AboveNormal,
@@ -1372,6 +1823,7 @@ mod tests {
         let mut controller = ThreadPriorityController::with_platform(platform);
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1382,6 +1834,7 @@ mod tests {
             .unwrap();
         let result = controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::AdaptiveEngine,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1408,7 +1861,9 @@ mod tests {
             ProcessThreadPrioritySetting::BelowNormal,
             ThreadPriorityPreservation::Exact,
         );
-        controller.apply_policy_claim(policy.clone(), true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
         controller.platform.process.threads.insert(
             101,
             FakeThread {
@@ -1416,10 +1871,14 @@ mod tests {
                 priority: THREAD_PRIORITY_NORMAL,
             },
         );
-        controller.apply_policy_claim(policy.clone(), true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
         assert_eq!(controller.managed.len(), 2);
         controller.platform.process.threads.remove(&100);
-        controller.apply_policy_claim(policy, true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy, true)
+            .unwrap();
 
         assert_eq!(controller.managed.len(), 1);
         assert!(controller
@@ -1439,6 +1898,7 @@ mod tests {
 
         let outcome = controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1461,11 +1921,15 @@ mod tests {
             ProcessThreadPrioritySetting::BelowNormal,
             ThreadPriorityPreservation::Exact,
         );
-        controller.apply_policy_claim(policy.clone(), true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
         let thread = controller.platform.process.threads.get_mut(&100).unwrap();
         thread.creation_time = 2000;
         thread.priority = THREAD_PRIORITY_NORMAL;
-        controller.apply_policy_claim(policy, true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy, true)
+            .unwrap();
 
         assert_eq!(controller.managed.len(), 1);
         assert_eq!(
@@ -1480,6 +1944,7 @@ mod tests {
         let mut controller = ThreadPriorityController::with_platform(platform);
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1495,6 +1960,7 @@ mod tests {
 
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 ThreadPriorityClaim {
                     target: target(8),
                     owner: ControlOwner::ThreadPriority,
@@ -1534,11 +2000,13 @@ mod tests {
             ProcessThreadPrioritySetting::BelowNormal,
             ThreadPriorityPreservation::Exact,
         );
-        controller.apply_policy_claim(policy.clone(), true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
         controller.platform.process.identity = process_identity(8);
 
         assert_eq!(
-            controller.apply_policy_claim(policy, true),
+            controller.apply_policy_claim(&mut ThreadInventory::default(), policy, true),
             Err(ProcessControlError::ProcessExited)
         );
         assert!(!controller.has_managed_state());
@@ -1560,7 +2028,9 @@ mod tests {
             ProcessThreadPrioritySetting::BelowNormal,
             ThreadPriorityPreservation::Exact,
         );
-        controller.apply_policy_claim(policy.clone(), true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
         controller
             .platform
             .process
@@ -1568,7 +2038,9 @@ mod tests {
             .get_mut(&100)
             .unwrap()
             .priority = THREAD_PRIORITY_ABOVE_NORMAL;
-        controller.apply_policy_claim(policy, true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy, true)
+            .unwrap();
 
         assert_eq!(
             controller.managed.values().next().unwrap().baseline,
@@ -1585,7 +2057,9 @@ mod tests {
             ProcessThreadPrioritySetting::BelowNormal,
             ThreadPriorityPreservation::Exact,
         );
-        controller.apply_policy_claim(policy.clone(), true).unwrap();
+        controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy.clone(), true)
+            .unwrap();
         controller
             .platform
             .process
@@ -1595,7 +2069,9 @@ mod tests {
             .priority = THREAD_PRIORITY_ABOVE_NORMAL;
         controller.platform.fail_next(FakeFailure::Relinquish);
 
-        assert!(controller.apply_policy_claim(policy, true).is_err());
+        assert!(controller
+            .apply_policy_claim(&mut ThreadInventory::default(), policy, true)
+            .is_err());
         assert!(controller.has_managed_state());
     }
 
@@ -1605,6 +2081,7 @@ mod tests {
         let mut controller = ThreadPriorityController::with_platform(platform);
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1639,6 +2116,7 @@ mod tests {
             let mut controller = ThreadPriorityController::with_platform(platform);
             assert!(controller
                 .apply_policy_claim(
+                    &mut ThreadInventory::default(),
                     claim(
                         ControlOwner::ThreadPriority,
                         ProcessThreadPrioritySetting::BelowNormal,
@@ -1663,6 +2141,7 @@ mod tests {
 
         assert!(controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1687,6 +2166,7 @@ mod tests {
 
         assert!(controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1707,6 +2187,7 @@ mod tests {
         let mut controller = ThreadPriorityController::with_platform(platform);
         assert!(controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1722,11 +2203,61 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_keeps_confirmed_exit_when_followup_query_is_denied() {
+        let mut controller =
+            ThreadPriorityController::with_platform(FakePlatform::new(&[THREAD_PRIORITY_NORMAL]));
+        controller
+            .apply_policy_claim(
+                &mut ThreadInventory::default(),
+                claim(
+                    ControlOwner::ThreadPriority,
+                    ProcessThreadPrioritySetting::BelowNormal,
+                    ThreadPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.fail_next(FakeFailure::BeginExited);
+        controller.platform.fail_next(FakeFailure::QueryDenied);
+        assert!(controller.shutdown().is_ok());
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn shutdown_cleans_up_threads_exiting_during_restore_and_retries_journal_failures() {
+        for fail_relinquish in [false, true] {
+            let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[
+                THREAD_PRIORITY_NORMAL,
+            ]));
+            controller
+                .apply_policy_claim(
+                    &mut ThreadInventory::default(),
+                    claim(
+                        ControlOwner::ThreadPriority,
+                        ProcessThreadPrioritySetting::BelowNormal,
+                        ThreadPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .unwrap();
+            controller.platform.fail_next(FakeFailure::ApplyExited);
+            if fail_relinquish {
+                controller.platform.fail_next(FakeFailure::Relinquish);
+            }
+            assert_eq!(controller.shutdown().is_err(), fail_relinquish);
+            assert_eq!(controller.has_managed_state(), fail_relinquish);
+            assert!(controller.shutdown().is_ok());
+            assert!(!controller.has_managed_state());
+        }
+    }
+
+    #[test]
     fn release_commit_failure_keeps_baseline_and_relinquishes_recovery() {
         let platform = FakePlatform::new(&[THREAD_PRIORITY_NORMAL]);
         let mut controller = ThreadPriorityController::with_platform(platform);
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1754,6 +2285,7 @@ mod tests {
         let mut controller = ThreadPriorityController::with_platform(platform);
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,
@@ -1804,6 +2336,7 @@ mod tests {
         let mut controller = ThreadPriorityController::with_platform(platform);
         controller
             .apply_policy_claim(
+                &mut ThreadInventory::default(),
                 claim(
                     ControlOwner::ThreadPriority,
                     ProcessThreadPrioritySetting::BelowNormal,

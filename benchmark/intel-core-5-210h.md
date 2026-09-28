@@ -34,7 +34,7 @@ tier switching or the CPU Sets (Soft) topology floor.
 Command:
 
 ```powershell
-.\scripts\cpu_scheduler_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+.\scripts\adaptive_engine_process_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
 Results are local direction, not a cross-machine ranking. Thermal state, firmware,

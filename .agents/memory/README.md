@@ -14,13 +14,14 @@ user constraints. Then read only what the task needs:
 - [`15-design-spec.md`](15-design-spec.md) for UI or UX work.
 - [`20-project-scope.md`](20-project-scope.md) for product boundaries or future
   direction.
+- [`25-runtime-contracts.md`](25-runtime-contracts.md) for feature policy, ownership, and restoration.
 - [`30-reference-library.md`](30-reference-library.md) for Windows APIs and
   operating-system mechanisms.
 
 ## Maintenance
 
-- Keep durable current decisions and active user constraints in
-  `00-agent-start.md`; remove them when they stop applying.
+- Keep `00-agent-start.md` short: current stack, constraints, and task routing.
+- Put detailed runtime contracts in `25-runtime-contracts.md`; preserve safety behavior.
 - Move durable engineering rules into `10-development-guide.md`.
 - Put UI design rules in `15-design-spec.md`.
 - Put product boundaries in `20-project-scope.md`.

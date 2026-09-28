@@ -29,6 +29,7 @@ pub struct ByRunningAppManager {
 
 #[derive(Debug, Clone)]
 struct ActiveByRunningApp {
+    rule_index: usize,
     rule_name: String,
     process_id: u32,
     process_name: String,
@@ -98,9 +99,10 @@ impl ByRunningAppManager {
             .unwrap_or_default()
     }
 
-    pub fn active_decision(&self) -> Option<(String, String, String)> {
+    pub fn active_decision(&self) -> Option<(usize, String, String, String)> {
         self.active.as_ref().map(|active| {
             (
+                active.rule_index,
                 active.rule_name.clone(),
                 active.process_name.clone(),
                 active.target_guid.clone(),
@@ -110,7 +112,8 @@ impl ByRunningAppManager {
 
     fn active_matches(&self, matched: &ActiveByRunningApp) -> bool {
         self.active.as_ref().is_some_and(|active| {
-            active.rule_name == matched.rule_name
+            active.rule_index == matched.rule_index
+                && active.rule_name == matched.rule_name
                 && active.process_id == matched.process_id
                 && same_process_name(&active.process_name, &matched.process_name)
                 && active
@@ -144,7 +147,7 @@ fn matching_rule_process(
     settings: &ByRunningAppSettings,
     processes: &[&ProcessInfo],
 ) -> Option<ActiveByRunningApp> {
-    for rule in &settings.rules {
+    for (rule_index, rule) in settings.rules.iter().enumerate() {
         if !rule.enabled || rule.executable_path.trim().is_empty() {
             continue;
         }
@@ -159,6 +162,7 @@ fn matching_rule_process(
         };
 
         return Some(ActiveByRunningApp {
+            rule_index,
             rule_name: performance_rule_name(rule),
             process_id: process.id,
             process_name: process.name.clone(),
@@ -291,6 +295,7 @@ mod tests {
     #[test]
     fn active_match_includes_rule_name() {
         let active = ActiveByRunningApp {
+            rule_index: 0,
             rule_name: "Old name".to_owned(),
             process_id: 42,
             process_name: "game.exe".to_owned(),
@@ -299,6 +304,12 @@ mod tests {
         let manager = ByRunningAppManager {
             active: Some(active.clone()),
         };
+        let reordered = ActiveByRunningApp {
+            rule_index: 1,
+            ..active.clone()
+        };
+        assert!(!manager.active_matches(&reordered));
+        assert_eq!(manager.active_decision().unwrap().0, 0);
         let renamed = ActiveByRunningApp {
             rule_name: "New name".to_owned(),
             ..active

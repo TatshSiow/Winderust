@@ -1055,7 +1055,7 @@ mod tests {
             allow_cross_session_process_control: true,
             ancestor_process_ids: Vec::new(),
         };
-        let (_identity, process) = crate::control::process::open_process_for_thread_control(
+        let (_identity, process) = crate::control::process::open_process_for_thread_snapshot(
             &suspension_target.process,
             true,
         )

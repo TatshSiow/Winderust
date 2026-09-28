@@ -190,7 +190,7 @@ ac_mode = "aggressive"
 battery_policy = 100
 battery_mode = "aggressive"
 
-[cpu_scheduler]
+[adaptive_engine_process]
 process_priority_enabled = false
 background_efficiency_enabled = false
 focus_process_background_efficiency_override_enabled = false

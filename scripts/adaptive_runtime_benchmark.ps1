@@ -1,4 +1,6 @@
 param(
+    [switch]$SettingsOnly,
+    [switch]$EnableDynamicResourceZones,
     [int]$Passes = 4,
     [int]$Rounds = 5,
     [int]$Iterations = 1000000,
@@ -33,29 +35,6 @@ if ($Passes -lt 4 -or ($Passes % 2) -ne 0) {
 if ($WorkerSeconds -le ($WarmupSeconds + 30)) {
     throw 'WorkerSeconds must exceed WarmupSeconds by more than 30 seconds so workers survive measurement.'
 }
-$benchmarkScript = Join-Path $PSScriptRoot 'cpu_scheduler_benchmark.ps1'
-$env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
-try {
-    . $benchmarkScript `
-        -Passes $Passes `
-        -Rounds $Rounds `
-        -Iterations $Iterations `
-        -WorkerSeconds $WorkerSeconds `
-        -BackgroundWorkers ([Math]::Min([Math]::Ceiling([Environment]::ProcessorCount * 0.9), 24)) `
-        -ForegroundScenario $ForegroundScenario `
-        -WinderustExePath $WinderustExePath `
-        -SkipPower:$SkipPower
-} finally {
-    Remove-Item Env:WINDERUST_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
-}
-
-$balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
-$originalGuid = Get-ActiveSchemeGuid
-$sourceExePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
-$configDir = Join-Path ([IO.Path]::GetTempPath()) "winderust-adaptive-benchmark-$([guid]::NewGuid())"
-$exePath = Join-Path $configDir 'winderust.exe'
-$configPath = Join-Path $configDir 'settings.toml'
-$runtime = $null
 $backgroundProcessorLimitEnabled = !$DisableBackgroundProcessorLimit.IsPresent
 
 $settingsToml = @'
@@ -94,7 +73,7 @@ battery_mode = "efficient_aggressive"
 [background_efficiency]
 enabled = false
 
-[cpu_scheduler]
+[adaptive_engine_process]
 process_priority_enabled = true
 background_efficiency_enabled = true
 focus_process_background_efficiency_override_enabled = true
@@ -115,6 +94,9 @@ visible_window_memory_priority = "default"
 background_memory_priority = "low"
 cpu_pressure_restraint_enabled = true
 limit_background_processors_enabled = __LIMIT_BACKGROUND_PROCESSORS__
+# Zoning is a separate opt-in scenario; the historical default stays off.
+dynamic_resource_zones_enabled = __DYNAMIC_RESOURCE_ZONES__
+dynamic_resource_zone_settings = { foreground_share_percent = 75, background_processor_selection = "least_used", specific_processors = [] }
 cpu_allocation_method = "cpu_sets_soft"
 background_processor_selection = "least_used"
 processor_limit_percent = 75
@@ -141,6 +123,7 @@ rules = []
 enabled = false
 rules = []
 '@
+$settingsToml = $settingsToml.Replace('__DYNAMIC_RESOURCE_ZONES__', $EnableDynamicResourceZones.IsPresent.ToString().ToLowerInvariant())
 $benchmarkHostPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $escapedBenchmarkHostPath = $benchmarkHostPath.Replace('\', '\\')
 $settingsToml = $settingsToml.Replace(
@@ -172,6 +155,45 @@ $settingsToml = $settingsToml.Replace(
     $BackgroundPressureAcBoostMode
 )
 
+if ($SettingsOnly) {
+    $settingsToml
+    return
+}
+
+# Validate the real generated payload before importing workload helpers or changing plans.
+Push-Location (Split-Path $PSScriptRoot -Parent)
+try {
+    $env:WINDERUST_BENCHMARK_SETTINGS = $settingsToml
+    cargo test --locked adaptive_runtime_benchmark_generated_settings_are_valid
+    if ($LASTEXITCODE -ne 0) { throw 'Adaptive runtime benchmark settings validation failed.' }
+} finally {
+    Remove-Item Env:WINDERUST_BENCHMARK_SETTINGS -ErrorAction SilentlyContinue
+    Pop-Location
+}
+
+$benchmarkScript = Join-Path $PSScriptRoot 'adaptive_engine_process_benchmark.ps1'
+$env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
+try {
+    . $benchmarkScript `
+        -Passes $Passes `
+        -Rounds $Rounds `
+        -Iterations $Iterations `
+        -WorkerSeconds $WorkerSeconds `
+        -BackgroundWorkers ([Math]::Min([Math]::Ceiling([Environment]::ProcessorCount * 0.9), 24)) `
+        -ForegroundScenario $ForegroundScenario `
+        -WinderustExePath $WinderustExePath `
+        -SkipPower:$SkipPower
+} finally {
+    Remove-Item Env:WINDERUST_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
+}
+
+$balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
+$originalGuid = Get-ActiveSchemeGuid
+$sourceExePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
+$configDir = Join-Path ([IO.Path]::GetTempPath()) "winderust-adaptive-benchmark-$([guid]::NewGuid())"
+$exePath = Join-Path $configDir 'winderust.exe'
+$configPath = Join-Path $configDir 'settings.toml'
+$runtime = $null
 function Write-IsolatedSettings {
     [IO.Directory]::CreateDirectory($configDir) | Out-Null
     Copy-Item -LiteralPath $sourceExePath -Destination $exePath
@@ -290,7 +312,7 @@ function Run-AdaptiveCase {
             -WarmupSeconds $WarmupSeconds
         Assert-ValidCase -Result $result -Name 'Adaptive'
         if (@($result.observed_worker_priorities | Where-Object { $_ -ne 'Normal' }).Count -eq 0) {
-            throw "Invalid runtime benchmark: CPU Scheduler did not change any generated worker priority."
+            throw "Invalid runtime benchmark: Adaptive Engine did not change any generated worker priority."
         }
         $result | Add-Member -NotePropertyName runtime_control_observed -NotePropertyValue $true
         $result | Add-Member -NotePropertyName adaptive_policy_after_load -NotePropertyValue (Read-ActiveProcessorPolicy)
@@ -361,6 +383,8 @@ $report = [pscustomobject]@{
     foreground_iterations_per_round = $Iterations
     background_pressure_ac_boost_policy = $BackgroundPressureAcBoostPolicy
     background_pressure_ac_boost_mode = $BackgroundPressureAcBoostMode
+    dynamic_resource_zones_enabled = $EnableDynamicResourceZones.IsPresent
+    zone_foreground_share_percent = 75
     limit_background_processors_enabled = $backgroundProcessorLimitEnabled
     process_restraint_threshold_percent = $ProcessRestraintThresholdPercent
     maximum_restrained_apps = $MaximumRestrainedApps
