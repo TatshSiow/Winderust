@@ -10,6 +10,7 @@ build = "build.rs"
 
 [features]
 render-smoke = []
+runtime-benchmark = []
 
 [dependencies]
 atomic-write-file = "0.3.0"

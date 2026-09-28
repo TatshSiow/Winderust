@@ -668,14 +668,6 @@ impl RuntimeCore {
         foreground_changed: bool,
     ) -> Result<String, String> {
         let now = Instant::now();
-        if self
-            .next_adaptive_io_refresh
-            .is_none_or(|refresh_at| now >= refresh_at)
-        {
-            self.adaptive_io_usage = self.io_monitor.sample();
-            self.next_adaptive_io_refresh = Some(now + ADAPTIVE_IO_REFRESH_INTERVAL);
-        }
-        let io_usage = self.adaptive_io_usage;
         if self.adaptive_processor_topology.is_empty() {
             self.adaptive_processor_topology = cpu_allocation::logical_processors();
         }
@@ -684,7 +676,7 @@ impl RuntimeCore {
             .sample()
             .map(|usage| adaptive_processor_demand(&usage, &self.adaptive_processor_topology))
             .unwrap_or_default();
-        let desired_profile = AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
+        let demand = AdaptivePowerDemand {
             focus_and_launch_profile_active: self.focus_and_launch_profile_active
                 || foreground_changed,
             background_pressure_active: self.cpu_pressure_restraint_active,
@@ -695,8 +687,28 @@ impl RuntimeCore {
             foreground_cpu_percent: self
                 .adaptive_engine_process_foreground_cpu_usage_tenths
                 .map(|usage| f32::from(usage) / 10.0),
-            io_bytes_per_second: io_usage.bytes_per_second,
-        });
+            io_bytes_per_second: None,
+        };
+        let mut desired_profile = AdaptivePowerProfile::for_demand(demand);
+        if desired_profile == AdaptivePowerProfile::Idle {
+            if self
+                .next_adaptive_io_refresh
+                .is_none_or(|refresh_at| now >= refresh_at)
+            {
+                self.adaptive_io_usage = self.io_monitor.sample();
+                self.next_adaptive_io_refresh = Some(now + ADAPTIVE_IO_REFRESH_INTERVAL);
+            }
+            desired_profile = AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
+                io_bytes_per_second: self.adaptive_io_usage.bytes_per_second,
+                ..demand
+            });
+        } else {
+            // I/O can only raise Idle to Responsive. Restart its baseline when needed;
+            // the power controller's deescalation delay exceeds the sampling interval.
+            self.io_monitor = IoUsageMonitor::default();
+            self.adaptive_io_usage = IoUsageSnapshot::default();
+            self.next_adaptive_io_refresh = None;
+        }
         let has_efficiency_cores = self
             .adaptive_processor_topology
             .iter()

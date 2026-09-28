@@ -1,5 +1,7 @@
 mod action_log;
 mod adaptive_engine;
+#[cfg(feature = "runtime-benchmark")]
+pub(crate) use adaptive_engine::benchmark as runtime_benchmark;
 mod advanced_power_plan_tuning;
 mod animated_controls;
 mod app_picker;

@@ -48,6 +48,10 @@ fn main() {
     if crash_recovery::run_watchdog_if_requested() {
         return;
     }
+    #[cfg(feature = "runtime-benchmark")]
+    if ui::runtime_benchmark::run_if_requested() {
+        return;
+    }
 
     let wait_for_previous_instance = privilege::elevated_relaunch_requested();
     let Some(_single_instance_guard) = SingleInstanceGuard::acquire(wait_for_previous_instance)

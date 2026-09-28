@@ -434,6 +434,7 @@ impl AdaptiveEngineProcessManager {
         let visible_window_process_group_ids = processes
             .iter()
             .filter(|process| !foreground_process_group_ids.contains(&process.id))
+            .filter(|process| visible_processes.may_contain(process))
             .filter_map(|process| {
                 cached_executable_path(process, &mut executable_paths).and_then(|path| {
                     visible_processes

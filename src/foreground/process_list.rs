@@ -806,6 +806,18 @@ impl ProtectedProcesses {
                 .iter()
                 .any(|protected_path| same_executable_path(protected_path, executable_path))
     }
+
+    /// A name match only permits a path lookup; it never establishes membership.
+    pub(crate) fn may_contain(&self, process: &ProcessInfo) -> bool {
+        self.process_ids.contains(&process.id)
+            || self.foreground_process_id == Some(process.id)
+            || process.image_path.is_some()
+            || self.executable_paths.iter().any(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_none_or(|name| same_process_name(&process.name, name))
+            })
+    }
 }
 
 pub fn same_process_name(left: &str, right: &str) -> bool {
@@ -1311,6 +1323,17 @@ mod tests {
         assert!(protected.contains(77, Path::new(r"C:\Apps\helper.exe")));
         assert!(protected.contains(99, Path::new(r"c:\apps\visible\APP.EXE")));
         assert!(!protected.contains(99, Path::new(r"D:\Other\app.exe")));
+
+        let mut candidate = process(99, r"D:\Other\app.exe");
+        candidate.image_path = None;
+        assert!(protected.may_contain(&candidate));
+        candidate.name = "unrelated.exe".to_owned();
+        assert!(!protected.may_contain(&candidate));
+        candidate.id = 77;
+        assert!(protected.may_contain(&candidate));
+        candidate.id = 99;
+        candidate.image_path = Some(PathBuf::from(r"C:\Apps\Visible\app.exe"));
+        assert!(protected.may_contain(&candidate));
 
         let unprotected = ProtectedProcesses::capture(&processes, false, Some(42), BTreeSet::new());
         assert!(!unprotected.contains(42, Path::new(r"C:\Apps\Foreground\app.exe")));

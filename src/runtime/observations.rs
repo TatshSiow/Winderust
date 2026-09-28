@@ -631,6 +631,64 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "profiles live Windows observations; run alone with --nocapture"]
+    fn profile_live_observation_costs() {
+        use std::time::{Duration, Instant};
+        let mut classifier = crate::bottleneck_classifier::BottleneckClassifier::default();
+        let mut cpu = crate::cpu::CpuUsageMonitor::default();
+        for sample in 0..12 {
+            let mut observations = CycleObservations::default();
+            let start = Instant::now();
+            let processes = observations.processes().expect("process observation");
+            let process_time = start.elapsed();
+            let start = Instant::now();
+            let visible = observations
+                .visible_window_process_ids()
+                .expect("visible windows");
+            let _ = observations.adaptive_workload(&processes);
+            let window_time = start.elapsed();
+            let protected =
+                crate::foreground::ProtectedProcesses::capture(&processes, false, None, visible);
+            let mut groups = Vec::new();
+            for prefilter in [false, true] {
+                let start = Instant::now();
+                let group: BTreeSet<_> = processes
+                    .iter()
+                    .filter(|process| !prefilter || protected.may_contain(process))
+                    .filter(|process| {
+                        crate::foreground::process_executable_path(process)
+                            .is_some_and(|path| protected.contains(process.id, &path))
+                    })
+                    .map(|process| process.id)
+                    .collect();
+                eprintln!(
+                    "sample={sample} prefilter={prefilter} grouping_us={}",
+                    start.elapsed().as_micros()
+                );
+                groups.push(group);
+            }
+            assert_eq!(
+                groups[0], groups[1],
+                "visible process membership changed during the probe"
+            );
+            let start = Instant::now();
+            let total_cpu = cpu.sample_usage();
+            let cpu_time = start.elapsed();
+            let start = Instant::now();
+            let status = classifier.sample(total_cpu.percent);
+            assert!(status.last_error.is_none(), "{:?}", status.last_error);
+            eprintln!(
+                "sample={sample} processes={:?} windows={:?} cpu={:?} bottleneck={:?}",
+                process_time,
+                window_time,
+                cpu_time,
+                start.elapsed()
+            );
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    #[test]
     fn unavailable_domains_are_cached_without_retrying_inside_the_pass() {
         let _guard = TEST_LOCK.lock().unwrap();
         PROCESS_CALLS.store(0, Ordering::Relaxed);

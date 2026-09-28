@@ -12,6 +12,9 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+#[cfg(feature = "runtime-benchmark")]
+#[path = "runtime_benchmark.rs"]
+pub(crate) mod benchmark;
 #[path = "adaptive_presets.rs"]
 mod presets;
 #[cfg(feature = "render-smoke")]
