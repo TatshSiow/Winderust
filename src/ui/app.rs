@@ -1861,12 +1861,9 @@ impl WinderustApp {
         let breadcrumb =
             container(header.wrap().vertical_spacing(design::space::SMALL)).width(Fill);
         let mut actions_width = 0.0;
+        let mut profile_controls = None;
         let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
         if self.page.supports_power_source_profiles() {
-            actions_width +=
-                widgets::text_width(&t!("power_source.plugged_in"), design::typography::BODY)
-                    + widgets::text_width(&t!("power_source.on_battery"), design::typography::BODY)
-                    + 72.0;
             let plugged_in = crate::backend::power_source::is_plugged_in();
             let mut tabs = row![].spacing(design::space::TIGHT);
             for (profile, key, live) in [
@@ -1905,7 +1902,7 @@ impl WinderustApp {
                         }),
                 );
             }
-            header = header.push(
+            profile_controls = Some(
                 container(tabs)
                     .padding(design::space::TIGHT as u16)
                     .style(widgets::surface),
@@ -1954,17 +1951,26 @@ impl WinderustApp {
             .wrap()
             .vertical_spacing(design::space::SMALL)
             .align_x(iced::Right);
-        let header: Element<'_, Message> =
-            if breadcrumb_width + actions_width + design::space::COMPACT as f32 > main_width {
-                column![breadcrumb, container(actions).align_right(Fill)]
-                    .spacing(design::space::SMALL)
-                    .into()
-            } else {
-                row![breadcrumb, actions]
+        let header: Element<'_, Message> = if let Some(profiles) = profile_controls {
+            column![
+                breadcrumb,
+                row![profiles, iced::widget::Space::new().width(Fill), actions]
                     .spacing(design::space::COMPACT)
                     .align_y(iced::Center)
-                    .into()
-            };
+                    .width(Fill)
+            ]
+            .spacing(design::space::SMALL)
+            .into()
+        } else if breadcrumb_width + actions_width + design::space::COMPACT as f32 > main_width {
+            column![breadcrumb, container(actions).align_right(Fill)]
+                .spacing(design::space::SMALL)
+                .into()
+        } else {
+            row![breadcrumb, actions]
+                .spacing(design::space::COMPACT)
+                .align_y(iced::Center)
+                .into()
+        };
         let mut heading = column![container(header)
             .padding([design::space::SMALL as u16, 0])
             .width(Fill)]
