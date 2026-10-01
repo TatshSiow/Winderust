@@ -259,7 +259,7 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             let color = super::widgets::checkbox_style(theme, status)
                 .icon_color
                 .scale_alpha(progress);
-            let inset = 3.0;
+            let inset = 2.0;
             renderer.draw_svg(
                 iced::advanced::svg::Svg::new(
                     super::assets::iced_icon("icons/check.svg").expect("Check icon is bundled"),
