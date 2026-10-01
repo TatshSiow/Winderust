@@ -816,6 +816,11 @@ impl WinderustApp {
             Message::NativeWindow(hwnd) => {
                 self.hwnd = hwnd;
                 if let Some(hwnd) = hwnd {
+                    if let Err(error) = crate::platform::windows::window_dpi::install(
+                        hwnd as windows_sys::Win32::Foundation::HWND,
+                    ) {
+                        crate::backend::diagnostics::error(&error);
+                    }
                     if let Err(error) =
                         tray::set_window_icon(hwnd as windows_sys::Win32::Foundation::HWND)
                     {

@@ -22,6 +22,7 @@ pub(crate) mod suspension;
 pub(crate) mod thread_priority;
 pub(crate) mod thread_suspension;
 pub(crate) mod timer_resolution;
+pub(crate) mod window_dpi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcessOperationError {
