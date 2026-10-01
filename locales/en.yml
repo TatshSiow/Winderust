@@ -1150,8 +1150,6 @@ settings_io_toast:
 
 exit_prompt:
   exiting: "Exiting..."
-  processing: "Restoring managed changes and stopping background automation."
-  recovery_handoff: "Automation has stopped. Exit again to let the recovery helper retry remaining restoration. Recovery may still fail."
   title: "Exit Winderust?"
   message: "Are you sure you want to exit Winderust?"
   unsaved: "You have unsaved changes. Save them before exiting, or exit without saving."

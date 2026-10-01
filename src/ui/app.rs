@@ -5,7 +5,12 @@ use super::{
     timer_resolution, widgets, win32_priority_separation,
 };
 use crate::ui::scrolling::scrollable;
-use std::{cell::RefCell, path::PathBuf, time::Duration};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use widgets::{button, text_input};
 
 use iced::widget::{column, container, row, text};
@@ -31,11 +36,19 @@ pub(crate) fn run(
     error: Option<String>,
     runtime: RuntimeHandle,
     restore_event: Option<SingleInstanceRestoreEvent>,
+    recovery_client: Arc<Mutex<crate::crash_recovery::RecoveryClient>>,
 ) -> iced::Result {
-    let startup = RefCell::new(Some((settings, error, runtime, restore_event)));
+    let startup = RefCell::new(Some((
+        settings,
+        error,
+        runtime,
+        restore_event,
+        recovery_client,
+    )));
     iced::application(
         move || {
-            let Some((settings, error, runtime, restore_event)) = startup.borrow_mut().take()
+            let Some((settings, error, runtime, restore_event, recovery_client)) =
+                startup.borrow_mut().take()
             else {
                 unreachable!("Iced must initialize the application exactly once");
             };
@@ -94,7 +107,7 @@ pub(crate) fn run(
                     color_dialog_open: false,
                     tray: None,
                     tray_attempt: None,
-                    shutdown_failed: false,
+                    recovery_client,
                     exiting: false,
                     hidden: false,
                     processes: process_list::ProcessList::default(),
@@ -236,7 +249,7 @@ struct WinderustApp {
     color_dialog_open: bool,
     tray: Option<tray::TrayIcon>,
     tray_attempt: Option<((bool, bool), std::time::Instant)>,
-    shutdown_failed: bool,
+    recovery_client: Arc<Mutex<crate::crash_recovery::RecoveryClient>>,
     exiting: bool,
     hidden: bool,
     processes: process_list::ProcessList,
@@ -1092,12 +1105,8 @@ impl WinderustApp {
                 settings.general.pause_power_plan_switching_while_plugged_in = value
             }),
             Message::ShutdownFinished(result) => {
-                self.exiting = false;
                 if let Err(error) = result {
                     crate::backend::diagnostics::error(&error);
-                    self.shutdown_failed = true;
-                    self.error_message = error;
-                    return self.show_window();
                 }
                 return self.finish_exit();
             }
@@ -1315,17 +1324,25 @@ impl WinderustApp {
     }
 
     fn shutdown(&mut self) -> Task<Message> {
-        // A confirmed subsequent exit hands the retained failure to the watchdog in main.
-        if self.shutdown_failed {
-            return self.finish_exit();
-        }
         crate::backend::diagnostics::event("Exit requested; restoring managed state.");
         self.exiting = true;
         self.closing = true;
         self.error_message.clear();
         let runtime = self.runtime.clone();
-        tasks::run(move || runtime.shutdown())
-            .map(|result| Message::ShutdownFinished(result.and_then(|result| result)))
+        let recovery_client = Arc::clone(&self.recovery_client);
+        tasks::run(move || {
+            if let Err(error) = runtime.shutdown() {
+                crate::backend::diagnostics::error(&error);
+            }
+            if let Err(error) = recovery_client
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish()
+            {
+                crate::backend::diagnostics::error(&error);
+            }
+        })
+        .map(Message::ShutdownFinished)
     }
 
     fn finish_exit(&mut self) -> Task<Message> {
@@ -1352,12 +1369,7 @@ impl WinderustApp {
                 design::typography::DIALOG_TITLE,
             )]
             .spacing(design::space::LARGE);
-            if self.shutdown_failed {
-                body = body.push(text(t!("exit_prompt.recovery_handoff").to_string()));
-            }
-            if self.exiting {
-                body = body.push(text(t!("exit_prompt.processing").to_string()));
-            } else if self.closing {
+            if !self.exiting && self.closing {
                 body = body.push(text(
                     t!(if self.pending_changes() {
                         "exit_prompt.unsaved"
@@ -1390,18 +1402,22 @@ impl WinderustApp {
                             .on_press(Message::DiscardAndClose),
                     );
                 }
-            } else {
+            } else if !self.exiting {
                 actions = actions.push(
                     button(text(t!("common.done").to_string()))
                         .style(widgets::tertiary_button)
                         .on_press(Message::DismissError),
                 );
             }
-            if !self.error_message.is_empty() {
+            if !self.exiting && !self.error_message.is_empty() {
                 body = body.push(text(&self.error_message));
             }
-            let dialog = container(body.push(actions))
+            if !self.exiting {
+                body = body.push(actions);
+            }
+            let dialog = container(body)
                 .padding(design::space::LARGE as u16)
+                .width(Fill)
                 .max_width(640)
                 .style(widgets::surface);
             return iced::widget::stack![

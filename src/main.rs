@@ -74,7 +74,9 @@ fn main() {
             .startup_registration_error()
             .map(|error| format!("Startup registration reconciliation failed: {error}"))
     });
-    let mut recovery_client = crash_recovery::RecoveryClient::start();
+    let recovery_client = std::sync::Arc::new(std::sync::Mutex::new(
+        crash_recovery::RecoveryClient::start(),
+    ));
     let adaptive_plan_recovery_error = power::restore_stale_adaptive_plans()
         .err()
         .map(|error| format!("Adaptive power plan recovery failed: {error}"));
@@ -85,12 +87,22 @@ fn main() {
     let runtime_settings = settings.runtime_settings_snapshot();
     let runtime_handle = automation::RuntimeHandle::start(&runtime_settings);
 
-    if let Err(error) = app::run(settings, settings_load_error, runtime_handle, restore_event) {
+    if let Err(error) = app::run(
+        settings,
+        settings_load_error,
+        runtime_handle,
+        restore_event,
+        recovery_client.clone(),
+    ) {
         backend::diagnostics::error(&error.to_string());
         eprintln!("{error}");
     }
 
-    if let Err(error) = recovery_client.finish() {
+    if let Err(error) = recovery_client
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .finish()
+    {
         backend::diagnostics::error(&error.to_string());
         eprintln!("{error}");
     }
@@ -366,13 +378,11 @@ mod tests {
         let stale_plan_recovery = main_body
             .find("restore_stale_adaptive_plans")
             .expect("stale adaptive-plan recovery");
-        let application = main_body.find("app::run(settings").expect("Iced startup");
+        let application = main_body.find("app::run(").expect("Iced startup");
         let runtime = main_body
             .find("RuntimeHandle::start")
             .expect("runtime startup");
-        let finish = main_body
-            .find("recovery_client.finish")
-            .expect("RecoveryClient finish");
+        let finish = main_body.find(".finish()").expect("RecoveryClient finish");
 
         assert!(helper_mode < elevated_relaunch);
         assert!(elevated_relaunch < single_instance);
@@ -384,5 +394,27 @@ mod tests {
         assert!(stale_plan_recovery < runtime);
         assert!(runtime < application);
         assert!(application < finish);
+
+        let ui_source = include_str!("ui/app.rs");
+        let shutdown = ui_source
+            .split_once("fn shutdown(&mut self)")
+            .expect("UI shutdown")
+            .1
+            .split_once("fn finish_exit")
+            .expect("UI exit completion")
+            .0;
+        let exiting = shutdown.find("self.exiting = true").expect("exiting modal");
+        let restoration = shutdown
+            .find("runtime.shutdown()")
+            .expect("managed restoration");
+        let helper = shutdown
+            .find(".finish()")
+            .expect("recovery helper completion");
+        let completion = shutdown
+            .find(".map(Message::ShutdownFinished)")
+            .expect("UI completion");
+        assert!(exiting < restoration);
+        assert!(restoration < helper);
+        assert!(helper < completion);
     }
 }
