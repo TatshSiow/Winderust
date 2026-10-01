@@ -351,6 +351,9 @@ pub(super) fn update_timer_resolution_status(
 pub(super) fn update_worker_error(shared: &SharedAutomationState, error: Option<String>) {
     let mut state = lock_unpoisoned(&shared.state);
     if state.status.worker_error != error {
+        if let Some(error) = &error {
+            crate::backend::diagnostics::error(error);
+        }
         state.status.worker_error = error;
         bump_status_generation(shared, &mut state);
     }

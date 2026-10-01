@@ -273,9 +273,6 @@ pub(super) fn view<'a>(
             .spacing(design::space::CONTROL),
         ));
     }
-    if let Some(error) = &runtime.worker_error {
-        body = body.push(text(error));
-    }
     if page == Page::BackgroundEfficiency
         && runtime
             .feature_status
