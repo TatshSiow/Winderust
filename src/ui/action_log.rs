@@ -335,26 +335,26 @@ impl Editor {
         table.into()
     }
 }
-// Group only adjacent successes from the same automation pass and operation.
+// Group matching actions throughout each automation pass, newest groups first.
 fn group_entries<'a>(entries: &[&'a ActionLogEntry]) -> Vec<Vec<&'a ActionLogEntry>> {
     let mut groups: Vec<Vec<&ActionLogEntry>> = Vec::new();
     for &entry in entries {
-        if let Some(group) = groups.last_mut() {
-            let first = group[0];
-            if matches!(
-                entry.result,
-                ActionLogResult::Applied | ActionLogResult::Restored
-            ) && entry.process_id.is_some()
-                && first.process_id.is_some()
-                && entry.batch_id == first.batch_id
-                && entry.feature == first.feature
-                && entry.result == first.result
-                && entry.reason == first.reason
-                && !group.iter().any(|old| old.process_id == entry.process_id)
-            {
-                group.push(entry);
-                continue;
-            }
+        if let Some(group) = groups
+            .iter_mut()
+            .rev()
+            .take_while(|group| group[0].batch_id == entry.batch_id)
+            .find(|group| {
+                let first = group[0];
+                entry.process_id.is_some()
+                    && first.process_id.is_some()
+                    && entry.feature == first.feature
+                    && entry.result == first.result
+                    && entry.reason == first.reason
+                    && !group.iter().any(|old| old.process_id == entry.process_id)
+            })
+        {
+            group.push(entry);
+            continue;
         }
         groups.push(vec![entry]);
     }
@@ -684,7 +684,7 @@ mod tests {
         }
     }
     #[test]
-    fn successful_batches_group_without_merging_other_operations_or_exports() {
+    fn batches_group_without_merging_other_operations_or_exports() {
         let mut log = crate::action_log::ActionLog::new(100);
         log.begin_batch();
         for pid in 1..=40 {
@@ -730,7 +730,7 @@ mod tests {
                 .iter()
                 .map(Vec::len)
                 .collect::<Vec<_>>(),
-            vec![1, 1, 1, 40]
+            vec![2, 1, 40]
         );
         for change in 0..4 {
             let mut other = entries[0].clone();
@@ -743,6 +743,40 @@ mod tests {
                 _ => other.process_id = entries[0].process_id,
             }
             assert_eq!(group_entries(&[&entries[0], &other]).len(), 2);
+        }
+    }
+
+    #[test]
+    fn every_feature_and_result_groups_matching_process_actions() {
+        for feature in FEATURES {
+            for result in RESULTS {
+                let mut log = crate::action_log::ActionLog::new(8);
+                log.begin_batch();
+                for pid in 1..=3 {
+                    log.record(
+                        feature,
+                        Some(pid),
+                        format!("app-{pid}.exe"),
+                        result,
+                        "Same action.",
+                    );
+                    log.record(
+                        feature,
+                        Some(pid + 3),
+                        format!("other-{pid}.exe"),
+                        result,
+                        "Different action.",
+                    );
+                }
+                let entries = log.entries();
+                let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+                let groups = group_entries(&filtered);
+                assert_eq!(groups.len(), 2, "{feature:?} {result:?}");
+                assert_eq!(groups[0].len(), 3);
+                assert_eq!(groups[1].len(), 3);
+                assert_eq!(groups[0][0].reason, "Different action.");
+                assert_eq!(action_log_entries_to_csv(&entries).lines().count(), 7);
+            }
         }
     }
 
