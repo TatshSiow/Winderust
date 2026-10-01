@@ -437,7 +437,19 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         }
 
         let baseline = managed.as_ref().map_or(current, |managed| managed.baseline);
-        if priority_is_preserved(preservation, baseline, desired) {
+        // Background-mode threads can report offsets such as -4 that the Win32 setter
+        // cannot restore. Leave them untouched rather than acquiring an unrestorable baseline.
+        if !matches!(
+            baseline,
+            windows_thread_priority::PRIORITY_IDLE
+                | windows_thread_priority::PRIORITY_LOWEST
+                | windows_thread_priority::PRIORITY_BELOW_NORMAL
+                | windows_thread_priority::PRIORITY_NORMAL
+                | windows_thread_priority::PRIORITY_ABOVE_NORMAL
+                | windows_thread_priority::PRIORITY_HIGHEST
+                | windows_thread_priority::PRIORITY_TIME_CRITICAL
+        ) || priority_is_preserved(preservation, baseline, desired)
+        {
             if let Some(managed) = managed {
                 self.managed.insert(identity.clone(), managed);
                 self.release_identity(&identity)?;
@@ -1754,6 +1766,43 @@ mod tests {
             controller.platform.process.threads[&101].priority,
             THREAD_PRIORITY_LOWEST
         );
+    }
+
+    #[test]
+    fn unsupported_baselines_are_preserved_for_manual_and_automatic_claims() {
+        for owner in [
+            ControlOwner::ProcessList,
+            ControlOwner::ThreadPriority,
+            ControlOwner::AdaptiveEngine,
+        ] {
+            let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[
+                -4,
+                3,
+                THREAD_PRIORITY_NORMAL,
+            ]));
+            let outcome = controller
+                .apply_process_claim(
+                    &mut ThreadInventory::default(),
+                    claim(
+                        owner,
+                        ProcessThreadPrioritySetting::BelowNormal,
+                        ThreadPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .unwrap();
+            assert_eq!(outcome.preserved_threads, 2);
+            assert_eq!(outcome.applied_threads, 1);
+            assert_eq!(controller.managed.len(), 1);
+            assert_eq!(controller.platform.process.threads[&100].priority, -4);
+            assert_eq!(controller.platform.process.threads[&101].priority, 3);
+            controller.shutdown().unwrap();
+            assert_eq!(
+                controller.platform.process.threads[&102].priority,
+                THREAD_PRIORITY_NORMAL
+            );
+            assert!(!controller.has_managed_state());
+        }
     }
 
     #[test]
