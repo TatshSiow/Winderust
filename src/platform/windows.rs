@@ -12,6 +12,7 @@ pub(crate) mod io_priority;
 pub(crate) mod job;
 pub(crate) mod memory_priority;
 pub(crate) mod memory_trim;
+pub(crate) mod menu_theme;
 pub(crate) mod power_plan;
 pub(crate) mod priority_efficiency;
 pub(crate) mod process;

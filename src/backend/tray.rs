@@ -453,6 +453,7 @@ fn append_menu(
 }
 
 fn show_tray_menu(hwnd: HWND) {
+    crate::platform::windows::menu_theme::apply(hwnd);
     // SAFETY: CreatePopupMenu has no pointer inputs and returns either a menu handle or null.
     let menu = unsafe { CreatePopupMenu() };
     if menu.is_null() {
