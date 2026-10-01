@@ -27,6 +27,19 @@ use crate::{
     tray,
 };
 
+// Iced supplies logical pixels; do not apply the monitor DPI a second time.
+fn shell_widths(width: f32) -> (f32, f32, u16) {
+    (
+        (width * 0.18).clamp(240.0, design::NAVIGATION_WIDTH),
+        (width * 0.21).clamp(240.0, design::SIDE_PANEL_WIDTH),
+        if width < 1280.0 {
+            design::space::MEDIUM
+        } else {
+            design::space::WIDE
+        } as u16,
+    )
+}
+
 #[cfg(feature = "render-smoke")]
 #[path = "smoke.rs"]
 pub(crate) mod smoke;
@@ -1557,6 +1570,11 @@ impl WinderustApp {
     }
 
     fn view_content(&self) -> Element<'_, Message> {
+        iced::widget::responsive(|size| self.view_content_at_width(size.width)).into()
+    }
+
+    fn view_content_at_width(&self, width: f32) -> Element<'_, Message> {
+        let (navigation_width, side_panel_width, page_padding) = shell_widths(width);
         if self.preferences.show_update && !self.closing {
             return (container(
                 column![
@@ -1791,6 +1809,7 @@ impl WinderustApp {
         utilities = utilities
             .push(iced::widget::rule::horizontal(1))
             .push(navigation_toggle);
+        let side_panel = self.side_panel(self.page);
         const BREADCRUMB_TEXT_SIZE: u32 = design::typography::TITLE;
         let mut header = row![].align_y(iced::Center);
         for (index, page) in self.breadcrumb.iter().copied().enumerate() {
@@ -1821,15 +1840,28 @@ impl WinderustApp {
                 super::motion::Effect::Visible,
             ));
         }
-        let breadcrumb = scrollable(header)
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::default(),
-            ))
-            .width(Fill);
-        let mut header = row![breadcrumb]
-            .spacing(design::space::COMPACT)
-            .align_y(iced::Center);
+        let breadcrumb_width: f32 = self
+            .breadcrumb
+            .iter()
+            .enumerate()
+            .map(|(index, page)| {
+                widgets::text_width(&page.label(), BREADCRUMB_TEXT_SIZE)
+                    + if index > 0 {
+                        design::ICON_SIZE as f32 + 2.0 * design::space::COMPACT as f32
+                    } else {
+                        0.0
+                    }
+            })
+            .sum();
+        let breadcrumb =
+            container(header.wrap().vertical_spacing(design::space::SMALL)).width(Fill);
+        let mut actions_width = 0.0;
+        let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
         if self.page.supports_power_source_profiles() {
+            actions_width +=
+                widgets::text_width(&t!("power_source.plugged_in"), design::typography::BODY)
+                    + widgets::text_width(&t!("power_source.on_battery"), design::typography::BODY)
+                    + 72.0;
             let plugged_in = crate::backend::power_source::is_plugged_in();
             let mut tabs = row![].spacing(design::space::TIGHT);
             for (profile, key, live) in [
@@ -1876,6 +1908,10 @@ impl WinderustApp {
         }
         let description = navigation::page_feature_info(self.page);
         if !description.is_empty() {
+            actions_width +=
+                widgets::text_width(&t!("common.feature_info"), design::typography::SECONDARY)
+                    + design::ICON_SIZE as f32
+                    + 36.0;
             header = header.push(
                 button(
                     row![
@@ -1894,10 +1930,36 @@ impl WinderustApp {
                 .on_press(Message::ToggleFeatureInfo),
             );
         }
-        let header: Element<'_, Message> = header
-            .width(Fill)
-            .height(32 + 2 * design::space::TIGHT)
-            .into();
+        let main_width = width
+            - if collapsed {
+                design::SIDEBAR_COLLAPSED_WIDTH
+            } else {
+                navigation_width
+            }
+            - if side_panel.is_none() {
+                0.0
+            } else if self.status_collapsed {
+                design::SIDEBAR_COLLAPSED_WIDTH
+            } else {
+                side_panel_width
+            }
+            - 2.0 * page_padding as f32
+            - design::space::SMALL as f32;
+        let actions = header
+            .wrap()
+            .vertical_spacing(design::space::SMALL)
+            .align_x(iced::Right);
+        let header: Element<'_, Message> =
+            if breadcrumb_width + actions_width + design::space::COMPACT as f32 > main_width {
+                column![breadcrumb, container(actions).align_right(Fill)]
+                    .spacing(design::space::SMALL)
+                    .into()
+            } else {
+                row![breadcrumb, actions]
+                    .spacing(design::space::COMPACT)
+                    .align_y(iced::Center)
+                    .into()
+            };
         let mut heading = column![container(header)
             .padding([design::space::SMALL as u16, 0])
             .width(Fill)]
@@ -1929,7 +1991,6 @@ impl WinderustApp {
         }
         let mut body = column![heading].spacing(design::space::MEDIUM).height(Fill);
         let content = self.page_view();
-        let side_panel = self.side_panel(self.page);
         body = body.push(
             container(
                 container(super::motion::wrap(
@@ -1960,11 +2021,11 @@ impl WinderustApp {
                 !collapsed,
                 super::motion::Effect::Width {
                     min: design::SIDEBAR_COLLAPSED_WIDTH,
-                    max: design::NAVIGATION_WIDTH
+                    max: navigation_width
                 }
             ),
             container(body)
-                .padding([design::space::SECTION as u16, design::space::WIDE as u16])
+                .padding([design::space::SECTION as u16, page_padding])
                 .center_x(Fill)
                 .height(Fill)
         ]
@@ -2007,7 +2068,7 @@ impl WinderustApp {
                 !self.status_collapsed,
                 super::motion::Effect::Width {
                     min: design::SIDEBAR_COLLAPSED_WIDTH,
-                    max: design::SIDE_PANEL_WIDTH,
+                    max: side_panel_width,
                 },
             )
         } else {
@@ -2491,6 +2552,39 @@ mod tests {
         assert!(queued <= 1);
         wake();
         assert_eq!(events.next().now_or_never(), Some(Some(())));
+    }
+
+    #[test]
+    fn shell_preserves_content_space_at_scaled_desktop_sizes() {
+        // Physical widths become logical widths before they reach the shell.
+        for (physical_width, scale) in [
+            (1920.0, 1.0),
+            (1920.0, 1.25),
+            (1920.0, 1.5),
+            (1920.0, 2.0),
+            (2560.0, 1.5),
+        ] {
+            let width = physical_width / scale;
+            let (navigation, panel, padding) = shell_widths(width);
+            assert!(navigation <= design::NAVIGATION_WIDTH);
+            assert!(panel <= design::SIDE_PANEL_WIDTH);
+            let content =
+                width - navigation - panel - 2.0 * padding as f32 - design::space::SMALL as f32;
+            assert!(content >= 380.0, "{width}: {content}");
+        }
+        assert_eq!(
+            shell_widths(1920.0),
+            (
+                design::NAVIGATION_WIDTH,
+                design::SIDE_PANEL_WIDTH,
+                design::space::WIDE as u16
+            )
+        );
+        let (navigation, panel, padding) = shell_widths(900.0);
+        assert!(
+            900.0 - navigation - panel - 2.0 * padding as f32 - design::space::SMALL as f32
+                >= 380.0
+        );
     }
 
     #[test]
