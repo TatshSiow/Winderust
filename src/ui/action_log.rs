@@ -402,7 +402,11 @@ fn process_group<'a>(
         strip =
             strip.push(text(format!("+{}", entries.len() - 5)).size(design::typography::CAPTION));
     }
-    let anchor = container(strip).width(160).clip(true).into();
+    let anchor = container(strip)
+        .width(160)
+        .center_y(ACTION_LOG_ROW_HEIGHT - 1.0)
+        .clip(true)
+        .into();
     if !names_hidden {
         return anchor;
     }
@@ -635,9 +639,10 @@ mod tests {
             ("a.exe", 2, true),
             ("a.exe", 5, true),
             ("a.exe", 6, true),
+            ("a.exe", 40, true),
             ("a-very-long-process-name.exe", 1, true),
         ] {
-            let mut log = crate::action_log::ActionLog::new(10);
+            let mut log = crate::action_log::ActionLog::new(40);
             for pid in 0..count {
                 log.record(
                     ActionLogFeature::AdaptiveEngine,
@@ -657,30 +662,33 @@ mod tests {
                 &renderer,
                 &layout::Limits::new(iced::Size::ZERO, size),
             );
-            let position = node.bounds().center();
-            element.as_widget_mut().update(
-                &mut tree,
-                &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
-                Layout::new(&node),
-                iced::mouse::Cursor::Available(position),
-                &renderer,
-                &mut iced::advanced::clipboard::Null,
-                &mut Shell::new(&mut Vec::new()),
-                &iced::Rectangle::with_size(size),
-            );
-            assert_eq!(
-                element
-                    .as_widget_mut()
-                    .overlay(
-                        &mut tree,
-                        Layout::new(&node),
-                        &renderer,
-                        &iced::Rectangle::with_size(size),
-                        iced::Vector::ZERO
-                    )
-                    .is_some(),
-                expected
-            );
+            assert_eq!(node.size().height, ACTION_LOG_ROW_HEIGHT - 1.0);
+            for y in [1.0, node.size().height / 2.0, node.size().height - 1.0] {
+                let position = iced::Point::new(node.bounds().center().x, y);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
+                    Layout::new(&node),
+                    iced::mouse::Cursor::Available(position),
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut Vec::new()),
+                    &iced::Rectangle::with_size(size),
+                );
+                assert_eq!(
+                    element
+                        .as_widget_mut()
+                        .overlay(
+                            &mut tree,
+                            Layout::new(&node),
+                            &renderer,
+                            &iced::Rectangle::with_size(size),
+                            iced::Vector::ZERO
+                        )
+                        .is_some(),
+                    expected
+                );
+            }
         }
     }
     #[test]
