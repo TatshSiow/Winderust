@@ -1807,6 +1807,7 @@ impl WinderustApp {
                 text(t!("nav.expand_navigation").to_string()),
                 iced::widget::tooltip::Position::Right,
             )
+            .style(container::bordered_box)
             .into()
         } else {
             navigation_toggle.into()
@@ -2044,6 +2045,36 @@ impl WinderustApp {
         .height(Fill);
         let has_side_panel = side_panel.is_some();
         let panel: Element<'_, Message> = if let Some(panel) = side_panel {
+            let panel_toggle = widgets::sidebar_toggle(
+                row![
+                    text(if self.status_collapsed {
+                        String::new()
+                    } else {
+                        t!("nav.collapse_side_panel").to_string()
+                    })
+                    .size(design::typography::SECONDARY)
+                    .width(Fill),
+                    navigation::glyph(if self.status_collapsed {
+                        "icons/panel-right-open.svg"
+                    } else {
+                        "icons/panel-right-close.svg"
+                    }),
+                ]
+                .height(Fill)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::ToggleStatus);
+            let panel_toggle: Element<'_, Message> = if self.status_collapsed {
+                iced::widget::tooltip(
+                    panel_toggle,
+                    text(t!("nav.expand_side_panel").to_string()),
+                    iced::widget::tooltip::Position::Left,
+                )
+                .style(container::bordered_box)
+                .into()
+            } else {
+                panel_toggle.into()
+            };
             super::motion::wrap(
                 container(
                     column![
@@ -2051,25 +2082,7 @@ impl WinderustApp {
                             .height(Fill)
                             .padding([0, design::space::CONTROL as u16]),
                         iced::widget::rule::horizontal(1),
-                        widgets::sidebar_toggle(
-                            row![
-                                text(if self.status_collapsed {
-                                    String::new()
-                                } else {
-                                    t!("nav.collapse_side_panel").to_string()
-                                })
-                                .size(design::typography::SECONDARY)
-                                .width(Fill),
-                                navigation::glyph(if self.status_collapsed {
-                                    "icons/panel-right-open.svg"
-                                } else {
-                                    "icons/panel-right-close.svg"
-                                }),
-                            ]
-                            .height(Fill)
-                            .align_y(iced::Center)
-                        )
-                        .on_press(Message::ToggleStatus)
+                        panel_toggle
                     ]
                     .spacing(design::space::TINY)
                     .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
