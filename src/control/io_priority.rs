@@ -691,9 +691,11 @@ pub(crate) fn current_process_io_priority(
 fn io_priority_error(error: IoPriorityError) -> ProcessControlError {
     match error {
         IoPriorityError::ProcessExited => ProcessControlError::ProcessExited,
-        IoPriorityError::NtStatus(status) => {
-            ProcessControlError::Failed(format!("NTSTATUS 0x{status:08X}."))
+        IoPriorityError::PrivilegeSetup(5 | 1300)
+        | IoPriorityError::NtStatus(0xC0000022 | 0xC0000061) => {
+            ProcessControlError::AccessDenied(error.to_string())
         }
+        _ => ProcessControlError::Failed(error.to_string()),
     }
 }
 
@@ -711,6 +713,7 @@ mod tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FakeFailure {
+        Privilege,
         BeginExited,
         QueryDenied,
         ApplyExited,
@@ -860,6 +863,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("apply:{process}:{priority}"));
+            if self.take_failure(FakeFailure::Privilege) {
+                return Err(io_priority_error(IoPriorityError::PrivilegeSetup(1300)));
+            }
             if self.take_failure(FakeFailure::ApplyExited) {
                 self.processes.remove(process);
                 return Err(ProcessControlError::ProcessExited);
@@ -912,6 +918,56 @@ mod tests {
             priority,
             preservation,
         }
+    }
+
+    #[test]
+    fn missing_privilege_blocks_mutation_but_retains_pending_restoration() {
+        let mut controller = IoPriorityController::with_platform(FakePlatform::new(2));
+        let request = claim(
+            ControlOwner::IoPriority,
+            ProcessIoPriority::Low,
+            IoPriorityPreservation::Exact,
+        );
+        controller.platform.fail_next(FakeFailure::Privilege);
+        assert!(matches!(
+            controller.apply_policy_claim(request.clone(), true),
+            Err(ProcessControlError::AccessDenied(_))
+        ));
+        assert!(!controller.has_managed_state());
+        assert_eq!(controller.platform.processes[&42].priority, 2);
+
+        controller.apply_policy_claim(request, true).unwrap();
+        controller.platform.fail_next(FakeFailure::Privilege);
+        let summary = controller.release_all_policy();
+        assert_eq!(summary.failures.len(), 1);
+        assert!(controller.has_managed_state());
+        assert_eq!(controller.pending_releases.len(), 1);
+        let summary = controller.retry_pending_releases(Instant::now() + Duration::from_secs(2));
+        assert_eq!(summary.restored_processes, 1);
+        assert!(!controller.has_managed_state());
+        assert_eq!(controller.platform.processes[&42].priority, 2);
+    }
+
+    #[test]
+    fn native_permission_errors_use_the_suppression_path() {
+        for error in [
+            IoPriorityError::PrivilegeSetup(1300),
+            IoPriorityError::PrivilegeSetup(5),
+            IoPriorityError::NtStatus(0xC0000061),
+            IoPriorityError::NtStatus(0xC0000022),
+        ] {
+            assert!(matches!(
+                io_priority_error(error),
+                ProcessControlError::AccessDenied(_)
+            ));
+        }
+        assert!(io_priority_error(IoPriorityError::NtStatus(0xC0000061))
+            .to_string()
+            .contains("SeIncreaseBasePriorityPrivilege"));
+        assert!(matches!(
+            io_priority_error(IoPriorityError::NtStatus(0xC0000001)),
+            ProcessControlError::Failed(_)
+        ));
     }
 
     fn action_target() -> ProcessActionTarget {

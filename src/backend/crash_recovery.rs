@@ -1369,16 +1369,18 @@ fn apply_process_value(handle: HANDLE, value: &ProcessValue) -> Result<(), Strin
         }
         ProcessValue::IoPriority(raw) => {
             let mut raw = *raw;
-            // SAFETY: raw points to exactly the supplied u32 size.
-            let status = unsafe {
-                NtSetInformationProcess(
-                    handle,
-                    PROCESS_IO_PRIORITY,
-                    (&mut raw as *mut u32).cast(),
-                    std::mem::size_of::<u32>() as u32,
-                )
-            };
-            nt_success(status, "NtSetInformationProcess")?;
+            crate::platform::windows::io_priority::with_privilege_retry(|| {
+                // SAFETY: raw points to exactly the supplied u32 size.
+                unsafe {
+                    NtSetInformationProcess(
+                        handle,
+                        PROCESS_IO_PRIORITY,
+                        (&mut raw as *mut u32).cast(),
+                        std::mem::size_of::<u32>() as u32,
+                    )
+                }
+            })
+            .map_err(|error| error.to_string())?;
             return Ok(());
         }
         ProcessValue::GpuPriority(raw) => {
