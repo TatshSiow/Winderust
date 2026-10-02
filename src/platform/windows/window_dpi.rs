@@ -68,8 +68,8 @@ unsafe extern "system" fn window_proc(
 mod tests {
     use super::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetWindowRect, SendMessageW, SetWindowPos, SWP_NOACTIVATE,
-        SWP_NOZORDER, WS_OVERLAPPEDWINDOW,
+        CreateWindowExW, DestroyWindow, GetWindowRect, SendMessageW, SetWindowPos, MINMAXINFO,
+        SWP_NOACTIVATE, SWP_NOZORDER, WM_GETMINMAXINFO, WS_OVERLAPPEDWINDOW,
     };
 
     unsafe extern "system" fn growing_window_proc(
@@ -80,6 +80,14 @@ mod tests {
         _id: usize,
         data: usize,
     ) -> LRESULT {
+        if message == WM_GETMINMAXINFO {
+            // Keep synthetic DPI rectangles independent of the CI runner's desktop size.
+            // SAFETY: Windows supplies a writable MINMAXINFO for this synchronous message.
+            let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+            limits.ptMaxTrackSize.x = 3000;
+            limits.ptMaxTrackSize.y = 3000;
+            return 0;
+        }
         if message == WM_DPICHANGED {
             // SAFETY: the test retains its counter until this callback is removed.
             unsafe { *(data as *mut usize) += 1 };
