@@ -4,7 +4,8 @@ fn main() {
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
         let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".into());
         let mut parts = version
-            .split('.')
+            .split(['.', '-'])
+            .take(3)
             .map(|part| part.parse::<u16>().unwrap_or(0))
             .chain(std::iter::repeat(0));
         let file_version = format!(

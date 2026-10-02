@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ## Unreleased
 
+## 0.9.1-alpha - 2026-10-02
+
+### Added
+
+- Make the native tray menu follow Windows light and dark themes.
+
+### Changed
+
+- Combine matching Action Log entries across an entire batch into one row with the affected processes.
+- Place Plugged In and On Battery controls below the breadcrumb, with Feature info on the right.
+- Keep the Exiting modal visible throughout restoration and recovery; send shutdown errors to diagnostic logs.
+
+### Fixed
+
+- Keep the numeric Windows executable version aligned with the prerelease patch version.
+- Preserve thread priorities that Windows cannot restore, avoiding invalid-parameter failures.
+- Enable the required I/O Priority privilege when Windows permits it and suppress repeated permission failures.
+- Adapt the shared layout to window size and DPI, and prevent repeated window enlargement when moving between monitors with different scaling.
+- Use the Winderust icon in the title bar and Alt+Tab.
+- Make process tooltips reliable during hovering and scrolling, make sidebar tooltips opaque, and label the collapsed side panel.
+- Center checkbox ticks and make them easier to see.
+- Stop global worker errors from flooding every feature status sidebar while retaining diagnostic logging.
+
 ## 0.9.0-alpha - 2026-09-28
 
 ### Added
