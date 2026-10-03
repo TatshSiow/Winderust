@@ -335,26 +335,26 @@ impl Editor {
         table.into()
     }
 }
-// Group only adjacent successes from the same automation pass and operation.
+// Group matching actions throughout each automation pass, newest groups first.
 fn group_entries<'a>(entries: &[&'a ActionLogEntry]) -> Vec<Vec<&'a ActionLogEntry>> {
     let mut groups: Vec<Vec<&ActionLogEntry>> = Vec::new();
     for &entry in entries {
-        if let Some(group) = groups.last_mut() {
-            let first = group[0];
-            if matches!(
-                entry.result,
-                ActionLogResult::Applied | ActionLogResult::Restored
-            ) && entry.process_id.is_some()
-                && first.process_id.is_some()
-                && entry.batch_id == first.batch_id
-                && entry.feature == first.feature
-                && entry.result == first.result
-                && entry.reason == first.reason
-                && !group.iter().any(|old| old.process_id == entry.process_id)
-            {
-                group.push(entry);
-                continue;
-            }
+        if let Some(group) = groups
+            .iter_mut()
+            .rev()
+            .take_while(|group| group[0].batch_id == entry.batch_id)
+            .find(|group| {
+                let first = group[0];
+                entry.process_id.is_some()
+                    && first.process_id.is_some()
+                    && entry.feature == first.feature
+                    && entry.result == first.result
+                    && entry.reason == first.reason
+                    && !group.iter().any(|old| old.process_id == entry.process_id)
+            })
+        {
+            group.push(entry);
+            continue;
         }
         groups.push(vec![entry]);
     }
@@ -402,7 +402,11 @@ fn process_group<'a>(
         strip =
             strip.push(text(format!("+{}", entries.len() - 5)).size(design::typography::CAPTION));
     }
-    let anchor = container(strip).width(160).clip(true).into();
+    let anchor = container(strip)
+        .width(160)
+        .center_y(ACTION_LOG_ROW_HEIGHT - 1.0)
+        .clip(true)
+        .into();
     if !names_hidden {
         return anchor;
     }
@@ -635,9 +639,10 @@ mod tests {
             ("a.exe", 2, true),
             ("a.exe", 5, true),
             ("a.exe", 6, true),
+            ("a.exe", 40, true),
             ("a-very-long-process-name.exe", 1, true),
         ] {
-            let mut log = crate::action_log::ActionLog::new(10);
+            let mut log = crate::action_log::ActionLog::new(40);
             for pid in 0..count {
                 log.record(
                     ActionLogFeature::AdaptiveEngine,
@@ -657,34 +662,37 @@ mod tests {
                 &renderer,
                 &layout::Limits::new(iced::Size::ZERO, size),
             );
-            let position = node.bounds().center();
-            element.as_widget_mut().update(
-                &mut tree,
-                &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
-                Layout::new(&node),
-                iced::mouse::Cursor::Available(position),
-                &renderer,
-                &mut iced::advanced::clipboard::Null,
-                &mut Shell::new(&mut Vec::new()),
-                &iced::Rectangle::with_size(size),
-            );
-            assert_eq!(
-                element
-                    .as_widget_mut()
-                    .overlay(
-                        &mut tree,
-                        Layout::new(&node),
-                        &renderer,
-                        &iced::Rectangle::with_size(size),
-                        iced::Vector::ZERO
-                    )
-                    .is_some(),
-                expected
-            );
+            assert_eq!(node.size().height, ACTION_LOG_ROW_HEIGHT - 1.0);
+            for y in [1.0, node.size().height / 2.0, node.size().height - 1.0] {
+                let position = iced::Point::new(node.bounds().center().x, y);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
+                    Layout::new(&node),
+                    iced::mouse::Cursor::Available(position),
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut Vec::new()),
+                    &iced::Rectangle::with_size(size),
+                );
+                assert_eq!(
+                    element
+                        .as_widget_mut()
+                        .overlay(
+                            &mut tree,
+                            Layout::new(&node),
+                            &renderer,
+                            &iced::Rectangle::with_size(size),
+                            iced::Vector::ZERO
+                        )
+                        .is_some(),
+                    expected
+                );
+            }
         }
     }
     #[test]
-    fn successful_batches_group_without_merging_other_operations_or_exports() {
+    fn batches_group_without_merging_other_operations_or_exports() {
         let mut log = crate::action_log::ActionLog::new(100);
         log.begin_batch();
         for pid in 1..=40 {
@@ -730,7 +738,7 @@ mod tests {
                 .iter()
                 .map(Vec::len)
                 .collect::<Vec<_>>(),
-            vec![1, 1, 1, 40]
+            vec![2, 1, 40]
         );
         for change in 0..4 {
             let mut other = entries[0].clone();
@@ -743,6 +751,40 @@ mod tests {
                 _ => other.process_id = entries[0].process_id,
             }
             assert_eq!(group_entries(&[&entries[0], &other]).len(), 2);
+        }
+    }
+
+    #[test]
+    fn every_feature_and_result_groups_matching_process_actions() {
+        for feature in FEATURES {
+            for result in RESULTS {
+                let mut log = crate::action_log::ActionLog::new(8);
+                log.begin_batch();
+                for pid in 1..=3 {
+                    log.record(
+                        feature,
+                        Some(pid),
+                        format!("app-{pid}.exe"),
+                        result,
+                        "Same action.",
+                    );
+                    log.record(
+                        feature,
+                        Some(pid + 3),
+                        format!("other-{pid}.exe"),
+                        result,
+                        "Different action.",
+                    );
+                }
+                let entries = log.entries();
+                let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+                let groups = group_entries(&filtered);
+                assert_eq!(groups.len(), 2, "{feature:?} {result:?}");
+                assert_eq!(groups[0].len(), 3);
+                assert_eq!(groups[1].len(), 3);
+                assert_eq!(groups[0][0].reason, "Different action.");
+                assert_eq!(action_log_entries_to_csv(&entries).lines().count(), 7);
+            }
         }
     }
 

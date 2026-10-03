@@ -191,7 +191,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
         if !state.open {
             return None;
         }
-        if !viewport.intersects(&layout.bounds()) {
+        let anchor = layout.bounds() + translation;
+        if !viewport.intersects(&anchor) {
             state.open = false;
             return None;
         }
@@ -199,7 +200,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
             content: &mut self.content,
             tree: &mut tree.children[1],
             open: &mut state.open,
-            anchor: layout.bounds() + translation,
+            anchor,
             context: self.context,
         })))
     }
@@ -338,6 +339,62 @@ mod tests {
     use super::*;
     use crate::ui::action_log::Message;
     use iced::advanced::Overlay;
+    #[test]
+    fn hover_popup_uses_scrolled_anchor_for_visibility() {
+        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let mut element: Element<'_, ()> = view(
+            1,
+            iced::widget::container("Process")
+                .width(160)
+                .height(35)
+                .into(),
+            iced::widget::text("Affected processes").into(),
+        );
+        let mut tree = Tree::new(&element);
+        let node = element
+            .as_widget_mut()
+            .layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(500.0, 1000.0)),
+            )
+            .move_to(iced::Point::new(20.0, 700.0));
+        let viewport = Rectangle::with_size(Size::new(500.0, 300.0));
+        let translation = Vector::new(0.0, -650.0);
+        element.as_widget_mut().update(
+            &mut tree,
+            &Event::Mouse(mouse::Event::CursorMoved {
+                position: node.bounds().center(),
+            }),
+            Layout::new(&node),
+            mouse::Cursor::Available(node.bounds().center()),
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut Shell::new(&mut Vec::new()),
+            &(viewport - translation),
+        );
+        assert!(element
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                translation,
+            )
+            .is_some());
+        assert!(element
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                Vector::ZERO,
+            )
+            .is_none());
+    }
+
     #[test]
     fn context_menu_stays_open_until_dismissed_or_an_action_is_selected() {
         let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));

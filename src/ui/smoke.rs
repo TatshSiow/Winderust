@@ -251,9 +251,10 @@ pub(crate) fn render_all_pages() {
     settings.general.startup_with_windows = false;
     settings.advanced.show_advanced_controls = true;
     let mut editor = SettingsEditor::with_settings(settings);
+    let recovery = Arc::new(Mutex::new(crate::crash_recovery::RecoveryClient::start()));
     let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
     REQUESTED.store(true, Ordering::Relaxed);
-    let result = run(editor, None, runtime, None);
+    let result = run(editor, None, runtime, None, recovery);
     REQUESTED.store(false, Ordering::Relaxed);
     result.expect("all page windows rendered");
     assert_eq!(

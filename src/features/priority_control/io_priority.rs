@@ -290,17 +290,20 @@ impl IoPriorityManager {
                         .clear_process_failure(&executable_path);
                 }
                 Err(ProcessControlError::ProcessExited) => skipped_processes += 1,
-                Err(ProcessControlError::AccessDenied(_)) => {
+                Err(ProcessControlError::AccessDenied(message)) => {
                     skipped_processes += 1;
-                    self.failure_suppression
-                        .suppress_process_failure(&executable_path);
-                    action_log.record(
-                        ActionLogFeature::IoPriority,
-                        Some(process_id),
-                        process_name,
-                        ActionLogResult::Skipped,
-                        "Access denied when opening process.",
-                    );
+                    if self
+                        .failure_suppression
+                        .suppress_process_failure(&executable_path)
+                    {
+                        action_log.record(
+                            ActionLogFeature::IoPriority,
+                            Some(process_id),
+                            process_name,
+                            ActionLogResult::Skipped,
+                            message,
+                        );
+                    }
                 }
                 Err(error) => {
                     self.failure_suppression

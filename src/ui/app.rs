@@ -5,7 +5,12 @@ use super::{
     timer_resolution, widgets, win32_priority_separation,
 };
 use crate::ui::scrolling::scrollable;
-use std::{cell::RefCell, path::PathBuf, time::Duration};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use widgets::{button, text_input};
 
 use iced::widget::{column, container, row, text};
@@ -22,6 +27,19 @@ use crate::{
     tray,
 };
 
+// Iced supplies logical pixels; do not apply the monitor DPI a second time.
+fn shell_widths(width: f32) -> (f32, f32, u16) {
+    (
+        (width * 0.18).clamp(240.0, design::NAVIGATION_WIDTH),
+        (width * 0.21).clamp(240.0, design::SIDE_PANEL_WIDTH),
+        if width < 1280.0 {
+            design::space::MEDIUM
+        } else {
+            design::space::WIDE
+        } as u16,
+    )
+}
+
 #[cfg(feature = "render-smoke")]
 #[path = "smoke.rs"]
 pub(crate) mod smoke;
@@ -31,11 +49,19 @@ pub(crate) fn run(
     error: Option<String>,
     runtime: RuntimeHandle,
     restore_event: Option<SingleInstanceRestoreEvent>,
+    recovery_client: Arc<Mutex<crate::crash_recovery::RecoveryClient>>,
 ) -> iced::Result {
-    let startup = RefCell::new(Some((settings, error, runtime, restore_event)));
+    let startup = RefCell::new(Some((
+        settings,
+        error,
+        runtime,
+        restore_event,
+        recovery_client,
+    )));
     iced::application(
         move || {
-            let Some((settings, error, runtime, restore_event)) = startup.borrow_mut().take()
+            let Some((settings, error, runtime, restore_event, recovery_client)) =
+                startup.borrow_mut().take()
             else {
                 unreachable!("Iced must initialize the application exactly once");
             };
@@ -94,7 +120,7 @@ pub(crate) fn run(
                     color_dialog_open: false,
                     tray: None,
                     tray_attempt: None,
-                    shutdown_failed: false,
+                    recovery_client,
                     exiting: false,
                     hidden: false,
                     processes: process_list::ProcessList::default(),
@@ -236,7 +262,7 @@ struct WinderustApp {
     color_dialog_open: bool,
     tray: Option<tray::TrayIcon>,
     tray_attempt: Option<((bool, bool), std::time::Instant)>,
-    shutdown_failed: bool,
+    recovery_client: Arc<Mutex<crate::crash_recovery::RecoveryClient>>,
     exiting: bool,
     hidden: bool,
     processes: process_list::ProcessList,
@@ -789,6 +815,18 @@ impl WinderustApp {
             }
             Message::NativeWindow(hwnd) => {
                 self.hwnd = hwnd;
+                if let Some(hwnd) = hwnd {
+                    if let Err(error) = crate::platform::windows::window_dpi::install(
+                        hwnd as windows_sys::Win32::Foundation::HWND,
+                    ) {
+                        crate::backend::diagnostics::error(&error);
+                    }
+                    if let Err(error) =
+                        tray::set_window_icon(hwnd as windows_sys::Win32::Foundation::HWND)
+                    {
+                        crate::backend::diagnostics::error(&error);
+                    }
+                }
                 if let (Some(event), Some(hwnd)) = (self.restore_event.take(), hwnd) {
                     event.listen(hwnd as windows_sys::Win32::Foundation::HWND);
                 }
@@ -1092,12 +1130,8 @@ impl WinderustApp {
                 settings.general.pause_power_plan_switching_while_plugged_in = value
             }),
             Message::ShutdownFinished(result) => {
-                self.exiting = false;
                 if let Err(error) = result {
                     crate::backend::diagnostics::error(&error);
-                    self.shutdown_failed = true;
-                    self.error_message = error;
-                    return self.show_window();
                 }
                 return self.finish_exit();
             }
@@ -1315,17 +1349,25 @@ impl WinderustApp {
     }
 
     fn shutdown(&mut self) -> Task<Message> {
-        // A confirmed subsequent exit hands the retained failure to the watchdog in main.
-        if self.shutdown_failed {
-            return self.finish_exit();
-        }
         crate::backend::diagnostics::event("Exit requested; restoring managed state.");
         self.exiting = true;
         self.closing = true;
         self.error_message.clear();
         let runtime = self.runtime.clone();
-        tasks::run(move || runtime.shutdown())
-            .map(|result| Message::ShutdownFinished(result.and_then(|result| result)))
+        let recovery_client = Arc::clone(&self.recovery_client);
+        tasks::run(move || {
+            if let Err(error) = runtime.shutdown() {
+                crate::backend::diagnostics::error(&error);
+            }
+            if let Err(error) = recovery_client
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish()
+            {
+                crate::backend::diagnostics::error(&error);
+            }
+        })
+        .map(Message::ShutdownFinished)
     }
 
     fn finish_exit(&mut self) -> Task<Message> {
@@ -1352,12 +1394,7 @@ impl WinderustApp {
                 design::typography::DIALOG_TITLE,
             )]
             .spacing(design::space::LARGE);
-            if self.shutdown_failed {
-                body = body.push(text(t!("exit_prompt.recovery_handoff").to_string()));
-            }
-            if self.exiting {
-                body = body.push(text(t!("exit_prompt.processing").to_string()));
-            } else if self.closing {
+            if !self.exiting && self.closing {
                 body = body.push(text(
                     t!(if self.pending_changes() {
                         "exit_prompt.unsaved"
@@ -1390,18 +1427,22 @@ impl WinderustApp {
                             .on_press(Message::DiscardAndClose),
                     );
                 }
-            } else {
+            } else if !self.exiting {
                 actions = actions.push(
                     button(text(t!("common.done").to_string()))
                         .style(widgets::tertiary_button)
                         .on_press(Message::DismissError),
                 );
             }
-            if !self.error_message.is_empty() {
+            if !self.exiting && !self.error_message.is_empty() {
                 body = body.push(text(&self.error_message));
             }
-            let dialog = container(body.push(actions))
+            if !self.exiting {
+                body = body.push(actions);
+            }
+            let dialog = container(body)
                 .padding(design::space::LARGE as u16)
+                .width(Fill)
                 .max_width(640)
                 .style(widgets::surface);
             return iced::widget::stack![
@@ -1534,6 +1575,11 @@ impl WinderustApp {
     }
 
     fn view_content(&self) -> Element<'_, Message> {
+        iced::widget::responsive(|size| self.view_content_at_width(size.width)).into()
+    }
+
+    fn view_content_at_width(&self, width: f32) -> Element<'_, Message> {
+        let (navigation_width, side_panel_width, page_padding) = shell_widths(width);
         if self.preferences.show_update && !self.closing {
             return (container(
                 column![
@@ -1761,6 +1807,7 @@ impl WinderustApp {
                 text(t!("nav.expand_navigation").to_string()),
                 iced::widget::tooltip::Position::Right,
             )
+            .style(container::bordered_box)
             .into()
         } else {
             navigation_toggle.into()
@@ -1768,6 +1815,7 @@ impl WinderustApp {
         utilities = utilities
             .push(iced::widget::rule::horizontal(1))
             .push(navigation_toggle);
+        let side_panel = self.side_panel(self.page);
         const BREADCRUMB_TEXT_SIZE: u32 = design::typography::TITLE;
         let mut header = row![].align_y(iced::Center);
         for (index, page) in self.breadcrumb.iter().copied().enumerate() {
@@ -1798,14 +1846,24 @@ impl WinderustApp {
                 super::motion::Effect::Visible,
             ));
         }
-        let breadcrumb = scrollable(header)
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::default(),
-            ))
-            .width(Fill);
-        let mut header = row![breadcrumb]
-            .spacing(design::space::COMPACT)
-            .align_y(iced::Center);
+        let breadcrumb_width: f32 = self
+            .breadcrumb
+            .iter()
+            .enumerate()
+            .map(|(index, page)| {
+                widgets::text_width(&page.label(), BREADCRUMB_TEXT_SIZE)
+                    + if index > 0 {
+                        design::ICON_SIZE as f32 + 2.0 * design::space::COMPACT as f32
+                    } else {
+                        0.0
+                    }
+            })
+            .sum();
+        let breadcrumb =
+            container(header.wrap().vertical_spacing(design::space::SMALL)).width(Fill);
+        let mut actions_width = 0.0;
+        let mut profile_controls = None;
+        let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
         if self.page.supports_power_source_profiles() {
             let plugged_in = crate::backend::power_source::is_plugged_in();
             let mut tabs = row![].spacing(design::space::TIGHT);
@@ -1845,7 +1903,7 @@ impl WinderustApp {
                         }),
                 );
             }
-            header = header.push(
+            profile_controls = Some(
                 container(tabs)
                     .padding(design::space::TIGHT as u16)
                     .style(widgets::surface),
@@ -1853,6 +1911,10 @@ impl WinderustApp {
         }
         let description = navigation::page_feature_info(self.page);
         if !description.is_empty() {
+            actions_width +=
+                widgets::text_width(&t!("common.feature_info"), design::typography::SECONDARY)
+                    + design::ICON_SIZE as f32
+                    + 36.0;
             header = header.push(
                 button(
                     row![
@@ -1871,10 +1933,45 @@ impl WinderustApp {
                 .on_press(Message::ToggleFeatureInfo),
             );
         }
-        let header: Element<'_, Message> = header
-            .width(Fill)
-            .height(32 + 2 * design::space::TIGHT)
-            .into();
+        let main_width = width
+            - if collapsed {
+                design::SIDEBAR_COLLAPSED_WIDTH
+            } else {
+                navigation_width
+            }
+            - if side_panel.is_none() {
+                0.0
+            } else if self.status_collapsed {
+                design::SIDEBAR_COLLAPSED_WIDTH
+            } else {
+                side_panel_width
+            }
+            - 2.0 * page_padding as f32
+            - design::space::SMALL as f32;
+        let actions = header
+            .wrap()
+            .vertical_spacing(design::space::SMALL)
+            .align_x(iced::Right);
+        let header: Element<'_, Message> = if let Some(profiles) = profile_controls {
+            column![
+                breadcrumb,
+                row![profiles, iced::widget::Space::new().width(Fill), actions]
+                    .spacing(design::space::COMPACT)
+                    .align_y(iced::Center)
+                    .width(Fill)
+            ]
+            .spacing(design::space::SMALL)
+            .into()
+        } else if breadcrumb_width + actions_width + design::space::COMPACT as f32 > main_width {
+            column![breadcrumb, container(actions).align_right(Fill)]
+                .spacing(design::space::SMALL)
+                .into()
+        } else {
+            row![breadcrumb, actions]
+                .spacing(design::space::COMPACT)
+                .align_y(iced::Center)
+                .into()
+        };
         let mut heading = column![container(header)
             .padding([design::space::SMALL as u16, 0])
             .width(Fill)]
@@ -1906,7 +2003,6 @@ impl WinderustApp {
         }
         let mut body = column![heading].spacing(design::space::MEDIUM).height(Fill);
         let content = self.page_view();
-        let side_panel = self.side_panel(self.page);
         body = body.push(
             container(
                 container(super::motion::wrap(
@@ -1937,11 +2033,11 @@ impl WinderustApp {
                 !collapsed,
                 super::motion::Effect::Width {
                     min: design::SIDEBAR_COLLAPSED_WIDTH,
-                    max: design::NAVIGATION_WIDTH
+                    max: navigation_width
                 }
             ),
             container(body)
-                .padding([design::space::SECTION as u16, design::space::WIDE as u16])
+                .padding([design::space::SECTION as u16, page_padding])
                 .center_x(Fill)
                 .height(Fill)
         ]
@@ -1949,6 +2045,36 @@ impl WinderustApp {
         .height(Fill);
         let has_side_panel = side_panel.is_some();
         let panel: Element<'_, Message> = if let Some(panel) = side_panel {
+            let panel_toggle = widgets::sidebar_toggle(
+                row![
+                    text(if self.status_collapsed {
+                        String::new()
+                    } else {
+                        t!("nav.collapse_side_panel").to_string()
+                    })
+                    .size(design::typography::SECONDARY)
+                    .width(Fill),
+                    navigation::glyph(if self.status_collapsed {
+                        "icons/panel-right-open.svg"
+                    } else {
+                        "icons/panel-right-close.svg"
+                    }),
+                ]
+                .height(Fill)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::ToggleStatus);
+            let panel_toggle: Element<'_, Message> = if self.status_collapsed {
+                iced::widget::tooltip(
+                    panel_toggle,
+                    text(t!("nav.expand_side_panel").to_string()),
+                    iced::widget::tooltip::Position::Left,
+                )
+                .style(container::bordered_box)
+                .into()
+            } else {
+                panel_toggle.into()
+            };
             super::motion::wrap(
                 container(
                     column![
@@ -1956,25 +2082,7 @@ impl WinderustApp {
                             .height(Fill)
                             .padding([0, design::space::CONTROL as u16]),
                         iced::widget::rule::horizontal(1),
-                        widgets::sidebar_toggle(
-                            row![
-                                text(if self.status_collapsed {
-                                    String::new()
-                                } else {
-                                    t!("nav.collapse_side_panel").to_string()
-                                })
-                                .size(design::typography::SECONDARY)
-                                .width(Fill),
-                                navigation::glyph(if self.status_collapsed {
-                                    "icons/panel-right-open.svg"
-                                } else {
-                                    "icons/panel-right-close.svg"
-                                }),
-                            ]
-                            .height(Fill)
-                            .align_y(iced::Center)
-                        )
-                        .on_press(Message::ToggleStatus)
+                        panel_toggle
                     ]
                     .spacing(design::space::TINY)
                     .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
@@ -1984,7 +2092,7 @@ impl WinderustApp {
                 !self.status_collapsed,
                 super::motion::Effect::Width {
                     min: design::SIDEBAR_COLLAPSED_WIDTH,
-                    max: design::SIDE_PANEL_WIDTH,
+                    max: side_panel_width,
                 },
             )
         } else {
@@ -2468,6 +2576,39 @@ mod tests {
         assert!(queued <= 1);
         wake();
         assert_eq!(events.next().now_or_never(), Some(Some(())));
+    }
+
+    #[test]
+    fn shell_preserves_content_space_at_scaled_desktop_sizes() {
+        // Physical widths become logical widths before they reach the shell.
+        for (physical_width, scale) in [
+            (1920.0, 1.0),
+            (1920.0, 1.25),
+            (1920.0, 1.5),
+            (1920.0, 2.0),
+            (2560.0, 1.5),
+        ] {
+            let width = physical_width / scale;
+            let (navigation, panel, padding) = shell_widths(width);
+            assert!(navigation <= design::NAVIGATION_WIDTH);
+            assert!(panel <= design::SIDE_PANEL_WIDTH);
+            let content =
+                width - navigation - panel - 2.0 * padding as f32 - design::space::SMALL as f32;
+            assert!(content >= 380.0, "{width}: {content}");
+        }
+        assert_eq!(
+            shell_widths(1920.0),
+            (
+                design::NAVIGATION_WIDTH,
+                design::SIDE_PANEL_WIDTH,
+                design::space::WIDE as u16
+            )
+        );
+        let (navigation, panel, padding) = shell_widths(900.0);
+        assert!(
+            900.0 - navigation - panel - 2.0 * padding as f32 - design::space::SMALL as f32
+                >= 380.0
+        );
     }
 
     #[test]

@@ -9,7 +9,14 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/calendar-days.svg", icondata_lu::LuCalendarDays),
     ("icons/chart-column.svg", icondata_lu::LuChartColumn),
     ("icons/circle-pause.svg", icondata_lu::LuCirclePause),
-    ("icons/check.svg", icondata_lu::LuCheck),
+    (
+        "icons/check.svg",
+        &IconData {
+            stroke_width: Some("4"),
+            view_box: Some("0 -0.5 24 24"),
+            ..*icondata_lu::LuCheck
+        },
+    ),
     ("icons/chevron-down.svg", icondata_lu::LuChevronDown),
     ("icons/chevron-up.svg", icondata_lu::LuChevronUp),
     ("icons/chevron-right.svg", icondata_lu::LuChevronRight),

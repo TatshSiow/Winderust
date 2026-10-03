@@ -19,12 +19,12 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             AppendMenuW, CallWindowProcW, ChangeWindowMessageFilterEx, CreatePopupMenu,
             DestroyMenu, GetCursorPos, GetForegroundWindow, IsIconic, LoadImageW,
-            RegisterWindowMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
-            TrackPopupMenu, GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED,
-            MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE,
-            SW_HIDE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE,
-            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SHOWWINDOW,
-            WNDPROC,
+            RegisterWindowMessageW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
+            ShowWindow, TrackPopupMenu, GWLP_WNDPROC, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON,
+            LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+            MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE, SW_HIDE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD,
+            TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_POWERBROADCAST,
+            WM_RBUTTONUP, WM_SETICON, WM_SHOWWINDOW, WNDPROC,
         },
     },
 };
@@ -277,6 +277,27 @@ fn write_wide_fixed<const N: usize>(target: &mut [u16; N], value: &str) {
     }
 }
 
+pub(crate) fn set_window_icon(hwnd: HWND) -> Result<(), String> {
+    if hwnd.is_null() {
+        return Err("Cannot set Winderust icon without a window handle.".into());
+    }
+    let icon = load_app_icon();
+    if icon.is_null() {
+        return Err(format!(
+            "Failed to load Winderust window icon with error code {}.",
+            // SAFETY: GetLastError has no preconditions and follows the failed icon load.
+            unsafe { GetLastError() }
+        ));
+    }
+    // SAFETY: hwnd is the live application window; icon is a shared embedded resource that
+    // remains valid for the process lifetime and must not be destroyed by the caller.
+    unsafe {
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL as WPARAM, icon as LPARAM);
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG as WPARAM, icon as LPARAM);
+    }
+    Ok(())
+}
+
 fn load_app_icon() -> HICON {
     // SAFETY: The current module handle and integer resource id identify the embedded icon;
     // LR_SHARED keeps ownership with Windows.
@@ -432,6 +453,7 @@ fn append_menu(
 }
 
 fn show_tray_menu(hwnd: HWND) {
+    crate::platform::windows::menu_theme::apply(hwnd);
     // SAFETY: CreatePopupMenu has no pointer inputs and returns either a menu handle or null.
     let menu = unsafe { CreatePopupMenu() };
     if menu.is_null() {
@@ -548,6 +570,50 @@ fn set_hidden_to_tray(hidden: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_caption_and_switcher_use_the_embedded_app_icon() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WM_GETICON, WS_OVERLAPPEDWINDOW,
+        };
+        let class = wide_null("STATIC");
+        // SAFETY: STATIC is a built-in window class; this test creates a hidden window on
+        // its own thread, with a valid terminated class name and no retained input pointers.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                null(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                100,
+                100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                GetModuleHandleW(null()),
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        let result = set_window_icon(hwnd);
+        // SAFETY: hwnd is the live hidden test window; these messages return its assigned
+        // shared icon handles without transferring ownership.
+        let (small, big) = unsafe {
+            (
+                SendMessageW(hwnd, WM_GETICON, ICON_SMALL as WPARAM, 0),
+                SendMessageW(hwnd, WM_GETICON, ICON_BIG as WPARAM, 0),
+            )
+        };
+        // SAFETY: this thread owns hwnd and no further operation will use the window.
+        unsafe {
+            DestroyWindow(hwnd);
+        }
+        result.unwrap();
+        assert_ne!(small, 0);
+        assert_eq!(small, load_app_icon() as LPARAM);
+        assert_eq!(big, small);
+    }
 
     #[test]
     fn background_and_minimized_closes_prompt_instead_of_hiding() {
