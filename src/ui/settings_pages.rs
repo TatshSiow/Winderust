@@ -1,11 +1,10 @@
 use super::design;
-use super::widgets::{self, Choice};
-use super::widgets::{button, pick_list, text_input};
-use crate::ui::scrolling::scrollable;
+use super::widgets::{self, Choice, Ui};
 use crate::{config::*, ui::Page};
-use iced::widget::{column, row, text};
-use iced::{Color, Element, Fill, Theme};
 use rust_i18n::t;
+use windui::prelude::{
+    signal, Align, Color, ColorPickerOpts, Element, Intent, MenuItem, Role, Theme,
+};
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -41,7 +40,6 @@ pub(super) enum Message {
     AccentSource(AccentColorSource),
     AccentHex(String),
     ToggleAccent,
-    OpenColorPicker,
     EditColor(u32),
     ReplaceColor(u32, u32),
     Accent(u32),
@@ -213,409 +211,405 @@ impl Editor {
             Message::Checked(..) | Message::DismissUpdate | Message::ToggleAccent => {
                 self.update_ui(s.general.update_channel, m);
             }
-            Message::Open(_)
-            | Message::Export
-            | Message::Import
-            | Message::OpenColorPicker
-            | Message::EditColor(_) => {}
+            Message::Open(_) | Message::Export | Message::Import | Message::EditColor(_) => {}
         }
     }
-    pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
+    pub(super) fn view(&self, page: Page, s: &Settings, ui: Ui<Message>) -> Element {
         let flag = |key: &str, value, flag| {
-            widgets::settings_card(widgets::setting_row(
-                key,
-                widgets::switch(value, Some(move |value| Message::Flag(flag, value))),
-            ))
+            widgets::card(
+                "",
+                [widgets::setting(
+                    key,
+                    ui.toggle(value, move |value| Message::Flag(flag, value)),
+                )],
+            )
         };
         let body = match page {
-            Page::WinderustBehaviour => column![
-                widgets::heading(
-                    t!("settings.functionality").to_string(),
-                    design::typography::BODY
-                ),
+            Page::WinderustBehaviour => vec![
+                widgets::heading(t!("settings.functionality").to_string()),
                 flag("settings.master_switch", s.general.enabled, Flag::Enabled),
-                widgets::heading(
-                    t!("settings.launch_settings").to_string(),
-                    design::typography::BODY
+                widgets::heading(t!("settings.launch_settings").to_string()),
+                flag(
+                    "settings.startup_windows",
+                    s.general.startup_with_windows,
+                    Flag::Startup,
                 ),
-                column![
-                    flag(
-                        "settings.startup_windows",
-                        s.general.startup_with_windows,
-                        Flag::Startup
-                    ),
-                    flag(
-                        "settings.start_minimized",
-                        s.general.start_minimized,
-                        Flag::Minimized
-                    ),
-                    flag("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
-                ]
-                .spacing(widgets::CARD_GAP),
-                widgets::heading(
-                    t!("settings.advanced").to_string(),
-                    design::typography::BODY
+                flag(
+                    "settings.start_minimized",
+                    s.general.start_minimized,
+                    Flag::Minimized,
                 ),
+                flag("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
+                widgets::heading(t!("settings.advanced").to_string()),
                 flag(
                     "settings.allow_cross_session_process_control",
                     s.general.allow_cross_session_process_control,
-                    Flag::CrossSession
+                    Flag::CrossSession,
                 ),
-                widgets::settings_card(widgets::setting_row(
-                    "settings.failure_suppression_threshold",
-                    text_input(
-                        "",
-                        self.failure_threshold.as_deref().unwrap_or(
-                            &s.advanced
-                                .execution_failure_suppression_threshold
-                                .to_string()
+                widgets::card(
+                    "",
+                    [widgets::setting(
+                        "settings.failure_suppression_threshold",
+                        ui.input(
+                            self.failure_threshold.clone().unwrap_or_else(|| {
+                                s.advanced
+                                    .execution_failure_suppression_threshold
+                                    .to_string()
+                            }),
+                            "",
+                            Message::FailureThreshold,
                         )
-                    )
-                    .on_input(Message::FailureThreshold)
-                    .align_x(iced::Center)
-                    .width(design::STANDALONE_NUMERIC_WIDTH),
-                )),
-                widgets::heading(
-                    t!("settings.settings_files").to_string(),
-                    design::typography::BODY
+                        .width(96),
+                    )],
                 ),
-                row![
-                    button(text(t!("settings.export_settings").to_string()))
-                        .on_press(Message::Export),
-                    button(text(t!("settings.import_settings").to_string()))
-                        .on_press(Message::Import),
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ]
-            .spacing(super::widgets::CARD_GAP),
+                widgets::heading(t!("settings.settings_files").to_string()),
+                widgets::row().children([
+                    ui.button(t!("settings.export_settings").to_string(), Message::Export),
+                    ui.button(t!("settings.import_settings").to_string(), Message::Import),
+                ]),
+            ],
             Page::LanguageAndAppearance => {
-                let colors = column(ACCENT_PALETTE.chunks(8).map(|chunk| {
-                    row(chunk.iter().map(|color| {
+                let colors = widgets::col().children(ACCENT_PALETTE.chunks(4).map(|chunk| {
+                    widgets::row().children(chunk.iter().map(|color| {
                         color_button(
                             *color,
                             s.general.accent.source == AccentColorSource::Custom
                                 && s.general.accent.custom_color == *color,
+                            &ui,
                         )
-                        .into()
                     }))
-                    .spacing(design::space::CONTROL)
-                    .into()
-                }))
-                .spacing(design::space::CONTROL);
-                let saved = column(s.general.accent.custom_colors.chunks(8).enumerate().map(
-                    |(chunk_index, chunk)| {
-                        row(chunk.iter().enumerate().map(|(i, color)| {
-                            super::popover::context_menu(
-                                u64::from(*color),
-                                color_button(
-                                    *color,
-                                    s.general.accent.source == AccentColorSource::Custom
-                                        && s.general.accent.custom_color == *color,
+                }));
+                let saved = widgets::col().children(
+                    s.general.accent.custom_colors.chunks(4).enumerate().map(
+                        |(chunk_index, chunk)| {
+                            widgets::row().children(chunk.iter().enumerate().map(|(i, color)| {
+                                let color = *color;
+                                let index = chunk_index * 4 + i;
+                                let edit = ui.clone();
+                                let remove = ui.clone();
+                                super::popover::context_menu(
+                                    color_button(
+                                        color,
+                                        s.general.accent.source == AccentColorSource::Custom
+                                            && s.general.accent.custom_color == color,
+                                        &ui,
+                                    ),
+                                    move || {
+                                        let edit = edit.clone();
+                                        let remove = remove.clone();
+                                        vec![
+                                            MenuItem::run(
+                                                t!("common.edit").to_string(),
+                                                move |ctx| {
+                                                    widgets::flush_bindings(ctx);
+                                                    edit.emit(Message::EditColor(color));
+                                                },
+                                                false,
+                                            ),
+                                            MenuItem::run(
+                                                t!("common.remove").to_string(),
+                                                move |ctx| {
+                                                    widgets::flush_bindings(ctx);
+                                                    remove.emit(Message::RemoveColor(index));
+                                                },
+                                                false,
+                                            ),
+                                        ]
+                                    },
                                 )
-                                .into(),
-                                iced::widget::container(
-                                    column![
-                                        button(text(t!("common.edit").to_string()))
-                                            .width(Fill)
-                                            .style(widgets::quiet)
-                                            .on_press(Message::EditColor(*color)),
-                                        button(text(t!("common.remove").to_string()))
-                                            .width(Fill)
-                                            .style(widgets::quiet)
-                                            .on_press(Message::RemoveColor(chunk_index * 8 + i)),
-                                    ]
-                                    .spacing(design::space::TINY),
-                                )
-                                .width(140)
-                                .padding(design::space::SMALL as u16)
-                                .style(|theme: &Theme| {
-                                    let mut style = widgets::surface(theme);
-                                    let palette = theme.extended_palette();
-                                    style.border.color = palette.background.strong.color;
-                                    style.border.width = 1.0;
-                                    if palette.is_dark {
-                                        style.background =
-                                            Some(palette.background.neutral.color.into());
-                                    }
-                                    style
-                                })
-                                .into(),
-                            )
-                        }))
-                        .spacing(design::space::CONTROL)
-                        .into()
+                            }))
+                        },
+                    ),
+                );
+                let chosen = signal(rgb(s.general.accent.custom_color));
+                let draft = signal(
+                    self.color
+                        .clone()
+                        .unwrap_or_else(|| format!("#{:06X}", s.general.accent.custom_color)),
+                );
+                let picker_ui = ui.clone();
+                let picker = widgets::observe(
+                    Element::color_picker_opts(
+                        chosen,
+                        ColorPickerOpts::default()
+                            .alpha(false)
+                            .presets(ACCENT_PALETTE.into_iter().map(rgb).collect()),
+                    ),
+                    chosen,
+                    move |color| {
+                        let color =
+                            u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b);
+                        if parse_color(&draft.get()) != Some(color) {
+                            draft.set(format!("#{color:06X}"));
+                            picker_ui.edit(Message::Accent(color));
+                        }
                     },
-                ))
-                .spacing(design::space::CONTROL);
-                let picker = color_button(s.general.accent.custom_color, false)
-                    .on_press(Message::OpenColorPicker);
-                let custom = column![
-                    text(t!("accent.color_palette").to_string()),
+                );
+                let input_ui = ui.clone();
+                let hex = widgets::observe(
+                    Element::text_input(draft, "#RRGGBB").width(130),
+                    draft,
+                    move |text| {
+                        if let Some(color) = parse_color(&text) {
+                            chosen.set(rgb(color));
+                        }
+                        input_ui.edit(Message::AccentHex(text));
+                    },
+                );
+                let custom = widgets::col().children([
+                    widgets::label(t!("accent.color_palette").to_string()),
                     colors,
-                    text(t!("accent.custom_colors").to_string()),
-                    row![
+                    widgets::label(t!("accent.custom_colors").to_string()),
+                    widgets::row().children([
                         picker,
-                        text_input(
-                            "#RRGGBB",
-                            &self.color.clone().unwrap_or_else(|| format!(
-                                "#{:06X}",
-                                s.general.accent.custom_color
-                            ))
-                        )
-                        .on_input(Message::AccentHex)
-                        .width(130),
-                        button(text(t!("common.save").to_string()))
-                            .style(widgets::primary_button)
-                            .on_press_maybe(
-                                self.color
-                                    .as_deref()
-                                    .is_none_or(|v| parse_color(v).is_some())
-                                    .then_some(Message::SaveColor)
-                            )
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                    saved
+                        hex,
+                        ui.button(t!("common.save").to_string(), Message::SaveColor)
+                            .enabled_when(move || parse_color(&draft.get()).is_some()),
+                    ]),
+                    saved,
+                ]);
+                let accent_choices = [
+                    Choice(AccentColorSource::Windows, t!("accent.windows").to_string()),
+                    Choice(AccentColorSource::Custom, t!("accent.custom").to_string()),
+                ];
+                let accent = accent_choices
+                    .iter()
+                    .find(|choice| choice.0 == s.general.accent.source)
+                    .cloned()
+                    .unwrap_or_else(|| accent_choices[0].clone());
+                vec![
+                    widgets::card(
+                        "",
+                        [
+                            widgets::setting_row(
+                                t!("common.language").to_string(),
+                                ui.select(
+                                    AppLanguage::ALL
+                                        .into_iter()
+                                        .map(|v| Choice(v, v.native_label().to_owned())),
+                                    Choice(
+                                        s.general.language,
+                                        s.general.language.native_label().to_owned(),
+                                    ),
+                                    |v| Message::Language(v.0),
+                                )
+                                .width(240),
+                            ),
+                            Element::divider(),
+                            widgets::setting_row(
+                                t!("accent.source").to_string(),
+                                ui.select(accent_choices, accent, |v| Message::AccentSource(v.0))
+                                    .width(240),
+                            ),
+                            ui.collapsible(
+                                t!("accent.custom_colors").to_string(),
+                                self.accent_expanded,
+                                custom,
+                                |_| Message::ToggleAccent,
+                            ),
+                            Element::divider(),
+                            widgets::setting_row(
+                                t!("common.theme").to_string(),
+                                ui.select(
+                                    AppThemeMode::ALL
+                                        .into_iter()
+                                        .map(|v| Choice(v, theme_label(v))),
+                                    Choice(s.general.theme_mode, theme_label(s.general.theme_mode)),
+                                    |v| Message::Theme(v.0),
+                                )
+                                .width(240),
+                            ),
+                            Element::divider(),
+                            widgets::setting_row(
+                                t!("settings.animation_mode").to_string(),
+                                ui.select(
+                                    AnimationMode::ALL
+                                        .into_iter()
+                                        .map(|v| Choice(v, animation_label(v))),
+                                    Choice(
+                                        s.general.animation_mode,
+                                        animation_label(s.general.animation_mode),
+                                    ),
+                                    |v| Message::Animation(v.0),
+                                )
+                                .width(240),
+                            ),
+                        ],
+                    )
+                    .spacing(0),
+                    widgets::card(
+                        "",
+                        [
+                            widgets::setting(
+                                "settings.show_enabled_feature_counts_in_sidebar",
+                                ui.toggle(s.general.show_enabled_feature_counts_in_sidebar, |v| {
+                                    Message::Flag(Flag::FeatureCounts, v)
+                                }),
+                            ),
+                            Element::divider(),
+                            widgets::setting(
+                                "settings.show_feature_status_on_cards",
+                                ui.toggle(s.general.show_feature_status_on_cards, |v| {
+                                    Message::Flag(Flag::CardStatus, v)
+                                }),
+                            ),
+                        ],
+                    )
+                    .spacing(0),
                 ]
-                .spacing(design::space::COMPACT);
-                column![
-                    super::widgets::settings_card(
-                        row![
-                            text(t!("common.language").to_string()).width(Fill),
-                            pick_list(
-                                AppLanguage::ALL
-                                    .into_iter()
-                                    .map(|v| Choice(v, v.native_label().to_owned()))
-                                    .collect::<Vec<_>>(),
-                                Some(Choice(
-                                    s.general.language,
-                                    s.general.language.native_label().to_owned()
-                                )),
-                                |v| Message::Language(v.0)
-                            )
-                            .width(design::SELECT_WIDTH)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .align_y(iced::Center)
-                    ),
-                    super::widgets::setting_group(
-                        "accent.source".to_string(),
-                        self.accent_expanded,
-                        Message::ToggleAccent,
-                        pick_list(
-                            vec![
-                                Choice(
-                                    AccentColorSource::Windows,
-                                    t!("accent.windows").to_string()
-                                ),
-                                Choice(AccentColorSource::Custom, t!("accent.custom").to_string())
-                            ],
-                            Some(Choice(
-                                s.general.accent.source,
-                                if s.general.accent.source == AccentColorSource::Windows {
-                                    t!("accent.windows").to_string()
-                                } else {
-                                    t!("accent.custom").to_string()
-                                }
-                            )),
-                            |v| Message::AccentSource(v.0)
-                        )
-                        .width(design::SELECT_WIDTH),
-                        custom
-                    ),
-                    super::widgets::settings_card(
-                        row![
-                            text(t!("common.theme").to_string()).width(Fill),
-                            pick_list(
-                                AppThemeMode::ALL
-                                    .into_iter()
-                                    .map(|v| Choice(v, theme_label(v)))
-                                    .collect::<Vec<_>>(),
-                                Some(Choice(
-                                    s.general.theme_mode,
-                                    theme_label(s.general.theme_mode)
-                                )),
-                                |v| Message::Theme(v.0)
-                            )
-                            .width(design::SELECT_WIDTH)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .align_y(iced::Center)
-                    ),
-                    widgets::settings_card(widgets::setting_row(
-                        "settings.animation_mode",
-                        pick_list(
-                            AnimationMode::ALL
-                                .map(|v| Choice(v, animation_label(v)))
-                                .to_vec(),
-                            Some(Choice(
-                                s.general.animation_mode,
-                                animation_label(s.general.animation_mode)
-                            )),
-                            |v| Message::Animation(v.0),
-                        )
-                        .width(design::SELECT_WIDTH),
-                    )),
-                    flag(
-                        "settings.show_enabled_feature_counts_in_sidebar",
-                        s.general.show_enabled_feature_counts_in_sidebar,
-                        Flag::FeatureCounts
-                    ),
-                    flag(
-                        "settings.show_feature_status_on_cards",
-                        s.general.show_feature_status_on_cards,
-                        Flag::CardStatus
-                    ),
-                ]
-                .spacing(super::widgets::CARD_GAP)
             }
-            Page::ExperimentalFeatures => column![
+            Page::ExperimentalFeatures => vec![
                 flag(
                     "settings.expose_all_priority_values",
                     s.advanced.expose_all_priority_values,
-                    Flag::AdvancedValues
+                    Flag::AdvancedValues,
                 ),
                 flag(
                     "settings.show_advanced_controls",
                     s.advanced.show_advanced_controls,
-                    Flag::AdvancedControls
+                    Flag::AdvancedControls,
                 ),
-            ]
-            .spacing(super::widgets::CARD_GAP),
+            ],
             Page::About => {
-                let mut links = row![].spacing(design::space::SMALL);
-                for (key, url) in [
-                    ("about.github", "https://github.com/TatshSiow/Winderust"),
-                    ("about.discord", "https://discord.gg/M7nctFZUxX"),
-                    (
-                        "about.documentation",
-                        "https://github.com/TatshSiow/Winderust#readme",
-                    ),
-                    (
-                        "about.license",
-                        "https://github.com/TatshSiow/Winderust/blob/main/LICENSE",
-                    ),
-                ] {
-                    links = links.push(
-                        button(text(t!(key).to_string())).on_press(Message::Open(url.into())),
-                    );
-                }
-                let identity = widgets::settings_card(
-                    column![
-                        row![
-                            iced::widget::image(logo()).width(52).height(52),
-                            column![
-                                widgets::heading(
-                                    t!("app.name").to_string(),
-                                    design::typography::BODY
-                                ),
-                                text(t!("app.description").to_string())
-                            ]
-                            .spacing(design::space::SMALL)
+                let links = Element::flow()
+                    .width_match()
+                    .spacing(8)
+                    .run_spacing(8)
+                    .children(
+                        [
+                            ("about.github", "https://github.com/TatshSiow/Winderust"),
+                            ("about.discord", "https://discord.gg/M7nctFZUxX"),
+                            (
+                                "about.documentation",
+                                "https://github.com/TatshSiow/Winderust#readme",
+                            ),
+                            (
+                                "about.license",
+                                "https://github.com/TatshSiow/Winderust/blob/main/LICENSE",
+                            ),
                         ]
-                        .spacing(design::space::LARGE)
-                        .align_y(iced::Center),
-                        text(format!(
+                        .into_iter()
+                        .map(|(key, url)| {
+                            ui.button(t!(key).to_string(), Message::Open(url.into()))
+                                .tooltip(url)
+                        }),
+                    );
+                let identity = widgets::card(
+                    "",
+                    [
+                        widgets::row()
+                            .children([
+                                logo(),
+                                widgets::col().weight(1.0).spacing(8).children([
+                                    widgets::heading(t!("app.name").to_string()),
+                                    widgets::label(t!("app.description").to_string()).width_match(),
+                                ]),
+                            ])
+                            .spacing(16),
+                        widgets::label(format!(
                             "{} Wanderlust {} Windows Derust",
                             t!("about.inspired_by"),
-                            t!("about.inspiration_joiner")
-                        )),
-                        text("Copyright (C) 2026 Tatsh Siow / GPL-3.0-only"),
-                        links
-                    ]
-                    .spacing(design::space::LARGE),
-                );
-                let updates = widgets::settings_card(
-                    column![
-                        widgets::setting_row(
-                            "about.update_channel",
-                            row![
-                                pick_list(
-                                    UpdateChannel::ALL
-                                        .into_iter()
-                                        .map(|v| Choice(v, channel_label(v)))
-                                        .collect::<Vec<_>>(),
-                                    Some(Choice(
-                                        s.general.update_channel,
-                                        channel_label(s.general.update_channel)
-                                    )),
-                                    |v| Message::Channel(v.0)
-                                )
-                                .width(design::SELECT_WIDTH),
-                                button(text(t!("about.check_for_updates").to_string()))
-                                    .on_press_maybe((!self.checking).then_some(Message::Check))
-                            ]
-                            .spacing(design::space::MEDIUM)
-                        ),
-                        widgets::setting_row(
-                            "about.latest_version",
-                            text(self.latest.as_deref().unwrap_or("-"))
-                        ),
-                        widgets::setting_row(
-                            "about.current_version",
-                            text(env!("CARGO_PKG_VERSION"))
-                        ),
-                        widgets::setting_row(
-                            "about.automatic_check_for_updates_on_startup",
-                            widgets::switch(
-                                s.general.check_for_updates,
-                                Some(|v| Message::Flag(Flag::UpdateCheck, v))
+                            t!("about.inspiration_joiner"),
+                        ))
+                        .fg_role(Role::TextMuted),
+                        widgets::label("Copyright (C) 2026 Tatsh Siow / GPL-3.0-only")
+                            .fg_role(Role::TextMuted),
+                        links,
+                    ],
+                )
+                .spacing(16);
+                let mut update_rows = vec![
+                    Element::setting_row(
+                        t!("about.update_channel").to_string(),
+                        Element::row().cross(Align::Center).spacing(8).children([
+                            ui.select(
+                                UpdateChannel::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, channel_label(v))),
+                                Choice(
+                                    s.general.update_channel,
+                                    channel_label(s.general.update_channel),
+                                ),
+                                |v| Message::Channel(v.0),
                             )
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                );
-                let mut body = column![
-                    widgets::heading(t!("nav.about").to_string(), design::typography::BODY),
-                    identity,
-                    widgets::heading(t!("about.updates").to_string(), design::typography::BODY),
-                    updates
-                ]
-                .spacing(super::widgets::CARD_GAP);
+                            .width(240),
+                            ui.button(
+                                t!(if self.checking {
+                                    "common.loading"
+                                } else {
+                                    "about.check_for_updates"
+                                })
+                                .to_string(),
+                                Message::Check,
+                            )
+                            .enabled(!self.checking),
+                        ]),
+                    )
+                    .width_match(),
+                    Element::divider(),
+                    widgets::setting_row(
+                        t!("about.latest_version").to_string(),
+                        widgets::label(self.latest.clone().unwrap_or_else(|| "-".into())),
+                    ),
+                    Element::divider(),
+                    widgets::setting_row(
+                        t!("about.current_version").to_string(),
+                        widgets::label(env!("CARGO_PKG_VERSION")),
+                    ),
+                    Element::divider(),
+                    widgets::setting_row(
+                        t!("about.automatic_check_for_updates_on_startup").to_string(),
+                        ui.toggle(s.general.check_for_updates, |v| {
+                            Message::Flag(Flag::UpdateCheck, v)
+                        }),
+                    ),
+                ];
                 if self.latest.is_some() {
-                    body = body.push(text(
+                    update_rows.push(Element::badge_intent(
                         t!(if self.download.is_some() {
                             "about.old"
                         } else {
                             "about.up_to_date"
                         })
                         .to_string(),
+                        if self.download.is_some() {
+                            Intent::Warning
+                        } else {
+                            Intent::Success
+                        },
                     ));
                 }
                 if let Some(url) = &self.download {
-                    body = body.push(
-                        button(text(t!("about.download_update").to_string()))
-                            .on_press(Message::Open(url.clone())),
-                    );
+                    update_rows.push(ui.button(
+                        t!("about.download_update").to_string(),
+                        Message::Open(url.clone()),
+                    ));
                 }
                 if let Some(error) = &self.update_error {
-                    body = body.push(text(error));
+                    update_rows.push(widgets::error(error.clone()));
                 }
-                body
+                vec![
+                    identity,
+                    widgets::card(t!("about.updates").to_string(), update_rows),
+                ]
             }
-            _ => column![],
+            _ => Vec::new(),
         };
-        scrollable(body).height(Fill).into()
+        widgets::page(body)
     }
 }
-fn color_button(color: u32, selected: bool) -> super::animated_controls::Button<'static, Message> {
-    button(iced::widget::Space::new())
-        .width(42)
-        .height(42)
-        .on_press(Message::Accent(color))
-        .style(move |theme, status| {
-            let mut style = widgets::quiet(theme, status);
-            style.background = Some(rgb(color).into());
-            if selected {
-                style.border.width = 2.0;
-                style.border.color = theme.palette().text;
-            }
-            style
-        })
+fn color_button(color: u32, selected: bool, ui: &Ui<Message>) -> Element {
+    let color_value = rgb(color);
+    ui.primary_button(format!("#{color:06X}"), Message::Accent(color))
+        .width(88)
+        .height(36)
+        .font_size(11.0)
+        .bg(color_value)
+        .fg(super::design::accent_foreground(color_value))
+        .border_role(Role::Text, if selected { 2 } else { 0 })
 }
 pub(super) fn rgb(color: u32) -> Color {
-    Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8)
+    Color::hex(color)
 }
 fn animation_label(value: AnimationMode) -> String {
     t!(match value {
@@ -641,6 +635,32 @@ fn channel_label(v: UpdateChannel) -> String {
     }
     .to_string()
 }
+/// Native text and window menus follow the same language as Winderust's pages.
+/// Wind UI 0.24 bundles English and Simplified Chinese; supply its complete
+/// eight-key menu vocabulary for Winderust's Traditional Chinese selection.
+pub(super) fn native_locales(language: AppLanguage) -> windui::i18n::Locales {
+    windui::i18n::Locales::builder()
+        .embed(
+            r#"
+[meta]
+locale = "zh-TW"
+name = "繁體中文（台灣）"
+[windui.menu]
+cut = "剪下"
+copy = "複製"
+paste = "貼上"
+select_all = "全選"
+[windui.window]
+restore = "還原"
+minimize = "最小化"
+maximize = "最大化"
+close = "關閉"
+"#,
+        )
+        .initial(windui::i18n::Initial::Fixed(language.locale().into()))
+        .build()
+}
+
 pub(super) fn theme(s: &GeneralSettings) -> Theme {
     let system = match crate::platform::windows::appearance::read() {
         Ok(appearance) => Some(appearance),
@@ -649,25 +669,23 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
             None
         }
     };
-    super::motion::set_enabled(
-        s.animation_mode.enabled(
-            system
-                .as_ref()
-                .is_some_and(|appearance| appearance.animations),
-        ),
+    super::motion::apply(
+        s.animation_mode,
+        system
+            .as_ref()
+            .is_some_and(|appearance| appearance.animations),
     );
     let light = match s.theme_mode {
         AppThemeMode::Light => true,
         AppThemeMode::Dark => false,
         AppThemeMode::System => system.as_ref().is_none_or(|appearance| appearance.light),
     };
-    let mut palette = design::palette(light);
-    if s.accent.source == AccentColorSource::Custom {
-        palette.primary = rgb(s.accent.custom_color);
-    } else if let Some(system) = system {
-        palette.primary = rgb(system.accent);
-    }
-    Theme::custom_with_fn("Winderust", palette, design::extended_palette)
+    let accent = if s.accent.source == AccentColorSource::Custom {
+        Some(rgb(s.accent.custom_color))
+    } else {
+        system.map(|appearance| rgb(appearance.accent))
+    };
+    design::theme(light, accent)
 }
 
 fn sanitize_advanced(settings: &mut Settings) {
@@ -881,17 +899,37 @@ fn parse_color(value: &str) -> Option<u32> {
         .then(|| u32::from_str_radix(value, 16).ok())
         .flatten()
 }
-fn logo() -> iced::widget::image::Handle {
-    static HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
-        std::sync::LazyLock::new(|| {
-            iced::widget::image::Handle::from_bytes(
-                include_bytes!("../../image/icon-design.png").as_slice(),
-            )
-        });
-    HANDLE.clone()
+fn logo() -> Element {
+    Element::image_bytes(include_bytes!("../../image/icon-design.png")).size(52, 52)
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_menu_catalog_covers_both_product_languages() {
+        let locales = native_locales(AppLanguage::English);
+        let english = locales.catalog("en");
+        let traditional = locales.catalog("zh-TW");
+        assert_eq!(english.lang(), "en");
+        assert_eq!(traditional.lang(), "zh-TW");
+        assert_eq!(
+            english.keys().collect::<Vec<_>>(),
+            traditional.keys().collect::<Vec<_>>()
+        );
+        for (key, translated) in [
+            ("windui.menu.cut", "剪下"),
+            ("windui.menu.copy", "複製"),
+            ("windui.menu.paste", "貼上"),
+            ("windui.menu.select_all", "全選"),
+            ("windui.window.restore", "還原"),
+            ("windui.window.minimize", "最小化"),
+            ("windui.window.maximize", "最大化"),
+            ("windui.window.close", "關閉"),
+        ] {
+            assert_eq!(traditional.text(key), translated);
+        }
+        assert_eq!(english.text("windui.menu.copy"), "Copy");
+    }
+
     #[test]
     fn ui_only_preferences_need_no_mutable_settings() {
         let settings = Settings::default();

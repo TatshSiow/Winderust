@@ -1,5 +1,9 @@
 # Iced port
 
+Historical record of the Iced implementation before the Wind UI port. The
+evidence below describes that recorded baseline. See the
+[Wind UI implementation guide](windui-port.md) for the current UI stack.
+
 Winderust uses Iced 0.14 with only the Tiny Skia software renderer
 to prioritize a lower memory footprint.
 The renderer is the unmodified crates.io release of `iced_tiny_skia`. `iced_anim` provides transitions for

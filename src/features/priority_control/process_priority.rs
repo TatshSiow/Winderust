@@ -1,12 +1,13 @@
-#[cfg(test)]
-use crate::config::ProcessPrioritySetting;
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::ProcessPrioritySettings,
+    config::{ProcessPrioritySetting, ProcessPrioritySettings},
     control::{
         priority_efficiency::{
             PriorityClassClaim, PriorityClassPreservation, PriorityClassValue,
@@ -16,8 +17,9 @@ use crate::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget},
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        unique_app_names, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, process_executable_path, process_failure_key,
+        process_list::enrich_process_control, process_session_id, same_process_name,
+        unique_app_names, ProcessInfo, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -101,7 +103,22 @@ impl ProcessPriorityManager {
             );
         };
 
-        let processes = match observations.processes() {
+        let uses_defaults = uses_default_priority(settings);
+        let processes = match if uses_defaults {
+            observations.processes()
+        } else {
+            observations.process_inventory().and_then(|inventory| {
+                if inventory
+                    .iter()
+                    .any(|process| process_may_need_priority(settings, process))
+                {
+                    drop(inventory);
+                    observations.process_observations()
+                } else {
+                    Ok(inventory)
+                }
+            })
+        } {
             Ok(processes) => processes,
             Err(error) => {
                 return self.paused_snapshot(
@@ -141,12 +158,11 @@ impl ProcessPriorityManager {
             .filter_map(|process| {
                 if process.id == 0
                     || process.id == current_process_id
-                    || process.is_critical != Some(false)
-                    || !process.can_set_information
                     || excluded_process_ids.contains(&process.id)
-                    || (!allow_cross_session_process_control
-                        && process_session_id(process.id) != Some(current_session_id))
                     || is_builtin_excluded(&process.name)
+                    || !process_may_need_priority(settings, process)
+                    || (uses_defaults
+                        && (process.is_critical != Some(false) || !process.can_set_information))
                 {
                     return None;
                 }
@@ -178,7 +194,20 @@ impl ProcessPriorityManager {
                     Some(None) => return None,
                     None => default_priority,
                 };
-                PriorityClassValue::from_setting(priority).map(|priority| ProcessPriorityTarget {
+                let priority = PriorityClassValue::from_setting(priority)?;
+                // Check control eligibility only after exact-path policy selection.
+                let mut eligible = process.clone();
+                if !uses_defaults {
+                    enrich_process_control(std::slice::from_mut(&mut eligible));
+                }
+                if eligible.is_critical != Some(false)
+                    || !eligible.can_set_information
+                    || (!allow_cross_session_process_control
+                        && eligible.session_id != Some(current_session_id))
+                {
+                    return None;
+                }
+                Some(ProcessPriorityTarget {
                     process_id: process.id,
                     process_name: process.name.clone(),
                     executable_path: executable_path.to_string_lossy().into_owned(),
@@ -467,6 +496,26 @@ fn process_priority_target_key(
     .key()
 }
 
+fn uses_default_priority(settings: &ProcessPrioritySettings) -> bool {
+    settings.background_priority != ProcessPrioritySetting::Default
+        || (settings.foreground_detection_enabled
+            && settings.foreground_priority != ProcessPrioritySetting::Default)
+        || (settings.visible_window_detection_enabled
+            && settings.visible_window_priority != ProcessPrioritySetting::Default)
+}
+
+fn process_may_need_priority(settings: &ProcessPrioritySettings, process: &ProcessInfo) -> bool {
+    uses_default_priority(settings)
+        || settings.exclusions.iter().any(|rule| {
+            rule.enabled
+                && (process.image_path.is_some()
+                    || Path::new(rule.executable_path.trim())
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_none_or(|name| same_process_name(&process.name, name)))
+        })
+}
+
 fn priority_preservation(
     tier: PriorityProcessTier,
     preserve_foreground: bool,
@@ -505,6 +554,60 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn priority_prefilter_keeps_defaults_and_possible_exact_path_rules() {
+        let mut process = ProcessInfo {
+            id: 42,
+            creation_time: Some(100),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: None,
+            can_set_information: false,
+            name: "worker.exe".to_owned(),
+            image_path: None,
+        };
+        let mut settings = ProcessPrioritySettings {
+            foreground_priority: ProcessPrioritySetting::Default,
+            visible_window_priority: ProcessPrioritySetting::Default,
+            background_priority: ProcessPrioritySetting::Default,
+            ..ProcessPrioritySettings::default()
+        };
+        assert!(!process_may_need_priority(&settings, &process));
+
+        settings.foreground_priority = ProcessPrioritySetting::Normal;
+        assert!(process_may_need_priority(&settings, &process));
+        settings.foreground_detection_enabled = false;
+        assert!(!process_may_need_priority(&settings, &process));
+        settings.visible_window_priority = ProcessPrioritySetting::BelowNormal;
+        assert!(!process_may_need_priority(&settings, &process));
+        settings.visible_window_detection_enabled = true;
+        assert!(process_may_need_priority(&settings, &process));
+        settings.visible_window_detection_enabled = false;
+        settings.background_priority = ProcessPrioritySetting::BelowNormal;
+        assert!(process_may_need_priority(&settings, &process));
+        settings.background_priority = ProcessPrioritySetting::Default;
+        settings
+            .exclusions
+            .push(crate::config::ProcessExclusionRule {
+                executable_path: r" C:/Apps/OTHER.exe ".to_owned(),
+                ..crate::config::ProcessExclusionRule::default()
+            });
+        assert!(!process_may_need_priority(&settings, &process));
+        settings.exclusions[0].executable_path = r" C:\Apps\WORKER.EXE ".to_owned();
+        assert!(process_may_need_priority(&settings, &process));
+        settings.exclusions[0].enabled = false;
+        assert!(!process_may_need_priority(&settings, &process));
+        settings.exclusions[0].enabled = true;
+        settings.exclusions[0].executable_path = r"C:\".to_owned();
+        assert!(process_may_need_priority(&settings, &process));
+
+        settings.exclusions[0].executable_path = r"C:\Apps\other.exe".to_owned();
+        process.image_path = Some(PathBuf::from(r"C:\Apps\other.exe"));
+        assert!(process_may_need_priority(&settings, &process));
+    }
 
     #[test]
     fn quick_apply_only_accepts_safe_concrete_priorities() {

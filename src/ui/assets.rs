@@ -104,39 +104,15 @@ fn push_attr(svg: &mut String, name: &str, value: Option<&str>) {
         svg.push('"');
     }
 }
-pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
-    static HANDLES: LazyLock<HashMap<&'static str, iced::widget::svg::Handle>> =
-        LazyLock::new(|| {
-            ICON_ASSETS
-                .iter()
-                .map(|(path, icon)| {
-                    (
-                        *path,
-                        iced::widget::svg::Handle::from_memory(lucide_svg(icon).into_bytes()),
-                    )
-                })
-                .collect()
-        });
-    HANDLES.get(path).cloned()
-}
-
-// SVG-local rotation works with the unmodified software renderer.
-pub(super) fn chevron_frame(progress: f32) -> iced::widget::svg::Handle {
-    static FRAMES: LazyLock<[iced::widget::svg::Handle; 19]> = LazyLock::new(|| {
-        std::array::from_fn(|index| {
-            let icon = icondata_lu::LuChevronRight;
-            let svg = lucide_svg(icon).replace(
-                icon.data,
-                &format!(
-                    "<g transform=\"rotate({} 12 12)\">{}</g>",
-                    index * 5,
-                    icon.data
-                ),
-            );
-            iced::widget::svg::Handle::from_memory(svg.into_bytes())
-        })
+/// Bundled SVG bytes shared across window recreation.
+pub(super) fn svg(path: &str) -> Option<&'static [u8]> {
+    static SOURCES: LazyLock<HashMap<&'static str, Vec<u8>>> = LazyLock::new(|| {
+        ICON_ASSETS
+            .iter()
+            .map(|(path, icon)| (*path, lucide_svg(icon).into_bytes()))
+            .collect()
     });
-    FRAMES[(progress.clamp(0.0, 1.0) * 18.0).round() as usize].clone()
+    SOURCES.get(path).map(Vec::as_slice)
 }
 
 #[cfg(test)]
@@ -146,12 +122,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icon_asset_paths_are_unique() {
+    fn bundled_paths_are_unique_and_reuse_the_same_svg_source() {
         let mut paths = HashSet::new();
         for (path, _) in ICON_ASSETS {
             assert!(paths.insert(*path), "duplicate icon asset path: {path}");
-            let first = iced_icon(path).unwrap();
-            assert_eq!(first.id(), iced_icon(path).unwrap().id());
+            let first = svg(path).unwrap();
+            assert!(std::ptr::eq(first, svg(path).unwrap()));
+            assert!(std::str::from_utf8(first).unwrap().starts_with("<svg "));
         }
+        assert!(svg("icons/not-bundled.svg").is_none());
     }
 }

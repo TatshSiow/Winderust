@@ -5,14 +5,17 @@ app:
   description: "Windows Performance & Power Manager"
 
 tray:
+  unavailable: "系統匣目前無法使用。Winderust 將保持視窗開啟。"
   show_winderust: "顯示 Winderust"
   exit: "結束"
 
 nav:
+  back: "上一頁"
+  forward: "下一頁"
   collapse_navigation: "收起側欄"
   expand_navigation: "展開側欄"
-  collapse_side_panel: "收起側邊面板"
-  expand_side_panel: "展開側邊面板"
+  collapse_side_panel: "隱藏側邊面板"
+  expand_side_panel: "顯示側邊面板"
   home: "首頁"
   winderust_features: "Winderust 功能"
   power_plan_control: "電源計畫控制"
@@ -50,6 +53,7 @@ nav:
   about: "關於"
 
 common:
+  retry: "重試"
   applied: "已套用"
   waiting: "等待中"
   error: "錯誤"
@@ -65,6 +69,7 @@ common:
   level: "層級"
   visible_window_detection: "可見視窗偵測"
   visible_window_detection_help: "對具有可見且未最小化視窗的應用程式套用獨立值；焦點應用程式仍優先。"
+  policy_detection_help: "設定套用的原則；開關控制偵測。"
   preserve_visible_window_priority: "相同或更高時忽略可見視窗應用程式"
   loading: "載入中…"
   loading_running_apps: "正在載入執行中的應用程式…"
@@ -286,6 +291,8 @@ home:
   focus_and_launch_profile: "焦點與啟動"
 
 process_list:
+  column_auto_size: "自動調整欄寬"
+  sort_order: "排序方向"
   plans_not_loaded: "電源計畫尚未載入。請按重新整理以重試。"
   pause_population: "暫停更新程序清單"
   resume_population: "恢復更新程序清單"
@@ -602,6 +609,7 @@ by_cpu_load:
   else_use: "否則使用"
 
 background_efficiency:
+  mode_detection_help: "設定效率模式；開關控制偵測。"
   foreground_detection: "前景偵測"
   foreground_detection_help: "加入第二層，可對焦點應用程式套用不同的效率模式設定。"
   intro_1: "背景效率會對背景應用程式套用 Windows 效率模式，以降低 CPU 耗電。"

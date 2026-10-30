@@ -3,7 +3,6 @@ use std::{
     sync::Arc,
 };
 
-use iced::widget::image::Handle as Image;
 use windows_sys::Win32::{
     Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
@@ -18,10 +17,15 @@ use windows_sys::Win32::{
 // A shared 64px source avoids enlarging the 20px UI icons at common display scales.
 const ICON_PIXELS: i32 = 64;
 
-const BMP_FILE_HEADER_SIZE: u32 = 14;
-const BMP_INFO_HEADER_SIZE: u32 = 40;
+/// Framework-independent, top-down RGBA icon pixels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIcon {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
 
-pub fn load_process_icon(path: &Path) -> Option<Arc<Image>> {
+pub fn load_process_icon(path: &Path) -> Option<Arc<ProcessIcon>> {
     let path = path
         .as_os_str()
         .encode_wide()
@@ -45,7 +49,7 @@ pub fn load_process_icon(path: &Path) -> Option<Arc<Image>> {
         return None;
     }
 
-    let image = hicon_to_bmp(icon).map(|bytes| Arc::new(Image::from_bytes(bytes)));
+    let image = hicon_to_rgba(icon).map(Arc::new);
 
     // SAFETY: icon was returned by SHDefExtractIconW and is destroyed exactly once after rendering.
     unsafe {
@@ -55,7 +59,7 @@ pub fn load_process_icon(path: &Path) -> Option<Arc<Image>> {
     image
 }
 
-fn hicon_to_bmp(icon: HICON) -> Option<Vec<u8>> {
+fn hicon_to_rgba(icon: HICON) -> Option<ProcessIcon> {
     let width = ICON_PIXELS;
     let height = ICON_PIXELS;
     let byte_len = width.checked_mul(height)?.checked_mul(4)? as usize;
@@ -123,47 +127,47 @@ fn hicon_to_bmp(icon: HICON) -> Option<Vec<u8>> {
         DeleteDC(hdc);
     }
 
-    pixels.map(|pixels| bmp_from_bgra_pixels(width, height, pixels))
+    pixels.map(|pixels| ProcessIcon {
+        width: width as u32,
+        height: height as u32,
+        rgba: rgba_from_bgra(pixels),
+    })
 }
 
-fn bmp_from_bgra_pixels(width: i32, height: i32, pixels: Vec<u8>) -> Vec<u8> {
-    let pixel_offset = BMP_FILE_HEADER_SIZE + BMP_INFO_HEADER_SIZE;
-    let file_size = pixel_offset + pixels.len() as u32;
-    let mut bytes = Vec::with_capacity(file_size as usize);
-
-    bytes.extend_from_slice(b"BM");
-    bytes.extend_from_slice(&file_size.to_le_bytes());
-    bytes.extend_from_slice(&[0; 4]);
-    bytes.extend_from_slice(&pixel_offset.to_le_bytes());
-    bytes.extend_from_slice(&BMP_INFO_HEADER_SIZE.to_le_bytes());
-    bytes.extend_from_slice(&width.to_le_bytes());
-    bytes.extend_from_slice(&(-height).to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
-    bytes.extend_from_slice(&32u16.to_le_bytes());
-    bytes.extend_from_slice(&BI_RGB.to_le_bytes());
-    bytes.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(&0i32.to_le_bytes());
-    bytes.extend_from_slice(&0i32.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&pixels);
-
-    bytes
+fn rgba_from_bgra(mut pixels: Vec<u8>) -> Vec<u8> {
+    // Legacy icons have no alpha channel. Preserve their opaque color instead of
+    // making the entire icon transparent; modern icons retain their alpha mask.
+    let opaque = pixels.chunks_exact(4).all(|pixel| pixel[3] == 0);
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        if opaque {
+            pixel[3] = 255;
+        } else if pixel[3] != 0 {
+            // DrawIconEx writes premultiplied channels. UI image APIs accept
+            // straight RGBA and apply premultiplication when they upload it.
+            let alpha = u32::from(pixel[3]);
+            for channel in &mut pixel[..3] {
+                *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+            }
+        }
+    }
+    pixels
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn bmp_header_describes_the_supplied_pixels() {
-        let pixels = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let bytes = bmp_from_bgra_pixels(2, 1, pixels.clone());
+    fn icon_channels_and_modern_transparency_are_preserved() {
+        assert_eq!(
+            rgba_from_bgra(vec![20, 40, 60, 128, 0, 0, 0, 0]),
+            vec![120, 80, 40, 128, 0, 0, 0, 0]
+        );
+    }
 
-        assert_eq!(&bytes[..2], b"BM");
-        assert_eq!(u32::from_le_bytes(bytes[2..6].try_into().unwrap()), 62);
-        assert_eq!(u32::from_le_bytes(bytes[10..14].try_into().unwrap()), 54);
-        assert_eq!(i32::from_le_bytes(bytes[18..22].try_into().unwrap()), 2);
-        assert_eq!(i32::from_le_bytes(bytes[22..26].try_into().unwrap()), -1);
-        assert_eq!(&bytes[54..], pixels);
+    #[test]
+    fn legacy_icons_without_an_alpha_channel_remain_visible() {
+        assert_eq!(rgba_from_bgra(vec![1, 2, 3, 0]), vec![3, 2, 1, 255]);
     }
 }

@@ -643,6 +643,40 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
 }
 
 pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
+    let mut processes = list_process_inventory(true)?;
+    for process in &mut processes {
+        let Some(handle) = open_process_for_query(process.id) else {
+            continue;
+        };
+        process.creation_time = handle.process_creation_time();
+        process.is_critical = process_critical_from_handle(&handle);
+        process.can_set_information = process_protection_from_handle(&handle) == Some(false)
+            && process_has_access(process.id, PROCESS_SET_INFORMATION);
+    }
+    Ok(processes)
+}
+
+/// Read-only workload identities without collecting process-control eligibility.
+pub(crate) fn list_process_observations() -> Result<Vec<ProcessInfo>, String> {
+    let mut processes = list_process_metadata()?;
+    enrich_process_identities(&mut processes);
+    Ok(processes)
+}
+
+/// Discovery hints only: no process generation or control eligibility has been queried.
+pub(crate) fn list_process_metadata() -> Result<Vec<ProcessInfo>, String> {
+    list_process_inventory(false)
+}
+
+/// Establish the first identity observation before metadata can select an exact target.
+pub(crate) fn enrich_process_identities(processes: &mut [ProcessInfo]) {
+    for process in processes {
+        process.creation_time =
+            open_process_for_query(process.id).and_then(|handle| handle.process_creation_time());
+    }
+}
+
+fn list_process_inventory(include_sessions: bool) -> Result<Vec<ProcessInfo>, String> {
     let snapshot = process_snapshot()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -658,7 +692,11 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
                 id: entry.th32ProcessID,
                 creation_time: None,
                 parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
-                session_id: process_session_id(entry.th32ProcessID),
+                session_id: if include_sessions {
+                    process_session_id(entry.th32ProcessID)
+                } else {
+                    None
+                },
                 user_name: None,
                 is_service_account: None,
                 is_critical: None,
@@ -673,16 +711,29 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     }
     ensure_process_iteration_complete()?;
 
-    for process in &mut processes {
+    Ok(processes)
+}
+
+/// Upgrade the captured table without promoting a reused or previously unknown PID generation.
+pub(crate) fn enrich_process_control(processes: &mut [ProcessInfo]) {
+    for process in processes {
+        process.session_id = None;
+        process.is_critical = None;
+        process.can_set_information = false;
+        let Some(captured_creation) = process.creation_time else {
+            continue;
+        };
         let Some(handle) = open_process_for_query(process.id) else {
             continue;
         };
-        process.creation_time = handle.process_creation_time();
+        if handle.process_creation_time() != Some(captured_creation) {
+            continue;
+        }
+        process.session_id = process_session_id(process.id);
         process.is_critical = process_critical_from_handle(&handle);
         process.can_set_information = process_protection_from_handle(&handle) == Some(false)
             && process_has_access(process.id, PROCESS_SET_INFORMATION);
     }
-    Ok(processes)
 }
 
 pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
@@ -1162,6 +1213,93 @@ mod tests {
 
     use super::*;
 
+    /// Run alone: cargo test --release --locked profile_process_scan_identity_cost --
+    /// --ignored --nocapture --test-threads=1. This measures scan cost, not framework power.
+    #[test]
+    #[ignore = "live read-only profiling; run alone with --ignored --nocapture --test-threads=1"]
+    fn profile_process_scan_identity_cost() -> Result<(), String> {
+        use windows_sys::Win32::System::{
+            Threading::GetCurrentThread, WindowsProgramming::QueryThreadCycleTime,
+        };
+
+        fn thread_cycles() -> Result<u64, String> {
+            let mut cycles = 0;
+            // SAFETY: the current-thread pseudo-handle is valid and cycles is writable.
+            if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } == 0 {
+                return Err(format!(
+                    "QueryThreadCycleTime failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            Ok(cycles)
+        }
+
+        let mut measurements = Vec::with_capacity(40);
+        let mut churn = Vec::with_capacity(20);
+        for pair in 0..20 {
+            let mut inventories = Vec::with_capacity(2);
+            let order = if pair % 2 == 0 {
+                [true, false]
+            } else {
+                [false, true]
+            };
+            for (position, raw) in order.into_iter().enumerate() {
+                let kind = if raw { "raw" } else { "identity" };
+                let before = thread_cycles()?;
+                let started = Instant::now();
+                let processes = if raw {
+                    list_process_inventory(false)
+                } else {
+                    list_process_observations()
+                }
+                .map_err(|error| format!("pair {} {kind} failed: {error}", pair + 1))?;
+                let wall_us = started.elapsed().as_micros();
+                let cycles = thread_cycles()?
+                    .checked_sub(before)
+                    .ok_or_else(|| "Current-thread cycle counter regressed".to_owned())?;
+                assert!(!processes.is_empty(), "{kind} returned an empty inventory");
+                for process in &processes {
+                    assert!(!process.can_set_information);
+                    assert_eq!(process.is_critical, None);
+                    if raw {
+                        assert_eq!(process.creation_time, None);
+                    }
+                }
+                let known = processes
+                    .iter()
+                    .filter(|process| process.creation_time.is_some())
+                    .count();
+                measurements.push(format!(
+                    "{},{},{kind},{cycles},{wall_us},{},{known}",
+                    pair + 1,
+                    position + 1,
+                    processes.len()
+                ));
+                inventories.push(
+                    processes
+                        .into_iter()
+                        .map(|process| (process.id, process.name))
+                        .collect::<BTreeSet<_>>(),
+                );
+            }
+            churn.push(format!(
+                "churn,{},{},{}",
+                pair + 1,
+                inventories[0].intersection(&inventories[1]).count(),
+                inventories[0].symmetric_difference(&inventories[1]).count()
+            ));
+        }
+        println!("pair,order,kind,cycles,wall_us,count,identity_known");
+        for row in measurements {
+            println!("{row}");
+        }
+        println!("record,pair,common_pid_name,changed_pid_name");
+        for row in churn {
+            println!("{row}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn process_name_from_entry_ignores_system_process() {
         let entry = process_entry("[System Process]");
@@ -1362,6 +1500,53 @@ mod tests {
             .expect("current process is present in its own snapshot");
 
         assert!(current.creation_time.is_some());
+    }
+
+    #[test]
+    fn read_only_snapshot_requires_known_matching_generations_for_control_enrichment() {
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let process_id = unsafe { GetCurrentProcessId() };
+        let current = list_process_observations()
+            .expect("read-only process snapshot is available")
+            .into_iter()
+            .find(|process| process.id == process_id)
+            .expect("current process is present in its own snapshot");
+        let creation = current
+            .creation_time
+            .expect("current process creation time is queryable");
+        assert_eq!(current.session_id, None);
+        assert_eq!(current.is_critical, None);
+        assert_eq!(current.is_service_account, None);
+        assert!(!current.can_set_information);
+        assert!(current.image_path.is_none());
+        let mut processes = [
+            current.clone(),
+            ProcessInfo {
+                creation_time: None,
+                session_id: Some(1),
+                is_critical: Some(false),
+                can_set_information: true,
+                ..current.clone()
+            },
+            ProcessInfo {
+                creation_time: Some(creation + 1),
+                session_id: Some(1),
+                is_critical: Some(false),
+                can_set_information: true,
+                ..current
+            },
+        ];
+        enrich_process_control(&mut processes);
+        assert_eq!(processes[0].creation_time, Some(creation));
+        assert!(processes[0].session_id.is_some());
+        assert_eq!(processes[0].is_critical, Some(false));
+        assert_eq!(processes[1].creation_time, None);
+        assert_eq!(processes[2].creation_time, Some(creation + 1));
+        for process in &processes[1..] {
+            assert_eq!(process.session_id, None);
+            assert_eq!(process.is_critical, None);
+            assert!(!process.can_set_information);
+        }
     }
 
     #[test]

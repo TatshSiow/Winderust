@@ -12,7 +12,7 @@ Read the relevant section before changing feature policy, ownership, restoration
   are explicit persistent operations, not temporary managed state or crash-recovery owners.
 - Runtime feature status is one semantically stable `Arc<RuntimeFeatureStatus>` segment. Process
   catalog/list, dashboard history, update state, and shell navigation remain plain UI read models.
-  Process queries, icons, monitors, Iced subscriptions, tray, dialogs, and focus remain at the
+  Process queries, icons, monitors, native UI event delivery, tray, dialogs, and focus remain at the
   `WinderustApp` composition boundary.
 
 ## Restoration and process safety
@@ -104,6 +104,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   CPU-rate state.
 
 ## Runtime observations
+
+- Preserve the Windows event watcher activation predicate. When a watcher is required, retain full automation registrations whenever either power profile needs an automation worker, including an inactive profile that needs an A/C transition wake. Appearance-only observation is restricted to configurations with no automation worker and retains the broadcast window without foreground/window-creation hooks or power/session subscriptions. Publish the source inactive before recreating it on mode changes, then publish successful readiness; preserve registration failure fallback and cleanup.
+
+- Settled Adaptive Engine pressure monitoring with all process actuators disabled can use query-only process identities. Startup, settings changes, tracked targets, policy claims, restoration/pending reconciliation and failure state require the full control path. Keep pressure hysteresis and exact foreground CPU sampling alive; missing input stays unavailable.
+- One CycleObservations inventory may begin with read-only identities and be enriched once for later control consumers. Enrichment must validate the same captured generation, preserve the cached descendant workload, and quarantine changed or unknown generations until a new cycle. Read-side inventory never authorizes a mutation.
 
 - Per-processor placement samples are complete-or-unavailable: invalid intervals never become zero load or shift processor indices. Counter regression, overflow, inconsistent idle deltas and zero-length intervals are unavailable; failed/empty captures clear the baseline and domain-size changes re-prime it.
 

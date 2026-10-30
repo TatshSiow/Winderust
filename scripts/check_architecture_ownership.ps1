@@ -412,8 +412,13 @@ Assert-NoSourceMatch `
 
 Assert-NoUnexpectedWriter `
     -Mechanism 'CPU Limiter waitable timer' `
-    -ApiPattern 'CreateWaitableTimerExW|SetWaitableTimer|CancelWaitableTimer|WaitForMultipleObjects' `
+    -ApiPattern 'CreateWaitableTimerExW|SetWaitableTimer|CancelWaitableTimer' `
     -AllowedLocationPattern '^src\\platform\\windows\\cpu_limiter\.rs:'
+
+Assert-NoUnexpectedWriter `
+    -Mechanism 'native CPU Limiter and resident restore event waits' `
+    -ApiPattern 'WaitForMultipleObjects' `
+    -AllowedLocationPattern '^src\\platform\\windows\\(?:cpu_limiter|resident_shell)\.rs:'
 
 Assert-NoUnexpectedWriter `
     -Mechanism 'CPU Limiter thread suspension' `
@@ -629,6 +634,16 @@ Assert-SourceMatchCount `
     -ExpectedCount 1
 
 Assert-NoUnexpectedWriter `
+    -Mechanism 'native input-hook adapters' `
+    -ApiPattern '\b(?:SetWindowsHookExW|UnhookWindowsHookEx)\b' `
+    -AllowedLocationPattern '^src\\(?:activity\\input_hook|platform\\windows\\resident_shell)\.rs:'
+
+Assert-NoSourceMatch `
+    -Boundary 'resident window navigation does not install global activity hooks' `
+    -Pattern '\bWH_(?:KEYBOARD_LL|MOUSE_LL)\b|InputHook::install' `
+    -Paths @('src/platform/windows/resident_shell.rs')
+
+Assert-NoUnexpectedWriter `
     -Mechanism 'Win32 Priority Separation registry writes' `
     -ApiPattern 'write_registry_dword_(root|create_root)' `
     -AllowedLocationPattern '^src\\(?:application\\win32_priority_separation|backend\\win_registry)\.rs:'
@@ -697,7 +712,7 @@ Assert-SourceMatchCount `
     -Paths @('src/backend/automation.rs') `
     -ExpectedCount 1
 
-# Iced owns UI state and subscriptions; RuntimeHandle remains the sole automation facade.
+# The resident UI owns presentation; RuntimeHandle remains the sole automation facade.
 Assert-SourceMatchCount `
     -Boundary 'Process List enumeration and confirmed tree refresh stay independent of RuntimeCore observations' `
     -Pattern 'list_processes_with_paths\(\)' `
@@ -728,9 +743,22 @@ Assert-NoSourceMatch `
     -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'runtime and control layers do not depend on UI models or Iced' `
-    -Pattern 'crate::ui|\biced::|\bgpui::|ProcessCatalogModel|ProcessListModel|DashboardModel|UpdateModel|ShellModel' `
-    -Paths @('src/backend/automation.rs', 'src/backend/automation', 'src/control')
+    -Boundary 'application runtime control and query models do not depend on UI frameworks or models' `
+    -Pattern 'crate::ui|\b(?:iced|windui|gpui)::|ProcessCatalogModel|ProcessListModel|DashboardModel|UpdateModel|ShellModel' `
+    -Paths @(
+        'src/application',
+        'src/backend/automation.rs',
+        'src/backend/automation',
+        'src/backend/dashboard_metrics.rs',
+        'src/control',
+        'src/foreground',
+        'src/runtime'
+    )
+
+Assert-NoSourceMatch `
+    -Boundary 'shared window visibility stays independent of tray and UI frameworks' `
+    -Pattern '\btray::|\b(?:iced|windui|gpui)::|crate::ui|windows_sys|unsafe' `
+    -Paths @('src/backend/window_visibility.rs')
 
 Assert-SourceMatchCount `
     -Boundary 'WinderustApp owns one Home read model' `
@@ -760,7 +788,7 @@ Assert-NoSourceMatch `
     -Paths @('src/ui/app.rs')
 
 Assert-SourceMatchCount `
-    -Boundary 'Iced application owns one current navigation page' `
+    -Boundary 'Wind UI application owns one current navigation page' `
     -Pattern '^\s*page:\s*Page,' `
     -Paths @('src/ui/app.rs') `
     -ExpectedCount 1
@@ -782,11 +810,38 @@ Assert-SourceMatchCount `
     -Paths @('src/backend/automation.rs') `
     -ExpectedCount 1
 
-$icedApplication = Get-Content -LiteralPath 'src/ui/app.rs' -Encoding utf8 -Raw
-if ($icedApplication -notmatch '(?s)struct WinderustApp\s*\{[^}]*\bsettings:\s*SettingsEditor,') {
-    throw 'WinderustApp must retain SettingsEditor as its settings composition boundary.'
+Assert-SourceMatchCount `
+    -Boundary 'one application-lifetime WinderustApp owner' `
+    -Pattern '^\s*struct WinderustApp\s*\{' `
+    -Paths @('src/ui') `
+    -ExpectedCount 1
+
+$application = Get-Content -LiteralPath 'src/ui/app.rs' -Encoding utf8 -Raw
+$applicationOwner = [regex]::Match($application, '(?s)struct WinderustApp\s*\{(?<fields>[^}]*)\}')
+if (-not $applicationOwner.Success) {
+    throw 'The Wind UI application must retain its application-lifetime owner in app.rs.'
 }
-Write-Host 'Architecture ownership gate passed: WinderustApp owns SettingsEditor'
+$applicationFields = $applicationOwner.Groups['fields'].Value
+foreach ($field in @(
+    @{ Name = 'SettingsEditor'; Pattern = '(?m)^\s*settings:\s*SettingsEditor\s*,' },
+    @{ Name = 'RuntimeHandle'; Pattern = '(?m)^\s*runtime:\s*(?:std::sync::)?Arc<RuntimeHandle>\s*,' },
+    @{ Name = 'RecoveryClient'; Pattern = '(?m)^\s*recovery_client:\s*Arc<Mutex<(?:crate::crash_recovery::)?RecoveryClient>>\s*,' }
+)) {
+    if ($applicationFields -notmatch $field.Pattern) {
+        throw "The Wind UI application must own $($field.Name) outside window content."
+    }
+    Write-Host "Architecture ownership gate passed: Wind UI application owns $($field.Name)"
+}
+
+Assert-NoSourceMatch `
+    -Boundary 'Wind UI application reuses startup and the RuntimeHandle facade' `
+    -Pattern 'RuntimeCore|(?:RuntimeHandle|RecoveryClient)::start\(|SettingsEditor::load\(' `
+    -Paths @('src/ui/app.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Wind UI application delegates native lifecycle and process mutations to existing boundaries' `
+    -Pattern '\bunsafe\b|SetPriorityClass|SetProcessInformation|SetProcessAffinityMask|SetProcessDefaultCpuSets|SuspendThread|ResumeThread|TerminateProcess|std::process::exit\(' `
+    -Paths @('src/ui/app.rs')
 
 
 Assert-NoSourceMatch `
@@ -795,12 +850,21 @@ Assert-NoSourceMatch `
     -Paths @('src/ui/app.rs')
 
 Assert-NoSourceMatch `
-    -Boundary 'production Iced renderer contains no GPUI entities or framework dependencies' `
-    -Pattern '\bgpui(?:_component)?\b|\bEntity<|\bContext<Self>' `
+    -Boundary 'native Wind UI presentation contains no other UI framework dependencies' `
+    -Pattern '\b(?:iced(?:_anim|_tiny_skia)?|gpui(?:_component)?)::|\bEntity<|\bContext<Self>' `
     -Paths @('src/ui')
 
+$manifest = Get-Content -LiteralPath 'Cargo.toml' -Encoding utf8 -Raw
+if ($manifest -match '(?m)^\s*(?:iced(?:_anim|_tiny_skia)?|gpui(?:_component)?)\s*=') {
+    throw 'The production manifest must use Wind UI as its sole UI framework.'
+}
+if ($manifest -notmatch '(?m)^windui\s*=\s*\{[^\r\n]*\brev\s*=') {
+    throw 'The production Wind UI dependency must retain an explicitly reviewed revision.'
+}
+Write-Host 'Architecture ownership gate passed: sole pinned Wind UI dependency'
+
 Assert-NoSourceMatch `
-    -Boundary 'Iced process controls do not mutate native state outside runtime commands' `
+    -Boundary 'native process controls do not mutate Windows state outside runtime commands' `
     -Pattern 'SetPriorityClass|SetProcessInformation|SetProcessAffinityMask|SetProcessDefaultCpuSets|SuspendThread|ResumeThread|TerminateProcess|unsafe' `
     -Paths @('src/ui/process_list.rs', 'src/ui/process_details.rs', 'src/ui/cpu_allocation.rs', 'src/ui/adaptive_engine.rs')
 

@@ -257,7 +257,7 @@ impl RuntimeCore {
         &mut self,
         observations: &mut CycleObservations,
     ) -> bool {
-        let Ok(processes) = observations.processes() else {
+        let Ok(processes) = observations.process_inventory() else {
             return false;
         };
         let current_ids = processes
@@ -593,9 +593,8 @@ impl RuntimeCore {
         self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
         let workload = if settings.general.enabled && adaptive_engine_process_required(settings) {
             observations
-                .processes()
+                .workload_for_observation()
                 .ok()
-                .map(|processes| observations.adaptive_workload(&processes))
                 .map(|group| {
                     group
                         .iter()

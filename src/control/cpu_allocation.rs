@@ -1340,6 +1340,10 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         !self.managed_affinity.is_empty() || !self.managed_cpu_sets.is_empty()
     }
 
+    pub(crate) fn has_policy_claims(&self) -> bool {
+        self.claims.values().any(|claims| !claims.is_empty())
+    }
+
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         self.claims.clear();
         self.pending_reconciliations.clear();
@@ -2149,6 +2153,37 @@ mod tests {
                 crate::cpu_allocation::CpuAllocationMode::SoftCpuSets
             },
         }
+    }
+
+    #[test]
+    fn unchanged_policy_claim_remains_visible_until_released() {
+        let mut coordinator = coordinator();
+        assert!(!coordinator.has_policy_claims());
+        assert_eq!(
+            coordinator.apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                claim(
+                    ControlOwner::AdaptiveEngine,
+                    CpuAllocationRequest::HardAffinity {
+                        logical_processor_mask: 0b1111,
+                    },
+                    7,
+                ),
+                true,
+            ),
+            Ok(CpuAllocationApplyOutcome::Unchanged)
+        );
+        assert!(!coordinator.has_managed_state());
+        assert!(!coordinator.has_pending_reconciliation());
+        assert!(coordinator.has_policy_claims());
+        assert!(coordinator
+            .release_all_policy(ControlOwner::AdaptiveEngine)
+            .failures
+            .is_empty());
+        assert!(!coordinator.has_policy_claims());
+        assert!(!coordinator.has_managed_state());
+        assert!(!coordinator.has_pending_reconciliation());
+        assert!(coordinator.platform.state.borrow().events.is_empty());
     }
 
     #[test]

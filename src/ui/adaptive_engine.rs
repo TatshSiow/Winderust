@@ -1,17 +1,14 @@
-use super::design;
 use super::priority_control::{
     process_dynamic_priority_boost_setting_label, process_gpu_priority_setting_label,
     process_io_priority_setting_label, process_memory_priority_setting_label,
     process_priority_setting_label, process_thread_priority_setting_label,
 };
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{self, Ui};
 use crate::automation::RuntimeStatusSnapshot;
 use crate::config::*;
 use crate::power::ProcessorBoostMode;
-use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
+use windui::prelude::{signal, Align, Element, Signal};
 #[cfg(feature = "runtime-benchmark")]
 #[path = "runtime_benchmark.rs"]
 pub(crate) mod benchmark;
@@ -20,6 +17,7 @@ mod presets;
 #[cfg(feature = "render-smoke")]
 pub(super) use presets::BuiltInAdaptiveEnginePreset;
 use presets::*;
+type NumericInput = (&'static str, Signal<String>, u64, u64);
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum TuningTab {
     #[default]
@@ -97,6 +95,10 @@ pub(super) enum Message {
     ExclusionEnabled(usize, bool),
 }
 impl Editor {
+    pub(super) fn shows_live_status(&self) -> bool {
+        !self.presets_tab
+    }
+
     pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
         if matches!(
             m,
@@ -360,20 +362,21 @@ impl Editor {
     pub(super) fn has_pending_editor(&self) -> bool {
         self.draft.is_some()
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        live: &'a Settings,
-        candidates: &'a [super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
-        self.tuning_view(live, false, candidates)
+    pub(super) fn view(
+        &self,
+        live: &Settings,
+        candidates: &[super::app_picker::Candidate],
+        ui: Ui<Message>,
+    ) -> Element {
+        self.tuning_view(live, false, candidates, ui, &mut Vec::new())
     }
 
-    pub(super) fn preset_modal<'a>(
-        &'a self,
-        live: &'a Settings,
-        candidates: &'a [super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
-        use iced::widget::Space;
+    pub(super) fn preset_modal(
+        &self,
+        live: &Settings,
+        candidates: &[super::app_picker::Candidate],
+        ui: Ui<Message>,
+    ) -> Element {
         let title = if self.read_only {
             self.name.clone()
         } else {
@@ -384,216 +387,270 @@ impl Editor {
             })
             .to_string()
         };
-        let header = row![
-            text(title).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::Cancel)
-        ]
-        .align_y(iced::Center);
-        let name = super::widgets::settings_card(
-            column![
-                text(t!("adaptive_engine.preset_name").to_string()),
-                text_input(&t!("adaptive_engine.preset_name_placeholder"), &self.name)
-                    .on_input_maybe((!self.read_only).then_some(Message::Name)),
-                text(t!("adaptive_engine.preset_name_help").to_string()).style(text::secondary)
-            ]
-            .spacing(design::space::SMALL),
-        );
-        let mut footer = row![Space::new().width(Fill)]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center);
-        if let Some(index) = self.editing.filter(|_| !self.read_only) {
-            footer = footer.push(
-                button(text(t!("common.remove").to_string()))
-                    .style(super::widgets::danger_button)
-                    .on_press(Message::Delete(index)),
-            );
-        }
-        if !self.read_only {
-            footer = footer.push(
-                button(text(t!("adaptive_engine.use_current_settings").to_string()))
-                    .on_press(Message::UseCurrent),
-            );
-        }
-        footer = footer.push(
-            button(text(t!("common.cancel").to_string()))
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::Cancel),
-        );
-        if !self.read_only {
-            footer = footer.push(
-                button(text(t!("common.save").to_string()))
-                    .style(super::widgets::primary_button)
-                    .on_press_maybe(
-                        (!self.name.trim().is_empty() && self.invalid_numbers.is_empty())
-                            .then_some(Message::Save),
-                    ),
-            );
-        }
-        let mut body = column![name, self.tuning_view(live, true, candidates)]
-            .spacing(design::space::MEDIUM)
-            .height(Fill);
+        let name = signal(self.name.clone());
+        let invalid_numbers = signal(self.invalid_numbers.clone());
+        let ui = ui.inspect(move |message: &Message, _refresh| {
+            if let Message::Number(_, raw, min, max, key, title) = message {
+                invalid_numbers.update(|invalid| {
+                    if raw
+                        .parse::<u64>()
+                        .is_ok_and(|value| (*min..=*max).contains(&value))
+                    {
+                        invalid.remove(key);
+                    } else {
+                        invalid.insert(*key, (*min, *max, *title));
+                    }
+                });
+            }
+        });
+        let other_names = live
+            .adaptive_engine_presets
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != self.editing)
+            .map(|(_, preset)| preset.name.trim().to_owned())
+            .collect::<Vec<_>>();
+        let mut native_numbers = Vec::new();
+        let mut body = vec![
+            Element::setting_row_desc(
+                t!("adaptive_engine.preset_name").to_string(),
+                t!("adaptive_engine.preset_name_help").to_string(),
+                ui.input_signal(
+                    name,
+                    t!("adaptive_engine.preset_name_placeholder").to_string(),
+                    Message::Name,
+                )
+                .enabled(!self.read_only)
+                .max_width(340),
+            )
+            .width_match(),
+            self.tuning_view(live, true, candidates, ui.clone(), &mut native_numbers),
+        ];
         if !self.error.is_empty() {
-            body = body.push(text(self.error.clone()).style(text::danger));
+            body.push(widgets::error(self.error.clone()));
         }
-        super::widgets::modal_frame(header, body, footer, (1200, 850))
+        let mut actions = Vec::new();
+        if !self.read_only {
+            if let Some(index) = self.editing {
+                actions.push(ui.button(t!("common.remove").to_string(), Message::Delete(index)));
+            }
+            actions.push(ui.button(
+                t!("adaptive_engine.use_current_settings").to_string(),
+                Message::UseCurrent,
+            ));
+            let names = other_names.clone();
+            body.push(Element::label(name.map(move |raw| {
+                if !raw.trim().is_empty()
+                    && names
+                        .iter()
+                        .any(|other| other.eq_ignore_ascii_case(raw.trim()))
+                {
+                    t!("adaptive_engine.duplicate_preset_name").to_string()
+                } else {
+                    String::new()
+                }
+            })));
+            body.push(Element::label(invalid_numbers.map(|invalid| {
+                invalid
+                    .values()
+                    .next()
+                    .map(|(min, max, title)| format!("{}: {min}..{max}", t!(*title)))
+                    .unwrap_or_default()
+            })));
+            let other_numbers_valid = self.invalid_numbers.keys().all(|key| {
+                native_numbers
+                    .iter()
+                    .any(|(visible, _, _, _)| visible == key)
+            });
+            actions.push(
+                ui.primary_button(t!("common.save").to_string(), Message::Save)
+                    .enabled_when(move || {
+                        let name = name.get();
+                        other_numbers_valid
+                            && native_numbers.iter().all(|(_, raw, min, max)| {
+                                raw.get()
+                                    .parse::<u64>()
+                                    .is_ok_and(|value| (*min..=*max).contains(&value))
+                            })
+                            && !name.trim().is_empty()
+                            && !other_names
+                                .iter()
+                                .any(|other| other.eq_ignore_ascii_case(name.trim()))
+                    }),
+            );
+        }
+        actions.push(ui.button(t!("common.cancel").to_string(), Message::Cancel));
+        widgets::editor_panel(
+            title,
+            widgets::col().children(body),
+            widgets::row().children(actions),
+        )
     }
 
-    fn tuning_view<'a>(
-        &'a self,
-        live: &'a Settings,
+    fn tuning_view(
+        &self,
+        live: &Settings,
         preset: bool,
-        candidates: &'a [super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
+        candidates: &[super::app_picker::Candidate],
+        ui: Ui<Message>,
+        native_numbers: &mut Vec<NumericInput>,
+    ) -> Element {
         let s = if preset {
             self.draft.as_ref().unwrap_or(live)
         } else {
             live
         };
         let editable = !preset || !self.read_only;
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
-        macro_rules! toggle {($key:expr,$($field:ident).+) => {row![
-            setting_label($key).width(Fill),
-            super::widgets::switch(s.$($field).+, editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v)))
-        ].spacing(design::space::SMALL).height(super::widgets::SETTING_ROW_HEIGHT).align_y(iced::Center)};}
-        macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
-            let key=stringify!($($field).+);
-            let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
-            let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if key.ends_with("_percent") || $max==100 {"%"} else {""};
-            row![setting_label_with_unit($key, unit).width(Fill),
-                super::widgets::stepper(&value, $min..=$max, 1,
-                    editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
-            ].spacing(design::space::SMALL).height(46).align_y(iced::Center)
-        }};}
-        macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+ $(, $color:expr)?) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0)))$(.option_color($color))?.width(Fill).into()}else{text($label(selected)).into()};control}};}
-        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).height(46).align_y(iced::Center)};}
+        let mut body = Vec::new();
+        macro_rules! toggle {
+            ($key:expr, $($field:ident).+) => {
+                setting($key, "", ui.toggle(s.$($field).+, |value| Message::Toggle(|s, value| s.$($field).+ = value, value)).enabled(editable))
+            };
+        }
+        macro_rules! number {
+            ($key:expr, $min:expr, $max:expr, $($field:ident).+) => {{
+                let key = stringify!($($field).+);
+                let value = self.numbers.get(key).cloned().unwrap_or_else(|| s.$($field).+.to_string());
+                let raw = signal(value);
+                native_numbers.push((key, raw, $min, $max));
+                let unit = if key.ends_with("_ms") { "ms" } else if key.ends_with("_seconds") { "s" } else if key.ends_with("_percent") || $max == 100 { "%" } else { "" };
+                setting($key, unit, trailing_control(ui.number(raw, $min, $max, 1, move |value| Message::Number(|s, number| s.$($field).+ = number as _, value, $min, $max, key, $key)).enabled(editable)))
+            }};
+        }
+        macro_rules! choice {
+            ($s:ident, $key:expr, $ty:ty, $options:expr, $label:expr, $($field:ident).+) => {{
+                let values: &[$ty] = $options;
+                let selected = s.$($field).+;
+                setting($key, "", trailing_control(ui.select(values.iter().copied().map(|value| Choice(value, $label(value))), Choice(selected, $label(selected)), move |value| Message::Choice(|$s, index| {
+                    let options: &[$ty] = $options;
+                    if let Some(value) = options.get(index) { $s.$($field).+ = *value; }
+                }, values.iter().position(|option| *option == value.0).unwrap_or(0))).enabled(editable)))
+            }};
+        }
         if !preset {
-            body = body.push(super::widgets::settings_card(toggle!(
-                "adaptive_engine.enable",
-                adaptive_engine.enabled
-            )));
-            let mut options: Vec<_> = BuiltInAdaptiveEnginePreset::ALL
+            let mut options = BuiltInAdaptiveEnginePreset::ALL
                 .into_iter()
                 .enumerate()
-                .map(|(i, p)| Choice(i, built_in_adaptive_engine_preset_label(p)))
-                .collect();
+                .map(|(index, value)| Choice(index, built_in_adaptive_engine_preset_label(value)))
+                .collect::<Vec<_>>();
             options.extend(
                 live.adaptive_engine_presets
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| Choice(i + 4, p.name.clone())),
+                    .map(|(index, value)| Choice(index + 4, value.name.clone())),
             );
-            let selected = self.selected_preset(live, &options);
-            body = body.push(super::widgets::settings_card(
-                row![
-                    setting_label("adaptive_engine.preset").width(Fill),
-                    pick_list(options, selected, |choice| if choice.0 < 4 {
-                        Message::BuiltIn(BuiltInAdaptiveEnginePreset::ALL[choice.0])
-                    } else {
-                        Message::Apply(choice.0 - 4)
-                    })
-                    .width(280)
-                    .placeholder(t!("common.custom").to_string())
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
+            let selected = self
+                .selected_preset(live, &options)
+                .unwrap_or_else(|| Choice(usize::MAX, t!("common.custom").to_string()));
+            body.push(widgets::card(
+                "",
+                [
+                    toggle!("adaptive_engine.enable", adaptive_engine.enabled),
+                    Element::divider(),
+                    setting(
+                        "adaptive_engine.preset",
+                        "",
+                        trailing_control(ui.select(options, selected, |choice| {
+                            if choice.0 < 4 {
+                                Message::BuiltIn(BuiltInAdaptiveEnginePreset::ALL[choice.0])
+                            } else if choice.0 == usize::MAX {
+                                Message::RailTab(true)
+                            } else {
+                                Message::Apply(choice.0 - 4)
+                            }
+                        })),
+                    ),
+                ],
             ));
         }
         let tab = self.tuning_tabs[usize::from(preset)];
-        let mut tabs = row![].spacing(design::space::TIGHT);
-        for next in TuningTab::ALL
-            .into_iter()
-            .filter(|tab| !preset || *tab != TuningTab::CustomRules)
-        {
-            tabs = tabs.push(
-                super::widgets::panel_tab(
-                    t!(next.key()).to_string(),
-                    next == tab,
-                    Message::TuningTab(next),
-                    false,
-                )
-                .height(36),
-            );
-        }
-        body = body.push(
-            iced::widget::container(tabs)
-                .padding(design::space::TIGHT as u16)
-                .width(Fill)
-                .style(super::widgets::surface),
+        body.push(
+            Element::scroll()
+                .scroll_axis(windui::spec::ScrollAxis::Horizontal)
+                .width_match()
+                .height(44)
+                .child(
+                    ui.segmented(
+                        TuningTab::ALL
+                            .into_iter()
+                            .filter(|tab| !preset || *tab != TuningTab::CustomRules),
+                        tab,
+                        Message::TuningTab,
+                    )
+                    .min_width(520),
+                ),
         );
-        let header = body;
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
             TuningTab::CpuBehaviour => {
-                let pressure = column![
-                    number!(
-                        "adaptive_engine_process.background_app_cpu_threshold",
-                        1,
-                        100,
-                        adaptive_engine_process.background_app_cpu_threshold_percent
-                    ),
-                    number!(
-                        "adaptive_engine_process.maximum_restrained_apps",
-                        1,
-                        64,
-                        adaptive_engine_process.maximum_restrained_apps
-                    ),
-                    number!(
-                        "adaptive_engine_process.reaction_time",
-                        250,
-                        5000,
-                        adaptive_engine_process.reaction_time_ms
-                    ),
-                    number!(
-                        "adaptive_engine_process.foreground_or_system_cpu_threshold",
-                        1,
-                        100,
-                        adaptive_engine_process.foreground_or_system_cpu_threshold_percent
-                    ),
-                    number!(
-                        "adaptive_engine_process.cpu_restraint_time",
-                        1,
-                        3600,
-                        adaptive_engine_process.cpu_restraint_time_seconds
-                    ),
-                    number!(
-                        "adaptive_engine_process.cpu_recovery_threshold",
-                        1,
-                        100,
-                        adaptive_engine_process.cpu_recovery_threshold_percent
-                    ),
-                    number!(
-                        "adaptive_engine_process.cpu_recovery_time",
-                        1,
-                        3600,
-                        adaptive_engine_process.cpu_recovery_time_seconds
-                    )
-                ]
-                .spacing(design::space::MEDIUM);
-                body = body
-                    .push(text(
-                        t!("adaptive_engine_process.shared_detection").to_string(),
-                    ))
-                    .push(super::widgets::settings_card(pressure));
-                let action = super::widgets::switch(
-                    s.adaptive_engine_process.cpu_pressure_restraint_enabled,
-                    editable.then_some(|v| {
-                        Message::Toggle(
-                            |s, v| s.adaptive_engine_process.cpu_pressure_restraint_enabled = v,
-                            v,
-                        )
-                    }),
-                );
-                body = body.push(super::widgets::setting_group(
-                    "adaptive_engine.cpu_pressure".to_string(),
-                    self.expanded[usize::from(preset)][0],
-                    Message::Collapse(0),
-                    action,
-                    column![text(
-                        t!("adaptive_engine_process.cpu_pressure_restraint_help").to_string()
-                    )
-                    .style(text::secondary)],
+                body.push(widgets::card(
+                    t!("adaptive_engine_process.shared_detection").to_string(),
+                    [
+                        number!(
+                            "adaptive_engine_process.background_app_cpu_threshold",
+                            1,
+                            100,
+                            adaptive_engine_process.background_app_cpu_threshold_percent
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine_process.maximum_restrained_apps",
+                            1,
+                            64,
+                            adaptive_engine_process.maximum_restrained_apps
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine_process.reaction_time",
+                            250,
+                            5000,
+                            adaptive_engine_process.reaction_time_ms
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine_process.foreground_or_system_cpu_threshold",
+                            1,
+                            100,
+                            adaptive_engine_process.foreground_or_system_cpu_threshold_percent
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine_process.cpu_restraint_time",
+                            1,
+                            3600,
+                            adaptive_engine_process.cpu_restraint_time_seconds
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine_process.cpu_recovery_threshold",
+                            1,
+                            100,
+                            adaptive_engine_process.cpu_recovery_threshold_percent
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine_process.cpu_recovery_time",
+                            1,
+                            3600,
+                            adaptive_engine_process.cpu_recovery_time_seconds
+                        ),
+                    ],
                 ));
-                let mut allocation = column![
+                body.push(widgets::card(
+                    "",
+                    [
+                        toggle!(
+                            "adaptive_engine.cpu_pressure",
+                            adaptive_engine_process.cpu_pressure_restraint_enabled
+                        ),
+                        ui.collapsible(
+                            t!("common.feature_info").to_string(),
+                            self.expanded[usize::from(preset)][0],
+                            widgets::help("adaptive_engine_process.cpu_pressure_restraint_help"),
+                            |_| Message::Collapse(0),
+                        ),
+                    ],
+                ));
+                let mut allocation = vec![
                     choice!(
                         s,
                         "adaptive_engine_process.processor_selection",
@@ -609,14 +666,13 @@ impl Editor {
                         &CpuAllocationMethod::ALL,
                         allocation_label,
                         adaptive_engine_process.cpu_allocation_method
-                    )
-                ]
-                .spacing(design::space::MEDIUM);
+                    ),
+                ];
                 if s.adaptive_engine_process
                     .background_processor_selection
                     .uses_percentage()
                 {
-                    allocation = allocation.push(number!(
+                    allocation.push(number!(
                         "adaptive_engine_process.processor_limit",
                         1,
                         100,
@@ -625,54 +681,39 @@ impl Editor {
                 }
                 if s.adaptive_engine_process.background_processor_selection
                     == BackgroundProcessorSelection::Custom
-                    && editable
                 {
-                    let mask = s
-                        .adaptive_engine_process
-                        .specific_processors
-                        .iter()
-                        .filter(|i| **i < 64)
-                        .fold(0u64, |m, i| m | (1u64 << i));
-                    allocation = allocation.push(super::cpu_allocation::mask_selector(
-                        mask,
-                        &crate::cpu_allocation::logical_processors(),
-                        &s.cpu_allocation_presets,
-                        Message::Mask,
-                    ));
+                    let mask = crate::cpu_allocation::logical_processor_indices_mask(
+                        &s.adaptive_engine_process.specific_processors,
+                    );
+                    allocation.push(
+                        super::cpu_allocation::mask_selector(
+                            mask,
+                            &crate::cpu_allocation::logical_processors(),
+                            &s.cpu_allocation_presets,
+                            Message::Mask,
+                            ui.clone(),
+                        )
+                        .enabled(editable),
+                    );
                 }
-                if s.adaptive_engine_process.background_processor_selection
-                    == BackgroundProcessorSelection::Custom
-                    && !editable
-                {
-                    allocation = allocation.push(text(format!(
-                        "{}: {:?}",
-                        t!("adaptive_engine_process.specific_processors"),
-                        s.adaptive_engine_process.specific_processors
-                    )));
-                }
-                body = body.push(super::widgets::setting_group(
-                    "adaptive_engine_process.limit_background_processors".to_string(),
-                    self.expanded[usize::from(preset)][1],
-                    Message::Collapse(1),
-                    super::widgets::switch(
-                        s.adaptive_engine_process
-                            .limit_background_processors_enabled,
-                        editable.then_some(|v| {
-                            Message::Toggle(
-                                |s, v| {
-                                    s.adaptive_engine_process
-                                        .limit_background_processors_enabled = v
-                                },
-                                v,
-                            )
-                        }),
-                    ),
-                    allocation,
+                body.push(widgets::card(
+                    "",
+                    [
+                        toggle!(
+                            "adaptive_engine_process.limit_background_processors",
+                            adaptive_engine_process.limit_background_processors_enabled
+                        ),
+                        ui.collapsible(
+                            t!("settings.advanced").to_string(),
+                            self.expanded[usize::from(preset)][1],
+                            widgets::col().children(allocation),
+                            |_| Message::Collapse(1),
+                        ),
+                    ],
                 ));
                 let zones = &s.adaptive_engine_process.dynamic_resource_zone_settings;
-                let mut zone_content = column![
-                    text(t!("adaptive_engine_process.zone_warning").to_string())
-                        .style(text::secondary),
+                let mut zone_controls = vec![
+                    widgets::help("adaptive_engine_process.zone_warning"),
                     choice!(
                         s,
                         "adaptive_engine_process.zone_selection",
@@ -682,11 +723,10 @@ impl Editor {
                         adaptive_engine_process
                             .dynamic_resource_zone_settings
                             .background_processor_selection
-                    )
-                ]
-                .spacing(design::space::MEDIUM);
+                    ),
+                ];
                 if zones.background_processor_selection.uses_percentage() {
-                    zone_content = zone_content.push(number!(
+                    zone_controls.push(number!(
                         "adaptive_engine_process.foreground_zone_share",
                         1,
                         99,
@@ -696,1335 +736,774 @@ impl Editor {
                     ));
                 }
                 if zones.background_processor_selection == BackgroundProcessorSelection::Custom {
-                    if editable {
-                        zone_content = zone_content.push(super::cpu_allocation::mask_selector(
+                    zone_controls.push(
+                        super::cpu_allocation::mask_selector(
                             crate::cpu_allocation::logical_processor_indices_mask(
                                 &zones.specific_processors,
                             ),
                             &crate::cpu_allocation::logical_processors(),
                             &s.cpu_allocation_presets,
                             Message::ZoneMask,
-                        ));
-                    } else {
-                        zone_content = zone_content.push(text(format!(
-                            "{}: {:?}",
-                            t!("adaptive_engine_process.specific_processors"),
-                            zones.specific_processors
-                        )));
-                    }
+                            ui.clone(),
+                        )
+                        .enabled(editable),
+                    );
                 }
-                body = body.push(super::widgets::setting_group(
-                    "adaptive_engine_process.dynamic_resource_zones".to_string(),
-                    self.expanded[usize::from(preset)][2],
-                    Message::Collapse(2),
-                    super::widgets::switch(
-                        s.adaptive_engine_process.dynamic_resource_zones_enabled,
-                        editable.then_some(|v| {
-                            Message::Toggle(
-                                |s, v| s.adaptive_engine_process.dynamic_resource_zones_enabled = v,
-                                v,
-                            )
-                        }),
-                    ),
-                    zone_content,
+                body.push(widgets::card(
+                    "",
+                    [
+                        toggle!(
+                            "adaptive_engine_process.dynamic_resource_zones",
+                            adaptive_engine_process.dynamic_resource_zones_enabled
+                        ),
+                        ui.collapsible(
+                            t!("settings.advanced").to_string(),
+                            self.expanded[usize::from(preset)][2],
+                            widgets::col().children(zone_controls),
+                            |_| Message::Collapse(2),
+                        ),
+                    ],
                 ));
             }
             TuningTab::ProcessorPower => {
-                body = body.push(super::widgets::settings_card(toggle!(
-                    "adaptive_engine.processor_power_policy",
-                    adaptive_engine.processor_power_policy_enabled
-                )));
-                body = body.push(
-                    text(t!("adaptive_engine.base_processor_policy").to_string())
-                        .size(design::typography::SECTION),
-                );
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.core_parking_min",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.core_parking_min
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.processor_min",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.performance_min
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.processor_max",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.performance_max
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.boost_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "processor_power.boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.base_processor_policy.boost_mode
-                )));
-
-                body = body.push(
-                    text(t!("adaptive_engine.background_pressure_profile").to_string())
-                        .size(design::typography::SECTION),
-                );
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.ac_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.background_pressure_profile.ac_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.ac_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.background_pressure_profile.ac_mode
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.battery_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.background_pressure_profile.battery_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.battery_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.background_pressure_profile.battery_mode
-                )));
-
-                body = body.push(
-                    text(t!("adaptive_engine.focus_and_launch_profile").to_string())
-                        .size(design::typography::SECTION),
-                );
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.ac_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.focus_and_launch_profile.ac_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.ac_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.focus_and_launch_profile.ac_mode
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.battery_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.focus_and_launch_profile.battery_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.battery_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.focus_and_launch_profile.battery_mode
-                )));
+                body.push(widgets::card(
+                    "",
+                    [toggle!(
+                        "adaptive_engine.processor_power_policy",
+                        adaptive_engine.processor_power_policy_enabled
+                    )],
+                ));
+                body.push(widgets::card(
+                    t!("adaptive_engine.base_processor_policy").to_string(),
+                    [
+                        number!(
+                            "processor_power.core_parking_min",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.core_parking_min
+                        ),
+                        Element::divider(),
+                        number!(
+                            "processor_power.processor_min",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.performance_min
+                        ),
+                        Element::divider(),
+                        number!(
+                            "processor_power.processor_max",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.performance_max
+                        ),
+                        Element::divider(),
+                        number!(
+                            "processor_power.boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.boost_policy
+                        ),
+                        Element::divider(),
+                        choice!(
+                            s,
+                            "processor_power.boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.base_processor_policy.boost_mode
+                        ),
+                    ],
+                ));
+                body.push(widgets::card(
+                    t!("adaptive_engine.background_pressure_profile").to_string(),
+                    [
+                        number!(
+                            "adaptive_engine.ac_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.background_pressure_profile.ac_policy
+                        ),
+                        Element::divider(),
+                        choice!(
+                            s,
+                            "adaptive_engine.ac_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.background_pressure_profile.ac_mode
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine.battery_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.background_pressure_profile.battery_policy
+                        ),
+                        Element::divider(),
+                        choice!(
+                            s,
+                            "adaptive_engine.battery_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.background_pressure_profile.battery_mode
+                        ),
+                    ],
+                ));
+                body.push(widgets::card(
+                    t!("adaptive_engine.focus_and_launch_profile").to_string(),
+                    [
+                        number!(
+                            "adaptive_engine.ac_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.focus_and_launch_profile.ac_policy
+                        ),
+                        Element::divider(),
+                        choice!(
+                            s,
+                            "adaptive_engine.ac_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.focus_and_launch_profile.ac_mode
+                        ),
+                        Element::divider(),
+                        number!(
+                            "adaptive_engine.battery_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.focus_and_launch_profile.battery_policy
+                        ),
+                        Element::divider(),
+                        choice!(
+                            s,
+                            "adaptive_engine.battery_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.focus_and_launch_profile.battery_mode
+                        ),
+                    ],
+                ));
             }
             TuningTab::PriorityControl => {
-                let mut table = column![row![
-                    text(t!("common.control").to_string()).width(Fill),
-                    row![
-                        text(t!("common.enable").to_string()).width(64),
-                        text(t!("common.focus_process").to_string()).width(Fill),
-                        text(t!("common.visible_window").to_string()).width(Fill),
-                        text(t!("common.background_process").to_string()).width(Fill),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .width(iced::Length::FillPortion(3)),
-                    iced::widget::Space::new().width(design::ICON_SIZE),
-                ]
-                .spacing(design::space::SMALL)
-                .padding(super::widgets::CARD_PADDING as u16)]
-                .spacing(super::widgets::CARD_GAP);
-                table = table.push(super::widgets::setting_group(
-                    "nav.process_priority".to_string(),
-                    self.priority_expanded[usize::from(preset)][0],
-                    Message::TogglePriority(0),
-                    row![
-                        iced::widget::container(super::widgets::switch(
-                            s.adaptive_engine_process.process_priority_enabled,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.process_priority_enabled = v,
-                                    v,
-                                )
-                            }),
-                        ))
-                        .width(64),
-                        iced::widget::container(selector!(
-                            s,
-                            "cpu_allocation.focus",
-                            ProcessPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessPrioritySetting::ALL
-                            },
-                            process_priority_setting_label,
-                            adaptive_engine_process.focus_process_priority,
-                            |value, theme| super::priority_control::Value::Process(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.visible_window",
-                            ProcessPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessPrioritySetting::ALL
-                            },
-                            process_priority_setting_label,
-                            adaptive_engine_process.visible_window_priority,
-                            |value, theme| super::priority_control::Value::Process(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.background_process",
-                            ProcessPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessPrioritySetting::ALL
-                            },
-                            process_priority_setting_label,
-                            adaptive_engine_process.background_priority,
-                            |value, theme| super::priority_control::Value::Process(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                    .width(iced::Length::FillPortion(3)),
-                    column![
-                        priority_option_row(
-                            "adaptive_engine.detection",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .process_priority_foreground_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .process_priority_foreground_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .process_priority_visible_window_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .process_priority_visible_window_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                text("\u{2014}").style(iced::widget::text::secondary).into()
-                            ]
-                        ),
-                        priority_option_row(
-                            "adaptive_engine.keep_existing_priority",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .process_priority_preserve_foreground
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .process_priority_preserve_foreground = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .process_priority_preserve_visible_window
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .process_priority_preserve_visible_window = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .process_priority_preserve_background
-                                )
-                                .label(t!("adaptive_engine.same_or_lower").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .process_priority_preserve_background = v
-                                    },
-                                    v
-                                )))
-                                .into()
-                            ]
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                ));
-                table = table.push(super::widgets::setting_group(
-                    "nav.background_efficiency".to_string(),
-                    self.priority_expanded[usize::from(preset)][1],
-                    Message::TogglePriority(1),
-                    row![
-                        iced::widget::container(super::widgets::switch(
-                            s.adaptive_engine_process.background_efficiency_enabled,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process.background_efficiency_enabled = v
-                                    },
-                                    v,
-                                )
-                            }),
-                        ))
-                        .width(64),
-                        iced::widget::container(
-                            pick_list(
-                                [
-                                    Choice(false, t!("common.disabled").to_string()),
-                                    Choice(true, t!("common.enabled").to_string())
-                                ],
-                                Some(Choice(
-                                    s.adaptive_engine_process
-                                        .focus_process_background_efficiency_mode,
-                                    t!(if s
-                                        .adaptive_engine_process
-                                        .focus_process_background_efficiency_mode
-                                    {
-                                        "common.enabled"
-                                    } else {
-                                        "common.disabled"
-                                    })
-                                    .to_string()
-                                )),
-                                |v| Message::Toggle(
-                                    |s, v| s
-                                        .adaptive_engine_process
-                                        .focus_process_background_efficiency_mode = v,
-                                    v.0
-                                )
-                            )
-                            .width(Fill)
-                        )
-                        .width(Fill),
-                        iced::widget::container(
-                            pick_list(
-                                [
-                                    Choice(false, t!("common.disabled").to_string()),
-                                    Choice(true, t!("common.enabled").to_string())
-                                ],
-                                Some(Choice(
-                                    s.adaptive_engine_process
-                                        .visible_window_background_efficiency_mode,
-                                    t!(if s
-                                        .adaptive_engine_process
-                                        .visible_window_background_efficiency_mode
-                                    {
-                                        "common.enabled"
-                                    } else {
-                                        "common.disabled"
-                                    })
-                                    .to_string()
-                                )),
-                                |v| Message::Toggle(
-                                    |s, v| s
-                                        .adaptive_engine_process
-                                        .visible_window_background_efficiency_mode = v,
-                                    v.0
-                                )
-                            )
-                            .width(Fill)
-                        )
-                        .width(Fill),
-                        iced::widget::container(
-                            pick_list(
-                                [
-                                    Choice(false, t!("common.disabled").to_string()),
-                                    Choice(true, t!("common.enabled").to_string())
-                                ],
-                                Some(Choice(
-                                    s.adaptive_engine_process.background_efficiency_mode,
-                                    t!(if s.adaptive_engine_process.background_efficiency_mode {
-                                        "common.enabled"
-                                    } else {
-                                        "common.disabled"
-                                    })
-                                    .to_string()
-                                )),
-                                |v| Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.background_efficiency_mode = v,
-                                    v.0
-                                )
-                            )
-                            .width(Fill)
-                        )
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                    .width(iced::Length::FillPortion(3)),
-                    column![priority_option_row(
-                        "adaptive_engine.detection",
-                        [
-                            checkbox(
-                                s.adaptive_engine_process
-                                    .focus_process_background_efficiency_override_enabled
-                            )
-                            .label(t!("common.enabled").to_string())
-                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                |s, v| {
-                                    s.adaptive_engine_process
-                                        .focus_process_background_efficiency_override_enabled = v
-                                },
-                                v
-                            )))
-                            .into(),
-                            checkbox(
-                                s.adaptive_engine_process
-                                    .visible_window_background_efficiency_override_enabled
-                            )
-                            .label(t!("common.enabled").to_string())
-                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                |s, v| {
-                                    s.adaptive_engine_process
-                                        .visible_window_background_efficiency_override_enabled = v
-                                },
-                                v
-                            )))
-                            .into(),
-                            text("\u{2014}").style(iced::widget::text::secondary).into()
-                        ]
-                    )]
-                    .spacing(design::space::SMALL),
-                ));
-                table = table.push(super::widgets::setting_group(
-                    "nav.thread_priority".to_string(),
-                    self.priority_expanded[usize::from(preset)][2],
-                    Message::TogglePriority(2),
-                    row![
-                        iced::widget::container(super::widgets::switch(
-                            s.adaptive_engine_process.thread_priority.enabled,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.thread_priority.enabled = v,
-                                    v,
-                                )
-                            }),
-                        ))
-                        .width(64),
-                        iced::widget::container(selector!(
-                            s,
-                            "cpu_allocation.focus",
-                            ProcessThreadPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessThreadPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessThreadPrioritySetting::ALL
-                            },
-                            process_thread_priority_setting_label,
-                            adaptive_engine_process.thread_priority.foreground_priority,
-                            |value, theme| super::priority_control::Value::Thread(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.visible_window",
-                            ProcessThreadPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessThreadPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessThreadPrioritySetting::ALL
-                            },
-                            process_thread_priority_setting_label,
-                            adaptive_engine_process
-                                .thread_priority
-                                .visible_window_priority,
-                            |value, theme| super::priority_control::Value::Thread(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.background_process",
-                            ProcessThreadPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessThreadPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessThreadPrioritySetting::ALL
-                            },
-                            process_thread_priority_setting_label,
-                            adaptive_engine_process.thread_priority.background_priority,
-                            |value, theme| super::priority_control::Value::Thread(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                    .width(iced::Length::FillPortion(3)),
-                    column![
-                        priority_option_row(
-                            "adaptive_engine.detection",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .thread_priority
-                                        .foreground_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .thread_priority
-                                            .foreground_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .thread_priority
-                                        .visible_window_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .thread_priority
-                                            .visible_window_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                text("\u{2014}").style(iced::widget::text::secondary).into()
-                            ]
-                        ),
-                        priority_option_row(
-                            "adaptive_engine.keep_existing_priority",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .thread_priority
-                                        .preserve_foreground_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .thread_priority
-                                            .preserve_foreground_priority = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .thread_priority
-                                        .preserve_visible_window_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .thread_priority
-                                            .preserve_visible_window_priority = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .thread_priority
-                                        .preserve_background_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_lower").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .thread_priority
-                                            .preserve_background_priority = v
-                                    },
-                                    v
-                                )))
-                                .into()
-                            ]
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                ));
-                table = table.push(super::widgets::setting_group(
-                    "nav.dynamic_priority_boost".to_string(),
-                    self.priority_expanded[usize::from(preset)][3],
-                    Message::TogglePriority(3),
-                    row![
-                        iced::widget::container(super::widgets::switch(
-                            s.adaptive_engine_process.dynamic_priority_boost.enabled,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process.dynamic_priority_boost.enabled = v
-                                    },
-                                    v,
-                                )
-                            }),
-                        ))
-                        .width(64),
-                        iced::widget::container(selector!(
-                            s,
-                            "cpu_allocation.focus",
-                            ProcessDynamicPriorityBoostSetting,
-                            &ProcessDynamicPriorityBoostSetting::ALL,
-                            process_dynamic_priority_boost_setting_label,
-                            adaptive_engine_process
-                                .dynamic_priority_boost
-                                .foreground_boost
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.visible_window",
-                            ProcessDynamicPriorityBoostSetting,
-                            &ProcessDynamicPriorityBoostSetting::ALL,
-                            process_dynamic_priority_boost_setting_label,
-                            adaptive_engine_process
-                                .dynamic_priority_boost
-                                .visible_window_boost
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.background_process",
-                            ProcessDynamicPriorityBoostSetting,
-                            &ProcessDynamicPriorityBoostSetting::ALL,
-                            process_dynamic_priority_boost_setting_label,
-                            adaptive_engine_process
-                                .dynamic_priority_boost
-                                .background_boost
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                    .width(iced::Length::FillPortion(3)),
-                    column![priority_option_row(
-                        "adaptive_engine.detection",
-                        [
-                            checkbox(
-                                s.adaptive_engine_process
-                                    .dynamic_priority_boost
-                                    .foreground_detection_enabled
-                            )
-                            .label(t!("common.enabled").to_string())
-                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                |s, v| {
-                                    s.adaptive_engine_process
-                                        .dynamic_priority_boost
-                                        .foreground_detection_enabled = v
-                                },
-                                v
-                            )))
-                            .into(),
-                            checkbox(
-                                s.adaptive_engine_process
-                                    .dynamic_priority_boost
-                                    .visible_window_detection_enabled
-                            )
-                            .label(t!("common.enabled").to_string())
-                            .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                |s, v| {
-                                    s.adaptive_engine_process
-                                        .dynamic_priority_boost
-                                        .visible_window_detection_enabled = v
-                                },
-                                v
-                            )))
-                            .into(),
-                            text("\u{2014}").style(iced::widget::text::secondary).into()
-                        ]
-                    )]
-                    .spacing(design::space::SMALL),
-                ));
-                table = table.push(super::widgets::setting_group(
-                    "nav.io_priority".to_string(),
-                    self.priority_expanded[usize::from(preset)][4],
-                    Message::TogglePriority(4),
-                    row![
-                        iced::widget::container(super::widgets::switch(
-                            s.adaptive_engine_process.io_priority.enabled,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.io_priority.enabled = v,
-                                    v,
-                                )
-                            }),
-                        ))
-                        .width(64),
-                        iced::widget::container(selector!(
-                            s,
-                            "cpu_allocation.focus",
-                            ProcessIoPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessIoPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessIoPrioritySetting::ALL
-                            },
-                            process_io_priority_setting_label,
-                            adaptive_engine_process.io_priority.foreground_priority,
-                            |value, theme| super::priority_control::Value::Io(value.0).color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.visible_window",
-                            ProcessIoPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessIoPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessIoPrioritySetting::ALL
-                            },
-                            process_io_priority_setting_label,
-                            adaptive_engine_process.io_priority.visible_window_priority,
-                            |value, theme| super::priority_control::Value::Io(value.0).color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.background_process",
-                            ProcessIoPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessIoPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessIoPrioritySetting::ALL
-                            },
-                            process_io_priority_setting_label,
-                            adaptive_engine_process.io_priority.background_priority,
-                            |value, theme| super::priority_control::Value::Io(value.0).color(theme)
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                    .width(iced::Length::FillPortion(3)),
-                    column![
-                        priority_option_row(
-                            "adaptive_engine.detection",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .io_priority
-                                        .foreground_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .io_priority
-                                            .foreground_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .io_priority
-                                        .visible_window_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .io_priority
-                                            .visible_window_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                text("\u{2014}").style(iced::widget::text::secondary).into()
-                            ]
-                        ),
-                        priority_option_row(
-                            "adaptive_engine.keep_existing_priority",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .io_priority
-                                        .preserve_foreground_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .io_priority
-                                            .preserve_foreground_priority = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .io_priority
-                                        .preserve_visible_window_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .io_priority
-                                            .preserve_visible_window_priority = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .io_priority
-                                        .preserve_background_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_lower").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .io_priority
-                                            .preserve_background_priority = v
-                                    },
-                                    v
-                                )))
-                                .into()
-                            ]
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                ));
-                table = table.push(super::widgets::setting_group(
-                    "nav.gpu_priority".to_string(),
-                    self.priority_expanded[usize::from(preset)][5],
-                    Message::TogglePriority(5),
-                    row![
-                        iced::widget::container(super::widgets::switch(
-                            s.adaptive_engine_process.gpu_priority.enabled,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.gpu_priority.enabled = v,
-                                    v,
-                                )
-                            }),
-                        ))
-                        .width(64),
-                        iced::widget::container(selector!(
-                            s,
-                            "cpu_allocation.focus",
-                            ProcessGpuPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessGpuPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessGpuPrioritySetting::ALL
-                            },
-                            process_gpu_priority_setting_label,
-                            adaptive_engine_process.gpu_priority.foreground_priority,
-                            |value, theme| super::priority_control::Value::Gpu(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.visible_window",
-                            ProcessGpuPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessGpuPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessGpuPrioritySetting::ALL
-                            },
-                            process_gpu_priority_setting_label,
-                            adaptive_engine_process.gpu_priority.visible_window_priority,
-                            |value, theme| super::priority_control::Value::Gpu(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.background_process",
-                            ProcessGpuPrioritySetting,
-                            if s.advanced.expose_all_priority_values {
-                                &ProcessGpuPrioritySetting::ADVANCED_ALL
-                            } else {
-                                &ProcessGpuPrioritySetting::ALL
-                            },
-                            process_gpu_priority_setting_label,
-                            adaptive_engine_process.gpu_priority.background_priority,
-                            |value, theme| super::priority_control::Value::Gpu(value.0)
-                                .color(theme)
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                    .width(iced::Length::FillPortion(3)),
-                    column![
-                        priority_option_row(
-                            "adaptive_engine.detection",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .gpu_priority
-                                        .foreground_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .gpu_priority
-                                            .foreground_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .gpu_priority
-                                        .visible_window_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .gpu_priority
-                                            .visible_window_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                text("\u{2014}").style(iced::widget::text::secondary).into()
-                            ]
-                        ),
-                        priority_option_row(
-                            "adaptive_engine.keep_existing_priority",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .gpu_priority
-                                        .preserve_foreground_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .gpu_priority
-                                            .preserve_foreground_priority = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .gpu_priority
-                                        .preserve_visible_window_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .gpu_priority
-                                            .preserve_visible_window_priority = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .gpu_priority
-                                        .preserve_background_priority
-                                )
-                                .label(t!("adaptive_engine.same_or_lower").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .gpu_priority
-                                            .preserve_background_priority = v
-                                    },
-                                    v
-                                )))
-                                .into()
-                            ]
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                ));
-                table = table.push(super::widgets::setting_group(
-                    "nav.memory_priority".to_string(),
-                    self.priority_expanded[usize::from(preset)][6],
-                    Message::TogglePriority(6),
-                    row![
-                        iced::widget::container(super::widgets::switch(
-                            s.adaptive_engine_process.memory_priority_enabled,
-                            editable.then_some(|v| {
-                                Message::Toggle(
-                                    |s, v| s.adaptive_engine_process.memory_priority_enabled = v,
-                                    v,
-                                )
-                            }),
-                        ))
-                        .width(64),
-                        iced::widget::container(selector!(
-                            s,
-                            "cpu_allocation.focus",
-                            ProcessMemoryPrioritySetting,
-                            &ProcessMemoryPrioritySetting::ALL,
-                            process_memory_priority_setting_label,
-                            adaptive_engine_process.focus_process_memory_priority
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.visible_window",
-                            ProcessMemoryPrioritySetting,
-                            &ProcessMemoryPrioritySetting::ALL,
-                            process_memory_priority_setting_label,
-                            adaptive_engine_process.visible_window_memory_priority
-                        ))
-                        .width(Fill),
-                        iced::widget::container(selector!(
-                            s,
-                            "common.background_process",
-                            ProcessMemoryPrioritySetting,
-                            &ProcessMemoryPrioritySetting::ALL,
-                            process_memory_priority_setting_label,
-                            adaptive_engine_process.background_memory_priority
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                    .width(iced::Length::FillPortion(3)),
-                    column![
-                        priority_option_row(
-                            "adaptive_engine.detection",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .memory_priority_foreground_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .memory_priority_foreground_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .memory_priority_visible_window_detection_enabled
-                                )
-                                .label(t!("common.enabled").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .memory_priority_visible_window_detection_enabled = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                text("\u{2014}").style(iced::widget::text::secondary).into()
-                            ]
-                        ),
-                        priority_option_row(
-                            "adaptive_engine.keep_existing_priority",
-                            [
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .memory_priority_preserve_foreground
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .memory_priority_preserve_foreground = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .memory_priority_preserve_visible_window
-                                )
-                                .label(t!("adaptive_engine.same_or_higher").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .memory_priority_preserve_visible_window = v
-                                    },
-                                    v
-                                )))
-                                .into(),
-                                checkbox(
-                                    s.adaptive_engine_process
-                                        .memory_priority_preserve_background
-                                )
-                                .label(t!("adaptive_engine.same_or_lower").to_string())
-                                .on_toggle_maybe(editable.then_some(|v| Message::Toggle(
-                                    |s, v| {
-                                        s.adaptive_engine_process
-                                            .memory_priority_preserve_background = v
-                                    },
-                                    v
-                                )))
-                                .into()
-                            ]
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                ));
-                body = body.push(table.width(Fill));
-            }
-            TuningTab::CustomRules => {}
-        }
-        if !preset && tab == TuningTab::CustomRules {
-            body = body
-                .push(text(t!("adaptive_engine_process.custom_rules").to_string()))
-                .push(super::app_picker::view(
-                    &self.path,
-                    candidates,
-                    true,
-                    Message::Path,
-                    Message::Browse,
-                    super::process_rules::can_add_process_candidate(
-                        &self.path,
-                        |path| {
-                            s.adaptive_engine_process.custom_rules.iter().any(|rule| {
-                                super::process_rules::process_setting_matches(
-                                    &rule.executable_path,
-                                    path,
-                                )
-                            })
-                        },
-                        crate::adaptive_engine_process::is_builtin_excluded,
-                    )
-                    .then_some(Message::AddExclusion),
-                    |path| {
-                        super::process_rules::can_add_process_candidate(
-                            path,
-                            |path| {
-                                s.adaptive_engine_process.custom_rules.iter().any(|rule| {
-                                    super::process_rules::process_setting_matches(
-                                        &rule.executable_path,
-                                        path,
-                                    )
-                                })
-                            },
-                            crate::adaptive_engine_process::is_builtin_excluded,
-                        )
-                        .then_some(true)
+                let mut controls = vec![toggle!(
+                    "common.enable",
+                    adaptive_engine_process.process_priority_enabled
+                )];
+                controls.push(choice!(
+                    s,
+                    "common.focus_process",
+                    ProcessPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessPrioritySetting::ALL
                     },
+                    process_priority_setting_label,
+                    adaptive_engine_process.focus_process_priority
                 ));
-            let rules = s
-                .adaptive_engine_process
-                .custom_rules
-                .iter()
-                .enumerate()
-                .map(|(i, rule)| {
-                    (
-                        super::widgets::stable_key(&rule.executable_path),
-                        super::widgets::process_rule_row(
-                            &rule.executable_path,
-                            candidates,
-                            checkbox(rule.enabled)
-                                .on_toggle(move |value| Message::ExclusionEnabled(i, value))
-                                .into(),
-                            vec![],
-                            Some(Message::RemoveExclusion(i)),
-                        ),
-                    )
-                })
-                .collect();
-            body = body.push(super::widgets::process_rules_table(
-                [],
-                rules,
-                t!("common.no_custom_rules").to_string(),
-            ));
-        }
-
-        if let Some(error) = self.validation_error() {
-            body = body.push(text(error));
-        }
-        scrollable(header.push(super::motion::wrap(
-            body,
-            true,
-            super::motion::Effect::Content(tab as u64),
-        )))
-        .width(Fill)
-        .height(Fill)
-        .into()
-    }
-    pub(super) fn side_panel<'a>(
-        &'a self,
-        live: &'a crate::application::SettingsEditor,
-        status: &'a RuntimeStatusSnapshot,
-    ) -> Element<'a, Message> {
-        let mut rail = column![super::widgets::heading(
-            t!("adaptive_engine.built_in_presets").to_string(),
-            design::typography::SECONDARY
-        )]
-        .spacing(design::space::MEDIUM)
-        .padding([0, design::space::MEDIUM as u16]);
-        for p in BuiltInAdaptiveEnginePreset::ALL {
-            rail = rail.push(
-                row![
-                    button(
-                        iced::widget::container(text(built_in_adaptive_engine_preset_label(p)))
-                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
-                    )
-                    .width(Fill)
-                    .style(super::widgets::quiet)
-                    .on_press(Message::BuiltIn(p)),
-                    button(super::navigation::glyph("icons/info.svg"))
-                        .style(super::widgets::quiet)
-                        .on_press(Message::ViewBuiltIn(p))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
-        }
-        rail = rail.push(super::widgets::heading(
-            t!("adaptive_engine.custom_presets").to_string(),
-            design::typography::SECONDARY,
-        ));
-        if live.adaptive_engine_presets.is_empty() {
-            rail = rail.push(
-                text(t!("adaptive_engine.no_custom_presets").to_string()).style(text::secondary),
-            );
-        }
-        for (i, p) in live.adaptive_engine_presets.iter().enumerate() {
-            rail = rail.push(
-                row![
-                    button(text(p.name.clone()))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::Apply(i)),
-                    iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::Edit(i)),
-                        text(t!("adaptive_engine.edit_preset").to_string()),
-                        iced::widget::tooltip::Position::Top,
+                controls.push(choice!(
+                    s,
+                    "common.visible_window",
+                    ProcessPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessPrioritySetting::ALL
+                    },
+                    process_priority_setting_label,
+                    adaptive_engine_process.visible_window_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.background_process",
+                    ProcessPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessPrioritySetting::ALL
+                    },
+                    process_priority_setting_label,
+                    adaptive_engine_process.background_priority
+                ));
+                let options = vec![
+                    toggle!(
+                        "adaptive_engine.detection",
+                        adaptive_engine_process.process_priority_foreground_detection_enabled
                     ),
-                    super::widgets::rule_delete_button(Some(Message::Delete(i)))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
-        }
-        if !self.presets_tab {
-            rail = column![];
-            if let Some(status) =
-                super::status_rail::view(crate::ui::Page::AdaptiveEngine, live, status, &[])
-            {
-                rail = rail.push(status.map(Message::Status));
+                    toggle!(
+                        "common.visible_window_detection",
+                        adaptive_engine_process.process_priority_visible_window_detection_enabled
+                    ),
+                    toggle!(
+                        "common.preserve_foreground_priority",
+                        adaptive_engine_process.process_priority_preserve_foreground
+                    ),
+                    toggle!(
+                        "common.preserve_visible_window_priority",
+                        adaptive_engine_process.process_priority_preserve_visible_window
+                    ),
+                    toggle!(
+                        "common.preserve_background_priority",
+                        adaptive_engine_process.process_priority_preserve_background
+                    ),
+                ];
+                controls.push(ui.collapsible(
+                    t!("adaptive_engine.detection").to_string(),
+                    self.priority_expanded[usize::from(preset)][0],
+                    widgets::col().children(options),
+                    |_| Message::TogglePriority(0),
+                ));
+                body.push(widgets::card(
+                    t!("nav.process_priority").to_string(),
+                    controls,
+                ));
+                let mut controls = vec![
+                    toggle!(
+                        "common.enable",
+                        adaptive_engine_process.background_efficiency_enabled
+                    ),
+                    toggle!(
+                        "common.focus_process",
+                        adaptive_engine_process.focus_process_background_efficiency_mode
+                    ),
+                    toggle!(
+                        "common.visible_window",
+                        adaptive_engine_process.visible_window_background_efficiency_mode
+                    ),
+                    toggle!(
+                        "common.background_process",
+                        adaptive_engine_process.background_efficiency_mode
+                    ),
+                ];
+                controls.push(ui.collapsible(
+                    t!("adaptive_engine.detection").to_string(),
+                    self.priority_expanded[usize::from(preset)][1],
+                    widgets::col().children([
+                        toggle!(
+                                "adaptive_engine.detection",
+                                adaptive_engine_process
+                                    .focus_process_background_efficiency_override_enabled
+                            ),
+                        toggle!(
+                                "common.visible_window_detection",
+                                adaptive_engine_process
+                                    .visible_window_background_efficiency_override_enabled
+                            ),
+                    ]),
+                    |_| Message::TogglePriority(1),
+                ));
+                body.push(widgets::card(
+                    t!("nav.background_efficiency").to_string(),
+                    controls,
+                ));
+                let mut controls = vec![toggle!(
+                    "common.enable",
+                    adaptive_engine_process.thread_priority.enabled
+                )];
+                controls.push(choice!(
+                    s,
+                    "common.focus_process",
+                    ProcessThreadPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessThreadPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessThreadPrioritySetting::ALL
+                    },
+                    process_thread_priority_setting_label,
+                    adaptive_engine_process.thread_priority.foreground_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.visible_window",
+                    ProcessThreadPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessThreadPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessThreadPrioritySetting::ALL
+                    },
+                    process_thread_priority_setting_label,
+                    adaptive_engine_process
+                        .thread_priority
+                        .visible_window_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.background_process",
+                    ProcessThreadPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessThreadPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessThreadPrioritySetting::ALL
+                    },
+                    process_thread_priority_setting_label,
+                    adaptive_engine_process.thread_priority.background_priority
+                ));
+                let options = vec![
+                    toggle!(
+                        "adaptive_engine.detection",
+                        adaptive_engine_process
+                            .thread_priority
+                            .foreground_detection_enabled
+                    ),
+                    toggle!(
+                        "common.visible_window_detection",
+                        adaptive_engine_process
+                            .thread_priority
+                            .visible_window_detection_enabled
+                    ),
+                    toggle!(
+                        "common.preserve_foreground_priority",
+                        adaptive_engine_process
+                            .thread_priority
+                            .preserve_foreground_priority
+                    ),
+                    toggle!(
+                        "common.preserve_visible_window_priority",
+                        adaptive_engine_process
+                            .thread_priority
+                            .preserve_visible_window_priority
+                    ),
+                    toggle!(
+                        "common.preserve_background_priority",
+                        adaptive_engine_process
+                            .thread_priority
+                            .preserve_background_priority
+                    ),
+                ];
+                controls.push(ui.collapsible(
+                    t!("adaptive_engine.detection").to_string(),
+                    self.priority_expanded[usize::from(preset)][2],
+                    widgets::col().children(options),
+                    |_| Message::TogglePriority(2),
+                ));
+                body.push(widgets::card(
+                    t!("nav.thread_priority").to_string(),
+                    controls,
+                ));
+                let mut controls = vec![toggle!(
+                    "common.enable",
+                    adaptive_engine_process.dynamic_priority_boost.enabled
+                )];
+                controls.push(choice!(
+                    s,
+                    "common.focus_process",
+                    ProcessDynamicPriorityBoostSetting,
+                    &ProcessDynamicPriorityBoostSetting::ALL,
+                    process_dynamic_priority_boost_setting_label,
+                    adaptive_engine_process
+                        .dynamic_priority_boost
+                        .foreground_boost
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.visible_window",
+                    ProcessDynamicPriorityBoostSetting,
+                    &ProcessDynamicPriorityBoostSetting::ALL,
+                    process_dynamic_priority_boost_setting_label,
+                    adaptive_engine_process
+                        .dynamic_priority_boost
+                        .visible_window_boost
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.background_process",
+                    ProcessDynamicPriorityBoostSetting,
+                    &ProcessDynamicPriorityBoostSetting::ALL,
+                    process_dynamic_priority_boost_setting_label,
+                    adaptive_engine_process
+                        .dynamic_priority_boost
+                        .background_boost
+                ));
+                let options = vec![
+                    toggle!(
+                        "adaptive_engine.detection",
+                        adaptive_engine_process
+                            .dynamic_priority_boost
+                            .foreground_detection_enabled
+                    ),
+                    toggle!(
+                        "common.visible_window_detection",
+                        adaptive_engine_process
+                            .dynamic_priority_boost
+                            .visible_window_detection_enabled
+                    ),
+                ];
+                controls.push(ui.collapsible(
+                    t!("adaptive_engine.detection").to_string(),
+                    self.priority_expanded[usize::from(preset)][3],
+                    widgets::col().children(options),
+                    |_| Message::TogglePriority(3),
+                ));
+                body.push(widgets::card(
+                    t!("nav.dynamic_priority_boost").to_string(),
+                    controls,
+                ));
+                let mut controls = vec![toggle!(
+                    "common.enable",
+                    adaptive_engine_process.io_priority.enabled
+                )];
+                controls.push(choice!(
+                    s,
+                    "common.focus_process",
+                    ProcessIoPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessIoPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessIoPrioritySetting::ALL
+                    },
+                    process_io_priority_setting_label,
+                    adaptive_engine_process.io_priority.foreground_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.visible_window",
+                    ProcessIoPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessIoPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessIoPrioritySetting::ALL
+                    },
+                    process_io_priority_setting_label,
+                    adaptive_engine_process.io_priority.visible_window_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.background_process",
+                    ProcessIoPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessIoPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessIoPrioritySetting::ALL
+                    },
+                    process_io_priority_setting_label,
+                    adaptive_engine_process.io_priority.background_priority
+                ));
+                let options = vec![
+                    toggle!(
+                        "adaptive_engine.detection",
+                        adaptive_engine_process
+                            .io_priority
+                            .foreground_detection_enabled
+                    ),
+                    toggle!(
+                        "common.visible_window_detection",
+                        adaptive_engine_process
+                            .io_priority
+                            .visible_window_detection_enabled
+                    ),
+                    toggle!(
+                        "common.preserve_foreground_priority",
+                        adaptive_engine_process
+                            .io_priority
+                            .preserve_foreground_priority
+                    ),
+                    toggle!(
+                        "common.preserve_visible_window_priority",
+                        adaptive_engine_process
+                            .io_priority
+                            .preserve_visible_window_priority
+                    ),
+                    toggle!(
+                        "common.preserve_background_priority",
+                        adaptive_engine_process
+                            .io_priority
+                            .preserve_background_priority
+                    ),
+                ];
+                controls.push(ui.collapsible(
+                    t!("adaptive_engine.detection").to_string(),
+                    self.priority_expanded[usize::from(preset)][4],
+                    widgets::col().children(options),
+                    |_| Message::TogglePriority(4),
+                ));
+                body.push(widgets::card(t!("nav.io_priority").to_string(), controls));
+                let mut controls = vec![toggle!(
+                    "common.enable",
+                    adaptive_engine_process.gpu_priority.enabled
+                )];
+                controls.push(choice!(
+                    s,
+                    "common.focus_process",
+                    ProcessGpuPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessGpuPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessGpuPrioritySetting::ALL
+                    },
+                    process_gpu_priority_setting_label,
+                    adaptive_engine_process.gpu_priority.foreground_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.visible_window",
+                    ProcessGpuPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessGpuPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessGpuPrioritySetting::ALL
+                    },
+                    process_gpu_priority_setting_label,
+                    adaptive_engine_process.gpu_priority.visible_window_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.background_process",
+                    ProcessGpuPrioritySetting,
+                    if s.advanced.expose_all_priority_values {
+                        &ProcessGpuPrioritySetting::ADVANCED_ALL
+                    } else {
+                        &ProcessGpuPrioritySetting::ALL
+                    },
+                    process_gpu_priority_setting_label,
+                    adaptive_engine_process.gpu_priority.background_priority
+                ));
+                let options = vec![
+                    toggle!(
+                        "adaptive_engine.detection",
+                        adaptive_engine_process
+                            .gpu_priority
+                            .foreground_detection_enabled
+                    ),
+                    toggle!(
+                        "common.visible_window_detection",
+                        adaptive_engine_process
+                            .gpu_priority
+                            .visible_window_detection_enabled
+                    ),
+                    toggle!(
+                        "common.preserve_foreground_priority",
+                        adaptive_engine_process
+                            .gpu_priority
+                            .preserve_foreground_priority
+                    ),
+                    toggle!(
+                        "common.preserve_visible_window_priority",
+                        adaptive_engine_process
+                            .gpu_priority
+                            .preserve_visible_window_priority
+                    ),
+                    toggle!(
+                        "common.preserve_background_priority",
+                        adaptive_engine_process
+                            .gpu_priority
+                            .preserve_background_priority
+                    ),
+                ];
+                controls.push(ui.collapsible(
+                    t!("adaptive_engine.detection").to_string(),
+                    self.priority_expanded[usize::from(preset)][5],
+                    widgets::col().children(options),
+                    |_| Message::TogglePriority(5),
+                ));
+                body.push(widgets::card(t!("nav.gpu_priority").to_string(), controls));
+                let mut controls = vec![toggle!(
+                    "common.enable",
+                    adaptive_engine_process.memory_priority_enabled
+                )];
+                controls.push(choice!(
+                    s,
+                    "common.focus_process",
+                    ProcessMemoryPrioritySetting,
+                    &ProcessMemoryPrioritySetting::ALL,
+                    process_memory_priority_setting_label,
+                    adaptive_engine_process.focus_process_memory_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.visible_window",
+                    ProcessMemoryPrioritySetting,
+                    &ProcessMemoryPrioritySetting::ALL,
+                    process_memory_priority_setting_label,
+                    adaptive_engine_process.visible_window_memory_priority
+                ));
+                controls.push(choice!(
+                    s,
+                    "common.background_process",
+                    ProcessMemoryPrioritySetting,
+                    &ProcessMemoryPrioritySetting::ALL,
+                    process_memory_priority_setting_label,
+                    adaptive_engine_process.background_memory_priority
+                ));
+                let options = vec![
+                    toggle!(
+                        "adaptive_engine.detection",
+                        adaptive_engine_process.memory_priority_foreground_detection_enabled
+                    ),
+                    toggle!(
+                        "common.visible_window_detection",
+                        adaptive_engine_process.memory_priority_visible_window_detection_enabled
+                    ),
+                    toggle!(
+                        "common.preserve_foreground_priority",
+                        adaptive_engine_process.memory_priority_preserve_foreground
+                    ),
+                    toggle!(
+                        "common.preserve_visible_window_priority",
+                        adaptive_engine_process.memory_priority_preserve_visible_window
+                    ),
+                    toggle!(
+                        "common.preserve_background_priority",
+                        adaptive_engine_process.memory_priority_preserve_background
+                    ),
+                ];
+                controls.push(ui.collapsible(
+                    t!("adaptive_engine.detection").to_string(),
+                    self.priority_expanded[usize::from(preset)][6],
+                    widgets::col().children(options),
+                    |_| Message::TogglePriority(6),
+                ));
+                body.push(widgets::card(
+                    t!("nav.memory_priority").to_string(),
+                    controls,
+                ));
+            }
+            TuningTab::CustomRules => {
+                if !preset {
+                    let candidate_rules = s.adaptive_engine_process.custom_rules.clone();
+                    body.push(super::app_picker::view(
+                        &self.path,
+                        candidates,
+                        true,
+                        Message::Path,
+                        Message::Browse,
+                        Some(Message::AddExclusion),
+                        move |candidate| {
+                            super::process_rules::can_add_process_candidate(
+                                &candidate.info.image_path.to_string_lossy(),
+                                |path| {
+                                    candidate_rules.iter().any(|rule| {
+                                        super::process_rules::process_setting_matches(
+                                            &rule.executable_path,
+                                            path,
+                                        )
+                                    })
+                                },
+                                crate::adaptive_engine_process::is_builtin_excluded,
+                            )
+                            .then_some(true)
+                        },
+                        ui.clone(),
+                    ));
+                    for (index, rule) in s.adaptive_engine_process.custom_rules.iter().enumerate() {
+                        body.push(widgets::card(
+                            rule.executable_path.clone(),
+                            [
+                                ui.checkbox(
+                                    t!("common.enable").to_string(),
+                                    rule.enabled,
+                                    move |value| Message::ExclusionEnabled(index, value),
+                                ),
+                                ui.button(
+                                    t!("common.remove").to_string(),
+                                    Message::RemoveExclusion(index),
+                                ),
+                            ],
+                        ));
+                    }
+                    if s.adaptive_engine_process.custom_rules.is_empty() {
+                        body.push(widgets::label(t!("common.no_custom_rules").to_string()));
+                    }
+                }
             }
         }
-        let tabs = row![
-            super::widgets::panel_tab(
-                t!("common.status").to_string(),
-                !self.presets_tab,
-                Message::RailTab(false),
-                true,
-            ),
-            super::widgets::panel_tab(
-                t!("adaptive_engine.presets").to_string(),
-                self.presets_tab,
-                Message::RailTab(true),
-                true,
-            )
-        ]
-        .spacing(design::space::SMALL);
-        let mut panel = column![
-            tabs,
-            super::motion::wrap(
-                scrollable(rail).width(Fill).height(Fill),
-                true,
-                super::motion::Effect::Content(u64::from(self.presets_tab))
-            )
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill);
-        if self.presets_tab {
-            panel = panel.push(super::widgets::preset_footer(
-                t!("adaptive_engine.add_preset").to_string(),
-                Message::New,
-            ));
+        if let Some(error) = self.validation_error() {
+            body.push(widgets::error(error));
         }
-        panel.into()
+        if preset {
+            widgets::col().children(body)
+        } else {
+            widgets::page(body)
+        }
+    }
+
+    pub(super) fn side_panel(
+        &self,
+        live: &crate::application::SettingsEditor,
+        status: &RuntimeStatusSnapshot,
+        ui: Ui<Message>,
+    ) -> Element {
+        let tabs = ui.segmented(
+            [
+                Choice(false, t!("common.status").to_string()),
+                Choice(true, t!("adaptive_engine.presets").to_string()),
+            ],
+            Choice(
+                self.presets_tab,
+                t!(if self.presets_tab {
+                    "adaptive_engine.presets"
+                } else {
+                    "common.status"
+                })
+                .to_string(),
+            ),
+            |value| Message::RailTab(value.0),
+        );
+        let panel = widgets::col()
+            .fill()
+            .child(Element::row().width_match().padding_xy(16, 0).child(tabs));
+        let mut body = Vec::new();
+        if self.presets_tab {
+            body.push(widgets::heading(
+                t!("adaptive_engine.built_in_presets").to_string(),
+            ));
+            for preset in BuiltInAdaptiveEnginePreset::ALL {
+                body.push(widgets::row().children([
+                    ui.button(
+                        built_in_adaptive_engine_preset_label(preset),
+                        Message::BuiltIn(preset),
+                    ),
+                    ui.button(
+                        t!("common.feature_info").to_string(),
+                        Message::ViewBuiltIn(preset),
+                    ),
+                ]));
+            }
+            body.push(widgets::heading(
+                t!("adaptive_engine.custom_presets").to_string(),
+            ));
+            if live.adaptive_engine_presets.is_empty() {
+                body.push(widgets::label(
+                    t!("adaptive_engine.no_custom_presets").to_string(),
+                ));
+            }
+            for (index, preset) in live.adaptive_engine_presets.iter().enumerate() {
+                body.push(widgets::row().children([
+                    ui.button(preset.name.clone(), Message::Apply(index)),
+                    ui.button(
+                        t!("adaptive_engine.edit_preset").to_string(),
+                        Message::Edit(index),
+                    ),
+                    ui.button(t!("common.remove").to_string(), Message::Delete(index)),
+                ]));
+            }
+            body.push(ui.button(t!("adaptive_engine.add_preset").to_string(), Message::New));
+        } else if let Some(status) = super::status_rail::view(
+            crate::ui::Page::AdaptiveEngine,
+            live,
+            status,
+            &[],
+            ui.map(Message::Status),
+        ) {
+            return panel.child(status.weight(1.0));
+        }
+        panel.child(
+            super::scrolling::scrollable(widgets::col().padding_xy(16, 0).children(body))
+                .weight(1.0),
+        )
     }
 }
-fn priority_option_row<'a>(key: &str, cells: [Element<'a, Message>; 3]) -> Element<'a, Message> {
-    let [focus, visible, background] = cells;
-    row![
-        text(t!(key).to_string())
-            .size(design::typography::SECONDARY)
-            .style(iced::widget::text::secondary)
-            .width(Fill),
-        row![
-            iced::widget::Space::new().width(64),
-            iced::widget::container(focus).width(Fill),
-            iced::widget::container(visible).width(Fill),
-            iced::widget::container(background).width(Fill),
-        ]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center)
-        .width(iced::Length::FillPortion(3)),
-        iced::widget::Space::new().width(design::ICON_SIZE),
-    ]
-    .spacing(design::space::SMALL)
-    .height(super::widgets::SETTING_ROW_HEIGHT)
-    .align_y(iced::Center)
-    .into()
+
+fn trailing_control(control: Element) -> Element {
+    Element::col()
+        .weight(1.0)
+        .cross(Align::End)
+        .child(control.max_width(240))
 }
 
-fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
-    setting_label_with_unit(key, "")
-}
-
-fn setting_label_with_unit(key: &str, unit: &str) -> iced::widget::Row<'static, Message> {
+fn setting(key: &str, unit: &str, control: Element) -> Element {
     let help_key = match key {
         "processor_power.core_parking_min" => "adaptive_engine.core_parking_min_help".to_string(),
         "processor_power.processor_min" => "adaptive_engine.processor_min_help".to_string(),
@@ -2032,24 +1511,21 @@ fn setting_label_with_unit(key: &str, unit: &str) -> iced::widget::Row<'static, 
         "processor_power.boost_policy" => "adaptive_engine.base_boost_policy_help".to_string(),
         _ => format!("{key}_help"),
     };
-    let mut label = row![super::widgets::heading(
-        super::widgets::label_with_unit(&t!(key), unit),
-        design::typography::BODY
-    )]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center);
+    let title = widgets::label_with_unit(&t!(key), unit);
     let help = t!(&help_key).to_string();
     if help != help_key {
-        label = label.push(iced::widget::tooltip(
-            super::navigation::glyph("icons/info.svg"),
-            iced::widget::container(text(help).width(320))
-                .padding(design::space::COMPACT as u16)
-                .style(super::widgets::surface),
-            iced::widget::tooltip::Position::Top,
-        ));
+        widgets::setting_row_with_help(title, help, control)
+    } else {
+        Element::setting_row(title, control).width_match()
     }
-    label
 }
+
+impl std::fmt::Display for TuningTab {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&t!(self.key()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Choice<T>(T, String);
 impl<T> std::fmt::Display for Choice<T> {
@@ -2086,6 +1562,164 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tuning_label_hover_resolves_its_help_including_processor_power_overrides() {
+        use windui::{core::Tree, geometry::Size, signal::SignalScope, text::NullTextEngine};
+
+        let mut scope = SignalScope::new();
+        scope.collect(|| {
+            for (key, unit, help_key) in [
+                (
+                    "adaptive_engine_process.reaction_time",
+                    "ms",
+                    "adaptive_engine_process.reaction_time_help",
+                ),
+                (
+                    "processor_power.core_parking_min",
+                    "%",
+                    "adaptive_engine.core_parking_min_help",
+                ),
+                (
+                    "processor_power.processor_min",
+                    "%",
+                    "adaptive_engine.processor_min_help",
+                ),
+                (
+                    "processor_power.processor_max",
+                    "%",
+                    "adaptive_engine.processor_max_help",
+                ),
+                (
+                    "processor_power.boost_policy",
+                    "",
+                    "adaptive_engine.base_boost_policy_help",
+                ),
+            ] {
+                let mut tree = Tree::new();
+                let root =
+                    setting(key, unit, Element::button("Control").width(160)).build(&mut tree);
+                tree.root = Some(root);
+                tree.layout_root(Size::new(640, 80), &mut NullTextEngine);
+                let label = tree
+                    .get(tree.get(root).unwrap().children[0])
+                    .unwrap()
+                    .children[0];
+                let bounds = tree.abs_bounds(label);
+                let hit = tree
+                    .hit_test(windui::geometry::Point::new(
+                        bounds.x + 2,
+                        bounds.y + bounds.h / 2,
+                    ))
+                    .unwrap();
+                assert_eq!(hit, label);
+                assert_eq!(
+                    tree.node_tooltip(hit),
+                    Some(t!(help_key).to_string()),
+                    "{key}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn narrow_editor_keeps_preset_label_and_scrolls_tuning_tabs() {
+        use windui::{
+            core::Tree, geometry::Size, signal::SignalScope, spec::Axis, text::NullTextEngine,
+        };
+
+        let mut scope = SignalScope::new();
+        scope.collect(|| {
+            let mut tree = Tree::new();
+            let root = Editor::default()
+                .view(&Settings::default(), &[], Ui::new(|_, _| {}))
+                .build(&mut tree);
+            tree.root = Some(root);
+            let page = tree.get(root).unwrap().children[0];
+            let body = tree.get(page).unwrap().children[0];
+            let children = tree.get(body).unwrap().children.clone();
+            let master = children[0];
+            let preset = tree.get(master).unwrap().children[2];
+            let preset_children = tree.get(preset).unwrap().children.clone();
+            let control = tree.get(preset_children[1]).unwrap().children[0];
+            let tabs = children[1];
+
+            for width in [316, 1280] {
+                tree.layout_root(Size::new(width, 620), &mut NullTextEngine);
+                let label = tree.abs_bounds(preset_children[0]);
+                let control = tree.abs_bounds(control);
+                assert!(
+                    label.w >= 80,
+                    "narrow controls must leave the label readable"
+                );
+                assert!(control.w >= 80 && control.w <= 240);
+                assert!(label.x + label.w <= control.x);
+                let row = tree.abs_bounds(preset);
+                assert_eq!(control.x + control.w, row.x + row.w);
+                let (_, range) = tree.scroll_range(tabs, Axis::Horizontal).unwrap();
+                assert_eq!(range > 0, width == 316);
+                if range > 0 {
+                    assert!(tree.set_scroll_x(tabs, range));
+                    tree.layout_root(Size::new(width, 620), &mut NullTextEngine);
+                    assert_eq!(tree.scroll_range(tabs, Axis::Horizontal).unwrap().0, range);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn side_panel_has_one_scroller_and_keeps_tabs_fixed() {
+        use windui::{
+            core::{Layout, Tree},
+            geometry::Size,
+            signal::SignalScope,
+            spec::Axis,
+            text::NullTextEngine,
+        };
+
+        for presets_tab in [false, true] {
+            let mut scope = SignalScope::new();
+            scope.collect(|| {
+                let editor = Editor {
+                    presets_tab,
+                    ..Default::default()
+                };
+                let settings =
+                    crate::application::SettingsEditor::with_settings(Settings::default());
+                let mut tree = Tree::new();
+                let root = editor
+                    .side_panel(
+                        &settings,
+                        &RuntimeStatusSnapshot::default(),
+                        Ui::new(|_, _| {}),
+                    )
+                    .build(&mut tree);
+                tree.root = Some(root);
+                tree.layout_root(Size::new(272, 80), &mut NullTextEngine);
+                let tabs = tree.get(root).unwrap().children[0];
+                let tabs_bounds = tree.abs_bounds(tabs);
+                let mut pending = vec![root];
+                let mut scrolls = Vec::new();
+                while let Some(id) = pending.pop() {
+                    let node = tree.get(id).unwrap();
+                    if matches!(node.layout, Layout::Scroll) {
+                        scrolls.push(id);
+                    }
+                    pending.extend(node.children.iter().copied());
+                }
+                assert_eq!(
+                    scrolls.len(),
+                    1,
+                    "status and presets each need one scroll owner"
+                );
+                let scroll = scrolls[0];
+                assert!(tree.scroll_range(scroll, Axis::Vertical).unwrap().1 > 0);
+                assert!(tree.set_scroll_y(scroll, 20));
+                tree.layout_root(Size::new(272, 80), &mut NullTextEngine);
+                assert_eq!(tree.abs_bounds(tabs), tabs_bounds);
+                assert_eq!(tree.scroll_range(scroll, Axis::Vertical).unwrap().0, 20);
+            });
+        }
+    }
 
     #[test]
     fn zone_preset_editing_is_independent_and_speed_keeps_background_limiting() {
@@ -2269,91 +1903,6 @@ mod tests {
     }
 
     use super::*;
-    #[test]
-    fn priority_card_changes_keep_repaint_regions_bounded() {
-        use iced::advanced::Renderer as _;
-        use iced::advanced::{layout, widget::Tree};
-        let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let mut editor = Editor::default();
-        let mut settings = Settings::default();
-        let bounds = iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0));
-        let mut pixels = tiny_skia::Pixmap::new(1040, 700).unwrap();
-        let mut mask = tiny_skia::Mask::new(1040, 700).unwrap();
-        let viewport =
-            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(1040, 700), 1.0);
-        for tab in TuningTab::ALL {
-            editor.update(&mut settings, Message::TuningTab(tab));
-            let mut tree = Tree::empty();
-            let mut previous = Vec::new();
-            for frame in 0..6 {
-                editor.priority_expanded[0][0] = (frame / 2) % 2 == 0;
-                settings.adaptive_engine_process.process_priority_enabled = frame % 2 == 0;
-                let mut view = editor.view(&settings, &[]);
-                tree.diff(view.as_widget());
-                let node = view.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &layout::Limits::new(iced::Size::ZERO, iced::Size::new(1040.0, 700.0)),
-                );
-                renderer.reset(bounds);
-                view.as_widget().draw(
-                    &tree,
-                    &mut renderer,
-                    &iced::Theme::Dark,
-                    &Default::default(),
-                    iced::advanced::Layout::new(&node),
-                    iced::mouse::Cursor::Unavailable,
-                    &bounds,
-                );
-                let damage = if frame == 0 {
-                    vec![bounds]
-                } else {
-                    iced::advanced::graphics::damage::group(
-                        iced::advanced::graphics::damage::diff(
-                            &previous,
-                            renderer.layers(),
-                            |l| vec![l.bounds],
-                            iced_tiny_skia::Layer::damage,
-                        ),
-                        bounds,
-                    )
-                };
-                assert!(
-                    damage.len() <= 4,
-                    "{tab:?}: {} repaint regions",
-                    damage.len()
-                );
-                previous = renderer.layers().to_vec();
-                let start = std::time::Instant::now();
-                renderer.draw(
-                    &mut pixels.as_mut(),
-                    &mut mask,
-                    &viewport,
-                    &damage,
-                    iced::Color::BLACK,
-                );
-                println!("raster {:?}, regions {}", start.elapsed(), damage.len());
-            }
-        }
-    }
-
-    #[test]
-    fn priority_tab_scroll_damage_stays_bounded() {
-        let mut editor = Editor::default();
-        let mut settings = Settings::default();
-        editor.update(
-            &mut settings,
-            Message::TuningTab(TuningTab::PriorityControl),
-        );
-        for expanded in [false, true] {
-            editor.priority_expanded[0].fill(expanded);
-            super::super::scrolling::check_scroll_damage(
-                editor.view(&settings, &[]),
-                iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0)),
-            );
-        }
-    }
-
     #[test]
     fn tuning_navigation_keeps_live_and_preset_state_separate() {
         let mut editor = Editor::default();

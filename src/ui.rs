@@ -3,7 +3,6 @@ mod adaptive_engine;
 #[cfg(feature = "runtime-benchmark")]
 pub(crate) use adaptive_engine::benchmark as runtime_benchmark;
 mod advanced_power_plan_tuning;
-mod animated_controls;
 mod app_picker;
 mod app_suspension;
 mod background_efficiency;
@@ -20,12 +19,14 @@ mod power_rules;
 mod priority_control;
 mod process_list;
 mod process_power_plans;
+#[cfg(feature = "render-smoke")]
+pub(crate) mod scheduler_benchmark;
 mod scrolling;
-mod select;
 mod settings_pages;
 mod status_rail;
 mod tasks;
 mod timer_resolution;
+mod viewport;
 mod widgets;
 mod win32_priority_separation;
 use rust_i18n::t;

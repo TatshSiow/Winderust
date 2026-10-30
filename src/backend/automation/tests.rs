@@ -1912,6 +1912,10 @@ fn system_appearance_uses_windows_events_without_power_automation() {
     settings.general.accent.source = AccentColorSource::Windows;
 
     assert!(windows_event_watcher_required(&settings));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::AppearanceOnly)
+    );
     assert!(windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::AppearanceChanged
@@ -1920,6 +1924,66 @@ fn system_appearance_uses_windows_events_without_power_automation() {
         &settings,
         WindowsAutomationEvent::PowerChanged
     ));
+    for event in [
+        WindowsAutomationEvent::ForegroundChanged,
+        WindowsAutomationEvent::WindowCreated,
+        WindowsAutomationEvent::SessionChanged,
+        WindowsAutomationEvent::ClockChanged,
+    ] {
+        assert!(!windows_event_wake_required(&settings, event));
+    }
+}
+
+#[test]
+fn windows_event_watcher_mode_tracks_automation_in_either_power_profile() {
+    let mut settings = Settings::default();
+    settings.general.enabled = false;
+    settings.general.theme_mode = AppThemeMode::Dark;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::AppearanceOnly)
+    );
+
+    let mut battery = settings.clone();
+    battery.general.enabled = true;
+    battery.app_suspension.enabled = true;
+    battery
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(r"C:\Apps\chat.exe"));
+    settings.on_battery = Some(Box::new(battery));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Automation)
+    );
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::WindowCreated
+    ));
+
+    settings.on_battery = None;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::AppearanceOnly)
+    );
+    settings.general.accent.source = AccentColorSource::Custom;
+    assert_eq!(windows_event_watcher_mode(&settings), None);
+    settings.general.theme_mode = AppThemeMode::System;
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::AppearanceOnly)
+    );
+
+    settings.general.enabled = true;
+    settings.app_suspension.enabled = true;
+    settings
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(r"C:\Apps\chat.exe"));
+    assert_eq!(
+        windows_event_watcher_mode(&settings),
+        Some(WindowsEventWatcherMode::Automation)
+    );
 }
 
 #[test]
@@ -1929,6 +1993,7 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
     settings.general.accent.source = AccentColorSource::Windows;
 
     assert!(!windows_event_watcher_required(&settings));
+    assert_eq!(windows_event_watcher_mode(&settings), None);
     assert!(!windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::AppearanceChanged
@@ -1961,6 +2026,98 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
         &settings,
         input_events
     ));
+}
+
+#[test]
+fn appearance_watcher_preserves_power_events_for_worker_only_profiles() {
+    for adaptive_only in [false, true] {
+        let mut worker = Settings::default();
+        worker.general.theme_mode = AppThemeMode::Dark;
+        worker.general.accent.source = AccentColorSource::Custom;
+        if adaptive_only {
+            worker.adaptive_engine.enabled = true;
+        } else {
+            worker.timer_resolution.enabled = true;
+            worker.timer_resolution.rules.push(TimerResolutionRule {
+                enabled: true,
+                executable_path: r"C:\Apps\chat.exe".to_owned(),
+                desired_100ns: 5_000,
+            });
+        }
+        assert!(automation_worker_required(&worker));
+        assert!(!automation_windows_event_watcher_required(&worker));
+        assert!(!windows_event_watcher_required(&worker));
+        assert_eq!(windows_event_watcher_mode(&worker), None);
+
+        let mut appearance = Settings::default();
+        appearance.general.enabled = false;
+        appearance.general.theme_mode = AppThemeMode::Dark;
+        assert!(!automation_worker_required(&appearance));
+        appearance.on_battery = Some(Box::new(worker.clone()));
+        assert_eq!(
+            windows_event_watcher_mode(&appearance),
+            Some(WindowsEventWatcherMode::Automation)
+        );
+        assert!(windows_event_wake_required(
+            &appearance,
+            WindowsAutomationEvent::PowerChanged
+        ));
+
+        appearance.on_battery = None;
+        worker.on_battery = Some(Box::new(appearance));
+        assert_eq!(
+            windows_event_watcher_mode(&worker),
+            Some(WindowsEventWatcherMode::Automation)
+        );
+        assert!(windows_event_wake_required(
+            &worker,
+            WindowsAutomationEvent::PowerChanged
+        ));
+    }
+}
+
+#[test]
+fn watcher_mode_change_publishes_unavailable_and_ready_transitions() {
+    let mut settings = Settings::default();
+    settings.general.enabled = false;
+    let automation = RuntimeHandle::start(&runtime_settings(settings.clone()));
+    assert_eq!(
+        lock_unpoisoned(&automation.event_watcher)
+            .as_ref()
+            .map(WindowsEventWatcher::mode),
+        Some(WindowsEventWatcherMode::AppearanceOnly)
+    );
+    let before_generation = {
+        let state = lock_unpoisoned(&automation.shared.state);
+        assert!(state.windows_event_watcher_active);
+        state.change_generation
+    };
+
+    settings.general.enabled = true;
+    settings.timer_resolution.enabled = true;
+    settings.timer_resolution.rules.push(TimerResolutionRule {
+        enabled: true,
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        desired_100ns: 5_000,
+    });
+    let settings = runtime_settings(settings);
+    lock_unpoisoned(&automation.shared.state).settings = Arc::clone(&settings.value);
+    // Isolate watcher recreation: no runtime worker or process-control rule is executed.
+    automation.sync_windows_event_watcher(&settings);
+    assert!(lock_unpoisoned(&automation.thread).is_none());
+    assert_eq!(
+        lock_unpoisoned(&automation.event_watcher)
+            .as_ref()
+            .map(WindowsEventWatcher::mode),
+        Some(WindowsEventWatcherMode::Automation)
+    );
+    {
+        let state = lock_unpoisoned(&automation.shared.state);
+        assert!(state.windows_event_watcher_active);
+        // Full power registration may also deliver initial notifications during startup.
+        assert!(state.change_generation.wrapping_sub(before_generation) >= 2);
+    }
+    automation.shutdown().expect("native watcher shutdown");
 }
 
 #[test]

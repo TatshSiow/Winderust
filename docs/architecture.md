@@ -1,6 +1,6 @@
 # Architecture
 
-Winderust is a mechanism-centered modular monolith: one Iced application process, one optional
+Winderust is a mechanism-centered modular monolith: one resident Wind UI application process, one optional
 automation worker, and one typed owner for each Windows mechanism. UI and feature code express
 intent; only controllers and their narrow Windows adapters own live mutations.
 
@@ -33,8 +33,9 @@ Windows events / UI intent / persisted settings
 
 ## Responsibilities
 
-- `WinderustApp` owns Iced composition, dialogs, navigation, process-list presentation, and local
-  read models.
+- `WinderustApp` owns native Wind UI composition, dialogs, navigation, process-list presentation,
+  local read models, one `SettingsEditor`, one `RuntimeHandle`, and the recovery client. These
+  application-lifetime owners survive closing and recreating the main window.
 - `SettingsEditor` is the only settings draft, revision, persistence, import, and export boundary.
 - `RuntimeHandle` owns worker lifecycle, event sources, typed commands, and published status.
 - `RuntimeCore` owns reconciliation order, shared observations, controller composition, and
@@ -50,6 +51,14 @@ Windows events / UI intent / persisted settings
 
 Process enumeration and presentation remain a read-side query. A query result can suggest a
 target, but every mutation reopens and revalidates the exact process or thread identity.
+
+Wind UI signals and elements remain in `src/ui/`. Typed UI work runs off the event thread and
+returns through the application channel. Window-scoped controls project durable editors;
+disposing a window does not dispose drafts, runtime state, or pending cleanup. The narrow
+`src/platform/windows/resident_shell.rs` adapter guards native host exit, identifies the current
+UI window, and handles the tray integration gaps in the pinned framework. Normal exit waits
+for asynchronous runtime and recovery cleanup before requesting application-wide quit. See
+the [Wind UI guide](windui-port.md) for the pinned contracts and validation matrix.
 
 ## State classes
 

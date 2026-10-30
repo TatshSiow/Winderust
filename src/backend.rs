@@ -13,4 +13,5 @@ pub(crate) mod tray;
 pub(crate) mod update_checker;
 pub(crate) mod win_registry;
 pub(crate) mod win_util;
+pub(crate) mod window_visibility;
 pub(crate) mod windows_events;

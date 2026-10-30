@@ -6,6 +6,12 @@
 /benchmark-results/
 /dist/
 
+# Local benchmark captures and evidence bundles; keep reports and scenario inputs
+/benchmark/*-results-*/
+/benchmark/*-results-*.zip
+/benchmark/*-results-*.zip.sha256
+/benchmark/ui-framework-followup-final-inventory-20261027.json
+
 # Local runtime/config artifacts
 *.log
 *.tmp

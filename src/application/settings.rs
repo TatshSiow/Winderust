@@ -427,6 +427,13 @@ impl SettingsEditor {
         )
     }
 
+    #[cfg(feature = "render-smoke")]
+    pub(crate) fn benchmark_in_memory(settings: Settings) -> Self {
+        let (coordinator, draft) =
+            SettingsCoordinator::from_loaded_settings(settings, Box::new(BenchmarkStorage));
+        Self::from_parts(coordinator, draft, Box::new(BenchmarkStartup))
+    }
+
     pub(crate) fn load_error(&self) -> Option<&str> {
         self.coordinator.load_error.as_deref()
     }
@@ -820,6 +827,36 @@ trait SettingsStorage: Send + Sync {
     fn save(&self, settings: &Settings) -> Result<(), String>;
     fn import(&self, path: &Path) -> Result<Settings, String>;
     fn export(&self, path: &Path, settings: &Settings) -> Result<(), String>;
+}
+
+// Resource fixtures must never reach portable files or Windows startup registration.
+#[cfg(feature = "render-smoke")]
+struct BenchmarkStorage;
+
+#[cfg(feature = "render-smoke")]
+impl SettingsStorage for BenchmarkStorage {
+    fn load(&self) -> Result<Settings, String> {
+        Err("Benchmark cannot load settings".into())
+    }
+    fn save(&self, _: &Settings) -> Result<(), String> {
+        Ok(())
+    }
+    fn import(&self, _: &Path) -> Result<Settings, String> {
+        Err("Benchmark cannot import settings".into())
+    }
+    fn export(&self, _: &Path, _: &Settings) -> Result<(), String> {
+        Err("Benchmark cannot export settings".into())
+    }
+}
+
+#[cfg(feature = "render-smoke")]
+struct BenchmarkStartup;
+
+#[cfg(feature = "render-smoke")]
+impl StartupRegistration for BenchmarkStartup {
+    fn set_enabled(&self, _: bool) -> Result<(), StartupRegistrationError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]

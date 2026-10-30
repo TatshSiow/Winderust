@@ -1,21 +1,18 @@
-use super::design;
 use super::priority_control::Tier;
-use super::widgets::{checkbox, pick_list};
+use super::widgets::{self, Ui};
 use crate::config::{
     BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
     ProcessRuleMode, Settings,
 };
 use crate::ui::process_rules::can_add_process_candidate;
-use crate::ui::scrolling::scrollable;
-use iced::widget::column;
-use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
+use windui::prelude::Element;
 
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    expanded: [bool; 3],
+    expanded: bool,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -30,7 +27,7 @@ pub(super) enum Message {
     RuleMode(usize, Tier, ProcessRuleMode),
     Remove(String),
 
-    Collapse(Tier),
+    Collapse(bool),
 }
 impl Editor {
     pub(super) fn update(&mut self, settings: &mut Settings, message: Message) {
@@ -85,20 +82,20 @@ impl Editor {
                     .custom_rules
                     .retain(|rule| rule.executable_path != path);
             }
-            Message::Collapse(tier) => {
-                let expanded = &mut self.expanded[tier as usize];
-                *expanded = !*expanded;
-            }
+            Message::Collapse(expanded) => self.expanded = expanded,
         }
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        settings: &'a Settings,
+    pub(super) fn view(
+        &self,
+        settings: &Settings,
         candidates: &[super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
+        ui: Ui<Message>,
+    ) -> Element {
         let settings = &settings.background_efficiency;
-        let enabled = settings.enabled;
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
+        let mut defaults = vec![widgets::setting_row(
+            t!("background_efficiency.enable").to_string(),
+            ui.toggle(settings.enabled, Message::Enabled),
+        )];
         for (tier, detection, value) in [
             (Tier::Background, true, settings.background_efficiency_mode),
             (
@@ -112,66 +109,96 @@ impl Editor {
                 settings.visible_window_efficiency_mode,
             ),
         ] {
-            let mut group = column![];
-            let label = match tier {
-                Tier::Background => "background_efficiency.enable",
+            defaults.push(Element::divider());
+            let title = match tier {
+                Tier::Background => "common.background_process",
                 Tier::Focus => "background_efficiency.foreground_detection",
                 Tier::VisibleWindow => "common.visible_window_detection",
-            }
-            .to_string();
-            let action: Element<'_, Message> = if tier == Tier::Background {
-                super::widgets::switch(enabled, Some(Message::Enabled))
+            };
+            let selector = ui.select(
+                [
+                    widgets::Choice(false, t!("common.disabled").to_string()),
+                    widgets::Choice(true, t!("common.enabled").to_string()),
+                ],
+                widgets::Choice(
+                    value,
+                    t!(if value {
+                        "common.enabled"
+                    } else {
+                        "common.disabled"
+                    })
+                    .to_string(),
+                ),
+                move |value| Message::Default(tier, value.0),
+            );
+            let (control, help) = if tier == Tier::Background {
+                (selector, None)
             } else {
-                super::widgets::switch(
-                    detection,
-                    Some(move |value| Message::Detection(tier, value)),
+                let help = match tier {
+                    Tier::Focus => "background_efficiency.foreground_detection_help",
+                    Tier::VisibleWindow => "common.visible_window_detection_help",
+                    Tier::Background => unreachable!("Background has no detection switch"),
+                };
+                let help = t!(help).to_string();
+                (
+                    widgets::row().children([
+                        selector.weight(1.0),
+                        ui.toggle(detection, move |value| Message::Detection(tier, value))
+                            .tooltip(help.clone()),
+                    ]),
+                    Some(help),
                 )
             };
-            let choices = [
-                super::widgets::Choice(false, t!("common.disabled").to_string()),
-                super::widgets::Choice(true, t!("common.enabled").to_string()),
-            ];
-            let selected = choices[usize::from(value)].clone();
-            group = group.push(super::widgets::setting_row(
-                "process_list.efficiency_mode",
-                pick_list(choices, Some(selected), move |v| {
-                    Message::Default(tier, v.0)
-                })
-                .width(design::SELECT_WIDTH),
-            ));
-            if tier == Tier::Background {
-                let aggressiveness = pick_list(
-                    BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
-                    Some(Aggressiveness(settings.aggressiveness)),
-                    move |value| Message::Aggressiveness(value.0),
-                )
-                .width(design::SELECT_WIDTH);
-                group = group.push(super::widgets::setting_row(
-                    "background_efficiency.aggressiveness",
-                    aggressiveness,
-                ));
-            }
-            body = body.push(super::widgets::setting_group(
-                label,
-                self.expanded[tier as usize],
-                Message::Collapse(tier),
-                action,
-                group,
-            ));
+            defaults.push(match help {
+                None => widgets::setting_row(t!(title).to_string(), control),
+                Some(help) => widgets::col().spacing(2).children([
+                    widgets::setting_row_with_help(
+                        t!(title).to_string(),
+                        help,
+                        control.max_width(340),
+                    ),
+                    widgets::help("background_efficiency.mode_detection_help"),
+                ]),
+            });
         }
-        body = body.push(super::widgets::setting_title(
-            "background_efficiency.custom_rules",
+        defaults.push(Element::divider());
+        defaults.push(ui.collapsible(
+            t!("settings.advanced").to_string(),
+            self.expanded,
+            widgets::setting(
+                "background_efficiency.aggressiveness",
+                ui.select(
+                    BackgroundEfficiencyAggressiveness::ALL.map(Aggressiveness),
+                    Aggressiveness(settings.aggressiveness),
+                    |value| Message::Aggressiveness(value.0),
+                ),
+            ),
+            Message::Collapse,
         ));
-        body = body.push(super::app_picker::view(
+        let mut body = vec![
+            widgets::card("", defaults),
+            widgets::setting_title("background_efficiency.custom_rules")
+                .font_size(super::design::typography::SUBTITLE as f32)
+                .font_weight(600),
+        ];
+        let candidate_settings = settings.clone();
+        body.push(super::app_picker::view(
             &self.path,
             candidates,
             true,
             Message::Path,
             Message::Browse,
-            (can_add(settings, &self.path)).then_some(Message::Add),
-            |path| can_add(settings, path).then_some(true),
+            Some(Message::Add),
+            move |candidate| {
+                can_add(
+                    &candidate_settings,
+                    &candidate.info.image_path.to_string_lossy(),
+                )
+                .then_some(true)
+            },
+            ui.clone(),
         ));
-        let mut rule_cards = Vec::new();
+        let mut rows = Vec::new();
         for (index, rule) in settings.custom_rules.iter().enumerate() {
             let mut controls = Vec::new();
             for (tier, mode) in Tier::ALL.into_iter().zip([
@@ -179,36 +206,31 @@ impl Editor {
                 rule.visible_window_efficiency_mode,
                 rule.background_efficiency_mode,
             ]) {
-                let control: Element<'_, Message> = {
-                    pick_list(
-                        ProcessRuleMode::ALL.map(Mode),
-                        Some(Mode(mode)),
-                        move |mode| Message::RuleMode(index, tier, mode.0),
-                    )
-                    .width(Fill)
-                    .into()
-                };
-                controls.push(control);
+                controls.push(ui.select(
+                    ProcessRuleMode::ALL.map(Mode),
+                    Mode(mode),
+                    move |value| Message::RuleMode(index, tier, value.0),
+                ));
             }
-            rule_cards.push((
-                super::widgets::stable_key(&rule.executable_path),
-                super::widgets::process_rule_row(
-                    &rule.executable_path,
-                    candidates,
-                    checkbox(rule.enabled)
-                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
-                        .into(),
-                    controls,
+            rows.push(widgets::process_rule_row(
+                &rule.executable_path,
+                candidates,
+                ui.checkbox("", rule.enabled, move |value| {
+                    Message::RuleEnabled(index, value)
+                }),
+                controls,
+                widgets::rule_delete_button(
+                    &ui,
                     Some(Message::Remove(rule.executable_path.clone())),
                 ),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
+        body.push(widgets::process_rules_table(
             Tier::ALL.map(|tier| tier.label()),
-            rule_cards,
+            rows,
             t!("background_efficiency.no_custom_rules").to_string(),
         ));
-        scrollable(body).height(Fill).into()
+        widgets::page(body)
     }
 }
 fn can_add(settings: &BackgroundEfficiencySettings, path: &str) -> bool {
@@ -254,7 +276,7 @@ mod tests {
         let mut settings = Settings::default();
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::Enabled(false));
-        assert_eq!(editor.expanded, [false; 3]);
+        assert!(!editor.expanded);
         editor.update(&mut settings, Message::Path(r"C:\Apps\editor.exe".into()));
         editor.update(&mut settings, Message::Add);
         assert_eq!(settings.background_efficiency.custom_rules.len(), 1);

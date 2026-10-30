@@ -17,12 +17,12 @@ pub(crate) mod power_plan;
 pub(crate) mod priority_efficiency;
 pub(crate) mod process;
 pub(crate) mod process_termination;
+pub(crate) mod resident_shell;
 pub(crate) mod self_power;
 pub(crate) mod suspension;
 pub(crate) mod thread_priority;
 pub(crate) mod thread_suspension;
 pub(crate) mod timer_resolution;
-pub(crate) mod window_dpi;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcessOperationError {

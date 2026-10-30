@@ -550,6 +550,10 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
         !self.managed.is_empty()
     }
 
+    pub(crate) fn has_policy_claims(&self) -> bool {
+        !self.static_claims.is_empty() || !self.adaptive_claims.is_empty()
+    }
+
     fn policy_claims(
         &self,
         owner: ControlOwner,
@@ -992,6 +996,26 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_policy_claims_remain_visible_until_released() {
+        for owner in [ControlOwner::MemoryPriority, ControlOwner::AdaptiveEngine] {
+            let mut controller = MemoryPriorityController::with_platform(platform_with(7, 1, 5));
+            assert!(!controller.has_policy_claims());
+            assert_eq!(
+                controller
+                    .apply_policy_claim(claim(7, 1, owner, ProcessMemoryPriority::Normal), true)
+                    .unwrap(),
+                MemoryPriorityApplyOutcome::Unchanged
+            );
+            assert!(!controller.has_managed_state());
+            assert!(controller.has_policy_claims());
+            assert!(controller.release_all_policy(owner).failures.is_empty());
+            assert!(!controller.has_policy_claims());
+            assert!(!controller.has_managed_state());
+            assert!(controller.platform.applied.is_empty());
+        }
+    }
+
+    #[test]
     fn static_policy_overrides_adaptive_then_reveals_it_without_baseline_bounce() {
         let mut controller = MemoryPriorityController::with_platform(platform_with(7, 1, 5));
         controller
@@ -1187,7 +1211,13 @@ mod tests {
             MemoryPriorityApplyOutcome::Preserved
         );
         assert!(!controller.has_managed_state());
+        assert!(controller.has_policy_claims());
         assert!(controller.platform.applied.is_empty());
+        assert!(controller
+            .release_all_policy(ControlOwner::AdaptiveEngine)
+            .failures
+            .is_empty());
+        assert!(!controller.has_policy_claims());
     }
 
     #[test]

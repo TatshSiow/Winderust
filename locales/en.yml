@@ -7,12 +7,15 @@ app:
 tray:
   show_winderust: "Show Winderust"
   exit: "Exit"
+  unavailable: "The system tray is unavailable. Winderust will keep its window open."
 
 nav:
+  back: "Back"
+  forward: "Forward"
   collapse_navigation: "Hide sidebar"
   expand_navigation: "Show sidebar"
-  collapse_side_panel: "Collapse side panel"
-  expand_side_panel: "Expand side panel"
+  collapse_side_panel: "Hide side panel"
+  expand_side_panel: "Show side panel"
   home: "Home"
   winderust_features: "Winderust Features"
   power_plan_control: "Power Plan Control"
@@ -50,6 +53,7 @@ nav:
   about: "About"
 
 common:
+  retry: "Retry"
   applied: "Applied"
   waiting: "Waiting"
   error: "Error"
@@ -65,6 +69,7 @@ common:
   level: "Level"
   visible_window_detection: "Visible Window Detection"
   visible_window_detection_help: "Applies a separate value to apps with visible, non-minimized windows. The focused app takes precedence."
+  policy_detection_help: "Applied policy; the switch controls detection."
   preserve_visible_window_priority: "Ignore visible window apps if same or higher"
   loading: "Loading…"
   loading_running_apps: "Loading running apps…"
@@ -286,6 +291,8 @@ home:
   focus_and_launch_profile: "Focus and Launch"
 
 process_list:
+  column_auto_size: "Auto-size"
+  sort_order: "Sort order"
   plans_not_loaded: "Power plans have not loaded. Select Refresh to retry."
   pause_population: Pause population
   resume_population: Resume population
@@ -600,6 +607,7 @@ by_cpu_load:
   else_use: "Else use"
 
 background_efficiency:
+  mode_detection_help: "Efficiency mode setting; the switch controls detection."
   foreground_detection: "Foreground Detection"
   foreground_detection_help: "Adds a second layer that can apply a separate Efficiency Mode setting to the focused app."
   intro_1: "Background Efficiency applies Windows Efficiency Mode to background apps to reduce CPU power use."

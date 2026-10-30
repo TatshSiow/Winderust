@@ -1,14 +1,11 @@
-use super::design;
-use super::widgets::{button, checkbox, text_input};
+use super::widgets::{self, Ui};
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::can_add_process_candidate;
-use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
+use windui::prelude::{signal, Element};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Kind {
@@ -90,6 +87,10 @@ pub(super) enum Message {
     ClosePreset,
 }
 impl Editor {
+    pub(super) fn shows_live_status(&self) -> bool {
+        !self.presets_tab
+    }
+
     pub(super) fn update(&mut self, s: &mut Settings, k: Kind, m: Message) {
         let available =
             cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
@@ -215,85 +216,88 @@ impl Editor {
     pub(super) fn has_pending_editor(&self) -> bool {
         self.preset_open && !self.preset_read_only
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        s: &'a Settings,
-        k: Kind,
-        candidates: &'a [super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
+    pub(super) fn view(
+        &self,
+        settings: &Settings,
+        kind: Kind,
+        candidates: &[super::app_picker::Candidate],
+        ui: Ui<Message>,
+    ) -> Element {
         let processors = cpu_allocation::logical_processors();
-        let feature = settings(s, k);
-        let mut body = column![
-            super::widgets::settings_card(super::widgets::setting_row(
-                match k {
-                    Kind::Soft => "cpu_sets_soft.enable",
-                    Kind::Hard => "processor_affinity_hard.enable",
-                },
-                super::widgets::switch(feature.enabled, Some(Message::Enabled)),
-            )),
-            super::widgets::setting_title("cpu_allocation.custom_rules"),
+        let feature = self::settings(settings, kind);
+        let candidate_soft = settings.cpu_sets_soft.clone();
+        let candidate_hard = settings.processor_affinity_hard.clone();
+        let key = match kind {
+            Kind::Soft => "cpu_sets_soft.enable",
+            Kind::Hard => "processor_affinity_hard.enable",
+        };
+        let mut body = vec![
+            widgets::card(
+                "",
+                [widgets::setting_row(
+                    t!(key).to_string(),
+                    ui.toggle(feature.enabled, Message::Enabled),
+                )],
+            ),
+            widgets::heading(format!("{} ⓘ", t!("cpu_allocation.custom_rules")))
+                .tooltip(t!("cpu_allocation.rules_help").to_string()),
             super::app_picker::view(
                 &self.path,
                 candidates,
                 true,
                 Message::Path,
                 Message::Browse,
-                (can_add(s, &self.path)).then_some(Message::Add),
-                |path| can_add(s, path).then_some(true)
-            )
-        ]
-        .spacing(super::widgets::CARD_GAP);
-        let mut rules = Vec::new();
-        for (i, r) in feature.rules.iter().enumerate() {
-            let controls = [Tier::Focus, Tier::Visible, Tier::Background]
-                .into_iter()
-                .map(|tier| {
-                    let mask = tier.mask(r);
-                    let mut choices = core_presets(&processors);
-                    choices.extend(
-                        s.cpu_allocation_presets
-                            .iter()
-                            .map(|p| super::widgets::Choice(p.core_mask, p.name.clone())),
-                    );
-                    choices.retain(|p| p.0 != 0);
-                    let selected = self
-                        .selected_preset(&r.executable_path, tier, mask, &choices)
-                        .unwrap_or_else(|| {
-                            super::widgets::Choice(mask, t!("common.custom").to_string())
-                        });
-                    if !choices.contains(&selected) {
-                        choices.push(selected.clone());
-                    }
-                    super::widgets::pick_list(choices, Some(selected), move |v| {
-                        Message::Mask(i, tier, v)
-                    })
-                    .width(Fill)
-                    .into()
-                })
-                .collect();
-            rules.push((
-                super::widgets::stable_key(&r.executable_path),
-                super::widgets::process_rule_row(
-                    &r.executable_path,
-                    candidates,
-                    checkbox(r.enabled)
-                        .on_toggle(move |v| Message::RuleEnabled(i, v))
-                        .into(),
-                    controls,
-                    Some(Message::Remove(i)),
-                ),
+                Some(Message::Add),
+                move |candidate| {
+                    can_add_with_settings(
+                        &candidate_soft,
+                        &candidate_hard,
+                        &candidate.info.image_path.to_string_lossy(),
+                    )
+                    .then_some(true)
+                },
+                ui.clone(),
+            ),
+        ];
+        let mut rows = Vec::new();
+        for (index, rule) in feature.rules.iter().enumerate() {
+            let mut controls = Vec::new();
+            for tier in [Tier::Focus, Tier::Visible, Tier::Background] {
+                let mask = tier.mask(rule);
+                let mut options = core_presets(&processors);
+                options.extend(
+                    settings
+                        .cpu_allocation_presets
+                        .iter()
+                        .map(|preset| widgets::Choice(preset.core_mask, preset.name.clone())),
+                );
+                options.retain(|preset| preset.0 != 0);
+                let selected = self
+                    .selected_preset(&rule.executable_path, tier, mask, &options)
+                    .unwrap_or_else(|| widgets::Choice(mask, t!("common.custom").to_string()));
+                controls.push(ui.select(options, selected, move |choice| {
+                    Message::Mask(index, tier, choice)
+                }));
+            }
+            rows.push(widgets::process_rule_row(
+                &rule.executable_path,
+                candidates,
+                ui.checkbox("", rule.enabled, move |value| {
+                    Message::RuleEnabled(index, value)
+                }),
+                controls,
+                widgets::rule_delete_button(&ui, Some(Message::Remove(index))),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
+        body.push(widgets::process_rules_table(
             [Tier::Focus, Tier::Visible, Tier::Background].map(|tier| tier.label()),
-            rules,
+            rows,
             t!("common.no_custom_rules").to_string(),
         ));
-
-        scrollable(body).width(Fill).height(Fill).into()
+        widgets::page(body)
     }
 
-    pub(super) fn modal<'a>(&'a self, s: &Settings) -> Option<Element<'a, Message>> {
+    pub(super) fn modal(&self, settings: &Settings, ui: Ui<Message>) -> Option<Element> {
         if !self.preset_open {
             return None;
         }
@@ -307,219 +311,155 @@ impl Editor {
             })
             .to_string()
         };
-        let header = row![
-            text(title).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::ClosePreset)
-        ]
-        .align_y(iced::Center);
-        let mut cpus = row![].spacing(design::space::CONTROL);
-        for cpu in cpu_allocation::logical_processors()
+        let processors = cpu_allocation::logical_processors();
+        let name = signal(self.preset_name.clone());
+        let other_names = settings
+            .cpu_allocation_presets
             .iter()
-            .filter(|cpu| cpu.index < 64)
-        {
-            let bit = 1u64 << cpu.index;
-            let selected = self.preset_mask & bit != 0;
-            let kind = t!(match cpu.kind {
-                LogicalProcessorKind::Performance => "cpu_allocation.p_core",
-                LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
-                LogicalProcessorKind::Standard => "cpu_allocation.core",
-            })
-            .to_string();
-            cpus = cpus.push(
-                button(
-                    iced::widget::container(
-                        column![
-                            text(kind).size(design::typography::CAPTION),
-                            text(format!("CPU {}", cpu.index))
-                        ]
-                        .align_x(iced::Center),
-                    )
-                    .center_x(Fill)
-                    .center_y(Fill),
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != self.editing_preset)
+            .map(|(_, preset)| preset.name.trim().to_owned())
+            .collect::<Vec<_>>();
+        let mut body = vec![
+            widgets::setting_row(
+                t!("cpu_allocation.preset_name").to_string(),
+                ui.input_signal(
+                    name,
+                    t!("cpu_allocation.preset_name_placeholder").to_string(),
+                    Message::PresetName,
                 )
-                .width(100)
-                .height(64)
-                .style(if selected {
-                    super::widgets::primary_button
-                } else {
-                    super::widgets::tertiary_button
-                })
-                .on_press_maybe(
-                    (!self.preset_read_only).then_some(Message::PresetMask(self.preset_mask ^ bit)),
-                ),
-            );
-        }
-        let valid_name = !self.preset_name.trim().is_empty()
-            && !s.cpu_allocation_presets.iter().enumerate().any(|(i, p)| {
-                Some(i) != self.editing_preset
-                    && p.name.trim().eq_ignore_ascii_case(self.preset_name.trim())
-            });
-        let mut body = column![
-            super::widgets::settings_card(
-                column![
-                    text(t!("cpu_allocation.preset_name").to_string()),
-                    text_input(
-                        &t!("cpu_allocation.preset_name_placeholder"),
-                        &self.preset_name
-                    )
-                    .on_input_maybe((!self.preset_read_only).then_some(Message::PresetName)),
-                    text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
-                ]
-                .spacing(design::space::SMALL)
+                .enabled(!self.preset_read_only),
             ),
-            super::widgets::settings_card(
-                column![
-                    text(t!("cpu_allocation.selected_logical_cpus").to_string()),
-                    cpus.wrap()
-                ]
-                .spacing(design::space::SMALL)
+            widgets::help("cpu_allocation.preset_name_help"),
+            widgets::heading(t!("cpu_allocation.selected_logical_cpus").to_string()),
+            mask_selector(
+                self.preset_mask,
+                &processors,
+                &settings.cpu_allocation_presets,
+                Message::PresetMask,
+                ui.clone(),
             )
-        ]
-        .spacing(design::space::MEDIUM);
+            .enabled(!self.preset_read_only),
+        ];
         if self.preset_mask == 0 {
-            body = body
-                .push(text(t!("cpu_allocation.no_logical_cpus").to_string()).style(text::danger));
+            body.push(widgets::error(
+                t!("cpu_allocation.no_logical_cpus").to_string(),
+            ));
         }
-        if !self.preset_read_only && !self.preset_name.trim().is_empty() && !valid_name {
-            body = body.push(
-                text(t!("cpu_allocation.duplicate_preset_name").to_string()).style(text::danger),
-            );
-        }
-        let mut footer = row![
-            iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::ClosePreset)
-        ]
-        .spacing(design::space::SMALL);
+        let mut actions = Vec::new();
         if !self.preset_read_only {
-            footer = footer.push(
-                button(text(t!("common.save").to_string()))
-                    .style(super::widgets::primary_button)
-                    .on_press_maybe(
-                        (valid_name && self.preset_mask != 0).then_some(Message::SavePreset),
-                    ),
+            let names = other_names.clone();
+            body.push(Element::label(name.map(move |raw| {
+                if !raw.trim().is_empty()
+                    && names
+                        .iter()
+                        .any(|other| other.eq_ignore_ascii_case(raw.trim()))
+                {
+                    t!("cpu_allocation.duplicate_preset_name").to_string()
+                } else {
+                    String::new()
+                }
+            })));
+            let mask = self.preset_mask;
+            actions.push(
+                ui.primary_button(t!("common.save").to_string(), Message::SavePreset)
+                    .enabled_when(move || {
+                        let name = name.get();
+                        mask != 0
+                            && !name.trim().is_empty()
+                            && !other_names
+                                .iter()
+                                .any(|other| other.eq_ignore_ascii_case(name.trim()))
+                    }),
             );
         }
-        Some(super::widgets::modal_frame(
-            header,
-            scrollable(body).height(Fill),
-            footer,
-            (950, 760),
+        actions.push(ui.button(t!("common.cancel").to_string(), Message::ClosePreset));
+        Some(widgets::editor_panel(
+            title,
+            widgets::col().children(body),
+            widgets::row().children(actions),
         ))
     }
-    pub(super) fn side_panel<'a>(
-        &'a self,
-        s: &'a crate::application::SettingsEditor,
-        k: Kind,
-        status: &'a crate::automation::RuntimeStatusSnapshot,
-    ) -> Element<'a, Message> {
-        let processors = cpu_allocation::logical_processors();
-        let mut rail = column![super::widgets::heading(
-            t!("cpu_allocation.core_presets").to_string(),
-            design::typography::SECONDARY
-        ),]
-        .spacing(design::space::MEDIUM)
-        .padding([0, design::space::MEDIUM as u16]);
-        for preset in core_presets(&processors).into_iter().filter(|p| p.0 != 0) {
-            let message = Message::ViewPreset(preset.1.clone(), preset.0);
-            rail = rail.push(
-                row![
-                    button(
-                        iced::widget::container(text(preset.1))
-                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
-                    )
-                    .width(Fill)
-                    .style(super::widgets::quiet)
-                    .on_press(message.clone()),
-                    button(super::navigation::glyph("icons/info.svg"))
-                        .style(super::widgets::quiet)
-                        .on_press(message)
-                ]
-                .align_y(iced::Center)
-                .spacing(design::space::TIGHT),
-            );
-        }
-        rail = rail.push(super::widgets::heading(
-            t!("adaptive_engine.custom_presets").to_string(),
-            design::typography::SECONDARY,
-        ));
-        if s.cpu_allocation_presets.is_empty() {
-            rail = rail.push(
-                text(t!("cpu_allocation.no_custom_presets").to_string()).style(text::secondary),
-            );
-        }
-        for (i, p) in s.cpu_allocation_presets.iter().enumerate() {
-            rail = rail.push(
-                row![
-                    button(text(p.name.clone()))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::EditPreset(i)),
-                    iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::EditPreset(i)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::DeletePreset(i)))
-                ]
-                .align_y(iced::Center)
-                .spacing(design::space::TIGHT),
-            );
-        }
+
+    pub(super) fn side_panel(
+        &self,
+        settings: &crate::application::SettingsEditor,
+        kind: Kind,
+        status: &crate::automation::RuntimeStatusSnapshot,
+        ui: Ui<Message>,
+    ) -> Element {
+        let mut body = vec![ui.segmented(
+            [
+                widgets::Choice(false, t!("common.status").to_string()),
+                widgets::Choice(true, t!("cpu_allocation.presets").to_string()),
+            ],
+            widgets::Choice(
+                self.presets_tab,
+                t!(if self.presets_tab {
+                    "cpu_allocation.presets"
+                } else {
+                    "common.status"
+                })
+                .to_string(),
+            ),
+            |value| Message::RailTab(value.0),
+        )];
         if !self.presets_tab {
-            let page = match k {
+            let page = match kind {
                 Kind::Soft => crate::ui::Page::CpuSetsSoft,
                 Kind::Hard => crate::ui::Page::ProcessorAffinityHard,
             };
-            rail = column![];
-            if let Some(status) = super::status_rail::view(page, s, status, &[]) {
-                rail = rail.push(status.map(Message::Status));
+            if let Some(status) =
+                super::status_rail::view(page, settings, status, &[], ui.map(Message::Status))
+            {
+                body.push(status);
             }
-        }
-        let tabs = row![
-            super::widgets::panel_tab(
-                t!("common.status").to_string(),
-                !self.presets_tab,
-                Message::RailTab(false),
-                true,
-            ),
-            super::widgets::panel_tab(
-                t!("cpu_allocation.presets").to_string(),
-                self.presets_tab,
-                Message::RailTab(true),
-                true,
-            )
-        ]
-        .spacing(design::space::SMALL);
-        let mut panel = column![
-            tabs,
-            super::motion::wrap(
-                scrollable(rail).width(Fill).height(Fill),
-                true,
-                super::motion::Effect::Content(u64::from(self.presets_tab))
-            )
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill);
-        if self.presets_tab {
-            panel = panel.push(super::widgets::preset_footer(
+        } else {
+            body.push(widgets::heading(
+                t!("cpu_allocation.core_presets").to_string(),
+            ));
+            for preset in core_presets(&cpu_allocation::logical_processors())
+                .into_iter()
+                .filter(|preset| preset.0 != 0)
+            {
+                body.push(ui.button(preset.1.clone(), Message::ViewPreset(preset.1, preset.0)));
+            }
+            body.push(widgets::heading(
+                t!("adaptive_engine.custom_presets").to_string(),
+            ));
+            if settings.cpu_allocation_presets.is_empty() {
+                body.push(widgets::label(
+                    t!("cpu_allocation.no_custom_presets").to_string(),
+                ));
+            }
+            for (index, preset) in settings.cpu_allocation_presets.iter().enumerate() {
+                body.push(widgets::row().children([
+                    ui.button(preset.name.clone(), Message::EditPreset(index)),
+                    ui.button(
+                        t!("common.remove").to_string(),
+                        Message::DeletePreset(index),
+                    ),
+                ]));
+            }
+            body.push(ui.button(
                 t!("cpu_allocation.add_preset").to_string(),
                 Message::NewPreset,
             ));
         }
-        panel.into()
+        widgets::page(body)
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {
+    can_add_with_settings(&s.cpu_sets_soft, &s.processor_affinity_hard, path)
+}
+fn can_add_with_settings(
+    soft: &CpuAllocationSettings,
+    hard: &CpuAllocationSettings,
+    path: &str,
+) -> bool {
     can_add_process_candidate(
         path,
-        |p| s.cpu_sets_soft.contains_rule_for(p) || s.processor_affinity_hard.contains_rule_for(p),
+        |p| soft.contains_rule_for(p) || hard.contains_rule_for(p),
         cpu_allocation::is_builtin_excluded,
     )
 }
@@ -542,46 +482,79 @@ fn core_presets(processors: &[LogicalProcessorInfo]) -> Vec<super::widgets::Choi
     .map(|(key, mask)| super::widgets::Choice(mask, t!(key).to_string()))
     .collect()
 }
-pub(super) fn mask_selector<'a, M: Clone + 'a>(
+pub(super) fn mask_selector<M: Clone + 'static>(
     mask: u64,
     processors: &[LogicalProcessorInfo],
     custom: &[CpuAllocationPreset],
-    message: impl Fn(u64) -> M + Clone + 'a,
-) -> Element<'a, M> {
+    message: impl Fn(u64) -> M + Clone + 'static,
+    ui: Ui<M>,
+) -> Element {
     let all = cpu_allocation::logical_processor_mask(processors);
-    let mut presets = row![].spacing(design::space::TIGHT);
-    for preset in core_presets(processors) {
-        presets = presets.push(
-            button(text(preset.1)).on_press_maybe((preset.0 != 0).then(|| message(preset.0))),
-        );
-    }
-    for preset in custom {
-        let m = preset.core_mask & all;
-        presets = presets
-            .push(button(text(preset.name.clone())).on_press_maybe((m != 0).then(|| message(m))));
-    }
-    let mut cpus = row![].spacing(design::space::CONTROL);
-    for cpu in processors.iter().filter(|p| p.index < 64) {
+    let mut options = core_presets(processors);
+    options.extend(
+        custom
+            .iter()
+            .map(|preset| widgets::Choice(preset.core_mask & all, preset.name.clone())),
+    );
+    options.retain(|preset| preset.0 != 0);
+    let selected = options
+        .iter()
+        .find(|preset| preset.0 == mask)
+        .cloned()
+        .unwrap_or_else(|| widgets::Choice(mask, t!("common.custom").to_string()));
+    let select = message.clone();
+    let mut body = vec![ui.select(options, selected, move |choice| select(choice.0))];
+    for cpu in processors.iter().filter(|cpu| cpu.index < 64) {
         let bit = 1u64 << cpu.index;
-        let msg = message.clone();
+        let message = message.clone();
         let kind = t!(match cpu.kind {
             LogicalProcessorKind::Performance => "cpu_allocation.p_core",
             LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
             LogicalProcessorKind::Standard => "cpu_allocation.core",
         });
-        cpus = cpus.push(
-            checkbox(mask & bit != 0)
-                .label(format!("{} ({kind} {})", cpu.index, cpu.core_index))
-                .on_toggle(move |v| msg(if v { mask | bit } else { mask & !bit })),
-        );
+        body.push(ui.checkbox(
+            format!("CPU {} ({kind} {})", cpu.index, cpu.core_index),
+            mask & bit != 0,
+            move |value| message(if value { mask | bit } else { mask & !bit }),
+        ));
     }
-    column![presets.wrap(), cpus.wrap(), text(format!("0x{mask:016X}"))]
-        .spacing(design::space::SMALL)
-        .into()
+    body.push(widgets::label(format!("0x{mask:016X}")));
+    widgets::col().children(body)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owned_candidate_policy_rejects_duplicates_across_allocation_families() {
+        let rule = CpuAllocationRule {
+            enabled: false,
+            executable_path: r"C:\Apps\example.exe".into(),
+            focus_core_mask: 0,
+            visible_window_core_mask: 0,
+            background_core_mask: 0,
+        };
+        let empty = CpuAllocationSettings::default();
+        let configured = CpuAllocationSettings {
+            rules: vec![rule],
+            ..Default::default()
+        };
+        assert!(!can_add_with_settings(
+            &configured,
+            &empty,
+            "c:/apps/EXAMPLE.exe"
+        ));
+        assert!(!can_add_with_settings(
+            &empty,
+            &configured,
+            "c:/apps/EXAMPLE.exe"
+        ));
+        assert!(can_add_with_settings(
+            &empty,
+            &empty,
+            r"C:\Apps\example.exe"
+        ));
+    }
+
     #[test]
     fn identical_masks_keep_explicit_selection_per_rule_and_tier() {
         for kind in [Kind::Soft, Kind::Hard] {

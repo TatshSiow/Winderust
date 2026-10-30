@@ -8,10 +8,16 @@
 
 Windows Performance & Power Manager. A system engine to improve your Windows experience.
 
-The Windows desktop UI uses Iced with software rendering. Settings remain portable
-beside the executable, with English and Traditional Chinese locales.
+The Windows desktop UI uses Wind UI with software rendering. Its resident
+application keeps background automation running when the main window is closed.
+Settings remain portable beside the executable, with English and Traditional
+Chinese locales.
 
 ![Winderust Home dashboard](screenshots/Home.png)
+
+Native UI previews: [About](screenshots/About.png) and
+[Language and Appearance](screenshots/LanguageAndAppearance.png).
+The screenshots use isolated fixtures with automation disabled.
 
 ## Download
 
@@ -30,6 +36,7 @@ beside the executable, with English and Traditional Chinese locales.
 
 - [Documentation index](docs/README.md)
 - [Architecture](docs/architecture.md)
+- [Wind UI implementation and validation](docs/windui-port.md)
 - [Adaptive Engine implementation](docs/adaptive-engine-implementation.md)
 - [Release checklist](docs/release-checklist.md)
 
@@ -74,8 +81,10 @@ Before contributing, run:
 
 ```powershell
 cargo fmt -- --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
 cargo test --locked
+.\scripts\check_architecture_ownership.ps1
+.\scripts\check_legacy_names.ps1
 ```
 
 See 

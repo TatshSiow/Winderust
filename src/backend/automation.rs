@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::window_visibility::{self, VisibilityWatcher};
 use crate::{
     action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
@@ -82,8 +83,7 @@ use crate::{
     self_power::SelfPowerController,
     thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
-    tray::{self, TrayVisibilityWatcher},
-    windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
+    windows_events::{WindowsAutomationEvent, WindowsEventWatcher, WindowsEventWatcherMode},
 };
 
 mod requirements;
@@ -133,7 +133,7 @@ pub struct RuntimeHandle {
     event_watcher: Mutex<Option<WindowsEventWatcher>>,
     input_hook: Mutex<Option<InputHook>>,
     self_power: Arc<Mutex<SelfPowerController>>,
-    tray_visibility_watcher: Mutex<Option<TrayVisibilityWatcher>>,
+    visibility_watcher: Mutex<Option<VisibilityWatcher>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,6 +385,14 @@ impl AutomationWakeEvents {
 }
 
 impl RuntimeHandle {
+    /// Evidence for opt-in benchmark fixtures; does not wake or poll the worker.
+    #[cfg(feature = "render-smoke")]
+    pub(crate) fn benchmark_worker_running(&self) -> bool {
+        lock_unpoisoned(&self.thread)
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+    }
+
     pub fn start(settings: &RuntimeSettingsSnapshot) -> Self {
         let shared = Arc::new(SharedAutomationState {
             state: Mutex::new(AutomationWorkerState {
@@ -419,14 +427,14 @@ impl RuntimeHandle {
             let mut controller = lock_unpoisoned(&self_power);
             controller
                 .set_requests(
-                    tray::is_hidden_to_tray(),
+                    window_visibility::is_hidden(),
                     settings.value.adaptive_engine.enabled,
                 )
                 .err()
         };
         let visibility_self_power = Arc::clone(&self_power);
         let visibility_shared = Arc::clone(&shared);
-        let tray_visibility_watcher = TrayVisibilityWatcher::start(Arc::new(move |hidden| {
+        let visibility_watcher = VisibilityWatcher::start(Arc::new(move |hidden| {
             if let Err(error) = lock_unpoisoned(&visibility_self_power).set_hidden_mode(hidden) {
                 update_worker_error(&visibility_shared, Some(error));
             }
@@ -439,7 +447,7 @@ impl RuntimeHandle {
             event_watcher: Mutex::new(None),
             input_hook: Mutex::new(None),
             self_power,
-            tray_visibility_watcher: Mutex::new(Some(tray_visibility_watcher)),
+            visibility_watcher: Mutex::new(Some(visibility_watcher)),
         };
         if let Some(error) = self_power_error {
             update_worker_error(&automation.shared, Some(error));
@@ -509,7 +517,7 @@ impl RuntimeHandle {
             input_hook.take();
         }
         {
-            let mut watcher = lock_unpoisoned(&self.tray_visibility_watcher);
+            let mut watcher = lock_unpoisoned(&self.visibility_watcher);
             watcher.take();
         }
         let thread = lock_unpoisoned(&self.thread).take();
@@ -863,16 +871,20 @@ impl RuntimeHandle {
         }
         let mut watcher = lock_unpoisoned(&self.event_watcher);
 
-        if windows_event_watcher_required(&settings.value) {
+        let requested_mode = windows_event_watcher_mode(&settings.value);
+        if watcher.as_ref().map(WindowsEventWatcher::mode) != requested_mode {
+            set_windows_event_watcher_active(&self.shared, false);
+            *watcher = None;
+        }
+        if let Some(mode) = requested_mode {
             if watcher.is_none() {
                 let shared = Arc::clone(&self.shared);
-                *watcher = WindowsEventWatcher::start(Arc::new(move |event| {
-                    notify_windows_event(&shared, event);
-                }))
+                *watcher = WindowsEventWatcher::start(
+                    mode,
+                    Arc::new(move |event| notify_windows_event(&shared, event)),
+                )
                 .ok();
             }
-        } else {
-            *watcher = None;
         }
 
         set_windows_event_watcher_active(&self.shared, watcher.is_some());
@@ -984,7 +996,7 @@ fn run_background_automation(
         runner.input_activity = snapshot.input_activity;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
         let mut observations = CycleObservations::default();
-        let hidden_to_tray = tray::is_hidden_to_tray();
+        let hidden_to_tray = window_visibility::is_hidden();
         let adaptive_engine_enabled = settings.adaptive_engine.enabled;
         let background_efficiency_refresh_interval = automation_refresh_interval(
             hidden_to_tray,

@@ -1,5 +1,9 @@
 # Iced design integrity review
 
+Historical audit of the Iced implementation. Its findings and corrections
+describe the recorded baseline, not the current Wind UI application. See the
+[Wind UI implementation guide](windui-port.md) for current contracts.
+
 The hierarchy corrections below are implemented in the Iced working tree. The original audit is retained as the comparison record; its “Current Iced difference” column describes the pre-correction state.
 
 Baseline: `cab3186`, the GPUI application before the Iced port. Comparison target: the current working tree. This is a source-level presentation review, not a new assessment of backend feature parity. Existing uncommitted changes were preserved.

@@ -1,9 +1,7 @@
-use super::widgets::{self, checkbox, pick_list};
-use crate::ui::scrolling::scrollable;
+use super::widgets::{self, Ui};
 use crate::{config::Settings, power::PowerPlan, ui::process_rules::*};
-use iced::widget::column;
-use iced::{Element, Fill};
 use rust_i18n::t;
+use windui::prelude::Element;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -25,15 +23,6 @@ pub(super) enum Message {
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Choice(Option<String>, String);
-
-impl std::fmt::Display for Choice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.1)
-    }
 }
 
 impl Editor {
@@ -96,108 +85,78 @@ impl Editor {
         }
     }
 
-    pub(super) fn view<'a>(
-        &'a self,
+    pub(super) fn view(
+        &self,
         kind: Kind,
-        settings: &'a Settings,
+        settings: &Settings,
         plans: &[PowerPlan],
         candidates: &[super::app_picker::Candidate],
         status: &crate::control::power_plan::PowerPlanStatus,
-    ) -> Element<'a, Message> {
-        let master_enabled = settings.general.enabled;
+        ui: Ui<Message>,
+    ) -> Element {
         let state = match kind {
             Kind::Foreground => crate::rules::DecisionState::ByForeground,
             Kind::RunningApp => crate::rules::DecisionState::ByRunningApp,
         };
         macro_rules! render_rules {
             ($field:ident, $can_add:ident, $enable:literal) => {{
-                let settings = &settings.$field;
-                let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
-                    $enable,
-                    super::widgets::switch(settings.enabled, Some(Message::Enabled))
-                )),]
-                .spacing(super::widgets::CARD_GAP);
-                let mut rules_body = column![super::app_picker::view(
-                    &self.path,
-                    candidates,
-                    true,
-                    Message::Path,
-                    Message::Browse,
-                    ($can_add(settings, &self.path)).then_some(Message::Add),
-                    |path| $can_add(settings, path).then_some(true)
-                )]
-                .spacing(super::widgets::CARD_GAP);
-                let mut cards = Vec::new();
-                for (index, rule) in settings.rules.iter().enumerate() {
-                    let mut choices = vec![Choice(None, t!("common.none").to_string())];
-                    choices.extend(
-                        plans
-                            .iter()
-                            .map(|plan| Choice(Some(plan.guid.clone()), plan.display_name())),
-                    );
-                    let selected = choices
-                        .iter()
-                        .find(|choice| choice.0 == rule.power_plan_guid)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            Choice(
-                                rule.power_plan_guid.clone(),
-                                rule.power_plan_guid.clone().unwrap_or_default(),
+                let feature = &settings.$field;
+                let candidate_settings = feature.clone();
+                let mut body = vec![
+                    widgets::setting_row(
+                        t!($enable).to_string(),
+                        ui.toggle(feature.enabled, Message::Enabled),
+                    ),
+                    widgets::heading(t!("common.rules").to_string()),
+                    super::app_picker::view(
+                        &self.path,
+                        candidates,
+                        true,
+                        Message::Path,
+                        Message::Browse,
+                        Some(Message::Add),
+                        move |candidate| {
+                            $can_add(
+                                &candidate_settings,
+                                &candidate.info.image_path.to_string_lossy(),
                             )
-                        });
-                    let selector: Element<'_, Message> = {
-                        pick_list(choices, Some(selected), move |choice| {
-                            Message::Plan(index, choice.0)
-                        })
-                        .width(Fill)
-                        .into()
-                    };
+                            .then_some(true)
+                        },
+                        ui.clone(),
+                    ),
+                ];
+                for (index, rule) in feature.rules.iter().enumerate() {
                     let key = super::power_rules::power_rule_status(
-                        master_enabled && settings.enabled && rule.enabled,
+                        settings.general.enabled && feature.enabled && rule.enabled,
                         !rule.executable_path.trim().is_empty(),
                         status.rule_index == Some(index),
                         state,
                         [rule.power_plan_guid.as_deref(), None],
                         status,
                     );
-                    let chip = iced::widget::container(iced::widget::text(t!(key).to_string()))
-                        .padding([4, 8])
-                        .style(move |theme| widgets::rule_status_chip(theme, key));
-                    cards.push((
-                        widgets::stable_key(&rule.executable_path),
-                        column![
-                            widgets::process_rule_header(
-                                &rule.executable_path,
-                                candidates,
-                                checkbox(rule.enabled)
-                                    .on_toggle_maybe(Some(move |value| {
-                                        Message::RuleEnabled(index, value)
-                                    }))
-                                    .into(),
-                                Some(chip.into()),
-                                vec![selector],
-                                iced::widget::container(widgets::rule_delete_button(Some(
-                                    Message::Remove(index)
-                                )))
-                                .center_x(80)
-                                .into(),
+                    body.push(widgets::card(
+                        rule.executable_path.clone(),
+                        [
+                            ui.checkbox(
+                                t!("common.enable").to_string(),
+                                rule.enabled,
+                                move |value| Message::RuleEnabled(index, value),
                             ),
-                            iced::widget::rule::horizontal(1)
-                        ]
-                        .into(),
+                            widgets::label(t!(key).to_string()),
+                            widgets::setting_row(
+                                t!("by_running_app.power_plan").to_string(),
+                                ui.plan(rule.power_plan_guid.clone(), plans, move |value| {
+                                    Message::Plan(index, value)
+                                }),
+                            ),
+                            ui.button(t!("common.remove").to_string(), Message::Remove(index)),
+                        ],
                     ));
                 }
-                rules_body = rules_body.push(widgets::process_rules_table_with_actions(
-                    [t!("by_running_app.power_plan").to_string()],
-                    cards,
-                    t!("common.no_custom_rules").to_string(),
-                    80,
-                    true,
-                ));
-                body = body
-                    .push(widgets::setting_title("common.rules"))
-                    .push(rules_body);
-                scrollable(body).height(Fill).into()
+                if feature.rules.is_empty() {
+                    body.push(widgets::label(t!("common.no_custom_rules").to_string()));
+                }
+                widgets::page(body)
             }};
         }
         match kind {

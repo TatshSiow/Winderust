@@ -1,26 +1,30 @@
-use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{self, Ui};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
     can_add_app_suspension_process, new_app_suspension_rule, process_setting_matches,
 };
-use crate::ui::scrolling::scrollable;
-use iced::widget::{column, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
+use std::collections::HashMap;
+use windui::prelude::{signal, Element};
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
     expanded: [bool; 3],
+    numbers: HashMap<Input, String>,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Delay {
     Background,
     ThawInterval,
     ThawDuration,
     Audio,
     Network,
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Input {
+    Delay(Delay),
+    Threshold(String, bool),
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -42,6 +46,24 @@ pub(super) enum Message {
     Remove(usize),
 }
 impl Editor {
+    pub(super) fn has_invalid_inputs(&self) -> bool {
+        self.numbers.iter().any(|(input, raw)| match input {
+            Input::Delay(field) => !raw
+                .parse::<u64>()
+                .is_ok_and(|value| (1..=delay_max(*field)).contains(&value)),
+            Input::Threshold(_, _) => !raw
+                .parse::<f64>()
+                .is_ok_and(|value| value.is_finite() && value >= 0.0),
+        })
+    }
+
+    fn number(&self, input: &Input, value: impl ToString) -> String {
+        self.numbers
+            .get(input)
+            .cloned()
+            .unwrap_or_else(|| value.to_string())
+    }
+
     pub(super) fn update(
         &mut self,
         s: &mut AppSuspensionSettings,
@@ -62,10 +84,8 @@ impl Editor {
                 self.path.clear();
             }
             Message::Delay(field, v) => {
-                let max = match field {
-                    Delay::Background | Delay::ThawInterval => 86_400,
-                    _ => 3600,
-                };
+                self.numbers.insert(Input::Delay(field), v.clone());
+                let max = delay_max(field);
                 if let Ok(v) = v.parse::<u64>() {
                     if (1..=max).contains(&v) {
                         *match field {
@@ -97,6 +117,12 @@ impl Editor {
                 }
             }
             Message::Threshold(i, upload, v) => {
+                if let Some(rule) = s.suspendable_apps.get(i) {
+                    self.numbers.insert(
+                        Input::Threshold(rule.executable_path.clone(), upload),
+                        v.clone(),
+                    );
+                }
                 if let (Some(r), Ok(v)) = (s.suspendable_apps.get_mut(i), v.parse::<f64>()) {
                     if v.is_finite() && v >= 0.0 {
                         if upload {
@@ -113,6 +139,8 @@ impl Editor {
             }
             Message::Unit(i, upload, v) => {
                 if let Some(r) = s.suspendable_apps.get_mut(i) {
+                    self.numbers
+                        .remove(&Input::Threshold(r.executable_path.clone(), upload));
                     if upload {
                         r.network_upload_threshold_unit = v;
                     } else {
@@ -139,7 +167,10 @@ impl Editor {
             }
             Message::Remove(i) => {
                 if i < s.suspendable_apps.len() {
-                    s.suspendable_apps.remove(i);
+                    let removed = s.suspendable_apps.remove(i);
+                    self.numbers.retain(|input, _| {
+                        !matches!(input, Input::Threshold(path, _) if path == &removed.executable_path)
+                    });
                 }
             }
 
@@ -153,220 +184,197 @@ impl Editor {
                 .iter()
                 .any(|p| process_setting_matches(p, &self.path))
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        s: &'a AppSuspensionSettings,
+    pub(super) fn view(
+        &self,
+        settings: &AppSuspensionSettings,
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
         candidates: &[super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
-            "app_suspension.enable",
-            super::widgets::switch(s.enabled, Some(Message::Enabled))
-        )),]
-        .spacing(super::widgets::CARD_GAP);
-        body = body.push(super::widgets::settings_card(delay_row(
-            Delay::Background,
-            "app_suspension.background_delay",
-            s.background_delay_seconds,
-        )));
-        for (i, key, enabled, toggle, rows) in [
+        ui: Ui<Message>,
+    ) -> Element {
+        let mut body = vec![
+            widgets::setting_row(
+                t!("app_suspension.enable").to_string(),
+                ui.toggle(settings.enabled, Message::Enabled),
+            ),
+            delay_row(
+                Delay::Background,
+                "app_suspension.background_delay",
+                self.number(
+                    &Input::Delay(Delay::Background),
+                    settings.background_delay_seconds,
+                ),
+                ui.clone(),
+            ),
+        ];
+        for (index, title, enabled, toggle, fields) in [
             (
                 0,
                 "app_suspension.temporary_thaw",
-                s.temporary_thaw_enabled,
+                settings.temporary_thaw_enabled,
                 Message::Thaw as fn(bool) -> Message,
                 vec![
                     (
                         Delay::ThawInterval,
                         "app_suspension.thaw_every",
-                        s.temporary_thaw_interval_seconds,
+                        settings.temporary_thaw_interval_seconds,
                     ),
                     (
                         Delay::ThawDuration,
                         "app_suspension.thaw_duration",
-                        s.temporary_thaw_duration_seconds,
+                        settings.temporary_thaw_duration_seconds,
                     ),
                 ],
             ),
             (
                 1,
                 "app_suspension.audio_detection",
-                s.audio_wake_enabled,
+                settings.audio_wake_enabled,
                 Message::Audio,
                 vec![(
                     Delay::Audio,
                     "app_suspension.audio_refreeze",
-                    s.audio_wake_duration_seconds,
+                    settings.audio_wake_duration_seconds,
                 )],
             ),
             (
                 2,
                 "app_suspension.network_detection",
-                s.network_wake_enabled,
+                settings.network_wake_enabled,
                 Message::Network,
                 vec![(
                     Delay::Network,
                     "app_suspension.network_refreeze",
-                    s.network_wake_duration_seconds,
+                    settings.network_wake_duration_seconds,
                 )],
             ),
         ] {
-            let controls = iced::widget::Column::with_children(
-                rows.into_iter()
-                    .map(|(field, label, value)| delay_row(field, label, value)),
-            )
-            .spacing(design::space::SMALL);
-            body = body.push(super::widgets::setting_group(
-                key.to_string(),
-                self.expanded[i],
-                Message::Group(i),
-                super::widgets::switch(enabled, Some(toggle)),
-                controls,
+            let controls = fields.into_iter().map(|(field, key, value)| {
+                delay_row(
+                    field,
+                    key,
+                    self.number(&Input::Delay(field), value),
+                    ui.clone(),
+                )
+            });
+            body.push(widgets::card(
+                t!(title).to_string(),
+                [
+                    widgets::setting_row(t!(title).to_string(), ui.toggle(enabled, toggle)),
+                    ui.collapsible(
+                        t!("common.control").to_string(),
+                        self.expanded[index],
+                        widgets::col().children(controls),
+                        move |_| Message::Group(index),
+                    ),
+                ],
             ));
         }
-        body = body.push(super::app_picker::view(
+        body.push(super::app_picker::view(
             &self.path,
             candidates,
             true,
             Message::Path,
             Message::Browse,
-            (self.can_add(s, unavailable)).then_some(Message::Add),
-            |path| {
-                Some(
-                    !unavailable
-                        .iter()
-                        .any(|blocked| process_setting_matches(blocked, path)),
-                )
-            },
+            Some(Message::Add),
+            |candidate| Some(candidate.info.has_suspendable_instance),
+            ui.clone(),
         ));
-        let mut cards = Vec::new();
-        for (i, r) in s.suspendable_apps.iter().enumerate() {
+        for (index, rule) in settings.suspendable_apps.iter().enumerate() {
             let frozen =
-                app_suspension::contains_process(&status.suspended_apps, &r.executable_path);
+                app_suspension::contains_process(&status.suspended_apps, &rule.executable_path);
             let blocked = unavailable
                 .iter()
-                .any(|p| process_setting_matches(p, &r.executable_path));
-            let state = column![
-                text(indicator(status, &r.executable_path, blocked)),
-                button(text(
+                .any(|path| process_setting_matches(path, &rule.executable_path));
+            let mut controls = vec![
+                ui.checkbox(
+                    t!("common.enable").to_string(),
+                    rule.enabled,
+                    move |value| Message::RuleEnabled(index, value),
+                ),
+                widgets::label(indicator(status, &rule.executable_path, blocked)),
+                ui.button(
                     t!(if frozen {
                         "app_suspension.thaw"
                     } else {
                         "app_suspension.freeze"
                     })
-                    .to_string()
-                ))
-                .on_press_maybe(
-                    (frozen || (status.enabled && r.enabled && !blocked))
-                        .then_some(Message::Toggle(i))
+                    .to_string(),
+                    Message::Toggle(index),
+                )
+                .enabled(frozen || (status.enabled && rule.enabled && !blocked)),
+                ui.checkbox(
+                    t!("app_suspension.audio").to_string(),
+                    rule.audio_wake_enabled,
+                    move |value| Message::RuleAudio(index, value),
                 ),
-            ]
-            .spacing(design::space::SMALL);
-            let mut controls: Vec<Element<'_, Message>> = vec![
-                checkbox(r.audio_wake_enabled)
-                    .on_toggle_maybe(Some(move |v| Message::RuleAudio(i, v)))
-                    .into(),
-                checkbox(r.network_wake_enabled)
-                    .on_toggle_maybe(Some(move |v| Message::RuleNetwork(i, v)))
-                    .into(),
+                ui.checkbox(
+                    t!("app_suspension.network").to_string(),
+                    rule.network_wake_enabled,
+                    move |value| Message::RuleNetwork(index, value),
+                ),
             ];
-            for (upload, bytes, unit, _label) in [
+            for (upload, bytes, unit, title) in [
                 (
                     false,
-                    r.network_download_threshold_bytes,
-                    r.network_download_threshold_unit,
+                    rule.network_download_threshold_bytes,
+                    rule.network_download_threshold_unit,
                     "app_suspension.download",
                 ),
                 (
                     true,
-                    r.network_upload_threshold_bytes,
-                    r.network_upload_threshold_unit,
+                    rule.network_upload_threshold_bytes,
+                    rule.network_upload_threshold_unit,
                     "app_suspension.upload",
                 ),
             ] {
-                let value = unit.threshold_value_from_bytes(bytes).to_string();
-                controls.push(
-                    column![
-                        text_input("", &value)
-                            .on_input_maybe(Some(move |v| Message::Threshold(i, upload, v)))
-                            .width(65),
-                        pick_list(
+                controls.push(widgets::setting_row(
+                    t!(title).to_string(),
+                    widgets::row().children([
+                        ui.input(
+                            self.number(
+                                &Input::Threshold(rule.executable_path.clone(), upload),
+                                unit.threshold_value_from_bytes(bytes),
+                            ),
+                            "0",
+                            move |value| Message::Threshold(index, upload, value),
+                        ),
+                        ui.select(
                             NetworkThresholdUnit::ALL.map(Unit),
-                            Some(Unit(unit)),
-                            move |v| Message::Unit(i, upload, v.0)
-                        )
-                    ]
-                    .spacing(design::space::SMALL)
-                    .into(),
-                );
+                            Unit(unit),
+                            move |value| Message::Unit(index, upload, value.0),
+                        ),
+                    ]),
+                ));
             }
-            cards.push((
-                super::widgets::stable_key(&r.executable_path),
-                column![
-                    super::widgets::process_rule_header(
-                        &r.executable_path,
-                        candidates,
-                        checkbox(r.enabled)
-                            .on_toggle_maybe(Some(move |v| Message::RuleEnabled(i, v)))
-                            .into(),
-                        Some(state.into()),
-                        controls,
-                        iced::widget::container(super::widgets::rule_delete_button(Some(
-                            Message::Remove(i)
-                        )))
-                        .center_x(80)
-                        .into(),
-                    ),
-                    iced::widget::rule::horizontal(1)
-                ]
-                .into(),
+            controls.push(ui.button(t!("common.remove").to_string(), Message::Remove(index)));
+            body.push(widgets::card(rule.executable_path.clone(), controls));
+        }
+        if settings.suspendable_apps.is_empty() {
+            body.push(widgets::label(
+                t!("app_suspension.no_suspendable").to_string(),
             ));
         }
-        body = body.push(
-            scrollable(
-                iced::widget::container(super::widgets::process_rules_table_with_actions(
-                    [
-                        "app_suspension.audio",
-                        "app_suspension.network",
-                        "app_suspension.download",
-                        "app_suspension.upload",
-                    ]
-                    .map(|key| t!(key).to_string()),
-                    cards,
-                    t!("app_suspension.no_suspendable").to_string(),
-                    80,
-                    true,
-                ))
-                .width(1240),
-            )
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::new(),
-            )),
-        );
-
         if let Some(error) = &status.last_error {
-            body = body.push(text(error.clone()));
+            body.push(widgets::error(error.clone()));
         }
-        scrollable(body).height(Fill).into()
+        widgets::page(body)
     }
 }
-fn delay_row(field: Delay, label: &str, value: u64) -> Element<'static, Message> {
-    let max = match field {
+fn delay_max(field: Delay) -> u64 {
+    match field {
         Delay::Background | Delay::ThawInterval => 86400,
         _ => 3600,
-    };
-    super::widgets::setting_row_with_unit(
-        label,
-        "s",
-        super::widgets::stepper(
-            &value.to_string(),
-            1..=max,
-            1,
-            Some(move |v| Message::Delay(field, v)),
-        ),
+    }
+}
+
+fn delay_row(field: Delay, title: &str, value: String, ui: Ui<Message>) -> Element {
+    widgets::setting_row(
+        format!("{} (s)", t!(title)),
+        ui.number(signal(value), 1, delay_max(field), 1, move |value| {
+            Message::Delay(field, value)
+        }),
     )
-    .into()
 }
 
 fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
@@ -409,6 +417,74 @@ impl std::fmt::Display for Unit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_native_drafts_survive_rule_reindexing_and_clear_when_corrected_or_removed() {
+        let mut editor = Editor::default();
+        let mut settings = AppSuspensionSettings::default();
+        let status = AppSuspensionSnapshot::default();
+        let original_delay = settings.background_delay_seconds;
+        editor.update(
+            &mut settings,
+            &status,
+            &[],
+            Message::Delay(Delay::Background, "0".into()),
+        );
+        assert_eq!(settings.background_delay_seconds, original_delay);
+        assert!(editor.has_invalid_inputs());
+        assert_eq!(
+            editor.number(&Input::Delay(Delay::Background), original_delay),
+            "0"
+        );
+        editor.update(
+            &mut settings,
+            &status,
+            &[],
+            Message::Delay(Delay::Background, "15".into()),
+        );
+        assert!(!editor.has_invalid_inputs());
+
+        settings.suspendable_apps = [r"C:\Apps\first.exe", r"C:\Apps\second.exe"]
+            .map(new_app_suspension_rule)
+            .to_vec();
+        let bytes = settings.suspendable_apps[1].network_download_threshold_bytes;
+        editor.update(
+            &mut settings,
+            &status,
+            &[],
+            Message::Threshold(1, false, "NaN".into()),
+        );
+        assert_eq!(
+            settings.suspendable_apps[1].network_download_threshold_bytes,
+            bytes
+        );
+        editor.update(&mut settings, &status, &[], Message::Remove(0));
+        assert!(editor.has_invalid_inputs());
+        assert_eq!(
+            editor.number(
+                &Input::Threshold(settings.suspendable_apps[0].executable_path.clone(), false),
+                bytes
+            ),
+            "NaN"
+        );
+        editor.update(
+            &mut settings,
+            &status,
+            &[],
+            Message::Threshold(0, false, "1.5".into()),
+        );
+        assert!(!editor.has_invalid_inputs());
+        editor.update(
+            &mut settings,
+            &status,
+            &[],
+            Message::Threshold(0, true, "-1".into()),
+        );
+        assert!(editor.has_invalid_inputs());
+        editor.update(&mut settings, &status, &[], Message::Remove(0));
+        assert!(!editor.has_invalid_inputs());
+    }
+
     #[test]
     fn unavailable_targets_cannot_be_added_or_frozen_but_can_thaw() {
         let mut e = Editor::default();

@@ -1,12 +1,9 @@
-use super::design;
-use super::widgets::{checkbox, text_input};
+use super::widgets::{self, Ui};
 use crate::config::TimerResolutionSettings;
 use crate::timer_resolution::TimerResolutionSnapshot;
 use crate::ui::process_rules::{can_add_timer_resolution_process, new_timer_resolution_rule};
-use crate::ui::scrolling::scrollable;
-use iced::widget::{column, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
+use windui::prelude::{signal, Element};
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
@@ -82,79 +79,97 @@ impl Editor {
             Message::Add | Message::Browse => {}
         }
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        s: &'a TimerResolutionSettings,
+    pub(super) fn view(
+        &self,
+        settings: &TimerResolutionSettings,
         status: &TimerResolutionSnapshot,
         candidates: &[super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
-        let mut body = column![
-            super::widgets::settings_card(super::widgets::setting_row(
-                "timer_resolution.enable",
-                super::widgets::switch(s.enabled, Some(Message::Enabled))
-            )),
-            super::widgets::setting_title("common.rules"),
+        ui: Ui<Message>,
+    ) -> Element {
+        let candidate_settings = settings.clone();
+        let mut body = vec![
+            widgets::setting_row(
+                t!("timer_resolution.enable").to_string(),
+                ui.toggle(settings.enabled, Message::Enabled),
+            ),
+            widgets::heading(t!("common.rules").to_string()),
             super::app_picker::view(
                 &self.path,
                 candidates,
                 true,
                 Message::Path,
                 Message::Browse,
-                (can_add_timer_resolution_process(s, &self.path)).then_some(Message::Add),
-                |path| can_add_timer_resolution_process(s, path).then_some(true)
-            )
-        ]
-        .spacing(super::widgets::CARD_GAP);
-        let mut cards = Vec::new();
-        for (i, r) in s.rules.iter().enumerate() {
+                Some(Message::Add),
+                move |candidate| {
+                    can_add_timer_resolution_process(
+                        &candidate_settings,
+                        &candidate.info.image_path.to_string_lossy(),
+                    )
+                    .then_some(true)
+                },
+                ui.clone(),
+            ),
+        ];
+        for (index, rule) in settings.rules.iter().enumerate() {
             let value = self
                 .editing
                 .as_ref()
-                .filter(|(index, _)| *index == i)
+                .filter(|(i, _)| *i == index)
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| {
-                    crate::timer_resolution::format_resolution_ms(r.desired_100ns)
+                    crate::timer_resolution::format_resolution_ms(rule.desired_100ns)
                         .trim_end_matches(" ms")
                         .to_owned()
                 });
-            let controls = text_input("", &value)
-                .align_x(iced::alignment::Horizontal::Center)
-                .on_input_maybe(Some(move |v| Message::Resolution(i, v)))
-                .on_submit(Message::Commit(i))
-                .width(design::STANDALONE_NUMERIC_WIDTH);
-            cards.push((
-                super::widgets::stable_key(&r.executable_path),
-                super::widgets::process_rule_row(
-                    &r.executable_path,
-                    candidates,
-                    checkbox(r.enabled)
-                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(i, v)))
-                        .into(),
-                    vec![controls.into()],
-                    Some(Message::Remove(i)),
-                ),
+            let raw = signal(value);
+            let edits = ui.clone();
+            let submit = ui.clone();
+            let input = widgets::observe(
+                Element::text_input(raw, "0.1-1000")
+                    .width_match()
+                    .on_submit(move |ctx| {
+                        widgets::flush_bindings(ctx);
+                        submit.emit(Message::Commit(index));
+                    }),
+                raw,
+                move |value| edits.edit(Message::Resolution(index, value)),
+            );
+            body.push(widgets::card(
+                rule.executable_path.clone(),
+                [
+                    ui.checkbox(
+                        t!("common.enable").to_string(),
+                        rule.enabled,
+                        move |value| Message::RuleEnabled(index, value),
+                    ),
+                    widgets::setting_row(
+                        format!("{} (ms)", t!("timer_resolution.requested")),
+                        input,
+                    ),
+                    ui.button(t!("common.remove").to_string(), Message::Remove(index)),
+                ],
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
-            [super::widgets::label_with_unit(
-                &t!("timer_resolution.requested"),
-                "ms",
-            )],
-            cards,
-            t!("timer_resolution.no_rules").to_string(),
-        ));
-
-        if let Some(value) = status.requested_100ns {
-            body = body.push(text(format!(
-                "{}: {}",
-                t!("timer_resolution.requested"),
-                crate::timer_resolution::format_resolution_ms(value)
-            )));
+        if settings.rules.is_empty() {
+            body.push(widgets::label(t!("timer_resolution.no_rules").to_string()));
+        }
+        for (key, value) in [
+            ("timer_resolution.minimum", status.minimum_100ns),
+            ("timer_resolution.maximum", status.maximum_100ns),
+            ("timer_resolution.requested", status.requested_100ns),
+        ] {
+            if let Some(value) = value {
+                body.push(widgets::label(format!(
+                    "{}: {}",
+                    t!(key),
+                    crate::timer_resolution::format_resolution_ms(value)
+                )));
+            }
         }
         if let Some(error) = &status.last_error {
-            body = body.push(text(error.clone()));
+            body.push(widgets::error(error.clone()));
         }
-        scrollable(body).height(Fill).into()
+        widgets::page(body)
     }
 }
 fn parse_resolution(value: &str, min: u32, max: u32) -> Option<u32> {

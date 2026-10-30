@@ -48,10 +48,13 @@ Winderust is a Windows-only Rust application. Install:
 - Visual Studio Build Tools with **Desktop development with C++**
 - A Windows SDK with the resource compiler (`rc.exe`)
 
-The desktop UI uses Iced 0.14 with the tiny-skia software renderer. Page editors
-live in `src/ui/`; `app.rs` composes their messages, runtime commands, and
-native window lifecycle. Keep Windows mutations in the existing typed services
-and controllers.
+The desktop UI uses the pinned Wind UI dependency with software rendering and
+native framework controls. Page editors live in `src/ui/`; `app.rs` owns their
+messages, runtime commands, and resident application lifecycle. Settings and
+runtime state survive closing and recreating the main window. Keep Windows
+mutations in the existing typed services and controllers. See the
+[Wind UI implementation guide](docs/windui-port.md) for ownership and native
+integration contracts.
 
 Fork the repository, create a branch from `dev`, and make your change there.
 Releasable changes are integrated into `dev` before promotion to `main`.
@@ -88,6 +91,7 @@ git diff --check
 cargo fmt -- --check
 cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
 cargo test --locked
+.\scripts\check_architecture_ownership.ps1
 rg -n -i --glob '!target/**' --glob '!graphify-out/**' --glob '!.git/**' --glob '!.agents/**' --glob '!CONTRIBUTING.md' 'PowerLeaf|Smart Saver|Smart Trim|Background CPU Restriction|Core Steering|Soft CPU Sets|Hard CPU Affinity|background_cpu_restriction|core_steering|soft_cpu_sets|hard_cpu_affinity|serde.*alias|fill_missing_power_plan_mappings|Settings::power_plans' .
 ```
 

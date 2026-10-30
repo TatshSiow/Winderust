@@ -1,9 +1,15 @@
-use super::design;
+use super::{
+    design,
+    widgets::{self, Ui},
+};
 use crate::config::Settings;
 use crate::ui::{self, Page};
-use iced::{Element, Theme};
 use rust_i18n::t;
 use std::collections::HashSet;
+use windui::{
+    geometry::Insets,
+    prelude::{Align, Element, Role},
+};
 
 pub(super) struct History {
     pages: Vec<Page>,
@@ -52,41 +58,144 @@ pub(super) fn breadcrumb_path(page: Page) -> Vec<Page> {
     path
 }
 
-pub(super) fn section<'a, Message: 'a>(
-    header: impl Into<Element<'a, Message>>,
-    children: Vec<Element<'a, Message>>,
-    expanded: bool,
-) -> Element<'a, Message> {
-    let mut section = iced::widget::column![header.into()];
-    // An empty column still participates in spacing; leaf pages must have no child slot.
-    if !children.is_empty() {
-        section = section.push(super::motion::wrap(
-            iced::widget::column(children)
-                .spacing(design::space::TINY)
-                .padding(iced::Padding {
-                    top: design::space::TINY as f32,
-                    right: design::space::COMPACT as f32,
-                    left: design::space::COMPACT as f32,
-                    bottom: 0.0,
-                }),
-            expanded,
-            super::motion::Effect::Visible,
-        ));
-    }
-    section.into()
+pub(super) struct Row {
+    pub page: Page,
+    pub child: bool,
+    pub collapsed: bool,
+    pub selected: bool,
+    pub expanded: Option<bool>,
+    pub enabled: Option<bool>,
+    pub count: Option<usize>,
 }
 
-pub(super) fn label<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
-    use iced::widget::{container, text};
-    container(
-        text(page.label())
-            .size(design::typography::SECONDARY)
-            .wrapping(text::Wrapping::None),
+/// Native Clickable owns interaction; selection remains visible without relying on color alone.
+pub(super) fn row<M: Clone + 'static>(state: Row, ui: Ui<M>, message: M) -> Element {
+    let mut content = Element::row()
+        .width_match()
+        .height(if state.child {
+            design::NAVIGATION_CHILD_ROW_HEIGHT as i32
+        } else {
+            design::NAVIGATION_ROW_HEIGHT as i32
+        })
+        .cross(Align::Center)
+        .spacing(if state.collapsed {
+            design::space::TIGHT as i32
+        } else {
+            design::space::SMALL as i32
+        })
+        .padding_xy(if state.collapsed { 2 } else { 4 }, 0)
+        .corner(design::CONTROL_RADIUS)
+        .bg_role_alpha(Role::Accent, if state.selected { 0.10 } else { 0.0 })
+        .child(
+            Element::col()
+                .size(3, design::ICON_SIZE as i32)
+                .corner(2.0)
+                .bg_role_alpha(Role::Accent, if state.selected { 1.0 } else { 0.0 }),
+        );
+    if !state.child {
+        content = content.child(
+            Element::row()
+                .size(26, 26)
+                .align(Align::Center)
+                .cross(Align::Center)
+                .child(glyph(
+                    icon_path(state.page),
+                    if state.selected {
+                        Role::Accent
+                    } else {
+                        Role::TextMuted
+                    },
+                )),
+        );
+    }
+    if state.collapsed {
+        // Balance the selection marker so compact navigation keeps its icon centered.
+        content = content.child(Element::col().width(3));
+    } else {
+        content = content.child(
+            widgets::label(state.page.label())
+                .font_size(design::typography::SECONDARY as f32)
+                .font_weight(if state.selected { 600 } else { 400 })
+                .max_lines(2)
+                .weight(1.0)
+                .fg_role(if state.selected {
+                    Role::Accent
+                } else {
+                    Role::TextMuted
+                }),
+        );
+        if state.child {
+            if state.enabled == Some(true) {
+                content = content.child(
+                    Element::col()
+                        .size(3, design::ICON_SIZE as i32)
+                        .corner(2.0)
+                        .bg_role(Role::Success),
+                );
+            }
+        } else {
+            if let Some(count) = state.count {
+                content = content.child(
+                    Element::badge_intent(
+                        count.to_string(),
+                        if count > 0 {
+                            windui::theme::Intent::CustomRole(Role::Accent)
+                        } else {
+                            windui::theme::Intent::Neutral
+                        },
+                    )
+                    .font_size(design::typography::BADGE as f32),
+                );
+            }
+            if let Some(expanded) = state.expanded {
+                content = content.child(glyph(
+                    if expanded {
+                        "icons/chevron-down.svg"
+                    } else {
+                        "icons/chevron-right.svg"
+                    },
+                    Role::TextMuted,
+                ));
+            }
+        }
+    }
+    content
+        .tooltip(state.page.label())
+        .clickable()
+        .on_click(move |ctx| {
+            widgets::flush_bindings(ctx);
+            ui.emit(message.clone());
+        })
+}
+
+pub(super) fn glyph(path: &'static str, color: Role) -> Element {
+    Element::image_svg(
+        super::assets::svg(path)
+            .unwrap_or_else(|| unreachable!("Navigation icons must be embedded")),
+        None,
     )
-    .width(iced::Fill)
-    .height(design::ICON_SIZE)
-    .clip(true)
-    .into()
+    .tint_role(color)
+    .size(design::ICON_SIZE as i32, design::ICON_SIZE as i32)
+}
+
+pub(super) fn section(header: Element, children: Vec<Element>, expanded: bool) -> Element {
+    let mut section = Element::col().width_match().child(header);
+    // Empty leaf sections have no child slot or additional vertical spacing.
+    if expanded && !children.is_empty() {
+        section = section.child(
+            Element::col()
+                .width_match()
+                .spacing(design::space::TINY as i32)
+                .padding_edges(Insets::new(
+                    design::space::COMPACT as i32,
+                    design::space::TINY as i32,
+                    design::space::COMPACT as i32,
+                    0,
+                ))
+                .children(children),
+        );
+    }
+    section
 }
 
 pub(super) fn page_feature_info(page: Page) -> String {
@@ -160,31 +269,6 @@ pub(super) fn page_feature_info(page: Page) -> String {
     help
 }
 
-pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, Message> {
-    iced::widget::svg(
-        crate::ui::assets::iced_icon(icon_path(page)).expect("Every UI icon is bundled"),
-    )
-    .width(design::ICON_SIZE)
-    .height(design::ICON_SIZE)
-    .style(move |theme: &Theme, _| iced::widget::svg::Style {
-        color: Some(if selected {
-            theme.palette().primary
-        } else {
-            super::widgets::muted_color(theme)
-        }),
-    })
-    .into()
-}
-
-pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message> {
-    iced::widget::svg(crate::ui::assets::iced_icon(path).expect("Every UI icon is bundled"))
-        .width(design::ICON_SIZE)
-        .height(design::ICON_SIZE)
-        .style(|theme: &Theme, _| iced::widget::svg::Style {
-            color: Some(super::widgets::muted_color(theme)),
-        })
-        .into()
-}
 pub(super) fn icon_path(page: Page) -> &'static str {
     match page {
         Page::Home => "icons/house.svg",
@@ -551,6 +635,117 @@ pub(super) fn nav_section_in_footer(page: Page) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn collapsed_navigation_centers_its_icon_without_overflowing_the_rail() {
+        use windui::{core::Tree, prelude::Size, signal::SignalScope, text::NullTextEngine};
+
+        let mut scope = SignalScope::new();
+        scope.collect(|| {
+            for selected in [false, true] {
+                let mut tree = Tree::new();
+                let root = Element::col()
+                    .width(design::SIDEBAR_COLLAPSED_WIDTH as i32)
+                    .padding_xy(6, 8)
+                    .child(row(
+                        Row {
+                            page: Page::WinderustFeatures,
+                            child: false,
+                            collapsed: true,
+                            selected,
+                            expanded: Some(true),
+                            enabled: None,
+                            count: Some(8),
+                        },
+                        Ui::new(|(): (), _| {}),
+                        (),
+                    ))
+                    .build(&mut tree);
+                tree.root = Some(root);
+                tree.layout_root(
+                    Size::new(design::SIDEBAR_COLLAPSED_WIDTH as i32, 52),
+                    &mut NullTextEngine,
+                );
+                let navigation = tree.get(root).unwrap().children[0];
+                let bounds = tree.abs_bounds(navigation);
+                assert_eq!(bounds.w, 44);
+                let mut nodes = vec![navigation];
+                let mut icon = None;
+                while let Some(id) = nodes.pop() {
+                    nodes.extend(tree.get(id).unwrap().children.iter().copied());
+                    let child = tree.abs_bounds(id);
+                    assert!(child.x >= bounds.x && child.x + child.w <= bounds.x + bounds.w);
+                    if child.w == 26 && child.h == 26 {
+                        icon = Some(child);
+                    }
+                }
+                let icon = icon.expect("Collapsed navigation keeps its native icon frame");
+                assert_eq!(icon.x + icon.w / 2, bounds.x + bounds.w / 2);
+            }
+        });
+    }
+
+    #[test]
+    fn native_navigation_commits_the_last_edit_before_changing_page() {
+        use std::{cell::RefCell, rc::Rc};
+        use windui::{
+            core::Tree,
+            event::{MouseButton, PointerEvent, PointerKind},
+            prelude::{signal, Point, Size},
+            signal::SignalScope,
+            text::NullTextEngine,
+        };
+
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        enum Message {
+            Edit(String),
+            Navigate(Page),
+        }
+        let mut scope = SignalScope::new();
+        scope.collect(|| {
+            let draft = signal(String::from("before"));
+            let received = Rc::new(RefCell::new(Vec::new()));
+            let events = Rc::clone(&received);
+            let ui = Ui::new(move |message, _| events.borrow_mut().push(message));
+            let mut tree = Tree::new();
+            let root = Element::col()
+                .child(ui.input_signal(draft, "", Message::Edit))
+                .child(row(
+                    Row {
+                        page: Page::ProcessList,
+                        child: false,
+                        collapsed: false,
+                        selected: false,
+                        expanded: None,
+                        enabled: None,
+                        count: None,
+                    },
+                    ui,
+                    Message::Navigate(Page::ProcessList),
+                ))
+                .build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(Size::new(264, 120), &mut NullTextEngine);
+            let bounds = tree.abs_bounds(tree.get(root).unwrap().children[1]);
+            let position = Point::new(bounds.x + bounds.w / 2, bounds.y + bounds.h / 2);
+            draft.set(String::from("last edit"));
+            let (mut hover, mut capture) = (None, None);
+            for kind in [PointerKind::Down, PointerKind::Up] {
+                tree.dispatch_pointer(
+                    PointerEvent::single(kind, position, MouseButton::Left),
+                    &mut hover,
+                    &mut capture,
+                );
+            }
+            assert_eq!(
+                &*received.borrow(),
+                &[
+                    Message::Edit(String::from("last edit")),
+                    Message::Navigate(Page::ProcessList),
+                ]
+            );
+        });
+    }
+
+    #[test]
     fn feature_toggle_fields_match_navigation_indicators() {
         for page in Page::sections().iter().flat_map(|section| section.pages) {
             let mut settings = Settings::default();
@@ -601,41 +796,13 @@ mod tests {
     }
 
     use super::*;
-    #[test]
-    fn leaf_navigation_keeps_one_layout_child_after_first_visit() {
-        let build = |expanded, children| {
-            section::<()>(
-                iced::widget::Space::new().height(design::NAVIGATION_ROW_HEIGHT),
-                children,
-                expanded,
-            )
-        };
-        for expanded in [false, true] {
-            assert_eq!(build(expanded, vec![]).as_widget().children().len(), 1);
-        }
-        let child = || {
-            iced::widget::Space::new()
-                .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
-                .into()
-        };
-        let mut collapsed = build(false, vec![child()]);
-        assert_eq!(collapsed.as_widget().children().len(), 2);
-        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let mut tree = iced::advanced::widget::Tree::new(&collapsed);
-        let layout = collapsed.as_widget_mut().layout(
-            &mut tree,
-            &renderer,
-            &iced::advanced::layout::Limits::new(iced::Size::ZERO, iced::Size::new(300.0, 900.0)),
-        );
-        assert_eq!(layout.size().height, design::NAVIGATION_ROW_HEIGHT as f32);
-        assert_eq!(build(true, vec![child()]).as_widget().children().len(), 2);
-    }
+
     #[test]
     fn every_page_has_a_bundled_icon_and_sidebar_counts_follow_feature_settings() {
         for section in Page::sections() {
-            assert!(crate::ui::assets::iced_icon(icon_path(section.landing_page)).is_some());
+            assert!(crate::ui::assets::svg(icon_path(section.landing_page)).is_some());
             for page in section.pages {
-                assert!(crate::ui::assets::iced_icon(icon_path(*page)).is_some());
+                assert!(crate::ui::assets::svg(icon_path(*page)).is_some());
             }
         }
         let mut settings = Settings::default();

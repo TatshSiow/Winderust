@@ -1,15 +1,13 @@
-use super::design;
-use super::widgets::{button, pick_list, slider, text_input};
+use super::widgets::{self, Ui};
 use crate::application::AdvancedPowerPlanTuningService;
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
     EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerPreset,
     ProcessorPowerSourceValues, ProcessorPowerValues,
 };
-use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
+use std::collections::HashMap;
+use windui::prelude::{signal, Element};
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -22,13 +20,14 @@ pub(super) struct Editor {
     preset: Option<PresetEditor>,
     expanded: [bool; 2],
     selected_presets: [Option<PresetChoice>; 2],
+    numbers: HashMap<(Source, Field), String>,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Source {
     Ac,
     Battery,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Field {
     Parking,
     Minimum,
@@ -44,6 +43,7 @@ struct PresetEditor {
     target: PresetTarget,
     name: String,
     values: ProcessorPowerValues,
+    numbers: HashMap<Field, String>,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -57,7 +57,6 @@ pub(super) enum Message {
     Load(Source, PresetChoice),
     OpenPreset(PresetTarget),
     PresetName(String),
-    PresetValue(Field, u32),
     PresetValueText(Field, String),
     PresetBoost(ProcessorBoostMode),
     SavePreset,
@@ -112,6 +111,7 @@ impl Editor {
         self.values = None;
         self.personality = None;
         self.selected_presets = [None, None];
+        self.numbers.clear();
         self.refresh();
     }
 
@@ -132,6 +132,7 @@ impl Editor {
             Ok(v) => {
                 self.values = Some(v);
                 self.dirty = false;
+                self.numbers.clear();
                 self.status = t!("processor_power.loaded_values", plan = guid).to_string();
             }
             Err(error) => {
@@ -140,6 +141,10 @@ impl Editor {
         }
     }
     pub(super) fn apply(&mut self) -> bool {
+        if !self.numbers.values().all(|raw| valid_percent(raw)) {
+            self.status = "0..100 (%)".into();
+            return false;
+        }
         let (Some(guid), Some(values)) = (&self.target, self.values) else {
             self.status = t!("processor_power.no_active_plan").to_string();
             return false;
@@ -197,6 +202,8 @@ impl Editor {
                         self.update(presets, plans, Message::Value(source, field, v));
                     }
                 }
+                self.numbers.insert((source, field), value);
+                self.dirty = true;
             }
             Message::Boost(source, value) => {
                 if let Some(values) = self.values.as_mut() {
@@ -206,6 +213,7 @@ impl Editor {
             }
             Message::Load(source, choice) => {
                 if let Some(values) = self.values.as_mut() {
+                    self.numbers.retain(|(owner, _), _| *owner != source);
                     *source_values(values, source) = choice.1.normalized();
                     self.selected_presets[source as usize] = Some(choice);
                     self.dirty = true;
@@ -233,6 +241,7 @@ impl Editor {
                     target,
                     name,
                     values,
+                    numbers: HashMap::new(),
                 });
             }
             Message::PresetName(v) => {
@@ -244,20 +253,18 @@ impl Editor {
                     p.name = v;
                 }
             }
-            Message::PresetValue(field, v) => {
-                if let Some(p) = self
+            Message::PresetValueText(field, v) => {
+                if let Some(preset) = self
                     .preset
                     .as_mut()
-                    .filter(|p| matches!(p.target, PresetTarget::Custom(_)))
+                    .filter(|preset| matches!(preset.target, PresetTarget::Custom(_)))
                 {
-                    set_field(&mut p.values, field, v);
-                }
-            }
-            Message::PresetValueText(field, v) => {
-                if let Ok(v) = v.parse::<u32>() {
-                    if v <= 100 {
-                        self.update(presets, plans, Message::PresetValue(field, v));
+                    if let Ok(value) = v.parse::<u32>() {
+                        if value <= 100 {
+                            set_field(&mut preset.values, field, value);
+                        }
                     }
+                    preset.numbers.insert(field, v);
                 }
             }
             Message::PresetBoost(v) => {
@@ -272,7 +279,9 @@ impl Editor {
             Message::SavePreset => {
                 if let Some(p) = &self.preset {
                     if let PresetTarget::Custom(index) = p.target {
-                        if valid_name(presets, index, &p.name) {
+                        if valid_name(presets, index, &p.name)
+                            && p.numbers.values().all(|raw| valid_percent(raw))
+                        {
                             let value = AdvancedPowerPlanTuningPreset {
                                 name: p.name.trim().to_string(),
                                 values: p.values.normalized(),
@@ -300,47 +309,46 @@ impl Editor {
             }
         }
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        presets: &'a [AdvancedPowerPlanTuningPreset],
+    pub(super) fn view(
+        &self,
+        presets: &[AdvancedPowerPlanTuningPreset],
         plans: &[PowerPlan],
         mode: EffectivePowerMode,
-    ) -> Element<'a, Message> {
-        let choices = plans
-            .iter()
-            .map(|p| PlanChoice(p.guid.clone(), p.display_name()))
-            .collect::<Vec<_>>();
-        let selected = choices
-            .iter()
-            .find(|p| Some(&p.0) == self.target.as_ref())
-            .cloned();
-        let mut body = column![
-            super::widgets::settings_card(
-                row![
-                    text(t!("processor_power.target_plan").to_string()).width(Fill),
-                    pick_list(choices, selected, |p| Message::Plan(p.0))
-                ]
-                .spacing(design::space::MEDIUM)
-                .align_y(iced::Center)
+        ui: Ui<Message>,
+    ) -> Element {
+        let numbers = signal(self.numbers.clone());
+        let ui = ui.inspect(move |message: &Message, _refresh| {
+            if let Message::ValueText(source, field, raw) = message {
+                numbers.update(|numbers| {
+                    numbers.insert((*source, *field), raw.clone());
+                });
+            }
+        });
+        let mut body = vec![
+            widgets::setting_row(
+                t!("processor_power.target_plan").to_string(),
+                ui.required_plan(self.target.clone(), plans, Message::Plan),
             ),
-            text(
+            widgets::label(
                 t!(
                     "processor_power.effective_power_mode",
                     mode = mode_label(mode)
                 )
-                .to_string()
-            )
-        ]
-        .spacing(super::widgets::CARD_GAP);
-        if let Some(plan) = plans.iter().find(|p| Some(&p.guid) == self.target.as_ref()) {
+                .to_string(),
+            ),
+        ];
+        if let Some(plan) = plans
+            .iter()
+            .find(|plan| Some(&plan.guid) == self.target.as_ref())
+        {
             if !plan.active {
-                body = body.push(text(
+                body.push(widgets::label(
                     t!(
                         "processor_power.target_plan_inactive",
                         plan = plans
                             .iter()
-                            .find(|p| p.active)
-                            .map(|p| p.display_name())
+                            .find(|plan| plan.active)
+                            .map(|plan| plan.display_name())
                             .unwrap_or_else(|| t!("processor_power.no_active_plan").to_string())
                     )
                     .to_string(),
@@ -351,9 +359,12 @@ impl Editor {
                     EffectivePowerMode::Unknown | EffectivePowerMode::Balanced
                 )
             {
-                body = body.push(text(t!("processor_power.overlay_warning").to_string()));
+                body.push(widgets::label(
+                    t!("processor_power.overlay_warning").to_string(),
+                ));
             }
         }
+        let mut native_numbers = Vec::new();
         if let Some(values) = self.values {
             for (source, title, values) in [
                 (Source::Ac, "processor_power.ac_preset", values.ac),
@@ -365,221 +376,217 @@ impl Editor {
             ] {
                 let mut options = BUILT_INS
                     .into_iter()
-                    .map(|p| PresetChoice(preset_label(p), ProcessorPowerValues::for_preset(p)))
+                    .map(|preset| {
+                        PresetChoice(
+                            preset_label(preset),
+                            ProcessorPowerValues::for_preset(preset),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 options.extend(
-                    presets
-                        .iter()
-                        .map(|p| PresetChoice(p.name.clone(), p.values.normalized())),
+                    presets.iter().map(|preset| {
+                        PresetChoice(preset.name.clone(), preset.values.normalized())
+                    }),
                 );
-                let selected = self.selected_preset(source, values, &options);
-                let action = pick_list(options, selected, move |p| Message::Load(source, p))
-                    .placeholder(t!("common.custom").to_string())
-                    .width(280);
-                let mut controls = column![].spacing(design::space::SMALL);
-                for (field, label, value) in fields(values) {
-                    controls = controls.push(
-                        row![
-                            text(super::widgets::label_with_unit(&t!(label), "%")).width(Fill),
-                            slider(0..=100, value, move |v| Message::Value(source, field, v))
-                                .width(180),
-                            super::widgets::stepper(
-                                &value.to_string(),
-                                0..=100,
-                                1,
-                                Some(move |v| Message::ValueText(source, field, v))
-                            )
-                        ]
-                        .spacing(design::space::SMALL)
-                        .height(46)
-                        .align_y(iced::Center),
+                let selected = self
+                    .selected_preset(source, values, &options)
+                    .unwrap_or_else(|| PresetChoice(t!("common.custom").to_string(), values));
+                let mut controls = Vec::new();
+                for (field, title, value) in fields(values) {
+                    let raw = signal(
+                        self.numbers
+                            .get(&(source, field))
+                            .cloned()
+                            .unwrap_or_else(|| value.to_string()),
                     );
+                    native_numbers.push((raw, raw.get()));
+                    controls.push(widgets::setting_row(
+                        format!("{} (%)", t!(title)),
+                        ui.number(raw, 0, 100, 1, move |value| {
+                            Message::ValueText(source, field, value)
+                        }),
+                    ));
                 }
-                controls = controls.push(
-                    row![
-                        text(t!("processor_power.boost_mode").to_string()).width(Fill),
-                        pick_list(
-                            ProcessorBoostMode::ALL.map(BoostChoice),
-                            Some(BoostChoice(values.boost_mode)),
-                            move |v| Message::Boost(source, v.0)
-                        )
-                        .width(280)
-                    ]
-                    .spacing(design::space::SMALL),
-                );
-                body = body.push(super::widgets::setting_group(
-                    title.to_string(),
-                    self.expanded[source as usize],
-                    Message::Group(source),
-                    action,
-                    controls,
+                controls.push(widgets::setting_row(
+                    t!("processor_power.boost_mode").to_string(),
+                    ui.select(
+                        ProcessorBoostMode::ALL.map(BoostChoice),
+                        BoostChoice(values.boost_mode),
+                        move |value| Message::Boost(source, value.0),
+                    ),
+                ));
+                body.push(widgets::card(
+                    t!(title).to_string(),
+                    [
+                        ui.select(options, selected, move |value| Message::Load(source, value)),
+                        ui.collapsible(
+                            t!("common.control").to_string(),
+                            self.expanded[source as usize],
+                            widgets::col().children(controls),
+                            move |_| Message::Group(source),
+                        ),
+                    ],
                 ));
             }
         }
-        body = body
-            .push(super::widgets::settings_card(
-                row![
-                    button(text(t!("processor_power.refresh_values").to_string()))
-                        .on_press_maybe(self.target.as_ref().map(|_| Message::Refresh)),
-                    button(text(t!("settings.apply").to_string())).on_press_maybe(
-                        (self.values.is_some() && self.dirty).then_some(Message::Apply)
-                    )
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            ))
-            .push(text(&self.status));
-        scrollable(body).height(Fill).width(Fill).into()
+        body.push(Element::label(numbers.map(|numbers| {
+            if numbers.values().all(|raw| valid_percent(raw)) {
+                String::new()
+            } else {
+                "0..100 (%)".into()
+            }
+        })));
+        let loaded = self.values.is_some();
+        let already_dirty = self.dirty;
+        body.push(
+            widgets::row().children([
+                ui.button(
+                    t!("processor_power.refresh_values").to_string(),
+                    Message::Refresh,
+                )
+                .enabled(self.target.is_some()),
+                ui.button(t!("settings.apply").to_string(), Message::Apply)
+                    .enabled_when(move || {
+                        loaded
+                            && (already_dirty
+                                || native_numbers
+                                    .iter()
+                                    .any(|(raw, original)| raw.get() != *original))
+                            && native_numbers
+                                .iter()
+                                .all(|(raw, _)| valid_percent(&raw.get()))
+                    }),
+            ]),
+        );
+        body.push(widgets::label(self.status.clone()));
+        widgets::page(body)
     }
-    pub(super) fn preset_modal<'a>(
-        &'a self,
-        presets: &'a [AdvancedPowerPlanTuningPreset],
-    ) -> Option<Element<'a, Message>> {
-        use super::widgets;
-        let p = self.preset.as_ref()?;
-        let editable = matches!(p.target, PresetTarget::Custom(_));
-        let title = match p.target {
-            PresetTarget::BuiltIn(_) => p.name.clone(),
+
+    pub(super) fn preset_modal(
+        &self,
+        presets: &[AdvancedPowerPlanTuningPreset],
+        ui: Ui<Message>,
+    ) -> Option<Element> {
+        let preset = self.preset.as_ref()?;
+        let editable = matches!(preset.target, PresetTarget::Custom(_));
+        let title = match preset.target {
+            PresetTarget::BuiltIn(_) => preset.name.clone(),
             PresetTarget::Custom(None) => t!("processor_power.add_preset").to_string(),
             PresetTarget::Custom(Some(_)) => t!("common.edit").to_string(),
         };
-        let header = row![
-            text(title).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::ClosePreset)
-        ]
-        .align_y(iced::Center);
-        let mut form = column![widgets::settings_card(
-            column![
-                text(t!("processor_power.preset_name").to_string()),
-                text_input(&t!("processor_power.preset_name_placeholder"), &p.name)
-                    .on_input_maybe(editable.then_some(Message::PresetName)),
-                text(t!("processor_power.preset_name_help").to_string()).style(text::secondary)
-            ]
-            .spacing(design::space::SMALL)
-        )]
-        .spacing(widgets::CARD_GAP);
-        for (field, label, value) in fields(p.values) {
-            form = form.push(widgets::settings_card(widgets::setting_row_with_unit(
-                label,
-                "%",
-                widgets::stepper(
-                    &value.to_string(),
-                    0..=100,
-                    1,
-                    editable.then_some(move |v| Message::PresetValueText(field, v)),
-                ),
-            )));
-        }
-        let boost: Element<'_, Message> = if editable {
-            pick_list(
-                ProcessorBoostMode::ALL.map(BoostChoice),
-                Some(BoostChoice(p.values.boost_mode)),
-                |v| Message::PresetBoost(v.0),
-            )
-            .width(design::SELECT_WIDTH)
-            .into()
-        } else {
-            text(BoostChoice(p.values.boost_mode).to_string()).into()
-        };
-        form = form.push(widgets::settings_card(widgets::setting_row(
-            "processor_power.boost_mode",
-            boost,
-        )));
-        let mut footer = row![
-            iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
-                .style(widgets::tertiary_button)
-                .on_press(Message::ClosePreset)
-        ]
-        .spacing(design::space::SMALL);
-        if let PresetTarget::Custom(index) = p.target {
-            if !p.name.trim().is_empty() && !valid_name(presets, index, &p.name) {
-                form = form.push(
-                    text(t!("processor_power.duplicate_preset_name").to_string())
-                        .style(text::danger),
-                );
+        let name = signal(preset.name.clone());
+        let numbers = signal(preset.numbers.clone());
+        let ui = ui.inspect(move |message: &Message, _refresh| {
+            if let Message::PresetValueText(field, raw) = message {
+                numbers.update(|numbers| {
+                    numbers.insert(*field, raw.clone());
+                });
             }
-            footer = footer.push(
-                button(text(t!("common.save").to_string()))
-                    .style(widgets::primary_button)
-                    .on_press_maybe(
-                        valid_name(presets, index, &p.name).then_some(Message::SavePreset),
-                    ),
+        });
+        let mut form = vec![
+            widgets::setting_row(
+                t!("processor_power.preset_name").to_string(),
+                ui.input_signal(
+                    name,
+                    t!("processor_power.preset_name_placeholder").to_string(),
+                    Message::PresetName,
+                )
+                .enabled(editable),
+            ),
+            widgets::help("processor_power.preset_name_help"),
+        ];
+        let mut native_numbers = Vec::new();
+        for (field, title, value) in fields(preset.values) {
+            let raw = signal(
+                preset
+                    .numbers
+                    .get(&field)
+                    .cloned()
+                    .unwrap_or_else(|| value.to_string()),
+            );
+            native_numbers.push(raw);
+            form.push(widgets::setting_row(
+                format!("{} (%)", t!(title)),
+                ui.number(raw, 0, 100, 1, move |value| {
+                    Message::PresetValueText(field, value)
+                })
+                .enabled(editable),
+            ));
+        }
+        form.push(widgets::setting_row(
+            t!("processor_power.boost_mode").to_string(),
+            ui.select(
+                ProcessorBoostMode::ALL.map(BoostChoice),
+                BoostChoice(preset.values.boost_mode),
+                |value| Message::PresetBoost(value.0),
+            )
+            .enabled(editable),
+        ));
+        let mut actions = Vec::new();
+        if let PresetTarget::Custom(index) = preset.target {
+            let presets = presets.to_vec();
+            let validation_presets = presets.clone();
+            form.push(Element::label(name.map(move |name| {
+                if !name.trim().is_empty() && !valid_name(&validation_presets, index, name) {
+                    t!("processor_power.duplicate_preset_name").to_string()
+                } else {
+                    String::new()
+                }
+            })));
+            form.push(Element::label(numbers.map(|numbers| {
+                if numbers.values().all(|raw| valid_percent(raw)) {
+                    String::new()
+                } else {
+                    "0..100 (%)".into()
+                }
+            })));
+            actions.push(
+                ui.button(t!("common.save").to_string(), Message::SavePreset)
+                    .enabled_when(move || {
+                        valid_name(&presets, index, &name.get())
+                            && native_numbers.iter().all(|raw| valid_percent(&raw.get()))
+                    }),
             );
         }
-        Some(widgets::modal_frame(
-            header,
-            scrollable(form).height(Fill),
-            footer,
-            (800, 680),
+        actions.push(ui.button(t!("common.cancel").to_string(), Message::ClosePreset));
+        Some(widgets::editor_panel(
+            title,
+            widgets::col().children(form),
+            widgets::row().children(actions),
         ))
     }
-    pub(super) fn side_panel<'a>(
-        &'a self,
-        presets: &'a [AdvancedPowerPlanTuningPreset],
-    ) -> Element<'a, Message> {
-        let mut rail = column![super::widgets::heading(
+
+    pub(super) fn side_panel(
+        &self,
+        presets: &[AdvancedPowerPlanTuningPreset],
+        ui: Ui<Message>,
+    ) -> Element {
+        let mut body = vec![widgets::heading(
             t!("processor_power.built_in_presets").to_string(),
-            design::typography::SECONDARY
-        )]
-        .spacing(design::space::MEDIUM)
-        .padding([0, design::space::MEDIUM as u16]);
-        for p in BUILT_INS {
-            rail = rail.push(
-                row![
-                    button(
-                        iced::widget::container(text(preset_label(p)))
-                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
-                    )
-                    .width(Fill)
-                    .style(super::widgets::quiet)
-                    .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p))),
-                    button(super::navigation::glyph("icons/info.svg"))
-                        .style(super::widgets::quiet)
-                        .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p)))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
+        )];
+        for preset in BUILT_INS {
+            body.push(ui.button(
+                preset_label(preset),
+                Message::OpenPreset(PresetTarget::BuiltIn(preset)),
+            ));
         }
-        rail = rail.push(super::widgets::heading(
+        body.push(widgets::heading(
             t!("processor_power.custom_presets").to_string(),
-            design::typography::SECONDARY,
         ));
-        for (i, p) in presets.iter().enumerate() {
-            rail = rail.push(
-                row![
-                    button(text(p.name.clone()))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
-                    iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::Remove(i)))
-                ]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center),
-            );
+        for (index, preset) in presets.iter().enumerate() {
+            body.push(widgets::row().children([
+                ui.button(
+                    preset.name.clone(),
+                    Message::OpenPreset(PresetTarget::Custom(Some(index))),
+                ),
+                ui.button(t!("common.remove").to_string(), Message::Remove(index)),
+            ]));
         }
-        column![
-            super::widgets::panel_heading(t!("processor_power.presets").to_string()),
-            scrollable(rail).height(Fill).width(Fill),
-            super::widgets::preset_footer(
-                t!("processor_power.add_preset").to_string(),
-                Message::OpenPreset(PresetTarget::Custom(None))
-            )
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
+        body.push(ui.button(
+            t!("processor_power.add_preset").to_string(),
+            Message::OpenPreset(PresetTarget::Custom(None)),
+        ));
+        widgets::page(body)
     }
 }
 const BUILT_INS: [ProcessorPowerPreset; 3] = [
@@ -624,6 +631,9 @@ fn set_field(values: &mut ProcessorPowerValues, field: Field, value: u32) {
         Field::Boost => &mut values.boost_policy,
     } = value.min(100);
 }
+fn valid_percent(raw: &str) -> bool {
+    raw.parse::<u32>().is_ok_and(|value| value <= 100)
+}
 fn valid_name(presets: &[AdvancedPowerPlanTuningPreset], index: Option<usize>, name: &str) -> bool {
     !name.trim().is_empty()
         && !presets
@@ -631,13 +641,7 @@ fn valid_name(presets: &[AdvancedPowerPlanTuningPreset], index: Option<usize>, n
             .enumerate()
             .any(|(i, p)| Some(i) != index && p.name.trim().eq_ignore_ascii_case(name.trim()))
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PlanChoice(String, String);
-impl std::fmt::Display for PlanChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.1)
-    }
-}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PresetChoice(String, ProcessorPowerValues);
 impl std::fmt::Display for PresetChoice {
@@ -776,6 +780,49 @@ mod tests {
     }
 
     #[test]
+    fn invalid_native_numeric_drafts_block_apply_and_preset_publication() {
+        let balanced = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced);
+        let mut editor = Editor {
+            target: Some("unused-test-plan".into()),
+            values: Some(ProcessorPowerSourceValues::same(balanced)),
+            ..Editor::default()
+        };
+        let mut presets = Vec::new();
+        editor.update(
+            &mut presets,
+            &[],
+            Message::ValueText(Source::Ac, Field::Parking, "invalid".into()),
+        );
+        assert_eq!(editor.values.unwrap().ac, balanced);
+        assert!(editor.dirty);
+        assert!(!editor.apply());
+        assert_eq!(editor.numbers[&(Source::Ac, Field::Parking)], "invalid");
+
+        editor.update(
+            &mut presets,
+            &[],
+            Message::OpenPreset(PresetTarget::Custom(None)),
+        );
+        editor.update(&mut presets, &[], Message::PresetName("Custom".into()));
+        editor.update(
+            &mut presets,
+            &[],
+            Message::PresetValueText(Field::Parking, "101".into()),
+        );
+        editor.update(&mut presets, &[], Message::SavePreset);
+        assert!(editor.has_pending_editor());
+        assert!(presets.is_empty());
+        editor.update(
+            &mut presets,
+            &[],
+            Message::PresetValueText(Field::Parking, "35".into()),
+        );
+        editor.update(&mut presets, &[], Message::SavePreset);
+        assert!(!editor.has_pending_editor());
+        assert_eq!(presets[0].values.core_parking_min, 35);
+    }
+
+    #[test]
     fn presets_are_unique_readonly_and_change_only_requested_source() {
         let mut e = Editor::default();
         let mut presets = vec![];
@@ -807,7 +854,11 @@ mod tests {
             &[],
             Message::OpenPreset(PresetTarget::BuiltIn(ProcessorPowerPreset::Balanced)),
         );
-        e.update(&mut presets, &[], Message::PresetValue(Field::Parking, 99));
+        e.update(
+            &mut presets,
+            &[],
+            Message::PresetValueText(Field::Parking, "99".into()),
+        );
         assert_eq!(e.preset.as_ref().unwrap().values, balanced);
     }
 }

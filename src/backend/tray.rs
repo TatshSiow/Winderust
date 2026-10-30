@@ -1,38 +1,25 @@
+//! Native grouped menu adapter for the Wind UI-owned tray icon.
 use std::{
-    mem::{size_of, transmute},
     panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
     sync::{
-        atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
 };
 
 use rust_i18n::t;
 use windows_sys::Win32::{
-    Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM},
-    System::LibraryLoader::GetModuleHandleW,
-    UI::{
-        Shell::{
-            Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
-        },
-        WindowsAndMessaging::{
-            AppendMenuW, CallWindowProcW, ChangeWindowMessageFilterEx, CreatePopupMenu,
-            DestroyMenu, GetCursorPos, GetForegroundWindow, IsIconic, LoadImageW,
-            RegisterWindowMessageW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-            ShowWindow, TrackPopupMenu, GWLP_WNDPROC, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON,
-            LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
-            MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE, SW_HIDE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_POWERBROADCAST,
-            WM_RBUTTONUP, WM_SETICON, WM_SHOWWINDOW, WNDPROC,
-        },
+    Foundation::{HWND, POINT},
+    UI::WindowsAndMessaging::{
+        AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow,
+        TrackPopupMenu, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD,
+        TPM_RIGHTBUTTON,
     },
 };
 
 use crate::win_util::wide_null;
 
-const TRAY_UID: u32 = 1;
-const WM_TRAYICON: u32 = WM_APP + 1;
 const MENU_SHOW: usize = 1001;
 const MENU_EXIT: usize = 1002;
 const MENU_MASTER: usize = 1003;
@@ -70,7 +57,7 @@ pub(crate) fn set_ui_wake(wake: Option<Arc<dyn Fn() + Send + Sync>>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
 }
 
-fn wake_ui() {
+pub(crate) fn wake_ui() {
     let wake = UI_WAKE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -116,122 +103,8 @@ fn menu_action(command: usize, state: &MenuState) -> Option<MenuAction> {
         })
 }
 
-static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
-static TASKBAR_RECREATED: AtomicBool = AtomicBool::new(false);
-
-pub fn take_taskbar_created() -> bool {
-    take_requested(&TASKBAR_RECREATED)
-}
-
-static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
-static HIDE_ON_CLOSE: AtomicBool = AtomicBool::new(false);
-static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTORE_REQUESTED: AtomicBool = AtomicBool::new(false);
-static VISIBILITY_CALLBACK: Mutex<Option<VisibilityCallback>> = Mutex::new(None);
-
-type VisibilityCallback = Arc<dyn Fn(bool) + Send + Sync>;
-
-pub struct TrayVisibilityWatcher {
-    callback: VisibilityCallback,
-}
-
-impl TrayVisibilityWatcher {
-    pub fn start(callback: VisibilityCallback) -> Self {
-        let mut slot = VISIBILITY_CALLBACK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some(Arc::clone(&callback));
-        Self { callback }
-    }
-}
-
-impl Drop for TrayVisibilityWatcher {
-    fn drop(&mut self) {
-        let mut slot = VISIBILITY_CALLBACK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if slot
-            .as_ref()
-            .is_some_and(|callback| Arc::ptr_eq(callback, &self.callback))
-        {
-            *slot = None;
-        }
-    }
-}
-
-pub struct TrayIcon {
-    hwnd: HWND,
-    original_wndproc: isize,
-    registered: bool,
-}
-
-impl TrayIcon {
-    pub fn install(hwnd: HWND) -> Result<Self, String> {
-        if hwnd.is_null() {
-            return Err("Cannot create tray icon without a window handle.".to_owned());
-        }
-
-        let name = wide_null("TaskbarCreated");
-        // SAFETY: name is null-terminated and valid throughout registration.
-        let message = unsafe { RegisterWindowMessageW(name.as_ptr()) };
-        if message == 0 {
-            return Err("Failed to register the taskbar recreation message.".into());
-        }
-        // SAFETY: hwnd is the live app window; only the payload-free shell notification is allowed.
-        if unsafe { ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, std::ptr::null_mut()) }
-            == 0
-        {
-            return Err("Failed to allow taskbar recreation notifications.".into());
-        }
-        TASKBAR_CREATED.store(message, Ordering::Relaxed);
-        let original_wndproc = subclass_window(hwnd)?;
-        let mut icon = Self {
-            hwnd,
-            original_wndproc,
-            registered: false,
-        };
-        icon.register()?;
-        Ok(icon)
-    }
-
-    pub fn is_registered(&self) -> bool {
-        self.registered
-    }
-
-    pub fn invalidate(&mut self) {
-        self.registered = false;
-    }
-
-    pub fn register(&mut self) -> Result<(), String> {
-        let mut data = notify_data(self.hwnd);
-        data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        data.uCallbackMessage = WM_TRAYICON;
-        data.hIcon = load_app_icon();
-        write_wide_fixed(&mut data.szTip, "Winderust");
-        // SAFETY: data identifies the live window and uses a shared icon handle.
-        self.registered = unsafe { Shell_NotifyIconW(NIM_ADD, &data) } != 0;
-        if self.registered {
-            Ok(())
-        } else {
-            Err("Failed to add Winderust to the system tray.".into())
-        }
-    }
-}
-
-impl Drop for TrayIcon {
-    fn drop(&mut self) {
-        let data = notify_data(self.hwnd);
-        // SAFETY: data identifies the tray icon installed for this live window and deletion does
-        // not transfer ownership.
-        unsafe {
-            Shell_NotifyIconW(NIM_DELETE, &data);
-        }
-        if let Err(error) = restore_window_proc(self.hwnd, self.original_wndproc) {
-            eprintln!("{error}");
-        }
-    }
-}
 
 pub fn take_exit_requested() -> bool {
     take_requested(&EXIT_REQUESTED)
@@ -245,202 +118,6 @@ fn take_requested(requested: &AtomicBool) -> bool {
     requested.swap(false, Ordering::Relaxed)
 }
 
-pub fn set_hide_on_close(enabled: bool) {
-    HIDE_ON_CLOSE.store(enabled, Ordering::Relaxed);
-}
-
-pub fn is_hidden_to_tray() -> bool {
-    HIDDEN_TO_TRAY.load(Ordering::Relaxed)
-}
-
-pub fn hide_window(hwnd: HWND) {
-    set_hidden_to_tray(true);
-    // SAFETY: hwnd is obtained from the live Iced window; ShowWindow does not retain pointers.
-    unsafe { ShowWindow(hwnd, SW_HIDE) };
-}
-
-fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
-    NOTIFYICONDATAW {
-        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
-        hWnd: hwnd,
-        uID: TRAY_UID,
-        ..Default::default()
-    }
-}
-
-fn write_wide_fixed<const N: usize>(target: &mut [u16; N], value: &str) {
-    for (slot, code) in target
-        .iter_mut()
-        .zip(value.encode_utf16().chain(std::iter::once(0)))
-    {
-        *slot = code;
-    }
-}
-
-pub(crate) fn set_window_icon(hwnd: HWND) -> Result<(), String> {
-    if hwnd.is_null() {
-        return Err("Cannot set Winderust icon without a window handle.".into());
-    }
-    let icon = load_app_icon();
-    if icon.is_null() {
-        return Err(format!(
-            "Failed to load Winderust window icon with error code {}.",
-            // SAFETY: GetLastError has no preconditions and follows the failed icon load.
-            unsafe { GetLastError() }
-        ));
-    }
-    // SAFETY: hwnd is the live application window; icon is a shared embedded resource that
-    // remains valid for the process lifetime and must not be destroyed by the caller.
-    unsafe {
-        SendMessageW(hwnd, WM_SETICON, ICON_SMALL as WPARAM, icon as LPARAM);
-        SendMessageW(hwnd, WM_SETICON, ICON_BIG as WPARAM, icon as LPARAM);
-    }
-    Ok(())
-}
-
-fn load_app_icon() -> HICON {
-    // SAFETY: The current module handle and integer resource id identify the embedded icon;
-    // LR_SHARED keeps ownership with Windows.
-    unsafe {
-        LoadImageW(
-            GetModuleHandleW(std::ptr::null()),
-            1usize as windows_sys::core::PCWSTR,
-            IMAGE_ICON,
-            0,
-            0,
-            LR_DEFAULTSIZE | LR_SHARED,
-        ) as HICON
-    }
-}
-
-fn subclass_window(hwnd: HWND) -> Result<isize, String> {
-    if ORIGINAL_WNDPROC.load(Ordering::SeqCst) != 0 {
-        return Err("The tray window is already subclassed.".to_owned());
-    }
-
-    // SAFETY: clearing the calling thread's last-error value lets the zero return from the
-    // following SetWindowLongPtrW call be distinguished from failure.
-    unsafe { SetLastError(0) };
-    // SAFETY: hwnd is the live Iced window and tray_wnd_proc has the required static callback ABI.
-    let previous =
-        unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, tray_wnd_proc as *const () as isize) };
-    if previous == 0 {
-        // SAFETY: GetLastError is captured immediately after the failed SetWindowLongPtrW call.
-        let error = unsafe { GetLastError() };
-        return Err(format!(
-            "Failed to subclass the tray window with error code {error}."
-        ));
-    }
-
-    ORIGINAL_WNDPROC.store(previous, Ordering::SeqCst);
-    Ok(previous)
-}
-
-fn restore_window_proc(hwnd: HWND, original_wndproc: isize) -> Result<(), String> {
-    // SAFETY: hwnd is the same live window subclassed by TrayIcon, and original_wndproc is the
-    // window procedure returned by that successful SetWindowLongPtrW call.
-    unsafe { SetLastError(0) };
-    // SAFETY: the original callback has the WNDPROC ABI and remains owned by the live window.
-    let previous = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original_wndproc) };
-    if previous == 0 {
-        // SAFETY: GetLastError is captured immediately after SetWindowLongPtrW returned zero.
-        let error = unsafe { GetLastError() };
-        if error != 0 {
-            return Err(format!(
-                "Failed to restore the tray window procedure with error code {error}."
-            ));
-        }
-    }
-
-    ORIGINAL_WNDPROC.store(0, Ordering::SeqCst);
-    Ok(())
-}
-
-fn close_needs_prompt(minimized: bool, foreground: bool) -> bool {
-    minimized || !foreground
-}
-
-unsafe extern "system" fn tray_wnd_proc(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) {
-        TASKBAR_RECREATED.store(true, Ordering::Relaxed);
-        HIDE_ON_CLOSE.store(false, Ordering::Relaxed);
-        wake_ui();
-    }
-    if message == WM_POWERBROADCAST && wparam == PBT_APMPOWERSTATUSCHANGE as usize {
-        wake_ui();
-    }
-    if message == WM_CLOSE {
-        // SAFETY: hwnd belongs to this active window procedure callback.
-        if unsafe { close_needs_prompt(IsIconic(hwnd) != 0, GetForegroundWindow() == hwnd) } {
-            EXIT_REQUESTED.store(true, Ordering::Relaxed);
-            wake_ui();
-            return 0;
-        }
-    }
-    if message == WM_CLOSE && HIDE_ON_CLOSE.load(Ordering::Relaxed) {
-        set_hidden_to_tray(true);
-        // SAFETY: hwnd is the window associated with this active window procedure callback.
-        unsafe { ShowWindow(hwnd, SW_HIDE) };
-        return 0;
-    }
-
-    if message == WM_SHOWWINDOW && wparam != 0 && HIDDEN_TO_TRAY.load(Ordering::Relaxed) {
-        // SAFETY: hwnd is the window associated with this active window procedure callback.
-        unsafe { ShowWindow(hwnd, SW_HIDE) };
-        return 0;
-    }
-
-    if message == WM_TRAYICON && wparam as u32 == TRAY_UID {
-        match lparam as u32 {
-            WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
-                show_window(hwnd);
-                return 0;
-            }
-            WM_RBUTTONUP => {
-                show_tray_menu(hwnd);
-                return 0;
-            }
-            _ => {}
-        }
-    }
-
-    let previous = ORIGINAL_WNDPROC.load(Ordering::SeqCst);
-    if previous != 0 {
-        // SAFETY: previous was returned by SetWindowLongPtrW for GWLP_WNDPROC and therefore has
-        // the WNDPROC ABI.
-        unsafe {
-            let proc: WNDPROC = transmute(previous);
-            CallWindowProcW(proc, hwnd, message, wparam, lparam)
-        }
-    } else {
-        0
-    }
-}
-
-pub(crate) fn show_window(hwnd: HWND) {
-    set_hidden_to_tray(false);
-    RESTORE_REQUESTED.store(true, Ordering::Relaxed);
-    wake_ui();
-    // SAFETY: hwnd is the live application window supplied by its window procedure callback or
-    // captured when the single-instance restore listener starts.
-    unsafe {
-        ShowWindow(
-            hwnd,
-            if IsIconic(hwnd) != 0 {
-                SW_RESTORE
-            } else {
-                SW_SHOW
-            },
-        );
-        SetForegroundWindow(hwnd);
-    }
-}
-
 fn append_menu(
     menu: windows_sys::Win32::UI::WindowsAndMessaging::HMENU,
     id: usize,
@@ -452,7 +129,9 @@ fn append_menu(
     unsafe { AppendMenuW(menu, flags, id, label.as_ptr()) != 0 }
 }
 
-fn show_tray_menu(hwnd: HWND) {
+/// Wind UI's tray menu has no submenus or dynamic visibility. Keep the existing native
+/// menu for those capabilities, while its resident host retains icon ownership.
+pub(crate) fn show_resident_menu(hwnd: HWND) {
     crate::platform::windows::menu_theme::apply(hwnd);
     // SAFETY: CreatePopupMenu has no pointer inputs and returns either a menu handle or null.
     let menu = unsafe { CreatePopupMenu() };
@@ -535,7 +214,9 @@ fn show_tray_menu(hwnd: HWND) {
     };
 
     match command as usize {
-        MENU_SHOW => show_window(hwnd),
+        // The resident host is an invisible message window. The application
+        // recreates or restores its UI after this native callback returns.
+        MENU_SHOW => RESTORE_REQUESTED.store(true, Ordering::Relaxed),
         // The app restores its window and owns confirmation and shutdown.
         MENU_EXIT => EXIT_REQUESTED.store(true, Ordering::Relaxed),
         command => {
@@ -552,76 +233,9 @@ fn show_tray_menu(hwnd: HWND) {
     }
 }
 
-fn set_hidden_to_tray(hidden: bool) {
-    if HIDDEN_TO_TRAY.swap(hidden, Ordering::Relaxed) == hidden {
-        return;
-    }
-    wake_ui();
-    let callback = VISIBILITY_CALLBACK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    if let Some(callback) = callback {
-        if catch_unwind(AssertUnwindSafe(|| callback(hidden))).is_err() {
-            eprintln!("Tray visibility callback panicked.");
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn window_caption_and_switcher_use_the_embedded_app_icon() {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, WM_GETICON, WS_OVERLAPPEDWINDOW,
-        };
-        let class = wide_null("STATIC");
-        // SAFETY: STATIC is a built-in window class; this test creates a hidden window on
-        // its own thread, with a valid terminated class name and no retained input pointers.
-        let hwnd = unsafe {
-            CreateWindowExW(
-                0,
-                class.as_ptr(),
-                null(),
-                WS_OVERLAPPEDWINDOW,
-                0,
-                0,
-                100,
-                100,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                GetModuleHandleW(null()),
-                std::ptr::null(),
-            )
-        };
-        assert!(!hwnd.is_null());
-        let result = set_window_icon(hwnd);
-        // SAFETY: hwnd is the live hidden test window; these messages return its assigned
-        // shared icon handles without transferring ownership.
-        let (small, big) = unsafe {
-            (
-                SendMessageW(hwnd, WM_GETICON, ICON_SMALL as WPARAM, 0),
-                SendMessageW(hwnd, WM_GETICON, ICON_BIG as WPARAM, 0),
-            )
-        };
-        // SAFETY: this thread owns hwnd and no further operation will use the window.
-        unsafe {
-            DestroyWindow(hwnd);
-        }
-        result.unwrap();
-        assert_ne!(small, 0);
-        assert_eq!(small, load_app_icon() as LPARAM);
-        assert_eq!(big, small);
-    }
-
-    #[test]
-    fn background_and_minimized_closes_prompt_instead_of_hiding() {
-        assert!(close_needs_prompt(false, false));
-        assert!(close_needs_prompt(true, false));
-        assert!(close_needs_prompt(true, true));
-        assert!(!close_needs_prompt(false, true));
-    }
 
     #[test]
     fn menu_toggles_target_the_displayed_profile_and_state() {

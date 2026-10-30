@@ -1,17 +1,14 @@
-use super::design;
-use super::widgets::{checkbox, pick_list};
+use super::widgets::{self, Ui};
 use crate::config::*;
 use crate::ui::process_rules::can_add_process_candidate;
-use crate::ui::scrolling::scrollable;
-use iced::widget::{column, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
+use windui::prelude::Element;
 
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    expanded: [[bool; 3]; 6],
+    expanded: [bool; 6],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -52,15 +49,15 @@ pub(super) enum Value {
     DynamicBoost(ProcessDynamicPriorityBoostSetting),
 }
 impl Value {
-    pub(super) fn color(&self, theme: &iced::Theme) -> Option<iced::Color> {
+    pub(super) fn warning(self) -> Option<&'static str> {
         match self {
             Self::Process(ProcessPrioritySetting::High)
             | Self::Io(ProcessIoPrioritySetting::High)
-            | Self::Gpu(ProcessGpuPrioritySetting::High) => Some(theme.palette().warning),
+            | Self::Gpu(ProcessGpuPrioritySetting::High) => Some("common.caution"),
             Self::Process(ProcessPrioritySetting::Realtime)
             | Self::Thread(ProcessThreadPrioritySetting::TimeCritical)
             | Self::Io(ProcessIoPrioritySetting::Critical)
-            | Self::Gpu(ProcessGpuPrioritySetting::Realtime) => Some(theme.palette().danger),
+            | Self::Gpu(ProcessGpuPrioritySetting::Realtime) => Some("common.danger"),
             _ => None,
         }
     }
@@ -78,7 +75,7 @@ pub(super) enum Message {
     RuleValue(usize, Tier, Value),
     Remove(String),
 
-    Collapse(Tier),
+    Collapse(bool),
 }
 impl Kind {
     pub(super) fn key(self) -> &'static str {
@@ -287,25 +284,31 @@ impl Kind {
         }
     }
     pub(super) fn can_add(self, settings: &Settings, path: &str) -> bool {
-        can_add_process_candidate(
-            path,
-            |path| match self {
-                Self::Process => settings.process_priority.contains_exclusion(path),
-                Self::Thread => settings.thread_priority.contains_exclusion(path),
-                Self::Io => settings.io_priority.contains_exclusion(path),
-                Self::Gpu => settings.gpu_priority.contains_exclusion(path),
-                Self::Memory => settings.memory_priority.contains_exclusion(path),
-                Self::DynamicBoost => settings.dynamic_priority_boost.contains_exclusion(path),
-            },
-            |name| match self {
-                Self::Process => crate::process_priority::is_builtin_excluded(name),
-                Self::Thread => crate::thread_priority::is_builtin_excluded(name),
-                Self::Io => crate::io_priority::is_builtin_excluded(name),
-                Self::Gpu => crate::gpu_priority::is_builtin_excluded(name),
-                Self::Memory => crate::memory_priority::is_builtin_excluded(name),
-                Self::DynamicBoost => crate::dynamic_priority_boost::is_builtin_excluded(name),
-            },
-        )
+        self.can_add_candidate(path, |path| match self {
+            Self::Process => settings.process_priority.contains_exclusion(path),
+            Self::Thread => settings.thread_priority.contains_exclusion(path),
+            Self::Io => settings.io_priority.contains_exclusion(path),
+            Self::Gpu => settings.gpu_priority.contains_exclusion(path),
+            Self::Memory => settings.memory_priority.contains_exclusion(path),
+            Self::DynamicBoost => settings.dynamic_priority_boost.contains_exclusion(path),
+        })
+    }
+    fn can_add_with_rules(self, rules: &[ProcessExclusionRule], path: &str) -> bool {
+        self.can_add_candidate(path, |path| {
+            rules.iter().any(|rule| {
+                super::process_rules::process_setting_matches(&rule.executable_path, path)
+            })
+        })
+    }
+    fn can_add_candidate(self, path: &str, contains: impl FnOnce(&str) -> bool) -> bool {
+        can_add_process_candidate(path, contains, |name| match self {
+            Self::Process => crate::process_priority::is_builtin_excluded(name),
+            Self::Thread => crate::thread_priority::is_builtin_excluded(name),
+            Self::Io => crate::io_priority::is_builtin_excluded(name),
+            Self::Gpu => crate::gpu_priority::is_builtin_excluded(name),
+            Self::Memory => crate::memory_priority::is_builtin_excluded(name),
+            Self::DynamicBoost => crate::dynamic_priority_boost::is_builtin_excluded(name),
+        })
     }
 }
 impl Editor {
@@ -328,10 +331,7 @@ impl Editor {
                 kind.rules_mut(settings)
                     .retain(|rule| rule.executable_path != path);
             }
-            Message::Collapse(tier) => {
-                let expanded = &mut self.expanded[kind as usize][tier as usize];
-                *expanded = !*expanded;
-            }
+            Message::Collapse(expanded) => self.expanded[kind as usize] = expanded,
 
             Message::RuleEnabled(index, value) => {
                 if let Some(rule) = kind.rules_mut(settings).get_mut(index) {
@@ -543,109 +543,134 @@ impl Editor {
             },
         }
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        settings: &'a Settings,
+    pub(super) fn view(
+        &self,
+        settings: &Settings,
         kind: Kind,
         candidates: &[super::app_picker::Candidate],
-    ) -> Element<'a, Message> {
+        ui: Ui<Message>,
+    ) -> Element {
         let key = kind.key();
-        let enabled = kind.enabled(settings);
         let choices = kind.choices(settings.advanced.expose_all_priority_values);
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
+        let mut defaults = vec![widgets::setting_row(
+            localized(key, "enable"),
+            ui.toggle(kind.enabled(settings), Message::Enabled),
+        )];
+        let mut advanced = Vec::new();
         for tier in [Tier::Background, Tier::Focus, Tier::VisibleWindow] {
-            let detection = kind.detection(settings, tier);
-            let mut group = column![].spacing(design::space::SMALL);
-            let label = match tier {
-                Tier::Background => format!("{key}.enable"),
-                Tier::Focus => format!("{key}.foreground_detection"),
-                Tier::VisibleWindow => "common.visible_window_detection".to_string(),
+            defaults.push(Element::divider());
+            let title = match tier {
+                Tier::Background => t!("common.background_process").to_string(),
+                Tier::Focus => localized(key, "foreground_detection"),
+                Tier::VisibleWindow => t!("common.visible_window_detection").to_string(),
             };
-            let action: Element<'_, Message> = if tier == Tier::Background {
-                super::widgets::switch(enabled, Some(Message::Enabled))
+            let value = kind.value(settings, tier);
+            let selector = ui.select(choices.clone(), value, move |value| {
+                Message::Default(tier, value)
+            });
+            let (control, help) = if tier == Tier::Background {
+                (selector, None)
             } else {
-                super::widgets::switch(
-                    detection,
-                    Some(move |value| Message::Detection(tier, value)),
+                let help = match tier {
+                    Tier::Focus => localized(key, "foreground_detection_help"),
+                    Tier::VisibleWindow => t!("common.visible_window_detection_help").to_string(),
+                    Tier::Background => unreachable!("Background has no detection switch"),
+                };
+                (
+                    widgets::row().children([
+                        selector.weight(1.0),
+                        ui.toggle(kind.detection(settings, tier), move |value| {
+                            Message::Detection(tier, value)
+                        })
+                        .tooltip(help.clone()),
+                    ]),
+                    Some(help),
                 )
             };
-            let control: Element<'_, Message> = {
-                pick_list(
-                    choices.clone(),
-                    Some(kind.value(settings, tier)),
-                    move |value| Message::Default(tier, value),
-                )
-                .option_color(Value::color)
-                .width(design::SELECT_WIDTH)
-                .into()
-            };
-            group = group.push(super::widgets::setting_row("common.default", control));
+            defaults.push(match help {
+                None => widgets::setting_row(title, control),
+                Some(help) => widgets::col().spacing(2).children([
+                    widgets::setting_row_with_help(title, help, control.max_width(340)),
+                    widgets::help("common.policy_detection_help"),
+                ]),
+            });
+            if let Some(warning) = value.warning() {
+                defaults.push(widgets::label(t!(warning).to_string()));
+            }
             if let Some(preserve) = kind.preserve(settings, tier) {
                 let label = match tier {
-                    Tier::Focus => t!("common.preserve_foreground_priority"),
-                    Tier::VisibleWindow => t!("common.preserve_visible_window_priority"),
-                    Tier::Background => t!("common.preserve_background_priority"),
+                    Tier::Focus => "common.preserve_foreground_priority",
+                    Tier::VisibleWindow => "common.preserve_visible_window_priority",
+                    Tier::Background => "common.preserve_background_priority",
                 };
-                group = group.push(
-                    checkbox(preserve)
-                        .label(label.to_string())
-                        .on_toggle_maybe(Some(move |value| Message::Preserve(tier, value))),
-                );
+                advanced.push(ui.checkbox(t!(label).to_string(), preserve, move |value| {
+                    Message::Preserve(tier, value)
+                }));
             }
-            body = body.push(super::widgets::setting_group(
-                label,
-                self.expanded[kind as usize][tier as usize],
-                Message::Collapse(tier),
-                action,
-                group,
+        }
+        if !advanced.is_empty() {
+            defaults.push(Element::divider());
+            defaults.push(ui.collapsible(
+                t!("settings.advanced").to_string(),
+                self.expanded[kind as usize],
+                widgets::col().children(advanced),
+                Message::Collapse,
             ));
         }
-        body = body.push(text(localized(key, "exclusions")).size(design::typography::SECTION));
-        body = body.push(super::app_picker::view(
+        let mut body = vec![
+            widgets::card("", defaults),
+            widgets::heading(localized(key, "exclusions")),
+        ];
+        let candidate_rules = kind.rules(settings).to_vec();
+        body.push(super::app_picker::view(
             &self.path,
             candidates,
             true,
             Message::Path,
             Message::Browse,
-            (kind.can_add(settings, &self.path)).then_some(Message::Add),
-            |path| kind.can_add(settings, path).then_some(true),
+            Some(Message::Add),
+            move |candidate| {
+                kind.can_add_with_rules(
+                    &candidate_rules,
+                    &candidate.info.image_path.to_string_lossy(),
+                )
+                .then_some(true)
+            },
+            ui.clone(),
         ));
-        let mut rule_cards = Vec::new();
+        let mut rows = Vec::new();
         for (index, rule) in kind.rules(settings).iter().enumerate() {
             let mut controls = Vec::new();
             for tier in Tier::ALL {
-                let control: Element<'_, Message> = {
-                    pick_list(
-                        choices.clone(),
-                        Some(kind.rule_value(rule, tier)),
-                        move |value| Message::RuleValue(index, tier, value),
-                    )
-                    .option_color(Value::color)
-                    .width(Fill)
-                    .into()
-                };
-                controls.push(control);
+                let value = kind.rule_value(rule, tier);
+                let control = ui.select(choices.clone(), value, move |value| {
+                    Message::RuleValue(index, tier, value)
+                });
+                controls.push(if let Some(warning) = value.warning() {
+                    control.tooltip(t!(warning).to_string())
+                } else {
+                    control
+                });
             }
-            rule_cards.push((
-                super::widgets::stable_key(&rule.executable_path),
-                super::widgets::process_rule_row(
-                    &rule.executable_path,
-                    candidates,
-                    checkbox(rule.enabled)
-                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
-                        .into(),
-                    controls,
+            rows.push(widgets::process_rule_row(
+                &rule.executable_path,
+                candidates,
+                ui.checkbox("", rule.enabled, move |value| {
+                    Message::RuleEnabled(index, value)
+                }),
+                controls,
+                widgets::rule_delete_button(
+                    &ui,
                     Some(Message::Remove(rule.executable_path.clone())),
                 ),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
+        body.push(widgets::process_rules_table(
             Tier::ALL.map(|tier| tier.label()),
-            rule_cards,
+            rows,
             localized(key, "no_exclusions"),
         ));
-
-        scrollable(body).height(Fill).into()
+        widgets::page(body)
     }
 }
 pub(super) fn process_priority_setting_label(priority: ProcessPrioritySetting) -> String {
@@ -805,37 +830,60 @@ fn localized(section: &str, field: &str) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn priority_warning_colors_match_the_original_risk_mapping() {
-        for theme in [iced::Theme::Dark, iced::Theme::Light] {
-            let caution = [
-                Value::Process(ProcessPrioritySetting::High),
-                Value::Io(ProcessIoPrioritySetting::High),
-                Value::Gpu(ProcessGpuPrioritySetting::High),
-            ];
-            let danger = [
-                Value::Process(ProcessPrioritySetting::Realtime),
-                Value::Thread(ProcessThreadPrioritySetting::TimeCritical),
-                Value::Io(ProcessIoPrioritySetting::Critical),
-                Value::Gpu(ProcessGpuPrioritySetting::Realtime),
-            ];
-            for kind in [
-                Kind::Process,
-                Kind::Thread,
-                Kind::Io,
-                Kind::Gpu,
-                Kind::Memory,
-                Kind::DynamicBoost,
-            ] {
-                for value in kind.choices(true) {
-                    let expected = if caution.contains(&value) {
-                        Some(theme.palette().warning)
-                    } else if danger.contains(&value) {
-                        Some(theme.palette().danger)
-                    } else {
-                        None
-                    };
-                    assert_eq!(value.color(&theme), expected, "{value:?}");
-                }
+    fn owned_candidate_policy_keeps_disabled_duplicates_and_system_exclusions() {
+        let rule = ProcessExclusionRule {
+            enabled: false,
+            executable_path: r"C:\Apps\example.exe".into(),
+            ..Default::default()
+        };
+        let protected = format!(
+            r"C:\Windows\System32\{}",
+            crate::foreground::CORE_BUILT_IN_PROCESS_EXCLUSIONS[0]
+        );
+        for kind in [
+            Kind::Process,
+            Kind::Thread,
+            Kind::Io,
+            Kind::Gpu,
+            Kind::Memory,
+            Kind::DynamicBoost,
+        ] {
+            assert!(!kind.can_add_with_rules(std::slice::from_ref(&rule), "c:/apps/EXAMPLE.exe"));
+            assert!(!kind.can_add_with_rules(&[], &protected));
+            assert!(kind.can_add_with_rules(&[], r"C:\Apps\example.exe"));
+        }
+    }
+
+    #[test]
+    fn priority_warnings_preserve_the_risk_mapping() {
+        let caution = [
+            Value::Process(ProcessPrioritySetting::High),
+            Value::Io(ProcessIoPrioritySetting::High),
+            Value::Gpu(ProcessGpuPrioritySetting::High),
+        ];
+        let danger = [
+            Value::Process(ProcessPrioritySetting::Realtime),
+            Value::Thread(ProcessThreadPrioritySetting::TimeCritical),
+            Value::Io(ProcessIoPrioritySetting::Critical),
+            Value::Gpu(ProcessGpuPrioritySetting::Realtime),
+        ];
+        for kind in [
+            Kind::Process,
+            Kind::Thread,
+            Kind::Io,
+            Kind::Gpu,
+            Kind::Memory,
+            Kind::DynamicBoost,
+        ] {
+            for value in kind.choices(true) {
+                let expected = if caution.contains(&value) {
+                    Some("common.caution")
+                } else if danger.contains(&value) {
+                    Some("common.danger")
+                } else {
+                    None
+                };
+                assert_eq!(value.warning(), expected, "{value:?}");
             }
         }
     }

@@ -1,5 +1,9 @@
 # Iced visual parity audit ? 2026-09-09
 
+Historical audit of the Iced implementation. Its verdict and evidence describe
+the recorded baseline, not the current Wind UI application. See the
+[Wind UI implementation guide](windui-port.md) for current contracts.
+
 Verdict: **not visually equivalent to the original GPUI UI**. The previous hierarchy fixes recovered some grouping, but did not establish page or interaction parity. Passing Rust tests and saving 86 screenshots proves neither visual correctness nor matching interaction behavior.
 
 ## Evidence and limits

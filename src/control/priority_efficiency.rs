@@ -1488,6 +1488,13 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             || !self.pending_power_releases.is_empty()
     }
 
+    pub(crate) fn has_policy_claims(&self) -> bool {
+        self.priority_claims
+            .values()
+            .any(|claims| !claims.is_empty())
+            || self.power_claims.values().any(|claims| !claims.is_empty())
+    }
+
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         self.pending_priority_releases.clear();
         self.pending_power_releases.clear();
@@ -2320,6 +2327,59 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_policy_claims_remain_visible_until_released() {
+        for owner in [
+            ControlOwner::AdaptiveEngine,
+            ControlOwner::AdaptiveEngineProcessFocusPriority,
+        ] {
+            let mut controller = PriorityEfficiencyController::with_platform(platform_with(
+                7,
+                1,
+                NORMAL_PRIORITY_CLASS,
+            ));
+            assert!(!controller.has_policy_claims());
+            assert_eq!(
+                controller
+                    .apply_priority_claim(
+                        priority_claim(7, 1, owner, PriorityClassValue::Normal),
+                        true,
+                    )
+                    .unwrap(),
+                ProcessPropertyApplyOutcome::Unchanged
+            );
+            assert!(!controller.has_managed_state());
+            assert!(controller.has_policy_claims());
+            assert!(controller
+                .release_all_priority_policy(owner)
+                .failures
+                .is_empty());
+            assert!(!controller.has_policy_claims());
+            assert!(!controller.has_managed_state());
+            assert!(controller.platform.events.is_empty());
+        }
+
+        let mut platform = platform_with(7, 1, NORMAL_PRIORITY_CLASS);
+        platform.processes.get_mut(&7).unwrap().power =
+            baseline_power().with_efficiency_enabled(false);
+        let mut controller = PriorityEfficiencyController::with_platform(platform);
+        assert_eq!(
+            controller
+                .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, false), true)
+                .unwrap(),
+            ProcessPropertyApplyOutcome::Unchanged
+        );
+        assert!(!controller.has_managed_state());
+        assert!(controller.has_policy_claims());
+        assert!(controller
+            .release_all_power_policy(ControlOwner::AdaptiveEngine)
+            .failures
+            .is_empty());
+        assert!(!controller.has_policy_claims());
+        assert!(!controller.has_managed_state());
+        assert!(controller.platform.events.is_empty());
+    }
+
+    #[test]
     fn adaptive_priority_temporarily_overrides_static_without_losing_the_baseline() {
         let mut controller =
             PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
@@ -2676,7 +2736,13 @@ mod tests {
             ProcessPropertyApplyOutcome::Preserved
         );
         assert!(!controller.has_managed_state());
+        assert!(controller.has_policy_claims());
         assert!(controller.platform.events.is_empty());
+        assert!(controller
+            .release_all_priority_policy(ControlOwner::AdaptiveEngine)
+            .failures
+            .is_empty());
+        assert!(!controller.has_policy_claims());
     }
 
     #[test]

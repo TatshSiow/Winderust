@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=resources/winderust.ico");
+    println!("cargo:rerun-if-changed=resources/winderust.manifest");
 
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
         let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".into());
@@ -23,6 +24,14 @@ fn main() {
         .join("winderust.ico")
         .to_string_lossy()
         .replace('\\', "\\\\");
+        let manifest = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("Cargo must set CARGO_MANIFEST_DIR for build scripts"),
+        )
+        .join("resources")
+        .join("winderust.manifest")
+        .to_string_lossy()
+        .replace('\\', "\\\\");
         let rc = std::path::PathBuf::from(
             std::env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR for build scripts"),
         )
@@ -32,6 +41,7 @@ fn main() {
             &rc,
             format!(
                 r#"1 ICON "{icon}"
+1 24 "{manifest}"
 
 1 VERSIONINFO
 FILEVERSION {file_version}

@@ -1,14 +1,12 @@
-use super::super::design;
 use super::super::priority_control::{self, Kind, Tier, Value};
-use super::super::widgets::{self, button, pick_list, setting_row, settings_card, slider, switch};
+use super::super::widgets::{self, Ui};
 use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
 use crate::config::*;
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::{new_cpu_limiter_rule, process_setting_matches};
-use iced::widget::{column, container, row, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
+use windui::prelude::Element;
 #[derive(Debug, Clone)]
 pub(in crate::ui) enum Message {
     ReloadPlans,
@@ -22,13 +20,6 @@ pub(in crate::ui) enum Message {
     Limiter(bool),
     LimiterMode(Tier, ProcessRuleMode),
     LimiterLimit(Tier, u8),
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Plan(Option<String>, String);
-impl std::fmt::Display for Plan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.1.fmt(f)
-    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Mode(ProcessRuleMode);
@@ -253,11 +244,7 @@ fn limiter_tier(tier: Tier) -> cpu_limiter::Tier {
         Tier::Background => cpu_limiter::Tier::Background,
     }
 }
-pub(super) fn view<'a>(
-    s: &'a Settings,
-    path: &'a str,
-    plans: PlanCatalog<'_>,
-) -> Element<'a, Message> {
+pub(super) fn view(s: &Settings, path: &str, plans: PlanCatalog<'_>, ui: Ui<Message>) -> Element {
     let adaptive = !s
         .adaptive_engine_process
         .custom_rules
@@ -272,104 +259,68 @@ pub(super) fn view<'a>(
             s.background_efficiency
                 .custom_rule_applies_efficiency_mode(r)
         });
-    let mut body = column![widgets::heading(
+    let mut body = widgets::col().child(widgets::heading(
         t!("process_list.details_exclusions").to_string(),
-        design::typography::BODY
-    ),]
-    .spacing(widgets::CARD_GAP);
+    ));
     for (key, included, adaptive_rule) in [
         ("nav.adaptive_engine", adaptive, true),
         ("nav.background_efficiency", efficiency, false),
     ] {
-        let options = [
-            t!("process_list.include").to_string(),
-            t!("process_list.exclude").to_string(),
-        ];
-        let selected = options[usize::from(!included)].clone();
-        let include = options[0].clone();
-        body = body.push(settings_card(setting_row(
-            key,
-            pick_list(options, Some(selected), move |value| {
+        let include = t!("process_list.include").to_string();
+        let exclude = t!("process_list.exclude").to_string();
+        let selected = if included {
+            include.clone()
+        } else {
+            exclude.clone()
+        };
+        body = body.child(widgets::setting_row(
+            t!(key).to_string(),
+            ui.select([include.clone(), exclude], selected, move |value| {
                 if adaptive_rule {
                     Message::Adaptive(value == include)
                 } else {
                     Message::Efficiency(value == include)
                 }
-            })
-            .width(design::SELECT_WIDTH),
-        )));
+            }),
+        ));
     }
-    body = body.push(widgets::heading(
+    body = body.child(widgets::heading(
         t!("process_list.details_power").to_string(),
-        design::typography::BODY,
     ));
-    if let PlanCatalog::Loaded(plans) = plans {
-        for foreground in [true, false] {
-            let selected = if foreground {
-                s.by_foreground
-                    .rules
-                    .iter()
-                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
-                    .and_then(|r| r.power_plan_guid.clone())
+    let loaded_plans = match plans {
+        PlanCatalog::Loaded(plans) => plans,
+        PlanCatalog::Loading | PlanCatalog::Unavailable => &[],
+    };
+    for foreground in [true, false] {
+        let selected = if foreground {
+            s.by_foreground
+                .rules
+                .iter()
+                .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+                .and_then(|r| r.power_plan_guid.clone())
+        } else {
+            s.by_running_app
+                .rules
+                .iter()
+                .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+                .and_then(|r| r.power_plan_guid.clone())
+        };
+        body = body.child(widgets::setting_row(
+            t!(if foreground {
+                "process_list.power_plan_foreground"
             } else {
-                s.by_running_app
-                    .rules
-                    .iter()
-                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
-                    .and_then(|r| r.power_plan_guid.clone())
-            };
-            let mut options = vec![Plan(None, t!("common.default").to_string())];
-            options.extend(
-                plans
-                    .iter()
-                    .map(|p| Plan(Some(p.guid.clone()), p.name.clone())),
-            );
-            if let Some(guid) = &selected {
-                if !options.iter().any(|p| p.0.as_ref() == Some(guid)) {
-                    options.push(Plan(
-                        selected.clone(),
-                        t!("common.selected_plan_unavailable").to_string(),
-                    ));
-                }
-            }
-            let selected = options.iter().find(|p| p.0 == selected).cloned();
-            body = body.push(settings_card(setting_row(
-                if foreground {
-                    "process_list.power_plan_foreground"
-                } else {
-                    "process_list.power_plan_running"
-                },
-                pick_list(options, selected, move |p| Message::Power(foreground, p.0))
-                    .width(design::SELECT_WIDTH),
-            )));
-        }
-    } else {
-        body = body.push(text(
-            t!(match plans {
-                PlanCatalog::Loading => "common.loading",
-                _ => "process_list.plans_not_loaded",
+                "process_list.power_plan_running"
             })
             .to_string(),
+            ui.plan(selected, loaded_plans, move |plan| {
+                Message::Power(foreground, plan)
+            }),
         ));
-        if matches!(plans, PlanCatalog::Unavailable) {
-            body = body.push(
-                button(text(t!("settings.refresh").to_string())).on_press(Message::ReloadPlans),
-            );
-        }
     }
-    let mut header = row![text(t!("process_list.details_priority").to_string()).width(Fill)]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center);
-    for tier in Tier::ALL {
-        header = header.push(
-            container(text(tier.label()).size(design::typography::CAPTION))
-                .width(iced::Length::FillPortion(1)),
-        );
+    if matches!(plans, PlanCatalog::Unavailable) {
+        body = body.child(ui.button(t!("settings.refresh").to_string(), Message::ReloadPlans));
     }
-    // Reserve the same reset-control space in the header and every row.
-    header = header.push(iced::widget::Space::new().width(32));
-    let mut priorities =
-        column![container(header).padding(widgets::CARD_PADDING as u16)].spacing(0);
+    let mut priorities = Vec::new();
     for kind in [
         Kind::Process,
         Kind::Thread,
@@ -378,48 +329,43 @@ pub(super) fn view<'a>(
         Kind::Gpu,
         Kind::Memory,
     ] {
-        let key = format!("nav.{}", kind.key());
         let rule = kind
             .rules(s)
             .iter()
             .find(|r| process_setting_matches(&r.executable_path, path))
             .cloned()
             .unwrap_or_default();
-        let mut controls = row![text(t!(&key).to_string()).width(Fill)]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center)
-            .height(widgets::SETTING_ROW_HEIGHT);
+        let mut controls = widgets::col();
         for tier in Tier::ALL {
-            controls = controls.push(
-                pick_list(
+            let selected = kind.rule_value(&rule, tier);
+            controls = controls.child(widgets::setting_row(
+                tier.label(),
+                ui.select(
                     kind.choices(s.advanced.expose_all_priority_values),
-                    Some(kind.rule_value(&rule, tier)),
+                    selected,
                     move |v| Message::Priority(kind, tier, v),
-                )
-                .width(Fill),
-            );
+                ),
+            ));
+            if let Some(key) = selected.warning() {
+                controls = controls.child(widgets::help(key));
+            }
         }
-        controls = controls.push(iced::widget::tooltip(
-            button(text("\u{21ba}"))
-                .width(32)
-                .on_press(Message::ResetPriority(kind)),
-            text(t!("common.default").to_string()),
-            iced::widget::tooltip::Position::Top,
+        controls = controls.child(ui.button(
+            t!("common.default").to_string(),
+            Message::ResetPriority(kind),
         ));
-        priorities = priorities
-            .push(iced::widget::rule::horizontal(1))
-            .push(container(controls).padding(widgets::CARD_PADDING as u16));
+        let key = format!("nav.{}", kind.key());
+        priorities.push(widgets::card(t!(&key).to_string(), [controls]));
     }
-    body = body
-        .push(container(priorities).width(Fill).style(widgets::surface))
-        .push(widgets::heading(
-            t!("nav.cpu_control").to_string(),
-            design::typography::BODY,
-        ));
+    body = body.child(widgets::card(
+        t!("process_list.details_priority").to_string(),
+        priorities,
+    ));
+    let mut allocation = Vec::new();
     if crate::cpu_allocation::has_multiple_processor_groups() {
-        body = body.push(text(t!("cpu_sets_soft.warning").to_string()));
+        allocation.push(widgets::help("cpu_sets_soft.warning"));
     }
-    body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
+    allocation.push(widgets::help("processor_affinity_hard.warning"));
     for soft in [true, false] {
         let settings = if soft {
             &s.cpu_sets_soft
@@ -430,15 +376,16 @@ pub(super) fn view<'a>(
             .rules
             .iter()
             .find(|r| process_setting_matches(&r.executable_path, path));
-        let mut card = column![setting_row(
-            if soft {
-                "nav.cpu_sets_soft"
-            } else {
-                "nav.processor_affinity_hard"
-            },
-            switch(rule.is_some(), Some(move |v| Message::CpuEnabled(soft, v))),
-        )]
-        .spacing(widgets::CARD_GAP);
+        let title = t!(if soft {
+            "nav.cpu_sets_soft"
+        } else {
+            "nav.processor_affinity_hard"
+        })
+        .to_string();
+        let mut controls = widgets::col().child(widgets::setting_row(
+            title.clone(),
+            ui.toggle(rule.is_some(), move |v| Message::CpuEnabled(soft, v)),
+        ));
         if let Some(rule) = rule {
             for tier in Tier::ALL {
                 let mask = match tier {
@@ -446,28 +393,29 @@ pub(super) fn view<'a>(
                     Tier::VisibleWindow => rule.visible_window_core_mask,
                     Tier::Background => rule.background_core_mask,
                 };
-                card = card
-                    .push(text(tier.label()))
-                    .push(cpu_allocation::mask_selector(
+                controls = controls.child(widgets::label(tier.label())).child(
+                    cpu_allocation::mask_selector(
                         mask,
                         &crate::cpu_allocation::logical_processors(),
                         &s.cpu_allocation_presets,
                         move |v| Message::CpuMask(soft, tier, v),
-                    ));
+                        ui.clone(),
+                    ),
+                );
             }
         }
-        body = body.push(settings_card(card));
+        allocation.push(widgets::card(title, [controls]));
     }
+    body = body.child(widgets::card(t!("nav.cpu_control").to_string(), allocation));
     let limiter = s
         .cpu_limiter
         .rules
         .iter()
         .find(|r| process_setting_matches(&r.executable_path, path));
-    let mut card = column![setting_row(
-        "nav.cpu_limiter",
-        switch(limiter.is_some(), Some(Message::Limiter))
-    )]
-    .spacing(widgets::CARD_GAP);
+    let mut controls = widgets::col().child(widgets::setting_row(
+        t!("nav.cpu_limiter").to_string(),
+        ui.toggle(limiter.is_some(), Message::Limiter),
+    ));
     if let Some(rule) = limiter {
         for tier in Tier::ALL {
             let (mode, limit) = match tier {
@@ -481,22 +429,23 @@ pub(super) fn view<'a>(
                     rule.background_allowed_cpu_time_percent,
                 ),
             };
-            card = card.push(row![
-                text(tier.label()).width(Fill),
-                pick_list(ProcessRuleMode::ALL.map(Mode), Some(Mode(mode)), move |m| {
-                    Message::LimiterMode(tier, m.0)
-                })
-            ]);
+            controls = controls.child(widgets::setting_row(
+                tier.label(),
+                ui.select(ProcessRuleMode::ALL.map(Mode), Mode(mode), move |value| {
+                    Message::LimiterMode(tier, value.0)
+                }),
+            ));
             if mode == ProcessRuleMode::Enabled {
-                card = card.push(row![
-                    slider(1..=100, limit, move |v| Message::LimiterLimit(tier, v)),
-                    text(format!("{limit}%"))
-                ]);
+                controls = controls.child(widgets::setting_row(
+                    format!("{limit}%"),
+                    ui.select(1u8..=100, limit, move |value| {
+                        Message::LimiterLimit(tier, value)
+                    }),
+                ));
             }
         }
     }
-    body = body.push(settings_card(card));
-    body.into()
+    body.child(widgets::card(t!("nav.cpu_limiter").to_string(), [controls]))
 }
 #[cfg(test)]
 mod tests {

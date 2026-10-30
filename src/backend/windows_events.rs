@@ -52,11 +52,18 @@ pub enum WindowsAutomationEvent {
 
 type EventCallback = Arc<dyn Fn(WindowsAutomationEvent) + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsEventWatcherMode {
+    AppearanceOnly,
+    Automation,
+}
+
 thread_local! {
     static EVENT_CALLBACK: RefCell<Option<EventCallback>> = RefCell::new(None);
 }
 
 pub struct WindowsEventWatcher {
+    mode: WindowsEventWatcherMode,
     thread_id: u32,
     thread: Option<JoinHandle<()>>,
 }
@@ -68,12 +75,13 @@ struct PowerNotifications {
 }
 
 impl WindowsEventWatcher {
-    pub fn start(callback: EventCallback) -> Result<Self, String> {
+    pub fn start(mode: WindowsEventWatcherMode, callback: EventCallback) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
-        let thread = thread::spawn(move || event_thread(sender, callback));
+        let thread = thread::spawn(move || event_thread(mode, sender, callback));
 
         match receiver.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
+                mode,
                 thread_id,
                 thread: Some(thread),
             }),
@@ -86,6 +94,10 @@ impl WindowsEventWatcher {
                 Err(format!("Windows event watcher did not start: {err}"))
             }
         }
+    }
+
+    pub fn mode(&self) -> WindowsEventWatcherMode {
+        self.mode
     }
 }
 
@@ -101,7 +113,11 @@ impl Drop for WindowsEventWatcher {
     }
 }
 
-fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallback) {
+fn event_thread(
+    mode: WindowsEventWatcherMode,
+    sender: mpsc::Sender<Result<u32, String>>,
+    callback: EventCallback,
+) {
     // SAFETY: GetCurrentThreadId takes no arguments and has no caller requirements.
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut msg = MSG::default();
@@ -117,31 +133,39 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
     }
 
     let window = create_event_window();
-    // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains no
-    // borrowed Rust data.
-    let foreground_hook = unsafe {
-        SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            std::ptr::null_mut(),
-            Some(win_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        )
+    let foreground_hook = if mode == WindowsEventWatcherMode::Automation {
+        // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains
+        // no borrowed Rust data.
+        unsafe {
+            SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                std::ptr::null_mut(),
+                Some(win_event_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+        }
+    } else {
+        std::ptr::null_mut()
     };
-    // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains no
-    // borrowed Rust data.
-    let window_hook = unsafe {
-        SetWinEventHook(
-            EVENT_OBJECT_CREATE,
-            EVENT_OBJECT_CREATE,
-            std::ptr::null_mut(),
-            Some(win_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        )
+    let window_hook = if mode == WindowsEventWatcherMode::Automation {
+        // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains
+        // no borrowed Rust data.
+        unsafe {
+            SetWinEventHook(
+                EVENT_OBJECT_CREATE,
+                EVENT_OBJECT_CREATE,
+                std::ptr::null_mut(),
+                Some(win_event_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+        }
+    } else {
+        std::ptr::null_mut()
     };
 
     let mut power_notifications = PowerNotifications {
@@ -150,7 +174,7 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
         settings_complete: false,
     };
     let mut session_notifications_registered = false;
-    if !window.is_null() {
+    if !window.is_null() && mode == WindowsEventWatcherMode::Automation {
         power_notifications = register_power_notifications(window);
         // SAFETY: window is the live hidden event window owned by this thread.
         session_notifications_registered =
@@ -158,6 +182,7 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
     }
 
     if !event_sources_ready(
+        mode,
         window,
         foreground_hook,
         window_hook,
@@ -204,6 +229,7 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
 }
 
 fn event_sources_ready(
+    mode: WindowsEventWatcherMode,
     window: HWND,
     foreground_hook: HWINEVENTHOOK,
     window_hook: HWINEVENTHOOK,
@@ -211,11 +237,12 @@ fn event_sources_ready(
     session_notifications_registered: bool,
 ) -> bool {
     !window.is_null()
-        && !foreground_hook.is_null()
-        && !window_hook.is_null()
-        && power_notifications.settings_complete
-        && power_notifications.suspend_resume != 0
-        && session_notifications_registered
+        && (mode == WindowsEventWatcherMode::AppearanceOnly
+            || (!foreground_hook.is_null()
+                && !window_hook.is_null()
+                && power_notifications.settings_complete
+                && power_notifications.suspend_resume != 0
+                && session_notifications_registered))
 }
 
 fn cleanup_event_sources(
@@ -427,6 +454,7 @@ mod tests {
         };
 
         assert!(event_sources_ready(
+            WindowsEventWatcherMode::Automation,
             handle,
             handle,
             handle,
@@ -434,24 +462,147 @@ mod tests {
             true,
         ));
         assert!(!event_sources_ready(
+            WindowsEventWatcherMode::Automation,
             std::ptr::null_mut(),
             handle,
             handle,
             &complete_power,
             true,
         ));
+        for (foreground_hook, window_hook, session_registered) in [
+            (std::ptr::null_mut(), handle, true),
+            (handle, std::ptr::null_mut(), true),
+            (handle, handle, false),
+        ] {
+            assert!(!event_sources_ready(
+                WindowsEventWatcherMode::Automation,
+                handle,
+                foreground_hook,
+                window_hook,
+                &complete_power,
+                session_registered,
+            ));
+        }
 
         let incomplete_power = PowerNotifications {
             settings_complete: false,
             ..complete_power
         };
         assert!(!event_sources_ready(
+            WindowsEventWatcherMode::Automation,
             handle,
             handle,
             handle,
             &incomplete_power,
             true,
         ));
+    }
+
+    #[test]
+    fn appearance_watcher_requires_only_the_broadcast_window() {
+        let window = std::ptr::dangling_mut();
+        let no_power = PowerNotifications {
+            settings: Vec::new(),
+            suspend_resume: 0,
+            settings_complete: false,
+        };
+        assert!(event_sources_ready(
+            WindowsEventWatcherMode::AppearanceOnly,
+            window,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &no_power,
+            false,
+        ));
+        for mode in [
+            WindowsEventWatcherMode::AppearanceOnly,
+            WindowsEventWatcherMode::Automation,
+        ] {
+            assert!(!event_sources_ready(
+                mode,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &no_power,
+                false,
+            ));
+        }
+        assert!(!event_sources_ready(
+            WindowsEventWatcherMode::Automation,
+            window,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &no_power,
+            false,
+        ));
+    }
+
+    #[test]
+    fn native_watcher_modes_deliver_appearance_and_release_their_windows() {
+        use std::time::Duration;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumThreadWindows, GetClassNameW, IsWindow, PostMessageW,
+        };
+
+        unsafe extern "system" fn find_event_window(window: HWND, output: LPARAM) -> i32 {
+            let mut name = [0u16; 64];
+            // SAFETY: name is a writable buffer whose declared capacity matches the argument.
+            let length = unsafe { GetClassNameW(window, name.as_mut_ptr(), name.len() as i32) };
+            if length > 0
+                && String::from_utf16_lossy(&name[..length as usize]) == "WinderustAutomationEvents"
+            {
+                // SAFETY: EnumThreadWindows invokes this synchronously with a writable HWND slot
+                // supplied below, and the slot outlives the entire enumeration.
+                unsafe { *(output as *mut HWND) = window };
+                return 0;
+            }
+            1
+        }
+
+        for mode in [
+            WindowsEventWatcherMode::AppearanceOnly,
+            WindowsEventWatcherMode::Automation,
+            WindowsEventWatcherMode::AppearanceOnly,
+        ] {
+            let (sender, received) = mpsc::channel();
+            let watcher = WindowsEventWatcher::start(
+                mode,
+                Arc::new(move |event| {
+                    if event == WindowsAutomationEvent::AppearanceChanged {
+                        let _ = sender.send(());
+                    }
+                }),
+            )
+            .expect("native watcher registration");
+            assert_eq!(watcher.mode(), mode);
+
+            let mut window: HWND = std::ptr::null_mut();
+            // SAFETY: watcher.thread_id identifies our live watcher thread; the synchronous
+            // callback writes only to window, which remains alive for the enumeration.
+            unsafe {
+                EnumThreadWindows(
+                    watcher.thread_id,
+                    Some(find_event_window),
+                    (&mut window as *mut HWND) as LPARAM,
+                );
+            }
+            assert!(!window.is_null(), "watcher broadcast window missing");
+            // SAFETY: this is our live watcher HWND; WM_THEMECHANGED carries no borrowed data.
+            assert_ne!(unsafe { PostMessageW(window, WM_THEMECHANGED, 0, 0) }, 0);
+            received
+                .recv_timeout(Duration::from_secs(2))
+                .expect("appearance callback from native message dispatch");
+
+            drop(watcher);
+            // SAFETY: IsWindow accepts a possibly stale HWND and does not dereference Rust data.
+            assert_eq!(unsafe { IsWindow(window) }, 0);
+            // Join completed and the thread-local callback has released its sender.
+            for () in received.try_iter() {}
+            assert!(matches!(
+                received.try_recv(),
+                Err(mpsc::TryRecvError::Disconnected)
+            ));
+        }
     }
 
     #[test]

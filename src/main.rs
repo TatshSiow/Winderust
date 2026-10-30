@@ -40,12 +40,11 @@ use ui::app;
 rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() {
-    #[cfg(feature = "render-smoke")]
-    if std::env::args().any(|argument| argument == "--render-smoke") {
-        ui::app::smoke::render_all_pages();
+    if crash_recovery::run_watchdog_if_requested() {
         return;
     }
-    if crash_recovery::run_watchdog_if_requested() {
+    #[cfg(feature = "render-smoke")]
+    if ui::app::smoke::run_if_requested() {
         return;
     }
     #[cfg(feature = "runtime-benchmark")]
@@ -152,6 +151,7 @@ impl SingleInstanceRestoreEvent {
         unsafe { SetEvent(handle.raw()) != 0 }
     }
 
+    #[cfg(test)]
     fn wait(&self, wait_milliseconds: u32) -> bool {
         use windows_sys::Win32::{
             Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject,
@@ -159,20 +159,6 @@ impl SingleInstanceRestoreEvent {
 
         // SAFETY: handle owns a live event and the wait does not retain pointers.
         unsafe { WaitForSingleObject(self.handle.raw(), wait_milliseconds) == WAIT_OBJECT_0 }
-    }
-
-    fn listen(self, hwnd: windows_sys::Win32::Foundation::HWND) {
-        let hwnd = hwnd as usize;
-        if let Err(error) = std::thread::Builder::new()
-            .name("single-instance-restore".to_owned())
-            .spawn(move || {
-                while self.wait(windows_sys::Win32::System::Threading::INFINITE) {
-                    tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
-                }
-            })
-        {
-            eprintln!("Failed to start the single-instance restore listener: {error}");
-        }
     }
 }
 
@@ -378,7 +364,7 @@ mod tests {
         let stale_plan_recovery = main_body
             .find("restore_stale_adaptive_plans")
             .expect("stale adaptive-plan recovery");
-        let application = main_body.find("app::run(").expect("Iced startup");
+        let application = main_body.find("app::run(").expect("Wind UI startup");
         let runtime = main_body
             .find("RuntimeHandle::start")
             .expect("runtime startup");
@@ -394,27 +380,5 @@ mod tests {
         assert!(stale_plan_recovery < runtime);
         assert!(runtime < application);
         assert!(application < finish);
-
-        let ui_source = include_str!("ui/app.rs");
-        let shutdown = ui_source
-            .split_once("fn shutdown(&mut self)")
-            .expect("UI shutdown")
-            .1
-            .split_once("fn finish_exit")
-            .expect("UI exit completion")
-            .0;
-        let exiting = shutdown.find("self.exiting = true").expect("exiting modal");
-        let restoration = shutdown
-            .find("runtime.shutdown()")
-            .expect("managed restoration");
-        let helper = shutdown
-            .find(".finish()")
-            .expect("recovery helper completion");
-        let completion = shutdown
-            .find(".map(Message::ShutdownFinished)")
-            .expect("UI completion");
-        assert!(exiting < restoration);
-        assert!(restoration < helper);
-        assert!(helper < completion);
     }
 }

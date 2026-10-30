@@ -16,9 +16,7 @@ runtime-benchmark = []
 atomic-write-file = "0.3.0"
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 csv = "1.4.0"
-iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "tokio", "advanced-shaping", "image-without-codecs", "svg", "canvas", "advanced"] }
-iced_anim = { version = "0.3.1", default-features = false }
-image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 icondata_core = "0.1.0"
 icondata_lu = "0.1.0"
 raw-window-handle = "0.6.2"
@@ -71,6 +69,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.56.0"
+windui = { git = "https://github.com/huanfeng/wind-ui-rust", rev = "d5c105067d7a31f0f14e388f1fe6394f1a043988", default-features = false, features = ["svg"] }
 
 # Optimize the rendering stack while keeping application code debuggable.
 [profile.dev.package."*"]
@@ -85,5 +84,4 @@ strip = "symbols"
 embed-resource = "3.0.9"
 
 [dev-dependencies]
-iced_tiny_skia = { version = "=0.14.1", default-features = false }
-tiny-skia = { version = "0.11", default-features = false }
+tiny-skia = { version = "0.12", default-features = false }

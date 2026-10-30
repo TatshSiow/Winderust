@@ -5,10 +5,10 @@ Read only the task-specific memory files linked from [README.md](README.md).
 
 ## Current stack
 
-- Windows-only Rust application using Iced 0.14 and unmodified upstream tiny-skia.
+- Windows-only Rust application using pinned upstream Wind UI 0.28.0 with software rendering and SVG support.
 - Do not restore GPUI, WGPU, or a vendored renderer. Prefer low memory use and measured performance.
-- Small control transitions use `iced_anim`. Animation supports On, Off, and Follow system.
-- Reuse the shared controls, select, motion, and scrolling modules; see [15-design-spec.md](15-design-spec.md).
+- Built-in control transitions use Wind UI animation. Animation supports On, Off, and Follow system.
+- Prefer Wind UI built-in widgets, layouts, menus, dialogs, themes, and scrolling; shared helpers bind typed intents without custom control painting; see [15-design-spec.md](15-design-spec.md).
 - Verify icon consumers before trimming `icondata_core` or `icondata_lu`.
 
 ## Boundaries

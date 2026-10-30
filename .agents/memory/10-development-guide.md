@@ -5,8 +5,8 @@ This is the working guide for code changes. Product scope and future goals live 
 ## Project Basics
 
 - Windows-only Rust desktop app.
-- UI stack: Iced 0.14 with tiny-skia only and rust-i18n locales.
-- Use the unmodified crates.io `iced_tiny_skia` renderer; do not add local renderer patches. Rendering regressions live in the application test suite (`src/ui/scrolling.rs`, `motion.rs`, `select.rs`, and page tests).
+- UI stack: pinned upstream Wind UI 0.28.0 with software rendering, SVG support, and rust-i18n locales.
+- Use the unmodified pinned upstream renderer; do not add local renderer patches. Native widget, binding, scroll, and chart regressions live in the application test suite. `render-smoke` provides isolated screenshots and a real resident lifecycle harness.
 - Settings format: TOML through `serde` and `toml`.
 - Localization: `rust-i18n` with files in `locales/`.
 - Windows integration: direct Win32 APIs through `windows` and `windows-sys`.
@@ -37,10 +37,10 @@ If `target\release\winderust.exe` is locked because the app is running:
 
 ## Rendering and performance
 
-- `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.
-- `src/ui/select.rs` retains native input while avoiding option measurement for explicitly sized fields.
-- `src/ui/motion.rs` and `animated_controls.rs` own small transitions. Do not add per-page animation timers or animate large lists.
-- Renderer dev-dependencies support pixel comparisons and damage-region tests; they do not replace the production renderer.
+- `src/ui/scrolling.rs` constructs native Scroll elements and restores per-page offsets through nonvisual scroll memory. Wind UI owns virtual tables, layout, painting, and damage tracking.
+- `src/ui/widgets.rs` binds native controls to typed intents and flushes pending text edits before actions. Keep invalid numeric drafts; use native Slider plus TextInput where the public Stepper cannot expose its raw draft for validation.
+- `src/ui/motion.rs` maps the animation preference; Wind UI owns built-in transitions. Do not add per-page animation timers or animate large lists.
+- Native-tree regressions cover input ordering, asynchronous dropdown catalogs, scroll restoration, modal layout, and chart rendering. The opt-in `render-smoke` driver supplies isolated Windows screenshots and resident lifecycle checks; it does not replace the production renderer.
 - `[profile.dev.package."*"] opt-level = 2` optimizes dependencies for debug use. Release settings are separate; benchmark before changing them.
 - Compare the reported interaction before and after a performance change. Scrolling benchmarks do not establish tab-switch or expansion performance; raster timings exclude layout and event handling.
 - Documentation-only changes need link/path and diff checks. Run the Rust checks above after code or dependency changes.
@@ -49,13 +49,13 @@ If `target\release\winderust.exe` is locked because the app is running:
 
 - Before implementing a new capability, search existing repository code, the standard library, native Windows APIs, and installed dependencies.
 - If those do not cover it, always check crates.io and the candidate crates' official documentation (docs.rs or upstream) before writing a custom implementation. Use current web references; do not rely only on recalled crate names or APIs.
-- Prefer an existing solution that reasonably meets the requirement. Check maintenance, license compatibility, Windows/Iced version support, dependency weight, and performance before adding a crate.
+- Prefer an existing solution that reasonably meets the requirement. Check maintenance, license compatibility, Windows/Wind UI version support, dependency weight, and performance before adding a crate.
 - Implement custom code only when existing options do not reasonably fit; briefly record the concrete gap or tradeoff. Finding a crate does not automatically justify adding it.
 - Reuse findings while they remain applicable. Routine edits to an established implementation do not require repeating the same crate search.
 
 ## Routine Chores
 
-- Dependabot version updates target `dev`; Iced and its renderer are grouped for review. GitHub reads Dependabot configuration from the default branch, so configuration changes must also reach `main` to take effect. Security updates retain GitHub's default-branch behavior.
+- Dependabot version updates target `dev`; Wind UI revision upgrades require explicit API and native-host contract review. GitHub reads Dependabot configuration from the default branch, so configuration changes must also reach `main` to take effect. Security updates retain GitHub's default-branch behavior.
 - CI and releases run the shared architecture and legacy-name scripts before Rust checks. CI supports manual runs and cancels superseded runs for the same PR or branch.
 
 For dependency PRs, review each update independently. Check the changed files,
@@ -155,7 +155,7 @@ and the corrected commit must be the tagged source.
 
 ## Source Map
 
-- `src/main.rs`: app entry, single-instance guard, and Iced startup.
+- `src/main.rs`: app entry, single-instance guard, and resident startup.
 - `src/ui/app.rs`: `WinderustApp` composition, message dispatch, subscriptions,
   native window/tray lifecycle, settings publication, and teardown. Runtime work remains
   in typed commands and services; UI drafts do not belong in `RuntimeCore`.
@@ -282,7 +282,7 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
 - Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CpuLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
-- Adaptive Engine is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
+- Adaptive Engine owns its CPU Behaviour, Processor Power, and Priority Control policies; keep their visible UI names aligned across settings and implementation.
 - Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, Background CPU Restriction, Core Steering, Core Limiter, Soft CPU Sets, or Hard CPU Affinity. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 
@@ -330,7 +330,7 @@ Process-control features must keep these defaults:
 ## UI Rules
 
 - Keep controls compact and operational.
-- Use existing Iced widgets and local `widgets.rs` helpers before adding new UI primitives.
+- Use Wind UI built-in widgets and local typed `widgets.rs` bindings before adding new UI primitives. Keep editor state outside window content. Signal observers enqueue intents; flush pending edits before structural actions.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Follow `15-design-spec.md` for current controls, panels, and motion.
 - Keep `src/ui/app.rs` for composition, messages, native integration, and teardown.

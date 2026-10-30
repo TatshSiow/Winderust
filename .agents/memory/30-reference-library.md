@@ -84,7 +84,7 @@ User-facing behavior:
 
 ## Automation Event Watcher
 
-`RuntimeHandle` owns `src/backend/windows_events.rs` as an RAII event source. The watcher retains one dedicated hidden-window thread for event-driven automation wakes. Startup is all-or-nothing: the hidden window, foreground hook, window-creation hook, every configured power-setting notification, suspend/resume notification, and current-session notification must all register successfully. Partial registrations are released immediately and the watcher remains inactive so automation retains its polling fallback. Runtime shutdown posts the source's quit message and joins its thread before automatic state is released.
+`RuntimeHandle` owns `src/backend/windows_events.rs` as an RAII event source. `src/backend/automation/requirements.rs` preserves the existing watcher-required gate, then selects Automation mode whenever either power profile needs an automation worker; its hidden window, foreground hook, window-creation hook, every configured power-setting notification, suspend/resume notification, and current-session notification must all register successfully. Partial registrations are released immediately and automation retains its polling fallback. AppearanceOnly mode retains the hidden top-level broadcast window without those automation registrations: [WM_THEMECHANGED](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-themechanged) and [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange) still reach its window procedure. This avoids desktop-wide [SetWinEventHook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook) delivery when callbacks cannot affect automation. Mode changes publish the source inactive before stopping and recreating it, then publish successful readiness; shutdown posts its quit message and joins its thread before automatic state is released. No undocumented Windows contract is introduced.
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -114,9 +114,9 @@ By Activity uses per-source physical keyboard/mouse timestamps from `src/activit
 
 `src/platform/windows/menu_theme.rs` prepares the native tray menu before each opening. It follows Windows' app light/dark preference using private UxTheme ordinals 135 (`SetPreferredAppMode`, Default=0 / AllowDark=1), 133 (`AllowDarkModeForWindow`), 104 (`RefreshImmersiveColorPolicyState`), and 136 (`FlushMenuThemes`), as used by [Microsoft PowerToys](https://github.com/microsoft/PowerToys/blob/main/src/modules/ZoomIt/ZoomIt/Utility.cpp). These are undocumented exports, not stable SDK contracts. [RtlGetVersion](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlgetversion) gates the changed ordinal-135 signature to Windows 10 build 18362 or later; all exports must resolve from a System32-only `LoadLibraryExW` load retained for the process lifetime. Missing support preserves the standard menu. [SystemParametersInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow) with `SPI_GETHIGHCONTRAST` preserves native high-contrast rendering; failed accessibility queries also select Default. No owner-drawn menu or persistent Windows preference change is used.
 
-`src/ui/app.rs` assigns the executable's embedded Winderust icon when the native window becomes available, independently of tray installation. `src/backend/tray.rs::set_window_icon` reuses the shared resource loaded by [LoadImageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadimagew) and sets both `ICON_SMALL` (caption) and `ICON_BIG` (Alt+Tab) with [WM_SETICON](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-seticon). Shared icon handles remain valid for the process lifetime and must not be destroyed by the caller.
+`src/ui/app.rs` supplies the embedded Winderust icon through Wind UI's native icon APIs. Wind UI owns the notification-area icon and UI-window icons; Winderust does not retain a second tray-icon owner or replace framework window procedures.
 
-`src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live Iced window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`. `src/ui/app.rs` latches a failed install for the current Hide to tray / Start minimized configuration, preventing the visible UI tick from retrying `Shell_NotifyIconW` every second; changing that configuration permits one new attempt and the original failure remains visible when Start minimized falls back to ordinary minimization.
+`src/backend/tray.rs` supplies the grouped Win32 popup required because pinned Wind UI's public tray menu has no submenus or dynamic visibility. `src/platform/windows/resident_shell.rs` intercepts the framework host's right-click notification before upstream dispatch, outside framework borrows. The popup queues typed intents; Show never displays the invisible resident host.
 
 Tray toggle items use native [AppendMenuW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-appendmenuw) `MF_CHECKED` flags and `MF_POPUP` submenus grouped by navigation section. Attached submenus are owned by the root menu; unattached menus are destroyed on failure. The callback queues typed actions for the UI tick instead of mutating runtime settings. Checkmarks reflect persisted settings for the actual power-source profile, captured with each action; the UI's preview profile does not determine tray targets. `SettingsEditor` persists only the chosen master/feature flag, preserving other drafts and the other power-source profile, and rolling back on save failure. Dashboard/process pause controls are not tray actions.
 
@@ -126,9 +126,6 @@ Tray Exit publishes one quit request. `WinderustApp` restores the window and own
 | API | Used for | Reference |
 | --- | --- | --- |
 | `Shell_NotifyIconW` | Adds and removes the Winderust notification-area icon. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw |
-| `ShowWindow` | Hides the window with `SW_HIDE` and shows it with `SW_RESTORE` only when `IsIconic` confirms it is minimized; otherwise `SW_SHOW` preserves its current size and maximized state. Background or minimized `WM_CLOSE` requests route to the quit prompt; foreground closes retain hide-to-tray behavior. This uses window state, not a guaranteed taskbar-origin identifier. See https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isiconic and https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow |
-| `SetWindowLongPtrW` | Installs and restores the temporary `GWLP_WNDPROC` tray callback. A zero return is a failure only when `GetLastError` is nonzero after first clearing it with `SetLastError(0)`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw |
-| `CallWindowProcW` | Forwards unhandled messages to the exact original window procedure. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw |
 
 ## External Web Links
 
@@ -143,15 +140,13 @@ no shell command or parameters, and reports return codes at or below 32 as failu
 
 ## Administrator Relaunch And Single-Instance Handoff
 
-`src/main.rs` acquires the path-scoped single-instance mutex before its administrator check. A fresh
+`src/main.rs` acquires the session-wide `Local\Winderust.SingleInstance` mutex before its administrator check. A fresh
 normal launch therefore requests elevation immediately through `src/backend/privilege.rs`, then
 exits while the elevated replacement waits for its mutex ownership to end. `ShellExecuteExW` uses
 the private elevated-relaunch argument, `SEE_MASK_NOASYNC` completes process creation before the
 standard process exits, and `SEE_MASK_NOCLOSEPROCESS` confirms that Windows returned a live
 replacement-process handle. If an instance already owns the mutex, an ordinary duplicate instead
-signals the path-scoped auto-reset event that restores the existing Iced window through
-`src/backend/tray.rs`; it does not open another UAC prompt or elevated waiter. The primary waits on
-that event from a blocked listener thread, so the handoff adds no polling wake source.
+signals the session-wide `Local\Winderust.RestoreWindow` auto-reset event. `src/platform/windows/resident_shell.rs::RestoreListener` blocks on that event and a cancellation event using [WaitForMultipleObjects](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjects); its callback only enqueues Show to the application. Its guard signals cancellation and joins before closing the cancellation handle. No UI polling or cached UI HWND is needed, including after UI destruction. It does not open another UAC prompt or elevated waiter.
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -159,7 +154,7 @@ that event from a blocked listener thread, so the handoff adds no polling wake s
 | `SEE_MASK_NOASYNC` | Keeps shell activation synchronous because the standard instance exits immediately after a successful launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
 | `SEE_MASK_NOCLOSEPROCESS` | Requests the replacement process handle used to distinguish accepted shell execution from an actual process launch. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow |
 | Named mutex / `WaitForSingleObject` | Keeps normal launches single-instance while allowing the explicit elevated replacement to wait for the closing instance's ownership to end. | https://learn.microsoft.com/en-us/windows/win32/sync/mutex-objects / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
-| `CreateEventW` / `OpenEventW` / `SetEvent` | Carries a duplicate normal launch to the existing process as a coalescing restore request without polling. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-openeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setevent |
+| `CreateEventW` / `OpenEventW` / `SetEvent` | Carries a duplicate normal launch to the existing process as a coalescing restore request; each UI shell owns its event-consumption strategy. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-openeventw / https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setevent |
 
 ## Winderust Self-Power
 
@@ -716,7 +711,7 @@ state.
 
 - `src/backend/windows_events.rs` routes WM_SETTINGCHANGE, WM_THEMECHANGED, and
   WM_DWMCOLORIZATIONCOLORCHANGED through AppearanceChanged. The runtime generation
-  makes `src/ui/app.rs` rebuild the shared Iced theme using the current preferences.
+  makes `src/ui/app.rs` update the native Wind UI theme using the current preferences.
 - References: [WM_THEMECHANGED](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-themechanged),
   [WM_DWMCOLORIZATIONCOLORCHANGED](https://learn.microsoft.com/en-us/windows/win32/dwm/wm-dwmcolorizationcolorchanged).
 - `src/platform/windows/appearance.rs` reads UISettings Foreground and AccentLight2 via
@@ -750,7 +745,7 @@ state.
 
 ## UI animation preference
 
-- src/platform/windows/appearance.rs::read reads UISettings.AnimationsEnabled alongside theme/accent values. src/ui/settings_pages.rs::theme passes this preference to shared Iced transitions in src/ui/motion.rs; failed reads disable motion. Existing Windows appearance-change notifications refresh it. No undocumented Windows contract is used; UI transitions use `iced_anim`.
+- src/platform/windows/appearance.rs::read reads UISettings.AnimationsEnabled alongside theme/accent values. src/ui/settings_pages.rs::theme passes this preference to native Wind UI animation in src/ui/motion.rs; failed reads disable motion. Existing Windows appearance-change notifications refresh it. No undocumented Windows contract is used; UI transitions use Wind UI built-in animation.
 - Official reference: https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.uisettings.animationsenabled
 
 ### Power scheme deletion during cleanup
@@ -760,7 +755,7 @@ state.
 
 ## Tray recreation
 
-`src/backend/tray.rs` registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification) and re-adds the notification icon without subclassing the window again. [ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex) allows only that payload-free shell notification through UIPI for elevated execution. `src/ui/app.rs` retries failed registration at five-second intervals and permits hide-on-close only while the icon is registered.
+Pinned Wind UI owns native notification-icon installation and Explorer restart recovery. `src/platform/windows/resident_shell.rs` independently registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification), permits that payload-free notification through [ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex), and wakes `src/ui/app.rs` to recheck availability. The app probes every five seconds and permits close-to-tray only after a positive registration check; it does not reinstall the icon. An initial upstream installation failure has no registered tray state to retry, so the app keeps or reopens an accessible main window.
 
 ## Dashboard network rates
 
@@ -774,11 +769,15 @@ Processor-value application in `src/power/powercfg.rs` treats failure to query t
 
 ## Tray UI wakeups
 
-src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle hidden windows need no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
+`src/platform/windows/resident_shell.rs` wakes the native application on TaskbarCreated and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE; `src/backend/tray.rs` queues typed popup actions through the coalesced application wake. Power status refreshes the active A/C or Battery menu profile through GetSystemPowerStatus. A UI-thread [WH_CALLWNDPROC](https://learn.microsoft.com/en-us/windows/win32/winmsg/callwndproc) hook observes owned Wind UI window creation, show/hide, size, position, and destruction messages, validates process/thread/class, and only enqueues a wake. This publishes actual visibility after dispatch without a hidden UI polling interval or cached UI HWND. References: [PBT_APMPOWERSTATUSCHANGE](https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange), [SetWindowsHookExW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowshookexw). Windows events are documented; pinned Wind UI host/tray identities are upgrade contracts described below.
+
+`src/platform/windows/resident_shell/tray_monitor.rs` owns one reusable read-only tray-query worker and a native health deadline. The existing host subclass intercepts its own unique timer ID before upstream Wind UI dispatch; it never cancels or changes Wind UI timers. Checks run at startup, TaskbarCreated, explicit settings restore, and observed settings-window destruction. Healthy completion cancels the native timer; unavailable results retry every five seconds, with a two-second in-flight deadline. Silent tray loss between events is detected at the next relevant event. Initial results, availability changes, and errors reach the UI; unchanged healthy checks do not. Only one query is outstanding, including after a timeout. A hung query is detached on teardown rather than joined without a bound. `ResidentShell::set_retry_pending` owns a separate five-second native timer only while an application settings retry is pending. Timer IDs derive from the owned subclass token; active/deadline checks reject stale queued messages because [KillTimer](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-killtimer) does not remove queued WM_TIMER messages. References: [SetTimer](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-settimer), [Shell_NotifyIconGetRect](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyicongetrect), [PostMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew). This scheduling is application policy; host/class/icon identities remain the pinned undocumented framework boundary.
+
+Both native timers preserve an absolute logical deadline. An early or stale message rearms only the remaining delay, rounded up to milliseconds, instead of waiting another full period or running maintenance early. A due settings retry restores the full five-second interval. Failed replacement attempts cancellation and retains ownership if cancellation fails. Native tests normalize their first `ShowWindow` call because launcher STARTUPINFO can override that call's show state: [ShowWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow).
 
 ## Native accent color dialog
 
-- `src/backend/file_dialog.rs::choose_color`, invoked through the shared worker task in `src/ui/app.rs` to keep the modal loop outside Iced's event loop, uses [ChooseColorW](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-choosecolorw) with a live owner, RGB initialization and expanded controls. App RGB values are converted to/from COLORREF. Cancel preserves the accent; [CommDlgExtendedError](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-commdlgextendederror) distinguishes cancellation from failure. The dialog's 16 custom slots are seeded from saved accent colors; the existing Save button owns persistent palette additions.
+- `src/backend/file_dialog.rs::choose_color`, invoked through the shared worker task in `src/ui/app.rs` to keep the modal loop outside the framework event loop, uses [ChooseColorW](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-choosecolorw) with a live owner, RGB initialization and expanded controls. App RGB values are converted to/from COLORREF. Cancel preserves the accent; [CommDlgExtendedError](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-commdlgextendederror) distinguishes cancellation from failure. The dialog's 16 custom slots are seeded from saved accent colors; the existing Save button owns persistent palette additions.
 
 ## Adaptive plan CPU idle states
 
@@ -812,6 +811,8 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 
 ## Exact identity and CPU Set observations
 
+`src/foreground/process_list.rs::list_process_metadata` supplies Toolhelp PID/name/parent hints without opening each process. `src/runtime/observations.rs::CycleObservations` shares that inventory only within one reconciliation pass: appearance detection and conservative Process Priority basename rejection can use metadata; identity, control, path and Adaptive Engine workload consumers first establish creation identities. The explicit identity-attempted flag distinguishes an unrequested identity from a failed read; failed or changed generations remain quarantined through later enrichment. `list_process_observations` and `enrich_process_identities` use the existing query-only creation-time reads. `enrich_process_control` adds session, critical/protection and set-access checks only for the same known captured generation. [Process32FirstW](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-process32firstw) captures numeric parent/PID candidates; [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) supplies creation identity. Metadata never authorizes process control, and an empty candidate set still releases obsolete claims. Controller acquisition still reopens and validates exact targets before mutation. No new API or undocumented boundary is introduced.
+
 `src/cpu.rs::PerProcessorUsageMonitor` collects valid per-processor deltas into a complete vector or returns unavailable. Shared percentage calculation uses checked cumulative-counter arithmetic. [GetSystemTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes) includes idle in kernel time. The existing NT processor collector and index domain are unchanged.
 
 - `src/backend/win_util.rs::WinHandle::process_times` returns creation and CPU counters from one [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) call, preserving its native failure code. `src/control/process.rs` treats failed reads as unavailable rather than proof of exit.
@@ -821,6 +822,154 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 
 ## Mixed-DPI window geometry
 
-`src/platform/windows/window_dpi.rs::install`, called by `src/ui/app.rs` when the native window is acquired, installs a UI-thread [SetWindowSubclass](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-setwindowsubclass) callback independent of tray settings. During [WM_DPICHANGED](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged), it forwards the message through DefSubclassProc so Winit still updates its DPI and emits events. For restored windows, a thread-local, window-specific scope retains Windows' suggested outer rectangle; nested [WM_WINDOWPOSCHANGING](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-windowposchanging) messages that both move and resize use that rectangle. Ordinary resizing, position-only/style changes, minimized/maximized handling and the remaining message chain remain unchanged. The scope restores its predecessor after forwarding; WM_NCDESTROY removes the callback.
+Wind UI owns DPI-aware native window sizing and painting. The former Winit-specific `window_dpi.rs` interception is removed. Verify 100%, 150%, and 200% render fixtures and real mixed-monitor behavior when updating the framework; retain no parallel geometry workaround without evidence.
 
-This application workaround addresses [Winit 0.30.13 mixed-DPI growth issue #4600](https://github.com/rust-windowing/winit/issues/4600). It relies on that version's synchronous SetWindowPos call during DPI processing, including WM_WINDOWPOSCHANGING delivery; it does not access Winit internals or change upstream sources. Reassess the workaround when upgrading Winit. All native APIs are documented; no undocumented Windows contract is introduced.
+## Wind UI Resident Lifecycle
+
+`src/ui/app.rs` owns SettingsEditor, RuntimeHandle, RecoveryClient, navigation, page editors, app-lifetime signals, and asynchronous exit state outside all window content. UI windows can be destroyed and recreated while the resident host remains alive. A visible window owns its 250 ms read-model tick. `resident_shell/tray_monitor.rs` verifies tray availability at startup, on `TaskbarCreated`, and on settings restore/destruction. Successful verification disarms the native timer; unavailable results retry after five seconds, with one outstanding query and a two-second deadline. Silent tray disappearance between events has no periodic detection, matching the former Iced integration's event-driven policy. Events during an outstanding query coalesce into a fresh subsequent query. Absent UI performs no page sampling or rendering; lazy Home monitoring and generation-tagged completions prevent destroyed-window work from refilling disposable presentation caches. Paused Process List snapshots, drafts, Home history and authoritative Action Log entries remain owned outside the window. Duplicate-launch, visibility, and power-source changes arrive through native event delivery. `src/backend/window_visibility.rs` supplies the background-policy hook: hidden or absent UI enables background policy; minimized alone does not.
+
+`src/platform/windows/resident_shell.rs` is pinned to Wind UI 0.28.0 revision `d5c105067d7a31f0f14e388f1fe6394f1a043988`. Undocumented upstream contracts are the top-level host class `WindUiAppHostClass`, UI class `WindUiWindowClass`, notification icon `(host HWND, uID 1, GUID_NULL)`, tray callback `WM_APP + 1` with `wParam = 1` and `lParam = WM_RBUTTONUP`, and host `WM_CLOSE` calling `quit_app`, destroying registered UI windows before ending the message loop. Revalidate these on every framework upgrade: [native loop](https://github.com/huanfeng/wind-ui-rust/blob/d5c105067d7a31f0f14e388f1fe6394f1a043988/src/platform/win32/mod.rs), [tray](https://github.com/huanfeng/wind-ui-rust/blob/d5c105067d7a31f0f14e388f1fe6394f1a043988/src/platform/win32/tray.rs). They are not stable public API.
+
+The adapter requires a unique host on the current process/UI thread, verifies the exact installed subclass, and retains callback ownership through removal/native teardown. Premature host close enqueues an exit request. Runtime shutdown and recovery finalization happen on a worker before authorizing final native close. Do not substitute `PostQuitMessage` alone, synthetic tray input, or process exit. References: [EnumThreadWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumthreadwindows), [SetWindowSubclass](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-setwindowsubclass), [GetWindowSubclass](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-getwindowsubclass), [RemoveWindowSubclass](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-removewindowsubclass), [DefSubclassProc](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-defsubclassproc), [PostMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew), [WM_CLOSE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close).
+
+Production startup stays visible until an off-thread tray probe confirms registration. The worker validates the host process/thread/class before and after [Shell_NotifyIconGetRect](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyicongetrect), using [NOTIFYICONIDENTIFIER](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-notifyiconidentifier). Only one query may be outstanding; overdue or failed queries keep an accessible window. An existing visible/minimized window is not repeatedly restored by failed probes. Explicit Show, exit intent, and duplicate-launch restore cancel pending startup hiding. Initial upstream NIM_ADD failure retains no tray state to retry; Explorer-restart retries only help existing tray state. Actual tray interaction/Explorer restart remain separate integration gates. [IsWindowVisible](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-iswindowvisible) and [IsIconic](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isiconic) distinguish hidden/absent UI from minimized UI.
+
+`build.rs` embeds `resources/winderust.manifest` as ID 1, type 24 (RT_MANIFEST), activating Microsoft.Windows.Common-Controls 6.0.0.0. GetWindowSubclass requires this activation context; the unactivated system DLL can lack that import and fail process startup. References: [Common Controls 6 activation](https://learn.microsoft.com/en-us/windows/win32/controls/cookbook-overview), [GetWindowSubclass requirements](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-getwindowsubclass).
+
+The host subclass forwards unhandled messages through `DefSubclassProc`, wakes on `WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE`, and permits registered `TaskbarCreated` through UIPI for Explorer recovery. References: [PBT_APMPOWERSTATUSCHANGE](https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange), [RegisterWindowMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerwindowmessagew), [ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex). The grouped popup and cancellation wait use documented Win32 APIs; the framework host class, icon ID, and tray callback number remain undocumented upgrade gates.
+
+## Pointer capture and structural UI revisions
+
+`src/platform/windows/resident_shell.rs::ui_pointer_capture_active` reads
+[GetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcapture)
+on the UI thread and validates the returned window's current process, thread and
+`WindUiWindowClass` identity before the application publishes structural UI
+revisions. NULL means that this thread has no capture; capture in another thread
+or process is outside the query. Unrelated native dialogs and window classes
+must not defer the application shell.
+
+The pinned Wind UI 0.28.0
+[native pointer dispatch](https://github.com/huanfeng/wind-ui-rust/blob/d5c105067d7a31f0f14e388f1fe6394f1a043988/src/platform/win32/mod.rs#L3493)
+synchronously delivers mouse events to `UiHost`, then mirrors its logical
+capture through SetCapture/ReleaseCapture before returning from the native
+message. Rebuilding a `host_signal` subtree during capture can delete its
+pressed control while the pinned private host retains that dead NodeId.
+Defer revision publication until capture ends; continue model/completion
+handling and use the existing UI tick to drain pending revisions. This ordering
+and the private capture lifecycle must be rechecked on framework upgrades.
+
+The query prevents ordinary own-window press/rebuild races; it does not inspect
+or reset Wind UI's private logical capture, recover an already stale NodeId, or
+prove that SetCapture succeeded. Do not substitute physical key-state polling
+or forcibly release capture. Native loss/transfer continues through upstream's
+[WM_CAPTURECHANGED](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-capturechanged)
+handling; the application adds no global input hook or polling timer.
+
+`src/ui/scrolling.rs::preserve_table_rows` also guards native virtual row
+realization: source revisions, scroll range and viewport height can each make
+[VirtualTableBody](https://github.com/huanfeng/wind-ui-rust/blob/d5c105067d7a31f0f14e388f1fe6394f1a043988/src/ui/sortable_table.rs)
+delete a captured child. A nonvisual parent installs before child reactive
+updates and asserts the pinned table shape (header, divider, scroll with one
+vertical body). It wraps only that body's public Widget slot, forwarding native
+`as_any_mut` and deferring `on_update` until capture ends. The pinned body
+implements only those two methods; revalidate that contract and parent-first
+reactive registration on upgrades. Native scrolling, input and painting remain
+owned by Wind UI. Virtual rows catch up on release, including after scrollbar
+drags; no additional capture state or timer is maintained.
+
+The isolated held-press fixture in `src/ui/smoke/lifecycle.rs` uses
+[GetClientRect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclientrect)
+to map logical targets to native client coordinates, then
+[PostMessageW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagew)
+for Down/Up on the validated owned UI HWND. It checks query/post errors and
+coordinates, and waits for real native capture before forcing a refresh.
+It does not inject physical/global input or alter saved settings.
+
+## Native Back and Forward navigation
+
+`src/platform/windows/resident_shell.rs::NavigationListener` owns a UI-thread-only [WH_GETMESSAGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/getmsgproc) hook, installed by [SetWindowsHookExW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowshookexw) and removed by [UnhookWindowsHookEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-unhookwindowshookex). Wind UI's pinned public MouseButton only exposes Left/Right/Middle. The adapter validates each retrieved target's current process, UI thread, and `WindUiWindowClass` before converting removed XBUTTON1/2 down/double-click messages into typed navigation intents. It consumes the matching release to prevent duplicate [WM_APPCOMMAND](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-appcommand) dispatch from [WM_XBUTTONUP](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-xbuttonup). Negative hook codes, PM_NOREMOVE peeks, other buttons, unrelated windows, and native dialogs are forwarded unchanged. The panic-contained callback only enqueues work; no global input observation, retained UI HWND, or framework state borrow is used.
+
+## UI resource diagnostics
+
+`scripts/measure_ui_resources.py` owns a lazy hidden `STATIC` popup on the
+sampler thread while observing windows. It uses `WS_POPUP | WS_DISABLED`
+without `WS_VISIBLE`, activation, timers, or a custom window procedure.
+Every enumeration must succeed and visit that exact owned HWND; a false
+return with error zero is never interpreted as an empty target window list.
+The diagnostic observed that ambiguous return on an empty desktop, so the
+anchor keeps absence checks distinguishable from enumeration failure.
+It is destroyed on its creating thread in cleanup, and its cost belongs to
+the separately reported sampler. Child fixtures inherit the sampler desktop;
+this does not establish window absence on arbitrary other desktops. References:
+[EnumWindows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows),
+[CreateWindowExW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexw),
+[window styles](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-styles),
+[DestroyWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-destroywindow),
+[desktop inheritance](https://learn.microsoft.com/en-us/windows/win32/winstation/thread-connection-to-a-desktop).
+
+`scripts/measure_ui_resources.py --thread-cycles` adds opt-in read-only thread
+accounting for the already validated measured process and its descendants.
+Thread identities include process creation time, thread owner, and thread
+creation time; numeric IDs and descriptions alone are not identities. First
+observations, missing samples, identity changes and regressed counters must not
+be interpreted as zero work or joined across unrelated thread lifetimes.
+
+- [Thread32First](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32first)
+  and Thread32Next enumerate candidate threads through a Toolhelp snapshot.
+- [OpenThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openthread)
+  uses only THREAD_QUERY_LIMITED_INFORMATION; handles are closed after sampling.
+- [GetProcessIdOfThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessidofthread)
+  and [GetThreadTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes)
+  revalidate owner and creation identity.
+  [GetExitCodeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodethread)
+  supplies the observed exit status. GetThreadTimes exit time is undefined for
+  an active thread and must not be treated as an exit predicate.
+- [QueryThreadCycleTime](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime)
+  includes user and kernel cycles. Counts are not instructions or elapsed time.
+- [GetThreadDescription](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreaddescription)
+  is optional; returned memory is released with LocalFree. Descriptions may be
+  empty, duplicated or changed, so they identify neither a unique thread nor
+  its currently executing function.
+
+The diagnostic does not suspend threads, change scheduling, or alter framework
+source. Thread sums can miss short-lived threads and are not required to equal
+process totals; coverage and the difference must remain explicit.
+
+The separate retained-handle diagnostic at
+`target/idle-thread-diagnosis-20261022/retained-thread-probe.py` preserves final
+counters for discovered thread instances. Retaining a handle can prolong the
+thread object's lifetime and adds observer overhead. Its optional
+[NtQueryInformationThread](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationthread)
+`ThreadQuerySetWin32StartAddress` (numeric class 9) lookup is dynamically loaded,
+returns NTSTATUS, and remains unavailable on failure. Microsoft documents this
+NT interface as internal and subject to change; the numeric class/access contract
+is a diagnostic compatibility boundary, not a production dependency. A separate
+[THREAD_QUERY_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/procthread/thread-security-and-access-rights)
+handle may be tried for that one query after limited-query denial, with owner and
+creation identity revalidated and the handle immediately closed. No modification,
+context, suspension or debug-privilege rights are requested. Module ranges from
+[Module32FirstW](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-module32firstw)
+and Module32NextW are refreshed per discovery batch and timestamped. A thread's
+entry module and offset describe initialization, not its currently executing
+stack or a causal framework function. See the
+[diagnostic report](../../benchmark/ui-idle-thread-diagnosis-20261022.md) for
+coverage and observer limits.
+
+### Benchmark file publication and readiness
+
+`benchmark/scheduler_worker.cs::WriteAtomic` publishes only disposable benchmark
+heartbeat/readiness files. Publication retries at most ten times with 20 ms
+sleeps for `IOException` HRESULTs corresponding to sharing/lock errors 32/33,
+or `UnauthorizedAccessException` HRESULT access-denied 5. The same access-checked
+operation is retried; permissions are not changed. Persistent or other failures
+still reach the existing error sidecar and nonzero exit. This bounded retry
+handles readers briefly holding an owned publication path. References:
+[Windows system error codes 0–499](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-),
+[File.Replace](https://learn.microsoft.com/en-us/dotnet/api/system.io.file.replace).
+
+`scripts/measure_ui_resources.py::read_readiness_json` separately retries
+readiness-file permission failures only until the existing startup deadline:
+Windows errors 5/32/33, or `EACCES`/`EPERM` when Python provides no `winerror`.
+Unsupported errors fail immediately, a timeout does not grant readiness, and
+other JSON reads retain their strict access-error behavior. Native fixture tests
+must distinguish sandbox access restrictions from actual host file semantics.

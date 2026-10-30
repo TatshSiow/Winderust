@@ -1,15 +1,11 @@
-use super::design;
-use super::widgets::{self, checkbox, Choice};
-use super::widgets::{button, pick_list, slider, text_input};
-use crate::ui::scrolling::scrollable;
+use super::widgets::{self, Choice, Ui};
 use crate::{
     config::{ByCpuLoadRule, ByTimeRule, CpuUsageComparison, Settings, WeekdaySetting},
     power::PowerPlan,
 };
-use iced::widget::{column, container, row, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::BTreeMap;
+use windui::prelude::{signal, Element, Signal};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Time,
@@ -114,7 +110,19 @@ impl Editor {
                 return;
             }
             Message::Save => {
-                if !self.valid() {
+                let named = self.draft.as_ref().is_some_and(|draft| match kind {
+                    Kind::Time => draft
+                        .by_time
+                        .rules
+                        .get(self.editing)
+                        .is_some_and(|rule| !rule.name.trim().is_empty()),
+                    Kind::CpuLoad => draft
+                        .by_cpu_load
+                        .rules
+                        .get(self.editing)
+                        .is_some_and(|rule| !rule.name.trim().is_empty()),
+                });
+                if !self.valid() || !named {
                     return;
                 }
                 if let Some(draft) = self.draft.take() {
@@ -317,146 +325,97 @@ impl Editor {
         }
         self.sync_ids(kind, s);
     }
-    pub(super) fn view<'a>(
-        &'a self,
+    pub(super) fn view(
+        &self,
         kind: Kind,
-        s: &'a Settings,
+        settings: &Settings,
         status: &crate::control::power_plan::PowerPlanStatus,
-    ) -> Element<'a, Message> {
-        let (enabled, label) = match kind {
-            Kind::Time => (s.by_time.enabled, "by_time.enable"),
-            Kind::CpuLoad => (s.by_cpu_load.enabled, "by_cpu_load.enable"),
+        ui: Ui<Message>,
+    ) -> Element {
+        let (enabled, title) = match kind {
+            Kind::Time => (settings.by_time.enabled, "by_time.enable"),
+            Kind::CpuLoad => (settings.by_cpu_load.enabled, "by_cpu_load.enable"),
         };
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
-            label,
-            super::widgets::switch(enabled, Some(Message::Enabled))
-        ))]
-        .spacing(super::widgets::CARD_GAP);
+        let mut body = vec![
+            widgets::setting_row(t!(title).to_string(), ui.toggle(enabled, Message::Enabled)),
+            widgets::heading(t!("common.rules").to_string()),
+        ];
         let rules = match kind {
-            Kind::Time => s
+            Kind::Time => settings
                 .by_time
                 .rules
                 .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    (
-                        self.ids.get(i).copied().unwrap_or(i as u64),
-                        i,
-                        RuleRef::Time(r),
-                    )
-                })
+                .map(RuleRef::Time)
                 .collect::<Vec<_>>(),
-            Kind::CpuLoad => s
+            Kind::CpuLoad => settings
                 .by_cpu_load
                 .rules
                 .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    (
-                        self.ids.get(i).copied().unwrap_or(i as u64),
-                        i,
-                        RuleRef::Cpu(r),
-                    )
-                })
+                .map(RuleRef::Cpu)
                 .collect::<Vec<_>>(),
         };
-
-        let mut cards = Vec::new();
-        for (id, index, rule) in rules {
-            let (rule_enabled, name) = match &rule {
-                RuleRef::Time(r) => (r.enabled, &r.name),
-                RuleRef::Cpu(r) => (r.enabled, &r.name),
+        if rules.is_empty() {
+            body.push(widgets::label(t!("common.no_custom_rules").to_string()));
+        }
+        for (index, rule) in rules.into_iter().enumerate() {
+            let (rule_enabled, name) = match rule {
+                RuleRef::Time(rule) => (rule.enabled, rule.name.clone()),
+                RuleRef::Cpu(rule) => (rule.enabled, rule.name.clone()),
             };
             let key = rule_status(
                 rule,
-                s.general.enabled && enabled,
+                settings.general.enabled && enabled,
                 status.rule_index == Some(index),
                 status,
             );
-            let header = row![
-                container(
-                    checkbox(rule_enabled)
-                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
-                )
-                .width(48),
-                container(text(t!(key).to_string()))
-                    .padding([4, 8])
-                    .style(move |theme| widgets::rule_status_chip(theme, key))
-                    .width(140),
-                text(name.clone()).width(Fill),
-            ]
-            .spacing(design::space::MEDIUM)
-            .align_y(iced::Center);
-            let header = header.push(
-                row![
-                    iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(widgets::quiet)
-                            .on_press(Message::Edit(index)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
+            body.push(widgets::card(
+                name,
+                [
+                    ui.checkbox(
+                        t!("common.enable").to_string(),
+                        rule_enabled,
+                        move |value| Message::RuleEnabled(index, value),
                     ),
-                    widgets::rule_delete_button(Some(Message::Remove(index)))
-                ]
-                .width(80)
-                .align_y(iced::Center),
-            );
-            cards.push((
-                id,
-                column![
-                    container(header).padding(widgets::CARD_PADDING as u16),
-                    iced::widget::rule::horizontal(1)
-                ]
-                .into(),
+                    widgets::label(t!(key).to_string()),
+                    widgets::row().children([
+                        ui.button(t!("common.edit").to_string(), Message::Edit(index)),
+                        ui.button(t!("common.remove").to_string(), Message::Remove(index)),
+                    ]),
+                ],
             ));
         }
-        let header = row![
-            text(t!("common.enable").to_string()).width(48),
-            text(t!("common.status").to_string()).width(140),
-            text(t!("common.rule_name").to_string()).width(Fill),
-        ]
-        .spacing(design::space::MEDIUM);
-        let header = header.push(
-            text(t!("common.actions").to_string())
-                .width(80)
-                .align_x(iced::Center),
-        );
-        let rows = if cards.is_empty() {
-            container(text(t!("common.no_custom_rules").to_string()).style(text::secondary))
-                .padding(design::space::LARGE as u16)
-                .into()
-        } else {
-            iced::widget::keyed_column(cards).into()
-        };
-        body = body
-            .push(widgets::setting_title("common.rules"))
-            .push(widgets::rules_table(header, rows));
-        scrollable(body).height(Fill).into()
+        widgets::page(body)
     }
-    pub(super) fn modal<'a>(
-        &'a self,
+
+    pub(super) fn modal(
+        &self,
         kind: Kind,
         plans: &[PowerPlan],
-    ) -> Option<Element<'a, Message>> {
-        let s = self.draft.as_ref()?;
+        ui: Ui<Message>,
+    ) -> Option<Element> {
+        let settings = self.draft.as_ref()?;
         let index = self.editing;
         let id = self.ids.get(index).copied().unwrap_or(index as u64);
         let rule = match kind {
-            Kind::Time => RuleRef::Time(s.by_time.rules.get(index)?),
-            Kind::CpuLoad => RuleRef::Cpu(s.by_cpu_load.rules.get(index)?),
+            Kind::Time => RuleRef::Time(settings.by_time.rules.get(index)?),
+            Kind::CpuLoad => RuleRef::Cpu(settings.by_cpu_load.rules.get(index)?),
         };
         let (name, guid) = match rule {
-            RuleRef::Time(r) => (&r.name, &r.power_plan_guid),
-            RuleRef::Cpu(r) => (&r.name, &r.power_plan_guid),
+            RuleRef::Time(rule) => (&rule.name, &rule.power_plan_guid),
+            RuleRef::Cpu(rule) => (&rule.name, &rule.power_plan_guid),
         };
-        let mut controls = column![].spacing(design::space::COMPACT);
+        let name = signal(name.clone());
+        let mut native_inputs = Vec::new();
+        let mut controls = vec![widgets::setting_row(
+            t!("common.rule_name").to_string(),
+            ui.input_signal(name, t!("common.rule_name").to_string(), move |value| {
+                Message::Name(index, value)
+            }),
+        )];
         match rule {
-            RuleRef::Time(r) => {
-                let mut days = row![].spacing(design::space::SMALL);
-                for (day, key) in WeekdaySetting::all().into_iter().zip([
+            RuleRef::Time(rule) => {
+                let mut days = Vec::new();
+                for (day, title) in WeekdaySetting::all().into_iter().zip([
                     "weekday.mon",
                     "weekday.tue",
                     "weekday.wed",
@@ -465,47 +424,28 @@ impl Editor {
                     "weekday.sat",
                     "weekday.sun",
                 ]) {
-                    days = days.push(widgets::panel_tab(
-                        t!(key).to_string(),
-                        r.days.contains(&day),
-                        Message::Day(index, day, !r.days.contains(&day)),
-                        false,
+                    days.push(ui.checkbox(
+                        t!(title).to_string(),
+                        rule.days.contains(&day),
+                        move |value| Message::Day(index, day, value),
                     ));
                 }
-                controls = controls.push(widgets::settings_card(days)).push(
-                    row![
-                        container(widgets::settings_card(
-                            column![
-                                text(t!("by_time.start").to_string()),
-                                text_input(
-                                    "HH:MM",
-                                    &self.input(id, Field::Start, r.start_time.clone())
-                                )
-                                .on_input(move |v| Message::Start(index, v))
-                                .width(Fill)
-                            ]
-                            .spacing(design::space::SMALL)
-                        ))
-                        .width(Fill),
-                        container(widgets::settings_card(
-                            column![
-                                text(t!("by_time.end").to_string()),
-                                text_input(
-                                    "HH:MM",
-                                    &self.input(id, Field::End, r.end_time.clone())
-                                )
-                                .on_input(move |v| Message::End(index, v))
-                                .width(Fill)
-                            ]
-                            .spacing(design::space::SMALL)
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::MEDIUM),
-                );
+                controls.push(widgets::row().children(days));
+                let start = signal(self.input(id, Field::Start, rule.start_time.clone()));
+                native_inputs.push((Field::Start, start));
+                controls.push(widgets::setting_row(
+                    t!("by_time.start").to_string(),
+                    ui.input_signal(start, "HH:MM", move |value| Message::Start(index, value)),
+                ));
+                let end = signal(self.input(id, Field::End, rule.end_time.clone()));
+                native_inputs.push((Field::End, end));
+                controls.push(widgets::setting_row(
+                    t!("by_time.end").to_string(),
+                    ui.input_signal(end, "HH:MM", move |value| Message::End(index, value)),
+                ));
             }
-            RuleRef::Cpu(r) => {
-                let choices = vec![
+            RuleRef::Cpu(rule) => {
+                let choices = [
                     Choice(
                         CpuUsageComparison::AtOrBelow,
                         t!("by_cpu_load.comparison_at_or_below").to_string(),
@@ -519,152 +459,113 @@ impl Editor {
                         t!("by_cpu_load.comparison_between").to_string(),
                     ),
                 ];
-                let selected = choices.iter().find(|c| c.0 == r.comparison).cloned();
-                controls = controls
-                    .push(widgets::settings_card(widgets::setting_row(
-                        "by_cpu_load.if",
-                        pick_list(choices, selected, move |v| Message::Comparison(index, v.0))
-                            .width(design::SELECT_WIDTH),
-                    )))
-                    .push(self.number(
-                        (id, index),
-                        Field::Threshold,
-                        "by_cpu_load.threshold",
-                        u32::from(r.threshold_percent),
-                        100,
-                        Message::Threshold,
-                    ));
-                let upper = self.number(
+                let selected = choices
+                    .iter()
+                    .find(|choice| choice.0 == rule.comparison)
+                    .cloned()
+                    .unwrap_or_else(|| choices[0].clone());
+                controls.push(widgets::setting_row(
+                    t!("by_cpu_load.if").to_string(),
+                    ui.select(choices, selected, move |value| {
+                        Message::Comparison(index, value.0)
+                    }),
+                ));
+                controls.push(self.number(
                     (id, index),
-                    Field::Upper,
-                    "by_cpu_load.upper_threshold",
-                    u32::from(r.upper_threshold_percent.unwrap_or(100)),
-                    100,
-                    Message::Upper,
-                );
-                controls = controls
-                    .push(super::widgets::optional_content(
-                        upper,
-                        r.comparison == CpuUsageComparison::Between,
-                    ))
-                    .push(self.number(
+                    (Field::Threshold, "by_cpu_load.threshold"),
+                    u32::from(rule.threshold_percent),
+                    Message::Threshold,
+                    &mut native_inputs,
+                    ui.clone(),
+                ));
+                if rule.comparison == CpuUsageComparison::Between {
+                    controls.push(self.number(
                         (id, index),
-                        Field::Duration,
-                        "by_cpu_load.duration",
-                        r.duration_seconds.min(86400) as u32,
-                        86400,
-                        Message::Duration,
-                    ))
-                    .push(widgets::settings_card(widgets::setting_row(
-                        "by_running_app.power_plan",
-                        widgets::plan(guid.clone(), plans, move |v| Message::Plan(index, v)),
-                    )))
-                    .push(widgets::settings_card(
-                        column![
-                            widgets::setting_row(
-                                "by_cpu_load.else",
-                                widgets::switch(
-                                    r.else_enabled,
-                                    Some(move |v| Message::Else(index, v))
-                                )
-                            ),
-                            widgets::optional_content(
-                                widgets::setting_row(
-                                    "by_running_app.power_plan",
-                                    widgets::plan(
-                                        r.else_power_plan_guid.clone(),
-                                        plans,
-                                        move |v| Message::ElsePlan(index, v)
-                                    )
-                                ),
-                                r.else_enabled
-                            )
-                        ]
-                        .spacing(design::space::MEDIUM),
+                        (Field::Upper, "by_cpu_load.upper_threshold"),
+                        u32::from(rule.upper_threshold_percent.unwrap_or(100)),
+                        Message::Upper,
+                        &mut native_inputs,
+                        ui.clone(),
                     ));
+                }
+                controls.push(self.number(
+                    (id, index),
+                    (Field::Duration, "by_cpu_load.duration"),
+                    rule.duration_seconds.min(86400) as u32,
+                    Message::Duration,
+                    &mut native_inputs,
+                    ui.clone(),
+                ));
+                controls.push(widgets::setting_row(
+                    t!("by_cpu_load.else").to_string(),
+                    ui.toggle(rule.else_enabled, move |value| Message::Else(index, value)),
+                ));
+                if rule.else_enabled {
+                    controls.push(widgets::setting_row(
+                        t!("by_running_app.power_plan").to_string(),
+                        ui.plan(rule.else_power_plan_guid.clone(), plans, move |value| {
+                            Message::ElsePlan(index, value)
+                        }),
+                    ));
+                }
             }
         }
-
-        if kind == Kind::Time {
-            controls = controls.push(widgets::settings_card(widgets::setting_row(
-                "by_running_app.power_plan",
-                widgets::plan(guid.clone(), plans, move |v| Message::Plan(index, v)),
-            )));
-        }
-        let content = column![
-            widgets::settings_card(
-                column![
-                    text(t!("common.rule_name").to_string()),
-                    text_input(&t!("common.rule_name"), name)
-                        .on_input(move |v| Message::Name(index, v))
-                        .width(Fill)
-                ]
-                .spacing(design::space::SMALL)
-            ),
-            controls
-        ]
-        .spacing(design::space::MEDIUM);
-        let header = row![
-            text(
-                t!(if self.creating {
-                    "common.create"
-                } else {
-                    "common.edit"
-                })
-                .to_string()
-            )
-            .width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::Cancel)
-        ]
-        .align_y(iced::Center);
-        let footer = row![
-            iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
-                .style(widgets::tertiary_button)
-                .on_press(Message::Cancel),
-            button(text(t!("common.save").to_string()))
-                .style(widgets::primary_button)
-                .on_press_maybe((self.valid() && !name.trim().is_empty()).then_some(Message::Save))
-        ]
-        .spacing(design::space::SMALL);
-        Some(widgets::modal_frame(
-            header,
-            scrollable(content).height(Fill),
+        controls.push(widgets::setting_row(
+            t!("by_running_app.power_plan").to_string(),
+            ui.plan(guid.clone(), plans, move |value| {
+                Message::Plan(index, value)
+            }),
+        ));
+        let other_inputs_valid = self.inputs.iter().all(|((owner, field), raw)| {
+            (*owner == id && native_inputs.iter().any(|(visible, _)| visible == field))
+                || valid_input(*field, raw)
+        });
+        let footer = widgets::row().children([
+            ui.button(t!("common.cancel").to_string(), Message::Cancel),
+            ui.primary_button(t!("common.save").to_string(), Message::Save)
+                .enabled_when(move || {
+                    !name.get().trim().is_empty()
+                        && other_inputs_valid
+                        && native_inputs
+                            .iter()
+                            .all(|(field, raw)| valid_input(*field, &raw.get()))
+                }),
+        ]);
+        Some(widgets::editor_panel(
+            t!(if self.creating {
+                "common.create"
+            } else {
+                "common.edit"
+            })
+            .to_string(),
+            widgets::col().children(controls),
             footer,
-            (800, 760),
         ))
     }
 
     fn input(&self, id: u64, field: Field, current: String) -> String {
         self.inputs.get(&(id, field)).cloned().unwrap_or(current)
     }
+
     fn number(
         &self,
         target: (u64, usize),
-        field: Field,
-        label: &str,
+        field: (Field, &str),
         value: u32,
-        max: u32,
         action: fn(usize, String) -> Message,
-    ) -> Element<'static, Message> {
+        native_inputs: &mut Vec<(Field, Signal<String>)>,
+        ui: Ui<Message>,
+    ) -> Element {
         let (id, index) = target;
-        widgets::settings_card(
-            row![
-                text(widgets::label_with_unit(
-                    &t!(label),
-                    if field == Field::Duration { "s" } else { "%" }
-                ))
-                .width(180),
-                slider(0..=max, value, move |v| action(index, v.to_string())),
-                text_input("", &self.input(id, field, value.to_string()))
-                    .on_input(move |v| action(index, v))
-                    .width(design::NUMERIC_WIDTH)
-            ]
-            .spacing(design::space::COMPACT)
-            .height(widgets::SETTING_ROW_HEIGHT)
-            .align_y(iced::Center),
+        let (field, title) = field;
+        let unit = if field == Field::Duration { "s" } else { "%" };
+        let max = if field == Field::Duration { 86400 } else { 100 };
+        let raw = signal(self.input(id, field, value.to_string()));
+        native_inputs.push((field, raw));
+        widgets::setting_row(
+            format!("{} ({unit})", t!(title)),
+            ui.number(raw, 0, max, 1, move |value| action(index, value)),
         )
-        .into()
     }
 }
 fn valid_input(field: Field, value: &str) -> bool {
@@ -758,6 +659,29 @@ pub(super) fn power_rule_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_save_keeps_unnamed_rule_drafts_open() {
+        for kind in [Kind::Time, Kind::CpuLoad] {
+            let mut settings = Settings::default();
+            settings.by_time.rules.clear();
+            settings.by_cpu_load.rules.clear();
+            let mut editor = Editor::default();
+            editor.update(kind, &mut settings, &[], Message::Add);
+            editor.update(kind, &mut settings, &[], Message::Name(0, "  ".into()));
+            editor.update(kind, &mut settings, &[], Message::Save);
+            assert!(editor.has_pending_editor());
+            assert!(settings.by_time.rules.is_empty());
+            assert!(settings.by_cpu_load.rules.is_empty());
+            editor.update(kind, &mut settings, &[], Message::Name(0, "Rule".into()));
+            editor.update(kind, &mut settings, &[], Message::Save);
+            assert!(!editor.has_pending_editor());
+            assert_eq!(
+                settings.by_time.rules.len() + settings.by_cpu_load.rules.len(),
+                1
+            );
+        }
+    }
     #[test]
     fn cpu_rule_status_tracks_selected_else_plan_and_failed_switches() {
         use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};

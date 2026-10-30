@@ -54,3 +54,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+      - name: Check optional native harnesses
+        run: cargo clippy --locked --all-targets --features 'render-smoke,runtime-benchmark' -- -D warnings -D unsafe-op-in-unsafe-fn
+
+      - name: Test optional native harnesses
+        run: cargo test --locked --features 'render-smoke,runtime-benchmark'

@@ -1,6 +1,6 @@
 use super::design;
 use super::navigation::dashboard_sections_in_nav_order;
-use super::widgets::button;
+use super::widgets::{self, Ui};
 use crate::automation::RuntimeFeatureStatus;
 use crate::backend::dashboard_metrics::{
     sample_memory_usage, DiskUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
@@ -8,26 +8,30 @@ use crate::backend::dashboard_metrics::{
 };
 use crate::config::Settings;
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
-use crate::ui::scrolling::scrollable;
 use crate::ui::Page;
-use iced::widget::{canvas, column, container, responsive, row, text};
-use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
 use std::collections::VecDeque;
+use windui::{
+    core::{EventCtx, Widget},
+    event::{Event, PointerKind},
+    prelude::{Align, Color, Element, Point, Rect, Role, Theme},
+    render::{Canvas, Paint},
+    style::Style,
+    text::TextStyle,
+};
 
 const HISTORY_LEN: usize = 30;
-#[derive(Debug)]
+type SamplerChannels = (
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<Sample>,
+);
+
+#[derive(Debug, Default)]
 pub(super) struct Sampler {
-    channels: Result<
-        (
-            std::sync::mpsc::Sender<()>,
-            std::sync::mpsc::Receiver<Sample>,
-        ),
-        String,
-    >,
+    channels: Option<Result<SamplerChannels, String>>,
 }
-impl Default for Sampler {
-    fn default() -> Self {
+impl Sampler {
+    fn start() -> Result<SamplerChannels, String> {
         let (request, requests) = std::sync::mpsc::channel();
         let (samples, response) = std::sync::mpsc::channel();
         let worker = std::thread::Builder::new()
@@ -54,14 +58,12 @@ impl Default for Sampler {
                     }
                 }
             });
-        Self {
-            channels: worker
-                .map(|_| (request, response))
-                .map_err(|error| error.to_string()),
-        }
+        worker
+            .map(|_| (request, response))
+            .map_err(|error| error.to_string())
     }
 }
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(super) struct Sample {
     cpu: CpuUsageSnapshot,
     memory: MemoryUsageSnapshot,
@@ -70,13 +72,53 @@ pub(super) struct Sample {
     input_idle: Option<std::time::Duration>,
     controller_idle: Option<std::time::Duration>,
 }
+#[cfg(feature = "render-smoke")]
+impl Sample {
+    pub(super) fn smoke_sample() -> Self {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        Self {
+            cpu: CpuUsageSnapshot {
+                percent: Some(10.3),
+                frequency_mhz: Some(2_970),
+                base_frequency_mhz: Some(3_000),
+            },
+            memory: MemoryUsageSnapshot {
+                percent: Some(81.25),
+                used_physical_bytes: Some(13 * GIB),
+                total_physical_bytes: Some(16 * GIB),
+                cached_physical_bytes: Some(2 * GIB),
+            },
+            io: IoUsageSnapshot {
+                bytes_per_second: Some(403.5 * 1024.0),
+                read_bytes_per_second: Some(157.1 * 1024.0),
+                write_bytes_per_second: Some(246.4 * 1024.0),
+            },
+            network: NetworkUsageSnapshot {
+                bytes_per_second: Some(841.3 * 1024.0),
+                download_bytes_per_second: Some(369.4 * 1024.0),
+                upload_bytes_per_second: Some(471.9 * 1024.0),
+            },
+            ..Default::default()
+        }
+    }
+}
 impl Sampler {
     // Call from an application task once per second while Home sampling is enabled.
-    // Dropping Sampler disconnects requests and lets its worker drop all native monitors.
+    // Construction is lazy. Dropping Sampler disconnects requests and lets its worker
+    // drop all native monitors; an in-flight task may retain it until its sample finishes.
     pub(super) fn sample(&mut self) -> Result<Sample, String> {
-        let (request, response) = self.channels.as_ref().map_err(Clone::clone)?;
+        let (request, response) = self
+            .channels
+            .get_or_insert_with(Self::start)
+            .as_ref()
+            .map_err(Clone::clone)?;
         request.send(()).map_err(|error| error.to_string())?;
         response.recv().map_err(|error| error.to_string())
+    }
+
+    /// Release an idle sampler without touching dashboard history or preferences.
+    pub(super) fn release(&mut self) {
+        self.channels = None;
     }
 }
 #[derive(Default)]
@@ -94,6 +136,19 @@ pub(super) enum Message {
     PauseMetrics(bool),
 }
 impl Model {
+    #[cfg(feature = "render-smoke")]
+    pub(super) fn smoke_history(&self) -> (Sample, [usize; 4]) {
+        (
+            self.latest,
+            [
+                self.cpu.len(),
+                self.memory.len(),
+                self.io.len(),
+                self.network.len(),
+            ],
+        )
+    }
+
     pub(super) fn record(&mut self, sample: Sample) {
         self.latest = sample;
         if sample.cpu.percent.is_some() {
@@ -109,163 +164,163 @@ impl Model {
             push_bounded(&mut self.network, sample.network);
         }
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        settings: &'a Settings,
-        status: &'a RuntimeFeatureStatus,
-    ) -> Element<'a, Message> {
-        responsive(move |size| {
-            let wide = size.width >= 760.0;
-            let mut body = column![row![
-                super::widgets::heading(t!("home.home").to_string(), design::typography::BODY)
-                    .width(Fill),
-                button(text(
-                    if self.metrics_paused {
-                        t!("home.resume_metrics")
-                    } else {
-                        t!("home.pause_metrics")
-                    }
-                    .to_string()
-                ))
-                .on_press(Message::PauseMetrics(!self.metrics_paused)),
-            ]
-            .align_y(iced::Center)]
-            .spacing(super::widgets::CARD_GAP);
-            let entries = enabled_features(settings, status, &self.latest);
-            let count = entries.iter().filter(|(_, active, _)| *active).count();
-            let mut enabled = column![row![
-                super::widgets::heading(
-                    t!("home.enabled_features").to_string(),
-                    design::typography::BODY
-                ),
-                container(text(count.to_string()).size(design::typography::BADGE))
-                    .padding([design::space::TINY as u16, design::space::CONTROL as u16])
-                    .style(move |theme| super::widgets::indicator_chip(theme, count > 0)),
-                iced::widget::Space::new().width(Fill),
-                button(
-                    text(
-                        if settings.general.enabled {
-                            t!("home.master_switch_enabled")
-                        } else {
-                            t!("home.master_switch_disabled")
-                        }
-                        .to_string()
-                    )
-                    .size(design::typography::CAPTION)
-                    .style(if settings.general.enabled {
-                        text::primary
-                    } else {
-                        text::secondary
+    pub(super) fn view(
+        &self,
+        settings: &Settings,
+        status: &RuntimeFeatureStatus,
+        ui: Ui<Message>,
+        wide: bool,
+    ) -> Element {
+        let entries = enabled_features(settings, status, &self.latest);
+        let count = entries.iter().filter(|(_, active, _)| *active).count();
+        let features = entries
+            .into_iter()
+            .filter(|(_, active, _)| *active)
+            .map(|(page, _, detail)| {
+                let ui = ui.clone();
+                widgets::row()
+                    .height(36)
+                    .padding_xy(8, 0)
+                    .corner(design::CONTROL_RADIUS)
+                    .child(super::navigation::glyph(
+                        super::navigation::icon_path(page),
+                        Role::TextMuted,
+                    ))
+                    .child(widgets::label(page.label()).max_lines(1).weight(1.0))
+                    .child(widgets::label(detail).max_lines(1))
+                    .clickable()
+                    .on_click(move |ctx| {
+                        widgets::flush_bindings(ctx);
+                        ui.emit(Message::Navigate(page));
                     })
-                )
-                .padding(0)
-                .style(super::widgets::quiet)
-                .on_press(Message::Navigate(Page::WinderustBehaviour))
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center)]
-            .spacing(design::space::MEDIUM);
-            let mut features = column![];
-            for (page, active, detail) in entries {
-                if active {
-                    features = features.push(
-                        button(
-                            row![
-                                super::navigation::icon(page, false),
-                                text(page.label()).width(Fill),
-                                text(detail)
-                            ]
-                            .spacing(design::space::SMALL)
-                            .height(Fill)
-                            .align_y(iced::Center),
-                        )
-                        .width(Fill)
-                        .height(36)
-                        .padding([0, design::space::SMALL as u16])
-                        .style(super::widgets::quiet)
-                        .on_press(Message::Navigate(page)),
-                    );
-                }
-            }
-            if count == 0 {
-                enabled = enabled
-                    .push(text(t!("home.no_enabled_features").to_string()).style(text::secondary));
-            } else {
-                enabled = enabled.push(
-                    scrollable(features)
-                        .id("home-enabled-features")
-                        .height(Fill),
-                );
-            }
-            let enabled = container(enabled)
-                .padding(design::space::CHART_INSET as u16)
-                .height(196)
-                .width(Fill)
-                .style(super::widgets::surface);
-            if wide {
-                body = body
-                    .push(
-                        row![
-                            self.chart_card(ChartKind::Cpu, self.chart(ChartKind::Cpu)),
-                            self.chart_card(ChartKind::Memory, self.chart(ChartKind::Memory)),
-                            self.chart_card(ChartKind::Io, self.chart(ChartKind::Io))
-                        ]
-                        .spacing(super::widgets::CARD_GAP),
-                    )
-                    .push(
-                        row![
-                            self.chart_card(ChartKind::Network, self.chart(ChartKind::Network)),
-                            enabled
-                        ]
-                        .spacing(super::widgets::CARD_GAP),
-                    );
-            } else {
-                body = body
-                    .push(
-                        row![
-                            self.chart_card(ChartKind::Cpu, self.chart(ChartKind::Cpu)),
-                            self.chart_card(ChartKind::Memory, self.chart(ChartKind::Memory))
-                        ]
-                        .spacing(super::widgets::CARD_GAP),
-                    )
-                    .push(
-                        row![
-                            self.chart_card(ChartKind::Io, self.chart(ChartKind::Io)),
-                            self.chart_card(ChartKind::Network, self.chart(ChartKind::Network))
-                        ]
-                        .spacing(super::widgets::CARD_GAP),
-                    )
-                    .push(enabled);
-            }
-            body = body.push(super::widgets::heading(
-                t!("home.main_sections").to_string(),
-                design::typography::BODY,
-            ));
-            let sections =
-                dashboard_sections_in_nav_order(settings.advanced.show_advanced_controls);
-            for group in sections.chunks(if wide { 3 } else { 2 }) {
-                let mut shortcuts = row![].spacing(super::widgets::CARD_GAP);
-                for section in group {
-                    shortcuts = shortcuts.push(
-                        super::widgets::card_button(row![
-                            super::navigation::icon(section.landing_page, false),
-                            super::widgets::heading(
-                                section.landing_page.label(),
-                                design::typography::BODY
+            })
+            .collect::<Vec<_>>();
+        let master = ui.clone();
+        let enabled = widgets::col()
+            .spacing(design::space::MEDIUM as i32)
+            .bg_role(Role::Surface)
+            .corner(design::CARD_RADIUS)
+            .padding(14)
+            .height(196)
+            .children([
+                widgets::row()
+                    .child(
+                        widgets::row()
+                            .child(
+                                widgets::label(t!("home.enabled_features").to_string())
+                                    .font_weight(600),
                             )
-                            .width(Fill),
-                            super::navigation::glyph("icons/chevron-right.svg")
-                        ])
-                        .on_press(Message::Navigate(section.landing_page)),
-                    );
-                }
-                body = body.push(shortcuts);
-            }
-            scrollable(body).height(Fill).into()
-        })
-        .into()
+                            .child(Element::badge_intent(
+                                count.to_string(),
+                                if count > 0 {
+                                    windui::theme::Intent::Success
+                                } else {
+                                    windui::theme::Intent::Neutral
+                                },
+                            ))
+                            .weight(1.0),
+                    )
+                    .child(
+                        Element::link(
+                            t!(if settings.general.enabled {
+                                "home.master_switch_enabled"
+                            } else {
+                                "home.master_switch_disabled"
+                            })
+                            .to_string(),
+                        )
+                        .font_size(design::typography::CAPTION as f32)
+                        .fg_role(if settings.general.enabled {
+                            Role::Accent
+                        } else {
+                            Role::TextMuted
+                        })
+                        .on_click(move |ctx| {
+                            widgets::flush_bindings(ctx);
+                            master.emit(Message::Navigate(Page::WinderustBehaviour));
+                        }),
+                    ),
+                if count == 0 {
+                    widgets::label(t!("home.no_enabled_features").to_string())
+                        .fg_role(Role::TextMuted)
+                } else {
+                    Element::scroll()
+                        .width_match()
+                        .weight(1.0)
+                        .child(Element::col().width_match().children(features))
+                },
+            ]);
+        let mut body = vec![widgets::row().children([
+            widgets::label(t!("home.home").to_string())
+                .font_weight(600)
+                .weight(1.0),
+            ui.button(
+                t!(if self.metrics_paused {
+                    "home.resume_metrics"
+                } else {
+                    "home.pause_metrics"
+                })
+                .to_string(),
+                Message::PauseMetrics(!self.metrics_paused),
+            )
+            .small(),
+        ])];
+        let chart = |kind| self.chart_panel(kind, self.chart(kind));
+        if wide {
+            body.extend([
+                widgets::row().children([
+                    chart(ChartKind::Cpu).weight(1.0),
+                    chart(ChartKind::Memory).weight(1.0),
+                    chart(ChartKind::Io).weight(1.0),
+                ]),
+                widgets::row()
+                    .children([chart(ChartKind::Network).weight(1.0), enabled.weight(1.0)]),
+            ]);
+        } else {
+            body.extend([
+                widgets::row().children([
+                    chart(ChartKind::Cpu).weight(1.0),
+                    chart(ChartKind::Memory).weight(1.0),
+                ]),
+                widgets::row().children([
+                    chart(ChartKind::Io).weight(1.0),
+                    chart(ChartKind::Network).weight(1.0),
+                ]),
+                enabled,
+            ]);
+        }
+        body.push(widgets::label(t!("home.main_sections").to_string()).font_weight(600));
+        let sections = dashboard_sections_in_nav_order(settings.advanced.show_advanced_controls);
+        for group in sections.chunks(if wide { 3 } else { 2 }) {
+            body.push(widgets::row().children(group.iter().map(|section| {
+                let page = section.landing_page;
+                let ui = ui.clone();
+                widgets::card(
+                    "",
+                    [widgets::row().children([
+                        super::navigation::glyph(
+                            super::navigation::icon_path(page),
+                            Role::TextMuted,
+                        ),
+                        widgets::label(page.label()).font_weight(600).weight(1.0),
+                        super::navigation::glyph("icons/chevron-right.svg", Role::TextMuted),
+                    ])],
+                )
+                .height(58)
+                .weight(1.0)
+                .clickable()
+                .on_click(move |ctx| {
+                    widgets::flush_bindings(ctx);
+                    ui.emit(Message::Navigate(page));
+                })
+            })));
+        }
+        widgets::page([widgets::col()
+            .spacing(design::CARD_GAP as i32)
+            .children(body)])
     }
-    fn chart_card(&self, kind: ChartKind, chart: Chart) -> Element<'static, Message> {
+
+    fn chart_panel(&self, kind: ChartKind, chart: Chart) -> Element {
         let sample = self.latest;
         let (title, first, second, first_value, second_value) = match kind {
             ChartKind::Cpu => (
@@ -303,36 +358,38 @@ impl Model {
             ChartKind::Io => io_usage_label(sample.io.bytes_per_second),
             ChartKind::Network => io_usage_label(sample.network.bytes_per_second),
         };
-        container(
-            column![
-                row![
-                    super::widgets::heading(title.to_string(), design::typography::BODY)
-                        .width(Fill),
-                    super::widgets::heading(total, design::typography::BODY)
-                ]
-                .spacing(design::space::SMALL),
-                row![
-                    text(format!("{first}: {first_value}"))
-                        .style(|theme| text::Style {
-                            color: Some(chart_colors(theme)[0])
-                        })
-                        .width(Fill),
-                    text(format!("{second}: {second_value}"))
-                        .style(|theme| text::Style {
-                            color: Some(chart_colors(theme)[1])
-                        })
-                        .width(Fill)
-                ]
-                .spacing(design::space::SMALL),
-                canvas(chart).width(Fill).height(110)
-            ]
-            .spacing(design::space::SMALL),
-        )
-        .padding(design::space::CHART_INSET as u16)
-        .height(196)
-        .width(Fill)
-        .style(super::widgets::surface)
-        .into()
+        let colors = chart_colors(&windui::theme::current());
+        widgets::col()
+            .spacing(8)
+            .bg_role(Role::Surface)
+            .corner(design::CARD_RADIUS)
+            .padding(14)
+            .children([
+                widgets::row().children([
+                    widgets::label(title.to_string())
+                        .font_weight(600)
+                        .font_size(design::typography::BODY as f32)
+                        .weight(1.0),
+                    widgets::label(total).font_weight(600),
+                ]),
+                widgets::row().children([
+                    widgets::label(format!("{first}: {first_value}"))
+                        .font_size(design::typography::SECONDARY as f32)
+                        .fg(colors[0])
+                        .tooltip(format!("{first}: {first_value}"))
+                        .max_lines(1)
+                        .weight(1.0),
+                    widgets::label(format!("{second}: {second_value}"))
+                        .font_size(design::typography::SECONDARY as f32)
+                        .fg(colors[1])
+                        .tooltip(format!("{second}: {second_value}"))
+                        .max_lines(1)
+                        .weight(1.0),
+                ]),
+                // Wind UI supplies the surface, text and layout; only the data plot is drawn.
+                Element::leaf().width_match().height(110).widget(chart),
+            ])
+            .height(196)
     }
     fn chart(&self, kind: ChartKind) -> Chart {
         let samples: Vec<ChartSample> = match kind {
@@ -410,7 +467,11 @@ impl Model {
             ChartKind::Cpu | ChartKind::Memory => 100.0,
             _ => samples.iter().flat_map(|s| s.values).fold(1.0, f64::max),
         };
-        Chart { samples, maximum }
+        Chart {
+            samples,
+            maximum,
+            hovered: None,
+        }
     }
 }
 fn push_bounded<T>(history: &mut VecDeque<T>, sample: T) {
@@ -433,101 +494,83 @@ struct ChartSample {
 struct Chart {
     samples: Vec<ChartSample>,
     maximum: f64,
+    hovered: Option<usize>,
 }
-fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
-    let bright = theme.palette().primary;
-    let dark = iced::Color {
-        r: bright.r * 0.65,
-        g: bright.g * 0.65,
-        b: bright.b * 0.65,
-        ..bright
-    };
-    [bright, dark]
+fn chart_colors(theme: &Theme) -> [Color; 2] {
+    let bright = theme.palette.accent;
+    [bright, bright.darken(0.35)]
 }
 
-impl canvas::Program<Message> for Chart {
-    type State = Option<usize>;
-    fn update(
-        &self,
-        hovered: &mut Self::State,
-        event: &canvas::Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Option<iced::widget::Action<Message>> {
-        let next = if matches!(event, canvas::Event::Mouse(mouse::Event::CursorLeft)) {
-            None
-        } else {
-            cursor
-                .position_in(bounds)
-                .filter(|point| point.y <= (bounds.height - 28.0).max(0.0))
-                .map(|point| {
-                    ((point.x / bounds.width.max(1.0)).clamp(0.0, 1.0) * (HISTORY_LEN - 1) as f32)
-                        .round() as usize
-                })
-                .filter(|slot| *slot >= HISTORY_LEN - self.samples.len())
-        };
-        if *hovered == next {
+impl Chart {
+    fn hover_slot(&self, position: Option<Point>, bounds: Rect) -> Option<usize> {
+        let point = position?;
+        if !bounds.contains(point) || point.y - bounds.y > (bounds.h - 28).max(0) {
             return None;
         }
-        *hovered = next;
-        Some(iced::widget::Action::request_redraw())
+        let fraction = (point.x - bounds.x) as f32 / bounds.w.max(1) as f32;
+        let slot = (fraction.clamp(0.0, 1.0) * (HISTORY_LEN - 1) as f32).round() as usize;
+        (slot >= HISTORY_LEN - self.samples.len()).then_some(slot)
     }
-    fn draw(
-        &self,
-        hovered: &Self::State,
-        renderer: &Renderer,
-        theme: &Theme,
-        bounds: Rectangle,
-        _: mouse::Cursor,
-    ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        // Repaint the canvas: stroke-only damage bounds omit flat lines and stroke edges.
-        frame.fill_rectangle(
-            Point::ORIGIN,
-            bounds.size(),
-            theme.extended_palette().background.weak.color,
+
+    fn set_hover(&mut self, position: Option<Point>, bounds: Rect) -> bool {
+        let next = self.hover_slot(position, bounds);
+        if self.hovered == next {
+            return false;
+        }
+        self.hovered = next;
+        true
+    }
+
+    fn paint_plot(&self, bounds: Rect, canvas: &mut dyn Canvas, theme: &Theme) {
+        let x = bounds.x as f32;
+        let y = bounds.y as f32;
+        let width = bounds.w.max(1) as f32;
+        let height = (bounds.h - 28).max(1) as f32;
+        // Erase the complete plot, including flat-line edges and the previous
+        // hover marker, before repainting a changed sample.
+        canvas.fill_rect(
+            x,
+            y,
+            width,
+            bounds.h.max(1) as f32,
+            &Paint::fill(theme.palette.surface),
         );
-        let height = (bounds.height - 28.0).max(1.0);
-        let width = bounds.width.max(1.0);
-        let grid = theme.extended_palette().background.strong.color;
         for fraction in [0.0, 0.5, 1.0] {
-            frame.stroke(
-                &canvas::Path::line(
-                    Point::new(0.0, height * fraction),
-                    Point::new(width, height * fraction),
-                ),
-                canvas::Stroke::default().with_color(grid),
+            canvas.draw_line(
+                x,
+                y + height * fraction,
+                x + width,
+                y + height * fraction,
+                1.0,
+                &Paint::fill(theme.palette.border),
             );
         }
-        for series in 0..2 {
-            let path = canvas::Path::new(|path| {
-                // Empty history is a visual zero baseline, not recorded samples.
-                let values = std::iter::repeat_n(0.0, HISTORY_LEN - self.samples.len())
-                    .chain(self.samples.iter().map(|sample| sample.values[series]));
-                for (index, value) in values.enumerate() {
-                    let x = index as f32 / (HISTORY_LEN - 1) as f32 * width;
-                    let y = height * (1.0 - (value / self.maximum).clamp(0.0, 1.0) as f32);
-                    if index == 0 {
-                        path.move_to(Point::new(x, y));
-                    } else {
-                        path.line_to(Point::new(x, y));
-                    }
-                }
-            });
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_width(1.8)
-                    .with_color(chart_colors(theme)[series]),
-            );
+        for (series, color) in chart_colors(theme).into_iter().enumerate() {
+            // Empty history is a visual baseline, never recorded sample data.
+            let values = std::iter::repeat_n(0.0, HISTORY_LEN - self.samples.len())
+                .chain(self.samples.iter().map(|sample| sample.values[series]));
+            let points = values
+                .enumerate()
+                .map(|(index, value)| {
+                    (
+                        x + index as f32 / (HISTORY_LEN - 1) as f32 * width,
+                        y + height * (1.0 - (value / self.maximum).clamp(0.0, 1.0) as f32),
+                    )
+                })
+                .collect::<Vec<_>>();
+            canvas.draw_polyline(&points, 1.8, &Paint::fill(color));
         }
-        if let Some(slot) = *hovered {
+        if let Some(slot) = self.hovered {
             if let Some(index) = slot.checked_sub(HISTORY_LEN - self.samples.len()) {
                 if let Some(sample) = self.samples.get(index) {
-                    let x = slot as f32 / (HISTORY_LEN - 1) as f32 * width;
-                    frame.stroke(
-                        &canvas::Path::line(Point::new(x, 0.0), Point::new(x, height)),
-                        canvas::Stroke::default().with_color(theme.palette().text),
+                    let marker_x = x + slot as f32 / (HISTORY_LEN - 1) as f32 * width;
+                    canvas.draw_line(
+                        marker_x,
+                        y,
+                        marker_x,
+                        y + height,
+                        1.0,
+                        &Paint::fill(theme.palette.text),
                     );
                     let age = HISTORY_LEN - slot - 1;
                     let age = if age == 0 {
@@ -535,17 +578,45 @@ impl canvas::Program<Message> for Chart {
                     } else {
                         t!("common.seconds_ago", count = age).to_string()
                     };
-                    frame.fill_text(canvas::Text {
-                        content: format!("{age}: {} / {}", sample.labels[0], sample.labels[1]),
-                        position: Point::new(2.0, height + 5.0),
-                        color: theme.palette().text,
-                        size: 11.0.into(),
-                        ..Default::default()
-                    });
+                    canvas.draw_text(
+                        &format!("{age}: {} / {}", sample.labels[0], sample.labels[1]),
+                        Rect::new(bounds.x + 2, bounds.y + height as i32 + 5, bounds.w - 4, 20),
+                        theme.palette.text,
+                        Align::Start,
+                        &TextStyle::new(11.0),
+                    );
                 }
             }
         }
-        vec![frame.into_geometry()]
+    }
+}
+
+impl Widget for Chart {
+    fn paint(
+        &self,
+        _bounds: Rect,
+        content: Rect,
+        _focused: bool,
+        _enabled: bool,
+        canvas: &mut dyn Canvas,
+        _style: &Style,
+    ) {
+        self.paint_plot(content, canvas, &windui::theme::current());
+    }
+
+    fn on_event(&mut self, ctx: &mut EventCtx, event: &Event) -> bool {
+        if let Event::Pointer(pointer) = event {
+            let position = if pointer.kind == PointerKind::Leave {
+                None
+            } else {
+                Some(pointer.pos)
+            };
+            if self.set_hover(position, ctx.bounds()) {
+                ctx.mark_dirty();
+            }
+        }
+        // The plot only observes hover. Wheel events continue to the native scroll.
+        false
     }
 }
 fn cpu_usage_label(percent: Option<f32>) -> String {
@@ -937,17 +1008,27 @@ fn activity_label(settings: &Settings, sample: &Sample) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampler_stays_unstarted_until_needed_and_release_disconnects_its_worker() {
+        let mut sampler = Sampler::default();
+        assert!(sampler.channels.is_none());
+        let (request, requests) = std::sync::mpsc::channel();
+        let (samples, response) = std::sync::mpsc::channel();
+        sampler.channels = Some(Ok((request, response)));
+        sampler.release();
+        assert!(sampler.channels.is_none());
+        assert!(matches!(
+            requests.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(samples.send(Sample::default()).is_err());
+    }
     #[test]
     fn chart_repaints_flat_lines_and_hover_without_artifacts() {
-        use canvas::Program;
-        use iced::advanced::{graphics::geometry::Renderer as _, renderer::Renderer as _};
-        let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let bounds = Rectangle::with_size(iced::Size::new(320.0, 110.0));
-        let viewport =
-            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(320, 110), 1.0);
+        let bounds = Rect::new(0, 0, 320, 110);
+        let theme = Theme::dark();
         let mut pixels = tiny_skia::Pixmap::new(320, 110).unwrap();
-        let mut mask = tiny_skia::Mask::new(320, 110).unwrap();
-        let mut previous = Vec::new();
         for (value, hovered) in [(75.0, None), (74.0, Some(12)), (74.0, None)] {
             let chart = Chart {
                 samples: (0..HISTORY_LEN)
@@ -957,54 +1038,30 @@ mod tests {
                     })
                     .collect(),
                 maximum: 100.0,
+                hovered,
             };
-            renderer.reset(bounds);
-            for geometry in chart.draw(
-                &hovered,
-                &renderer,
-                &Theme::Dark,
+            chart.paint_plot(
                 bounds,
-                mouse::Cursor::Unavailable,
-            ) {
-                renderer.draw_geometry(geometry);
-            }
-            let damage = iced::advanced::graphics::damage::group(
-                iced::advanced::graphics::damage::diff(
-                    &previous,
-                    renderer.layers(),
-                    |layer| vec![layer.bounds],
-                    iced_tiny_skia::Layer::damage,
-                ),
-                bounds,
-            );
-            renderer.draw(
-                &mut pixels.as_mut(),
-                &mut mask,
-                &viewport,
-                &damage,
-                iced::Color::BLACK,
+                &mut windui::render::skia::SkiaCanvas::new(&mut pixels),
+                &theme,
             );
             let mut full = tiny_skia::Pixmap::new(320, 110).unwrap();
-            renderer.draw(
-                &mut full.as_mut(),
-                &mut mask,
-                &viewport,
-                &[bounds],
-                iced::Color::BLACK,
+            chart.paint_plot(
+                bounds,
+                &mut windui::render::skia::SkiaCanvas::new(&mut full),
+                &theme,
             );
             assert_eq!(
                 pixels.data(),
                 full.data(),
-                "partial repaint left chart artifacts"
+                "chart retained a previous line or hover marker"
             );
-            previous = renderer.layers().to_vec();
         }
     }
 
     #[test]
     fn chart_hover_stays_on_the_same_sample_and_clears_outside_the_plot() {
-        use canvas::Program;
-        let chart = Chart {
+        let mut chart = Chart {
             samples: (0..HISTORY_LEN)
                 .map(|_| ChartSample {
                     values: [1.0, 2.0],
@@ -1012,30 +1069,32 @@ mod tests {
                 })
                 .collect(),
             maximum: 100.0,
+            hovered: None,
         };
-        let bounds = Rectangle::with_size(iced::Size::new(590.0, 110.0));
-        let mut hovered = None;
-        let mut move_to = |x, y| {
-            let position = Point::new(x, y);
-            chart
-                .update(
-                    &mut hovered,
-                    &canvas::Event::Mouse(mouse::Event::CursorMoved { position }),
-                    bounds,
-                    mouse::Cursor::Available(position),
-                )
-                .is_some()
-        };
-        assert!(move_to(300.0, 20.0));
-        assert!(!move_to(300.1, 21.0));
-        assert!(move_to(320.0, 20.0));
-        assert!(move_to(320.0, 100.0));
-        assert!(!move_to(320.0, 100.0));
-        assert_eq!(hovered, None);
-        let colors = chart_colors(&Theme::Dark);
+        let bounds = Rect::new(0, 0, 590, 110);
+        assert!(chart.set_hover(Some(Point::new(300, 20)), bounds));
+        assert!(!chart.set_hover(Some(Point::new(300, 21)), bounds));
+        assert!(chart.set_hover(Some(Point::new(320, 20)), bounds));
+        assert!(chart.set_hover(Some(Point::new(320, 100)), bounds));
+        assert!(!chart.set_hover(Some(Point::new(320, 100)), bounds));
+        assert_eq!(chart.hovered, None);
+        let colors = chart_colors(&Theme::dark());
         assert_ne!(colors[0], colors[1]);
-        assert_eq!(colors[0].a, 1.0);
-        assert_eq!(colors[1].a, 1.0);
+        assert_eq!(colors[0].a, 255);
+        assert_eq!(colors[1].a, 255);
+    }
+
+    #[test]
+    fn empty_history_has_no_hover_samples() {
+        let chart = Chart {
+            samples: Vec::new(),
+            maximum: 100.0,
+            hovered: None,
+        };
+        assert_eq!(
+            chart.hover_slot(Some(Point::new(300, 20)), Rect::new(0, 0, 590, 110)),
+            None
+        );
     }
 
     #[test]

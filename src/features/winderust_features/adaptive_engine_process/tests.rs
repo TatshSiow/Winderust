@@ -6,6 +6,55 @@ use windows_sys::Win32::System::Threading::{
 };
 
 #[test]
+fn observation_only_requires_reconciled_settings_and_no_process_actuators() {
+    let settings = AdaptiveEngineProcessSettings {
+        cpu_pressure_restraint_enabled: true,
+        process_priority_enabled: false,
+        background_efficiency_enabled: false,
+        memory_priority_enabled: false,
+        ..Default::default()
+    };
+    let mut manager = AdaptiveEngineProcessManager::default();
+    let cpu = CpuAllocationCoordinator::default();
+    let priority = PriorityEfficiencyController::default();
+    let memory = MemoryPriorityController::default();
+    assert!(!manager.can_observe_without_targets(&settings, &cpu, &priority, &memory));
+    manager.allocation_settings = Some(settings.clone());
+    assert!(manager.can_observe_without_targets(&settings, &cpu, &priority, &memory));
+
+    // Every actuator requires the full path even after its settings have settled.
+    for flag in 0..5 {
+        let mut active = settings.clone();
+        match flag {
+            0 => active.process_priority_enabled = true,
+            1 => active.background_efficiency_enabled = true,
+            2 => active.memory_priority_enabled = true,
+            3 => active.limit_background_processors_enabled = true,
+            _ => active.dynamic_resource_zones_enabled = true,
+        }
+        manager.allocation_settings = Some(active.clone());
+        assert!(!manager.can_observe_without_targets(&active, &cpu, &priority, &memory));
+    }
+    manager.allocation_settings = Some(settings.clone());
+    let mut changed = settings.clone();
+    changed.foreground_or_system_cpu_threshold_percent += 1;
+    assert!(!manager.can_observe_without_targets(&changed, &cpu, &priority, &memory));
+
+    manager.record_process_failure(r"C:\Apps\denied.exe");
+    assert!(!manager.can_observe_without_targets(&settings, &cpu, &priority, &memory));
+    manager.failure_suppression.clear();
+    assert!(manager.can_observe_without_targets(&settings, &cpu, &priority, &memory));
+    manager.focus_process_candidate = Some(FocusProcessCandidate {
+        process_id: 42,
+        process_name: "app.exe".to_owned(),
+        executable_path: r"C:\Apps\app.exe".to_owned(),
+        creation_time: 1,
+        first_seen: Instant::now(),
+    });
+    assert!(!manager.can_observe_without_targets(&settings, &cpu, &priority, &memory));
+}
+
+#[test]
 fn adaptive_efficiency_uses_the_configured_process_tier() {
     let mut settings = AdaptiveEngineProcessSettings {
         background_efficiency_mode: false,

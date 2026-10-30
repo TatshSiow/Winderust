@@ -1923,15 +1923,57 @@ mod tests {
         })
     }
 
-    fn spawn_test_helper(command: &str, args: &[&str]) -> Result<Child, String> {
-        Command::new("cmd")
-            .arg("/C")
-            .arg(format!("{command} {}", args.join(" ")))
+    fn spawn_test_helper(exit_code: i32) -> Result<Child, String> {
+        let mut child = Command::new("cmd")
+            .args(["/D", "/C"])
+            .arg(format!(
+                "echo winderust-test-ready&set /p winderust_test_input=&exit /b {exit_code}"
+            ))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|error| format!("Failed to spawn test recovery helper: {error}"))
+            .map_err(|error| format!("Failed to spawn test recovery helper: {error}"))?;
+
+        // Separate shell startup from the production shutdown deadline. The ready helper
+        // blocks on stdin until dropping RecoveryTransport closes its input pipe.
+        let ready = (|| {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "The test recovery helper stdout is unavailable.".to_owned())?;
+            let (ready, received) = mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("test-recovery-readiness".into())
+                .spawn(move || {
+                    let mut stdout = BufReader::new(stdout);
+                    let mut line = String::new();
+                    let result = stdout
+                        .read_line(&mut line)
+                        .map_err(|error| format!("Failed to read test helper readiness: {error}"))
+                        .and_then(|_| {
+                            if line.trim_end() == "winderust-test-ready" {
+                                Ok(stdout.into_inner())
+                            } else {
+                                Err(format!("Unexpected test helper readiness: {line:?}"))
+                            }
+                        });
+                    let _ = ready.send(result);
+                })
+                .map_err(|error| {
+                    format!("Failed to start test helper readiness reader: {error}")
+                })?;
+            child.stdout = Some(received.recv_timeout(Duration::from_secs(30)).map_err(
+                |error| format!("Test recovery helper did not become ready: {error}"),
+            )??);
+            Ok(())
+        })();
+        if let Err(error) = ready {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        Ok(child)
     }
 
     fn test_thread_handle(process_id: u32) -> Result<WinHandle, String> {
@@ -1997,13 +2039,13 @@ mod tests {
 
     #[test]
     fn recovery_runtime_finish_accepts_successful_helper_exit() -> Result<(), String> {
-        let runtime = test_runtime(spawn_test_helper("exit", &["0"])?)?;
+        let runtime = test_runtime(spawn_test_helper(0)?)?;
         finish_recovery_runtime(runtime)
     }
 
     #[test]
     fn recovery_runtime_finish_reports_helper_exit_code() -> Result<(), String> {
-        let helper = spawn_test_helper("exit", &["11"])?;
+        let helper = spawn_test_helper(11)?;
         let result = finish_recovery_runtime(test_runtime(helper)?);
         assert!(result.is_err());
         assert!(result

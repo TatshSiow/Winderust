@@ -137,7 +137,7 @@ mod tests {
     }
 }
 
-/// Run on a worker thread: the modal loop must not block Iced's event loop.
+/// Run on a worker thread: the modal loop must not block the native UI event loop.
 pub(crate) fn choose_color(owner: isize, color: u32, saved: &[u32]) -> Result<Option<u32>, String> {
     use windows_sys::Win32::UI::Controls::Dialogs::{
         ChooseColorW, CommDlgExtendedError, CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW,

@@ -230,6 +230,34 @@ struct FocusProcessPriorityGroup<'a> {
 }
 
 impl AdaptiveEngineProcessManager {
+    fn can_observe_without_targets(
+        &self,
+        settings: &AdaptiveEngineProcessSettings,
+        cpu_allocation: &CpuAllocationCoordinator,
+        priority_efficiency: &PriorityEfficiencyController,
+        memory_priority: &MemoryPriorityController,
+    ) -> bool {
+        // A normal pass must first reconcile startup or changed settings. Claims can
+        // exist without managed state when the requested value equals the baseline.
+        self.allocation_settings.as_ref() == Some(settings)
+            && !settings.process_priority_enabled
+            && !settings.background_efficiency_enabled
+            && !settings.memory_priority_enabled
+            && !settings.limit_background_processors_enabled
+            && !settings.dynamic_resource_zones_enabled
+            && self.tracked_processes.is_empty()
+            && self.focus_process_candidate.is_none()
+            && self.unavailable_power_targets.is_empty()
+            && self.failure_suppression.is_empty()
+            && !priority_efficiency.has_managed_state()
+            && !priority_efficiency.has_policy_claims()
+            && !memory_priority.has_managed_state()
+            && !memory_priority.has_policy_claims()
+            && !cpu_allocation.has_managed_state()
+            && !cpu_allocation.has_pending_reconciliation()
+            && !cpu_allocation.has_policy_claims()
+    }
+
     pub(crate) fn invalidate_allocation_selection(&mut self) {
         self.cpu_allocation_selection = [None; 2];
         self.cpu_allocation.invalidate_zone_generation();
@@ -340,11 +368,19 @@ impl AdaptiveEngineProcessManager {
             };
         };
 
+        let observe_without_targets = self.can_observe_without_targets(
+            settings,
+            cpu_allocation_coordinator,
+            priority_efficiency_controller,
+            memory_priority_controller,
+        );
         let exact_paths_required = settings
             .custom_rules
             .iter()
             .any(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute());
-        let processes = match if exact_paths_required {
+        let processes = match if observe_without_targets {
+            observations.process_observations()
+        } else if exact_paths_required {
             observations.processes_with_paths()
         } else {
             observations.processes()
@@ -378,6 +414,25 @@ impl AdaptiveEngineProcessManager {
         };
 
         let scanned_processes = processes.len();
+        if observe_without_targets {
+            let workload = observations.adaptive_workload(&processes);
+            let (_, foreground_cpu_usage_percent) =
+                self.update_foreground_state(settings, &workload);
+            let background_pressure_triggered = self.update_background_pressure(
+                settings,
+                foreground_cpu_usage_percent,
+                total_cpu_usage_percent,
+            );
+            return AdaptiveEngineProcessSnapshot {
+                enabled: true,
+                scanned_processes,
+                cpu_pressure_restraint_active: settings.cpu_pressure_restraint_enabled
+                    && background_pressure_triggered,
+                foreground_cpu_usage_tenths: foreground_cpu_usage_percent.map(percent_tenths),
+                message: "Adaptive Engine active.".to_owned(),
+                ..Default::default()
+            };
+        }
         let Ok(visible_window_process_ids) = observations.visible_window_process_ids() else {
             let failed = self.clear_all_with_memory_priority(
                 cpu_allocation_coordinator,
@@ -443,18 +498,9 @@ impl AdaptiveEngineProcessManager {
                 })
             })
             .collect::<BTreeSet<_>>();
-        let foreground_identity = foreground_workload
-            .iter()
-            .map(|(&id, &creation)| (id, creation))
-            .collect::<Vec<_>>();
-        let foreground_changed = self.allocation_foreground != foreground_identity;
-        let foreground_cpu_usage_percent = self.update_foreground_cpu_usage(&foreground_identity);
+        let (foreground_changed, foreground_cpu_usage_percent) =
+            self.update_foreground_state(settings, &foreground_workload);
         let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
-        if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
-            self.invalidate_allocation_selection();
-            self.allocation_settings = Some(settings.clone());
-            self.allocation_foreground = foreground_identity;
-        }
         let mut failures = PriorityFailures::default();
         let mut restrainable_processes = BTreeMap::new();
         for process in processes.iter() {
@@ -1870,6 +1916,25 @@ impl AdaptiveEngineProcessManager {
         state.active_since = None;
         state.decision = None;
         None
+    }
+
+    fn update_foreground_state(
+        &mut self,
+        settings: &AdaptiveEngineProcessSettings,
+        workload: &BTreeMap<u32, u64>,
+    ) -> (bool, Option<f32>) {
+        let identity = workload
+            .iter()
+            .map(|(&id, &creation)| (id, creation))
+            .collect::<Vec<_>>();
+        let changed = self.allocation_foreground != identity;
+        let usage = self.update_foreground_cpu_usage(&identity);
+        if self.allocation_settings.as_ref() != Some(settings) || changed {
+            self.invalidate_allocation_selection();
+            self.allocation_settings = Some(settings.clone());
+            self.allocation_foreground = identity;
+        }
+        (changed, usage)
     }
 
     fn update_foreground_cpu_usage(

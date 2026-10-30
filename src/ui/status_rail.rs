@@ -1,6 +1,6 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
 use super::design;
-use super::widgets::button;
+use super::widgets::{self, Ui};
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
@@ -9,9 +9,11 @@ use crate::{
     power::PowerPlan,
     ui::Page,
 };
-use iced::widget::{column, container, row, text};
-use iced::{Element, Fill};
 use rust_i18n::t;
+use windui::{
+    prelude::{Align, Element, Role},
+    theme::Intent,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FeatureRunState {
@@ -36,12 +38,13 @@ pub(super) enum Message {
     RelaunchAdmin,
 }
 
-pub(super) fn view<'a>(
+pub(super) fn view(
     page: Page,
     settings: &crate::application::SettingsEditor,
-    runtime: &'a RuntimeStatusSnapshot,
+    runtime: &RuntimeStatusSnapshot,
     plans: &[PowerPlan],
-) -> Option<Element<'a, Message>> {
+    ui: Ui<Message>,
+) -> Option<Element> {
     let settings = saved_runtime_settings(settings, crate::backend::power_source::is_plugged_in());
     let power_feature = match page {
         Page::ByActivity => Some(ActionLogFeature::ByActivity),
@@ -98,15 +101,9 @@ pub(super) fn view<'a>(
             "common.unknown",
         ),
     };
-    let mut body = column![
-        container(text(t!(state_label).to_string()).size(design::typography::SECONDARY))
-            .padding([4, 8])
-            .style(move |theme| super::widgets::rule_status_chip(theme, color)),
-        text(t!(detail).to_string())
-            .size(design::typography::CAPTION)
-            .style(text::secondary)
-    ]
-    .spacing(design::space::MEDIUM);
+    let mut body = widgets::col()
+        .child(chip(state_label, color))
+        .child(caption(t!(detail).to_string()).fg_role(Role::TextMuted));
     if power_feature.is_some() {
         let plan = runtime
             .power_plan_status
@@ -115,69 +112,65 @@ pub(super) fn view<'a>(
             .map(|guid| {
                 plans
                     .iter()
-                    .find(|p| p.guid.eq_ignore_ascii_case(guid))
-                    .map(|p| p.display_name())
+                    .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+                    .map(PowerPlan::display_name)
                     .unwrap_or_else(|| guid.clone())
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());
-        body = body.push(section("common.current_power_plan", column![text(plan)]));
+        body = body.child(section("common.current_power_plan", caption(plan)));
     } else {
-        body = body.push(section(
+        body = body.child(section(
             "common.process_activity",
-            column![
-                metric(
+            metric_group()
+                .child(metric(
                     "common.scanned_processes",
-                    count(available.then_some(summary.scanned).flatten())
-                ),
-                metric(
+                    count(available.then_some(summary.scanned).flatten()),
+                ))
+                .child(metric(
                     "common.adjusted_processes",
-                    count(available.then_some(summary.adjusted).flatten())
-                ),
-                metric(
+                    count(available.then_some(summary.adjusted).flatten()),
+                ))
+                .child(metric(
                     "common.protected_or_denied_processes",
-                    count(available.then_some(summary.protected_or_denied).flatten())
-                ),
-                metric(
+                    count(available.then_some(summary.protected_or_denied).flatten()),
+                ))
+                .child(metric(
                     "common.skipped_processes",
-                    count(available.then_some(summary.skipped).flatten())
-                )
-            ]
-            .spacing(design::space::CONTROL),
+                    count(available.then_some(summary.skipped).flatten()),
+                )),
         ));
     }
     let actions = runtime
         .action_log_summaries
         .get(&summary.action_log_feature);
     body = body
-        .push(section(
+        .child(section(
             "common.successful_actions",
-            column![
-                metric(
+            metric_group()
+                .child(metric(
                     "common.success_count",
-                    count(available.then(|| actions.map_or(0, |s| s.successful_actions)))
-                ),
-                log(
+                    count(
+                        available.then(|| actions.map_or(0, |summary| summary.successful_actions)),
+                    ),
+                ))
+                .child(log(
                     "common.last_success",
-                    actions.and_then(|s| s.last_success.as_ref()),
-                    None
-                )
-            ]
-            .spacing(design::space::CONTROL),
+                    actions.and_then(|summary| summary.last_success.as_ref()),
+                    None,
+                )),
         ))
-        .push(section(
+        .child(section(
             "common.failed_actions",
-            column![
-                metric(
+            metric_group()
+                .child(metric(
                     "common.failed_count",
-                    count(available.then(|| actions.map_or(0, |s| s.failed_actions)))
-                ),
-                log(
+                    count(available.then(|| actions.map_or(0, |summary| summary.failed_actions))),
+                ))
+                .child(log(
                     "common.last_failed",
-                    actions.and_then(|s| s.last_failed.as_ref()),
-                    summary.last_error.as_deref()
-                )
-            ]
-            .spacing(design::space::CONTROL),
+                    actions.and_then(|summary| summary.last_failed.as_ref()),
+                    summary.last_error.as_deref(),
+                )),
         ));
     if page == Page::AdaptiveEngine {
         use crate::adaptive_engine_process::ZoneStatus;
@@ -197,39 +190,37 @@ pub(super) fn view<'a>(
             let key = format!("adaptive_engine_process.{}", zones.reason);
             t!(&key).to_string()
         };
-        body = body.push(section(
+        let mut zone_metrics = metric_group().child(chip(key, color));
+        if !reason.is_empty() {
+            zone_metrics = zone_metrics.child(caption(reason));
+        }
+        body = body.child(section(
             "adaptive_engine_process.dynamic_resource_zones",
-            column![
-                container(text(t!(key).to_string()).size(design::typography::CAPTION))
-                    .padding([4, 8])
-                    .style(move |theme| super::widgets::rule_status_chip(theme, color)),
-                text(reason).size(design::typography::CAPTION),
-                metric(
+            zone_metrics
+                .child(metric(
                     "adaptive_engine_process.zone_foreground_cpus",
-                    zones.foreground_processors.to_string()
-                ),
-                metric(
+                    zones.foreground_processors.to_string(),
+                ))
+                .child(metric(
                     "adaptive_engine_process.zone_background_cpus",
-                    zones.background_processors.to_string()
-                ),
-                metric(
+                    zones.background_processors.to_string(),
+                ))
+                .child(metric(
                     "adaptive_engine_process.zone_foreground_targets",
-                    zones.foreground_targets.to_string()
-                ),
-                metric(
+                    zones.foreground_targets.to_string(),
+                ))
+                .child(metric(
                     "adaptive_engine_process.zone_background_targets",
-                    zones.background_targets.to_string()
-                ),
-            ]
-            .spacing(design::space::CONTROL),
+                    zones.background_targets.to_string(),
+                )),
         ));
         if settings
             .adaptive_engine_process
             .limit_background_processors_enabled
         {
-            body = body.push(section(
+            body = body.child(section(
                 "adaptive_engine_process.limit_background_processors",
-                column![text(
+                caption(
                     t!(if zones.status == ZoneStatus::Active {
                         "adaptive_engine_process.limit_waiting_zones"
                     } else if zones.background_limit_targets > 0 {
@@ -237,13 +228,10 @@ pub(super) fn view<'a>(
                     } else {
                         "common.waiting"
                     })
-                    .to_string()
-                )
-                .size(design::typography::CAPTION)],
+                    .to_string(),
+                ),
             ));
         }
-    }
-    if page == Page::AdaptiveEngine {
         use crate::bottleneck_classifier::BottleneckState;
         let status = &runtime.feature_status.bottleneck_classifier;
         let key = match status.state {
@@ -253,24 +241,22 @@ pub(super) fn view<'a>(
             BottleneckState::GpuBound => "adaptive_engine.bottleneck_gpu_bound",
             BottleneckState::Mixed => "adaptive_engine.bottleneck_mixed",
         };
-        body = body.push(section(
+        body = body.child(section(
             "adaptive_engine.bottleneck_classifier",
-            column![
-                metric("common.status", t!(key).to_string()),
-                metric(
+            metric_group()
+                .child(caption(t!(key).to_string()).font_weight(600))
+                .child(metric(
                     "adaptive_engine.total_cpu",
-                    percent(status.total_cpu_tenths)
-                ),
-                metric(
+                    percent(status.total_cpu_tenths),
+                ))
+                .child(metric(
                     "adaptive_engine.busiest_cpu",
-                    percent(status.busiest_cpu_tenths)
-                ),
-                metric(
+                    percent(status.busiest_cpu_tenths),
+                ))
+                .child(metric(
                     "adaptive_engine.busiest_gpu",
-                    percent(status.busiest_gpu_tenths)
-                )
-            ]
-            .spacing(design::space::CONTROL),
+                    percent(status.busiest_gpu_tenths),
+                )),
         ));
     }
     if page == Page::BackgroundEfficiency
@@ -281,18 +267,12 @@ pub(super) fn view<'a>(
             > 0
         && !crate::privilege::is_running_as_admin()
     {
-        body = body.push(
-            button(text(t!("admin_rights.relaunch").to_string())).on_press(Message::RelaunchAdmin),
-        );
+        body = body.child(ui.button(
+            t!("admin_rights.relaunch").to_string(),
+            Message::RelaunchAdmin,
+        ));
     }
-    let content: Element<'a, Message> = scrollable(
-        container(body.width(Fill))
-            .width(Fill)
-            .padding([0, design::space::MEDIUM as u16]),
-    )
-    .width(Fill)
-    .height(Fill)
-    .into();
+    let content = scrollable(body.padding_xy(design::space::MEDIUM as i32, 0)).fill();
     Some(
         if matches!(
             page,
@@ -300,16 +280,35 @@ pub(super) fn view<'a>(
         ) {
             content
         } else {
-            column![
-                super::widgets::panel_heading(t!("common.status").to_string()),
-                content
-            ]
-            .spacing(design::space::MEDIUM)
-            .height(Fill)
-            .into()
+            widgets::col()
+                .fill()
+                .child(
+                    Element::row()
+                        .width_match()
+                        .height(design::NAVIGATION_ROW_HEIGHT as i32)
+                        .cross(Align::Center)
+                        .padding_xy(design::space::MEDIUM as i32, 0)
+                        .child(widgets::heading(t!("common.status").to_string())),
+                )
+                .child(content.weight(1.0))
         },
     )
 }
+
+fn chip(label: &str, color: &str) -> Element {
+    Element::badge_intent(
+        t!(label).to_string(),
+        match color {
+            "common.applied" => Intent::Success,
+            "common.waiting" => Intent::Warning,
+            "common.error" => Intent::Danger,
+            "common.unknown" => Intent::CustomRole(Role::Accent),
+            _ => Intent::Neutral,
+        },
+    )
+    .font_size(design::typography::SECONDARY as f32)
+}
+
 fn saved_runtime_settings(
     editor: &crate::application::SettingsEditor,
     plugged_in: Option<bool>,
@@ -421,52 +420,59 @@ fn percent(value: Option<u16>) -> String {
         .map(|v| format!("{}.{:01}%", v / 10, v % 10))
         .unwrap_or_else(|| "\u{2014}".to_owned())
 }
-fn metric(label: &str, value: String) -> Element<'static, Message> {
-    row![
-        text(t!(label).to_string())
-            .width(iced::Length::FillPortion(2))
-            .size(design::typography::CAPTION),
-        text(value)
-            .width(iced::Length::FillPortion(1))
-            .align_x(iced::Right)
-            .size(design::typography::SECONDARY)
-    ]
-    .spacing(design::space::SMALL)
-    .width(Fill)
-    .into()
+fn metric(label: &str, value: String) -> Element {
+    widgets::row()
+        .padding_xy(0, 3)
+        .child(
+            caption(t!(label).to_string())
+                .fg_role(Role::TextMuted)
+                .weight(1.0),
+        )
+        .child(
+            widgets::label(value)
+                .font_size(design::typography::SECONDARY as f32)
+                .font_weight(600)
+                .text_align(Align::End)
+                .min_width(40)
+                .max_width(76),
+        )
 }
-fn section<'a>(title: &str, body: iced::widget::Column<'a, Message>) -> Element<'a, Message> {
-    column![
-        super::widgets::heading(t!(title).to_string(), design::typography::SECONDARY),
-        super::widgets::settings_card(body),
-    ]
-    .spacing(design::space::SMALL)
-    .into()
+fn section(title: &str, body: Element) -> Element {
+    widgets::col()
+        .spacing(design::space::SMALL as i32)
+        .child(Element::divider())
+        .child(
+            widgets::label(t!(title).to_string())
+                .font_size(design::typography::BODY as f32)
+                .font_weight(600)
+                .width_match(),
+        )
+        .child(body)
 }
-
-fn log(
-    label: &str,
-    entry: Option<&ActionLogEntry>,
-    fallback: Option<&str>,
-) -> Element<'static, Message> {
+fn metric_group() -> Element {
+    widgets::col().spacing(design::space::CONTROL as i32)
+}
+fn caption(text: impl Into<String>) -> Element {
+    widgets::label(text)
+        .font_size(design::typography::CAPTION as f32)
+        .width_match()
+}
+fn log(label: &str, entry: Option<&ActionLogEntry>, fallback: Option<&str>) -> Element {
     let value = entry
-        .map(|e| {
+        .map(|entry| {
             format!(
                 "[{}] {} - {}",
-                action_log_time_label(e.timestamp_epoch_ms),
-                action_log_process_label(e),
-                e.reason
+                action_log_time_label(entry.timestamp_epoch_ms),
+                action_log_process_label(entry),
+                entry.reason
             )
         })
         .or_else(|| fallback.map(str::to_owned))
         .unwrap_or_else(|| t!("common.none").to_string());
-    column![
-        text(t!(label).to_string()).size(design::typography::CAPTION),
-        text(value).width(Fill).size(design::typography::CAPTION)
-    ]
-    .width(Fill)
-    .spacing(design::space::TIGHT)
-    .into()
+    widgets::col()
+        .spacing(design::space::TIGHT as i32)
+        .child(caption(t!(label).to_string()).fg_role(Role::TextMuted))
+        .child(caption(value))
 }
 fn feature_status_summary(
     page: Page,

@@ -5,7 +5,7 @@
 - [Architecture](architecture.md): application, runtime and controller responsibilities.
 - [Adaptive Engine implementation](adaptive-engine-implementation.md): feature design and implementation.
 - [Adaptive Engine benchmarks](adaptive-engine-benchmark.md): measurement procedure, controls and limitations.
-- [Iced implementation](iced-port.md): UI stack and port implementation notes.
+- [Wind UI implementation and validation](windui-port.md): native controls, resident lifecycle, Rust ownership, run/smoke commands, and remaining validation gates.
 - [Release checklist](release-checklist.md): release validation and packaging.
 - [Contributing](../CONTRIBUTING.md): development and review requirements.
 
@@ -18,6 +18,7 @@
 ## Historical evidence
 
 - [Benchmark reports](../benchmark/README.md): measurements tied to hardware and test conditions.
+- [Iced implementation](iced-port.md): the previous UI stack and its recorded port evidence.
 - [Iced design integrity review](iced-design-integrity.md): original hierarchy findings and recorded corrections.
 - [Iced visual parity audit](iced-visual-parity.md): findings from the reviewed UI state.
 

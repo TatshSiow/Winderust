@@ -8,8 +8,8 @@ updates:
     schedule:
       interval: weekly
     groups:
-      iced:
-        patterns: ["iced", "iced_tiny_skia"]
+      windui:
+        patterns: ["windui"]
   - package-ecosystem: github-actions
     directory: /
     target-branch: dev

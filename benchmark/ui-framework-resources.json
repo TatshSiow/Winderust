@@ -1,0 +1,40 @@
+{
+  "targets": [
+    {
+      "name": "wind-ui",
+      "exe": "target/framework-benchmark/wind-ui/winderust.exe",
+      "renderer": "Wind UI 0.24.0 / tiny-skia software",
+      "window_class": "WindUiWindowClass",
+      "window_states": { "background": "absent" },
+      "args": [
+        "--framework-benchmark-ms", "{lifetime_ms}",
+        "--framework-benchmark-scenario", "{scenario}",
+        "--framework-benchmark-output", "{trial_dir}"
+      ]
+    },
+    {
+      "name": "iced",
+      "exe": "target/framework-benchmark/iced-build/release/winderust.exe",
+      "renderer": "Iced 0.14.0 / tiny-skia software",
+      "window_class": "Window Class",
+      "window_states": { "background": "hidden" },
+      "args": [
+        "--framework-benchmark-ms", "{lifetime_ms}",
+        "--framework-benchmark-scenario", "{scenario}",
+        "--framework-benchmark-output", "{trial_dir}"
+      ]
+    }
+  ],
+  "scenarios": [
+    { "name": "background", "window": "absent", "duration": 20 },
+    { "name": "hidden", "window": "hidden", "duration": 20 },
+    { "name": "minimized", "window": "minimized", "duration": 20 },
+    { "name": "home", "window": "visible", "duration": 20 },
+    { "name": "settings", "window": "visible", "duration": 20 },
+    { "name": "process-list", "window": "visible", "duration": 20 },
+    { "name": "navigation", "window": "visible", "duration": 12 },
+    { "name": "scroll", "window": "visible", "interaction": "scroll", "duration": 12 },
+    { "name": "resize", "window": "visible", "interaction": "resize", "duration": 12 },
+    { "name": "churn", "window": "visible", "allow_window_changes": true, "duration": 20 }
+  ]
+}

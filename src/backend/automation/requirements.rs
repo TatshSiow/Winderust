@@ -397,6 +397,18 @@ pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
             .is_some_and(windows_event_watcher_required_for_profile)
 }
 
+pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
+    if !windows_event_watcher_required(settings) {
+        None
+    } else if automation_worker_required(settings) {
+        // A worker needed by either power profile still needs A/C notifications, even when
+        // appearance is the only reason the existing watcher predicate requests a watcher.
+        Some(WindowsEventWatcherMode::Automation)
+    } else {
+        Some(WindowsEventWatcherMode::AppearanceOnly)
+    }
+}
+
 fn windows_event_watcher_required_for_profile(settings: &Settings) -> bool {
     automation_windows_event_watcher_required(settings)
         || (!settings.adaptive_engine.enabled && appearance_events_required(settings))

@@ -66,6 +66,10 @@ pub struct ExecutionFailureTracker {
 }
 
 impl ExecutionFailureTracker {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.states.clear();
     }

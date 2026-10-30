@@ -1,10 +1,8 @@
-use super::design;
-use super::widgets::{button, checkbox, pick_list, slider, text_input};
-use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text};
-use iced::{Element, Fill};
+use super::widgets::{self, Ui};
 use rust_i18n::t;
 use std::collections::HashMap;
+use windui::prelude::{signal, Element};
+use windui::theme::Intent;
 
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule};
@@ -12,7 +10,6 @@ use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule
 #[derive(Default)]
 pub(super) struct CpuLimiter {
     path: String,
-    expanded: bool,
     draft: Option<(usize, CpuLimiterSettings)>,
     numbers: HashMap<(String, Tier), String>,
 }
@@ -62,7 +59,6 @@ pub(super) enum Message {
     Path(String),
     Browse,
     Number(Option<usize>, Tier, String),
-    Collapse,
     Edit(usize),
     SaveRule,
     CancelRule,
@@ -124,7 +120,6 @@ impl CpuLimiter {
             }
             Message::Path(path) => self.path = path,
             Message::Browse => {}
-            Message::Collapse => self.expanded = !self.expanded,
             Message::Edit(_) | Message::SaveRule | Message::CancelRule => {}
             Message::Number(index, tier, raw) => {
                 let path = match index {
@@ -204,192 +199,163 @@ impl CpuLimiter {
             .cloned()
             .unwrap_or_else(|| value.to_string())
     }
-    fn limit_control(
-        &self,
-        index: Option<usize>,
-        tier: Tier,
-        path: &str,
-        value: u8,
-    ) -> Element<'_, Message> {
-        let change = move |value| match index {
-            Some(index) => Message::RuleLimit(index, tier, value),
-            None => Message::Default(tier, value),
-        };
-        row![
-            button(super::navigation::glyph("icons/minus.svg"))
-                .padding(7)
-                .height(32)
-                .on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
-            slider(1..=100, value, change).width(Fill),
-            button(super::navigation::glyph("icons/plus.svg"))
-                .padding(7)
-                .height(32)
-                .on_press_maybe((value < 100).then(|| change(value.saturating_add(1)))),
-            text_input("1-100", &self.number(path, tier, value))
-                .on_input(move |raw| Message::Number(index, tier, raw))
-                .width(design::NUMERIC_WIDTH)
-        ]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center)
-        .into()
-    }
     fn limit_row(
         &self,
         index: Option<usize>,
         tier: Tier,
         path: &str,
         value: u8,
-    ) -> Element<'_, Message> {
-        row![
-            text(super::widgets::label_with_unit(&tier.label(), "%")).width(Fill),
-            iced::widget::container(self.limit_control(index, tier, path, value)).width(420)
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(super::widgets::SETTING_ROW_HEIGHT)
-        .align_y(iced::Center)
-        .into()
+        ui: Ui<Message>,
+    ) -> Element {
+        widgets::setting_row(
+            format!("{} (%)", tier.label()),
+            ui.number(
+                signal(self.number(path, tier, value)),
+                1,
+                100,
+                1,
+                move |raw| Message::Number(index, tier, raw),
+            ),
+        )
     }
-    pub(super) fn view<'a>(
-        &'a self,
-        settings: &'a CpuLimiterSettings,
+
+    pub(super) fn view(
+        &self,
+        settings: &CpuLimiterSettings,
         candidates: &[super::app_picker::Candidate],
         master_enabled: bool,
         status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
-    ) -> Element<'a, Message> {
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
+        ui: Ui<Message>,
+    ) -> Element {
+        let mut body = Vec::new();
         if self.has_invalid_inputs() {
-            body = body.push(
-                text(t!("cpu_limiter.invalid_limit").to_string())
-                    .width(Fill)
-                    .style(text::danger),
-            );
+            body.push(widgets::error(t!("cpu_limiter.invalid_limit").to_string()));
         }
-        let mut defaults = column![].spacing(design::space::MEDIUM);
+        let mut defaults = vec![widgets::setting_row(
+            t!("cpu_limiter.enable").to_string(),
+            ui.toggle(settings.enabled, Message::Enabled),
+        )];
         for (tier, value) in Tier::ALL.into_iter().zip([
             settings.focus_allowed_cpu_time_percent,
             settings.visible_window_allowed_cpu_time_percent,
             settings.background_allowed_cpu_time_percent,
         ]) {
-            defaults = defaults.push(self.limit_row(None, tier, "", value));
+            defaults.push(Element::divider());
+            defaults.push(self.limit_row(None, tier, "", value, ui.clone()));
         }
-        body = body.push(super::widgets::setting_group(
-            "cpu_limiter.enable".to_string(),
-            self.expanded,
-            Message::Collapse,
-            super::widgets::switch(settings.enabled, Some(Message::Enabled)),
-            defaults,
+        body.push(widgets::card("", defaults));
+        body.push(
+            widgets::setting_title("cpu_limiter.rules")
+                .font_size(super::design::typography::SUBTITLE as f32)
+                .font_weight(600),
+        );
+        let candidate_settings = settings.clone();
+        body.push(super::app_picker::view(
+            &self.path,
+            candidates,
+            true,
+            Message::Path,
+            Message::Browse,
+            Some(Message::Add),
+            move |candidate| {
+                can_add_cpu_limiter_process(
+                    &candidate_settings,
+                    &candidate.info.image_path.to_string_lossy(),
+                )
+                .then_some(true)
+            },
+            ui.clone(),
         ));
-        body = body
-            .push(super::widgets::setting_title("cpu_limiter.rules"))
-            .push(super::app_picker::view(
-                &self.path,
-                candidates,
-                true,
-                Message::Path,
-                Message::Browse,
-                (can_add_cpu_limiter_process(settings, &self.path)).then_some(Message::Add),
-                |path| can_add_cpu_limiter_process(settings, path).then_some(true),
-            ));
-        let mut cards = Vec::new();
+        let mut rows = Vec::new();
         for (index, rule) in settings.rules.iter().enumerate() {
-            let mut cells = Vec::new();
-            for (tier, (mode, _value)) in Tier::ALL.into_iter().zip([
-                (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
-                (
-                    rule.visible_window_mode,
-                    rule.visible_window_allowed_cpu_time_percent,
-                ),
-                (
-                    rule.background_mode,
-                    rule.background_allowed_cpu_time_percent,
-                ),
-            ]) {
-                let choices: Vec<_> = ProcessRuleMode::ALL
-                    .into_iter()
-                    .map(|mode| Mode(mode, mode_label(mode)))
-                    .collect();
-                let selector: Element<'_, Message> = {
-                    pick_list(choices, Some(Mode(mode, mode_label(mode))), move |mode| {
-                        Message::RuleMode(index, tier, mode.0)
-                    })
-                    .width(Fill)
-                    .into()
-                };
-                cells.push(selector);
-            }
-
             let key = rule_status(rule, master_enabled && settings.enabled, status);
-            let chip = iced::widget::container(text(t!(key).to_string()))
-                .padding([4, 8])
-                .style(move |theme| super::widgets::rule_status_chip(theme, key));
-            let header = super::widgets::process_rule_header(
+            let intent = match key {
+                "common.applied" => Intent::Success,
+                "common.error" => Intent::Danger,
+                "common.waiting" => Intent::Warning,
+                _ => Intent::Neutral,
+            };
+            let mut controls = Vec::new();
+            for (tier, mode) in Tier::ALL.into_iter().zip([
+                rule.focus_mode,
+                rule.visible_window_mode,
+                rule.background_mode,
+            ]) {
+                controls.push(ui.select(
+                    ProcessRuleMode::ALL.map(|mode| Mode(mode, mode_label(mode))),
+                    Mode(mode, mode_label(mode)),
+                    move |mode| Message::RuleMode(index, tier, mode.0),
+                ));
+            }
+            rows.push(widgets::process_rule_header(
                 &rule.executable_path,
                 candidates,
-                checkbox(rule.enabled)
-                    .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
-                    .into(),
-                Some(chip.into()),
-                cells,
-                row![
-                    iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::Edit(index)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
+                ui.checkbox("", rule.enabled, move |value| {
+                    Message::RuleEnabled(index, value)
+                }),
+                Some(Element::badge_intent(t!(key).to_string(), intent)),
+                controls,
+                widgets::row().children([
+                    widgets::icon_button(
+                        &ui,
+                        "icons/pencil.svg",
+                        t!("common.edit").to_string(),
+                        Message::Edit(index),
                     ),
-                    super::widgets::rule_delete_button(Some(Message::Remove(index)))
-                ]
-                .width(80)
-                .align_y(iced::Center)
-                .into(),
-            );
-            cards.push((
-                super::widgets::stable_key(&rule.executable_path),
-                column![header, iced::widget::rule::horizontal(1)].into(),
+                    widgets::rule_delete_button(&ui, Some(Message::Remove(index))),
+                ]),
             ));
         }
-        body = body.push(super::widgets::process_rules_table_with_actions(
+        body.push(widgets::process_rules_table_with_actions(
             [
                 t!("cpu_allocation.focus").to_string(),
                 t!("common.visible_window").to_string(),
                 t!("common.background_process").to_string(),
             ],
-            cards,
+            rows,
             t!("cpu_limiter.no_rules").to_string(),
-            80,
+            96,
             true,
         ));
-        scrollable(body).height(Fill).into()
+        widgets::page(body)
     }
-    pub(super) fn modal<'a>(
-        &'a self,
+
+    pub(super) fn modal(
+        &self,
         candidates: &[super::app_picker::Candidate],
         status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
-    ) -> Option<Element<'a, Message>> {
+        ui: Ui<Message>,
+    ) -> Option<Element> {
         let (index, settings) = self.draft.as_ref()?;
         let index = *index;
         let rule = settings.rules.get(index)?;
+        let numbers = signal(self.numbers.clone());
+        let path = rule.executable_path.clone();
+        let ui = ui.inspect(move |message: &Message, _refresh| {
+            if let Message::Number(_, tier, raw) = message {
+                numbers.update(|numbers| {
+                    numbers.insert((path.clone(), *tier), raw.clone());
+                });
+            }
+        });
         let key = rule_status(rule, settings.enabled, status);
-        let mut details = column![row![
-            text(t!("common.status").to_string()).width(Fill),
-            iced::widget::container(text(t!(key).to_string()))
-                .padding([4, 8])
-                .style(move |theme| super::widgets::rule_status_chip(theme, key))
-        ]
-        .align_y(iced::Center)]
-        .spacing(24);
-
-        details = details.push(super::widgets::settings_card(
-            column![
-                super::app_picker::app_name(&rule.executable_path, candidates),
-                text(rule.executable_path.clone()).style(text::secondary),
-            ]
-            .spacing(design::space::SMALL),
-        ));
+        let mut body = vec![
+            super::app_picker::app_name(&rule.executable_path, candidates),
+            widgets::label(rule.executable_path.clone()),
+            widgets::label(t!(key).to_string()),
+        ];
+        body.push(Element::label(numbers.map(|numbers| {
+            if numbers.values().any(|raw| {
+                raw.parse::<u8>()
+                    .ok()
+                    .is_none_or(|value| !(1..=100).contains(&value))
+            }) {
+                t!("cpu_limiter.invalid_limit").to_string()
+            } else {
+                String::new()
+            }
+        })));
+        let mut native_numbers = Vec::new();
         for (tier, (mode, value)) in Tier::ALL.into_iter().zip([
             (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
             (
@@ -401,44 +367,47 @@ impl CpuLimiter {
                 rule.background_allowed_cpu_time_percent,
             ),
         ]) {
-            let mut card = column![super::widgets::setting_row(
-                tier.key(),
-                pick_list(
-                    ProcessRuleMode::ALL
-                        .into_iter()
-                        .map(|m| Mode(m, mode_label(m)))
-                        .collect::<Vec<_>>(),
-                    Some(Mode(mode, mode_label(mode))),
-                    move |m| Message::RuleMode(index, tier, m.0),
-                )
-                .width(design::SELECT_WIDTH),
-            )]
-            .spacing(design::space::MEDIUM);
+            let mut controls = vec![ui.select(
+                ProcessRuleMode::ALL.map(|mode| Mode(mode, mode_label(mode))),
+                Mode(mode, mode_label(mode)),
+                move |mode| Message::RuleMode(index, tier, mode.0),
+            )];
             if mode == ProcessRuleMode::Enabled {
-                card = card.push(self.limit_row(Some(index), tier, &rule.executable_path, value));
+                let raw = signal(self.number(&rule.executable_path, tier, value));
+                native_numbers.push((tier, raw));
+                controls.push(widgets::setting_row(
+                    format!("{} (%)", tier.label()),
+                    ui.number(raw, 1, 100, 1, move |raw| {
+                        Message::Number(Some(index), tier, raw)
+                    })
+                    .enabled(rule.enabled),
+                ));
             }
-            details = details.push(super::widgets::settings_card(card));
+            body.push(widgets::card(tier.label(), controls));
         }
-        let header = row![
-            text(t!("common.edit").to_string()).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::CancelRule)
-        ]
-        .align_y(iced::Center);
-        let footer = row![
-            iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::CancelRule),
-            button(text(t!("common.save").to_string()))
-                .style(super::widgets::primary_button)
-                .on_press_maybe((!self.has_invalid_inputs()).then_some(Message::SaveRule))
-        ]
-        .spacing(design::space::SMALL);
-        Some(super::widgets::modal_frame(
-            header,
-            scrollable(details).height(Fill),
+        let other_numbers_valid = self.numbers.iter().all(|((path, tier), raw)| {
+            (path == &rule.executable_path
+                && native_numbers.iter().any(|(visible, _)| visible == tier))
+                || raw
+                    .parse::<u8>()
+                    .is_ok_and(|value| (1..=100).contains(&value))
+        });
+        let footer = widgets::row().children([
+            ui.button(t!("common.cancel").to_string(), Message::CancelRule),
+            ui.primary_button(t!("common.save").to_string(), Message::SaveRule)
+                .enabled_when(move || {
+                    other_numbers_valid
+                        && native_numbers.iter().all(|(_, raw)| {
+                            raw.get()
+                                .parse::<u8>()
+                                .is_ok_and(|value| (1..=100).contains(&value))
+                        })
+                }),
+        ]);
+        Some(widgets::editor_panel(
+            t!("common.edit").to_string(),
+            widgets::col().children(body),
             footer,
-            (900, 680),
         ))
     }
 }
