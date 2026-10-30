@@ -28,18 +28,8 @@ pub(super) fn rules_table<'a, M: 'a>(
     .into()
 }
 
-pub(super) fn table_frame<'a, M: 'a>(
-    content: impl Into<Element<'a, M>>,
-) -> iced::widget::Container<'a, M> {
-    iced::widget::container(content)
-        .padding(1)
-        .width(Fill)
-        .height(Fill)
-        .clip(true)
-        .style(|theme| iced::widget::container::Style {
-            background: None,
-            ..surface(theme)
-        })
+pub(super) fn table_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    super::scrolling::table_frame(content)
 }
 
 pub(super) fn process_rule_row<'a, M: Clone + 'a>(

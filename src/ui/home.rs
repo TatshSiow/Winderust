@@ -709,15 +709,23 @@ pub(super) enum ChartKind {
     Io,
     Network,
 }
+#[derive(Clone, PartialEq)]
 struct ChartSample {
     captured_at: Option<std::time::SystemTime>,
     values: [f64; 2],
     labels: [String; 2],
 }
+#[derive(Clone, PartialEq)]
 struct Chart {
     samples: Vec<ChartSample>,
     maximum: f64,
     kind: ChartKind,
+}
+#[derive(Default)]
+struct ChartState {
+    hovered: Option<usize>,
+    cache: canvas::Cache,
+    drawn: std::cell::RefCell<Option<(Chart, Theme, Option<usize>)>>,
 }
 fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
     [theme.palette().primary, theme.palette().success]
@@ -789,14 +797,15 @@ impl Chart {
 }
 
 impl canvas::Program<Message> for Chart {
-    type State = Option<usize>;
+    type State = ChartState;
     fn update(
         &self,
-        hovered: &mut Self::State,
+        state: &mut Self::State,
         event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<iced::widget::Action<Message>> {
+        let hovered = &mut state.hovered;
         let next = if matches!(event, canvas::Event::Mouse(mouse::Event::CursorLeft)) {
             None
         } else {
@@ -823,13 +832,37 @@ impl canvas::Program<Message> for Chart {
     }
     fn draw(
         &self,
-        hovered: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         theme: &Theme,
         bounds: Rectangle,
         _: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let changed =
+            state
+                .drawn
+                .borrow()
+                .as_ref()
+                .is_none_or(|(chart, previous_theme, hovered)| {
+                    chart != self || previous_theme != theme || *hovered != state.hovered
+                });
+        if changed {
+            state.cache.clear();
+            *state.drawn.borrow_mut() = Some((self.clone(), theme.clone(), state.hovered));
+        }
+        vec![state.cache.draw(renderer, bounds.size(), |frame| {
+            self.draw_chart(frame, theme, bounds, state.hovered);
+        })]
+    }
+}
+impl Chart {
+    fn draw_chart(
+        &self,
+        frame: &mut canvas::Frame,
+        theme: &Theme,
+        bounds: Rectangle,
+        hovered: Option<usize>,
+    ) {
         // Repaint the canvas: stroke-only damage bounds omit flat lines and stroke edges.
         frame.fill_rectangle(
             Point::ORIGIN,
@@ -921,7 +954,7 @@ impl canvas::Program<Message> for Chart {
                     .with_color(chart_colors(theme)[series]),
             );
         }
-        if let Some(slot) = *hovered {
+        if let Some(slot) = hovered {
             if let Some(sample) = self.sample_at(slot) {
                 let x = slot as f32 / (HISTORY_LEN - 1) as f32 * width;
                 frame.stroke(
@@ -948,7 +981,6 @@ impl canvas::Program<Message> for Chart {
                 }
             }
         }
-        vec![frame.into_geometry()]
     }
 }
 fn cpu_usage_label(percent: Option<f32>) -> String {
@@ -1595,7 +1627,7 @@ mod tests {
             };
             renderer.reset(bounds);
             for geometry in chart.draw(
-                &None,
+                &ChartState::default(),
                 &renderer,
                 &Theme::Dark,
                 bounds,
@@ -1644,7 +1676,26 @@ mod tests {
         let mut pixels = tiny_skia::Pixmap::new(320, 110).unwrap();
         let mut mask = tiny_skia::Mask::new(320, 110).unwrap();
         let mut previous = Vec::new();
-        for (value, hovered) in [(75.0, None), (74.0, Some(12)), (74.0, None)] {
+        let mut state = ChartState::default();
+        use ChartKind::{Cpu, Memory};
+        let normal = bounds.size();
+        let small = iced::Size::new(300.0, 100.0);
+        // Repeat unchanged frames, then change each cached drawing input.
+        for (index, (value, hovered, theme, maximum, kind, size)) in [
+            (75.0, None, Theme::Dark, 100.0, Cpu, normal),
+            (75.0, None, Theme::Dark, 100.0, Cpu, normal),
+            (74.0, Some(12), Theme::Dark, 100.0, Cpu, normal),
+            (74.0, Some(12), Theme::Dark, 100.0, Cpu, normal),
+            (74.0, None, Theme::Dark, 100.0, Cpu, normal),
+            (74.0, None, Theme::Light, 100.0, Cpu, normal),
+            (74.0, None, Theme::Light, 200.0, Cpu, normal),
+            (74.0, None, Theme::Light, 200.0, Memory, normal),
+            (74.0, None, Theme::Light, 200.0, Memory, small),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            state.hovered = hovered;
             let chart = Chart {
                 samples: (0..HISTORY_LEN)
                     .map(|_| ChartSample {
@@ -1653,15 +1704,16 @@ mod tests {
                         labels: ["RAM".into(), "Cache".into()],
                     })
                     .collect(),
-                maximum: 100.0,
-                kind: ChartKind::Cpu,
+                maximum,
+                kind,
             };
+            let chart_bounds = Rectangle::with_size(size);
             renderer.reset(bounds);
             for geometry in chart.draw(
-                &hovered,
+                &state,
                 &renderer,
-                &Theme::Dark,
-                bounds,
+                &theme,
+                chart_bounds,
                 mouse::Cursor::Unavailable,
             ) {
                 renderer.draw_geometry(geometry);
@@ -1675,6 +1727,11 @@ mod tests {
                 ),
                 bounds,
             );
+            if matches!(index, 1 | 3) {
+                assert!(damage.is_empty(), "unchanged chart damaged {damage:?}");
+            } else {
+                assert!(!damage.is_empty(), "changed chart did not repaint");
+            }
             renderer.draw(
                 &mut pixels.as_mut(),
                 &mut mask,
@@ -1682,6 +1739,12 @@ mod tests {
                 &damage,
                 iced::Color::BLACK,
             );
+            previous = renderer.layers().to_vec();
+            // Compare cached partial repaints with a fresh, uncached drawing.
+            renderer.reset(bounds);
+            let mut frame = canvas::Frame::new(&renderer, size);
+            chart.draw_chart(&mut frame, &theme, chart_bounds, hovered);
+            renderer.draw_geometry(frame.into_geometry());
             let mut full = tiny_skia::Pixmap::new(320, 110).unwrap();
             renderer.draw(
                 &mut full.as_mut(),
@@ -1695,7 +1758,6 @@ mod tests {
                 full.data(),
                 "partial repaint left chart artifacts"
             );
-            previous = renderer.layers().to_vec();
         }
     }
 
@@ -1714,12 +1776,12 @@ mod tests {
             kind: ChartKind::Cpu,
         };
         let bounds = Rectangle::with_size(iced::Size::new(590.0, 110.0));
-        let mut hovered = None;
+        let mut state = ChartState::default();
         let mut move_to = |x, y| {
             let position = Point::new(x, y);
             chart
                 .update(
-                    &mut hovered,
+                    &mut state,
                     &canvas::Event::Mouse(mouse::Event::CursorMoved { position }),
                     bounds,
                     mouse::Cursor::Available(position),
@@ -1731,7 +1793,7 @@ mod tests {
         assert!(move_to(320.0, 20.0));
         assert!(move_to(320.0, 100.0));
         assert!(!move_to(320.0, 100.0));
-        assert_eq!(hovered, None);
+        assert_eq!(state.hovered, None);
         let colors = chart_colors(&Theme::Dark);
         assert_ne!(colors[0], colors[1]);
         assert_eq!(colors[0].a, 1.0);

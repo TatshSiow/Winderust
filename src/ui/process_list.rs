@@ -26,12 +26,12 @@ pub(super) enum PlanCatalog<'a> {
     Loaded(&'a [crate::power::PowerPlan]),
 }
 const ROW_HEIGHT: f32 = 36.0;
+type Icons = HashMap<PathBuf, Option<Arc<image::Handle>>>;
 #[derive(Debug, Clone)]
 pub(super) struct Population {
     processes: Vec<ProcessInfo>,
     samples: BTreeMap<u32, ProcessResourceSample>,
     total_memory_bytes: Option<u64>,
-    icons: HashMap<PathBuf, Option<Arc<image::Handle>>>,
 }
 #[derive(Debug, Clone)]
 struct Entry {
@@ -127,6 +127,7 @@ pub(super) enum MenuBranch {
 pub(super) enum Message {
     Refresh,
     Loaded(Result<Population, String>),
+    IconsLoaded(Result<Icons, String>),
     Search(String),
     Scrolled(f32),
     ResizeStart(Sort, f32),
@@ -171,7 +172,7 @@ pub(super) struct ProcessList {
     total_memory_bytes: Option<u64>,
     cpu: HashMap<u32, f32>,
     suspended_process_ids: Vec<u32>,
-    icons: HashMap<PathBuf, Option<Arc<image::Handle>>>,
+    icons: Icons,
     search: String,
     offset: std::cell::Cell<f32>,
     refreshing: bool,
@@ -246,39 +247,7 @@ impl ProcessList {
         match message {
             Message::Refresh if !self.refreshing => {
                 self.refreshing = true;
-                let cached = self.icons.keys().cloned().collect::<HashSet<_>>();
-                return background(
-                    move || {
-                        let processes = foreground::list_processes_with_paths()?;
-                        let mut samples = foreground::sample_process_resources(&processes);
-                        let identities = processes
-                            .iter()
-                            .map(|p| (p.id, p.creation_time))
-                            .collect::<HashMap<_, _>>();
-                        samples.retain(|id, sample| {
-                            identities.get(id) == Some(&Some(sample.creation_time))
-                        });
-                        let mut icons = HashMap::new();
-                        for p in &processes {
-                            if let Some(path) = &p.image_path {
-                                if !cached.contains(path) && !icons.contains_key(path) {
-                                    icons.insert(
-                                        path.clone(),
-                                        crate::process_icon::load_process_icon(path),
-                                    );
-                                }
-                            }
-                        }
-                        Ok(Population {
-                            total_memory_bytes: crate::dashboard_metrics::sample_memory_usage()
-                                .total_physical_bytes,
-                            processes,
-                            samples,
-                            icons,
-                        })
-                    },
-                    Message::Loaded,
-                );
+                return background(load_population, Message::Loaded);
             }
             Message::Refresh => {}
             Message::Loaded(result) => {
@@ -301,7 +270,6 @@ impl ProcessList {
                         self.processes = data.processes;
                         self.samples = data.samples;
                         self.total_memory_bytes = data.total_memory_bytes;
-                        self.icons.extend(data.icons);
                         let paths = self
                             .processes
                             .iter()
@@ -309,9 +277,38 @@ impl ProcessList {
                             .collect::<HashSet<_>>();
                         self.icons.retain(|p, _| paths.contains(p));
                         self.error = None;
+                        let missing = paths
+                            .into_iter()
+                            .filter(|path| !self.icons.contains_key(*path))
+                            .cloned()
+                            .collect::<Vec<_>>();
                         self.rebuild();
+                        if !missing.is_empty() {
+                            // Publish rows before extracting executable icons, and keep one refresh in flight.
+                            self.refreshing = true;
+                            return background(
+                                move || {
+                                    Ok(missing
+                                        .into_iter()
+                                        .map(|path| {
+                                            let icon =
+                                                crate::process_icon::load_process_icon(&path);
+                                            (path, icon)
+                                        })
+                                        .collect())
+                                },
+                                Message::IconsLoaded,
+                            );
+                        }
                     }
                     Err(e) => self.error = Some(e),
+                }
+            }
+            Message::IconsLoaded(result) => {
+                self.refreshing = false;
+                match result {
+                    Ok(icons) => self.icons.extend(icons),
+                    Err(error) => self.error = Some(error),
                 }
             }
             Message::Search(v) => {
@@ -713,6 +710,7 @@ impl ProcessList {
 
     fn auto_width(&self, col: Sort) -> f32 {
         let mut width = measure_column_text(&col.label()) + 44.0;
+        let mut measured = HashMap::new();
         for entry in &self.rows {
             let value = self.cell_value(entry, col);
             let value = if col == Sort::Status {
@@ -731,7 +729,10 @@ impl ProcessList {
                 Sort::Status => 32.0,
                 _ => 12.0,
             };
-            width = width.max(measure_column_text(&value) + padding);
+            let value_width = measured
+                .entry(value)
+                .or_insert_with_key(|value| measure_column_text(value));
+            width = width.max(*value_width + padding);
         }
         width.ceil()
     }
@@ -1875,9 +1876,250 @@ fn background<T: Send + 'static>(
     super::tasks::run(work).map(move |result| map(result.and_then(|value| value)))
 }
 
+fn load_population() -> Result<Population, String> {
+    let processes = foreground::list_processes_with_paths()?;
+    let mut samples = foreground::sample_process_resources(&processes);
+    let identities = processes
+        .iter()
+        .map(|p| (p.id, p.creation_time))
+        .collect::<HashMap<_, _>>();
+    samples.retain(|id, sample| identities.get(id) == Some(&Some(sample.creation_time)));
+    Ok(Population {
+        total_memory_bytes: crate::dashboard_metrics::sample_memory_usage().total_physical_bytes,
+        processes,
+        samples,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn page_process_list_transitions_keep_repaints_bounded() {
+        use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
+        use iced::{mouse, Rectangle, Size};
+        use std::time::Instant;
+
+        let mut list = ProcessList {
+            processes: (1..=500)
+                .map(|id| {
+                    let mut process = process(id, id as u64, &format!("application-{id}.exe"));
+                    process.name = format!("application-{id}-long-process-name.exe");
+                    process
+                })
+                .collect(),
+            ..ProcessList::default()
+        };
+        let rebuild = Instant::now();
+        list.rebuild();
+        eprintln!("rebuild/auto-fit: {:?}", rebuild.elapsed());
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        let home = super::super::home::Model::default();
+        let log = super::super::action_log::Editor::default();
+        let entries: Vec<_> = (1..=500)
+            .map(|id| crate::action_log::ActionLogEntry {
+                sequence: id,
+                batch_id: id,
+                timestamp_epoch_ms: 1_700_000_000_000 + u128::from(id),
+                feature: crate::action_log::ActionLogFeature::ProcessPriority,
+                process_id: Some(id as u32),
+                process_name: format!("application-{id}.exe"),
+                result: crate::action_log::ActionLogResult::Applied,
+                reason: "Process Priority applied".into(),
+            })
+            .collect();
+        let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let bounds = Rectangle::with_size(Size::new(1400.0, 900.0));
+        let physical = Size::new(2100, 1350);
+        let viewport = iced::advanced::graphics::Viewport::with_physical_size(physical, 1.5);
+        let mut pixels = tiny_skia::Pixmap::new(physical.width, physical.height).unwrap();
+        let mut mask = tiny_skia::Mask::new(physical.width, physical.height).unwrap();
+        let mut tree = Tree::empty();
+        let mut previous = Vec::new();
+        for frame in 0..16 {
+            let start = Instant::now();
+            let home_page = frame < 8 && frame % 2 == 0;
+            let log_page = frame >= 8 && frame % 2 == 0;
+            let content = if home_page {
+                home.view(&settings, &status.feature_status, &[])
+                    .map(|_| Message::Refresh)
+            } else if log_page {
+                log.view(&entries, &[]).map(|_| Message::Refresh)
+            } else {
+                list.view(&settings, &status, PlanCatalog::Loaded(&[]))
+            };
+            let page = super::super::motion::wrap(
+                scrolling::repaint_group(content),
+                true,
+                super::super::motion::Effect::Content(if home_page {
+                    0
+                } else if log_page {
+                    1
+                } else {
+                    2
+                }),
+            );
+            let mut view: Element<'_, Message> = if home_page {
+                page
+            } else {
+                row![
+                    container(page).width(Fill).height(Fill),
+                    container(if log_page {
+                        log.side_panel(crate::config::ActionLogMode::Full, true, true)
+                            .map(|_| Message::Refresh)
+                    } else {
+                        list.side_panel()
+                    })
+                    .width(300)
+                    .height(Fill),
+                ]
+                .height(Fill)
+                .into()
+            };
+            tree.diff(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            let layout = start.elapsed();
+            renderer.reset(bounds);
+            view.as_widget().draw(
+                &tree,
+                &mut renderer,
+                &iced::Theme::Light,
+                &iced::advanced::renderer::Style::default(),
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &bounds,
+            );
+            let recorded = start.elapsed();
+            let damage = iced::advanced::graphics::damage::group(
+                iced::advanced::graphics::damage::diff(
+                    &previous,
+                    renderer.layers(),
+                    |layer| vec![layer.bounds],
+                    iced_tiny_skia::Layer::damage,
+                ),
+                bounds,
+            );
+            previous = renderer.layers().to_vec();
+            assert!(
+                damage.len() <= 4,
+                "Page / Process List transition {frame} fragmented into {} repaint regions",
+                damage.len()
+            );
+            let damaged_area: f32 = damage
+                .iter()
+                .map(|region| region.width * region.height)
+                .sum();
+            assert!(damaged_area <= bounds.width * bounds.height * 1.25);
+            renderer.draw(
+                &mut pixels.as_mut(),
+                &mut mask,
+                &viewport,
+                &damage,
+                iced::Color::WHITE,
+            );
+            eprintln!("transition {frame} home={home_page} log={log_page}: layout={layout:?}, draw={:?}, damage/raster={:?}, total={:?}, regions={}", recorded-layout, start.elapsed()-recorded, start.elapsed(), damage.len());
+        }
+    }
+
+    #[test]
+    #[ignore = "Measures live Process List opening; run manually with --nocapture"]
+    fn process_list_open_timing() {
+        use iced::advanced::{layout, widget::Tree};
+        use iced::{Rectangle, Size};
+        use std::time::Instant;
+
+        let font_start = Instant::now();
+        let _ = super::super::widgets::text_width("Home", design::typography::BODY);
+        eprintln!("Font warmup: {:?}", font_start.elapsed());
+        let start = Instant::now();
+        let population = load_population().unwrap();
+        let sampled = start.elapsed();
+        let mut list = ProcessList {
+            processes: population.processes,
+            samples: population.samples,
+            total_memory_bytes: population.total_memory_bytes,
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        let rebuilt = start.elapsed();
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+        let mut tree = Tree::new(&view);
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let bounds = Rectangle::with_size(Size::new(1200.0, 800.0));
+        let _ = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, bounds.size()),
+        );
+        let ready = start.elapsed();
+        drop(view);
+        let mut icons = HashMap::new();
+        for process in &list.processes {
+            if let Some(path) = &process.image_path {
+                icons
+                    .entry(path.clone())
+                    .or_insert_with(|| crate::process_icon::load_process_icon(path));
+            }
+        }
+        eprintln!("Process List: processes={}, rows={}, population={sampled:?}, rebuild={:?}, view/layout={:?}, rows ready={ready:?}, subsequent icons={:?}", list.processes.len(), list.rows.len(), rebuilt - sampled, ready - rebuilt, start.elapsed() - ready);
+    }
+
+    #[test]
+    fn population_is_visible_before_icons_and_refreshes_do_not_overlap() {
+        let mut settings = Settings::default();
+        settings.general.enabled = false;
+        let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
+        let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
+        let mut list = ProcessList::default();
+        let path = PathBuf::from("missing-process-list-test.exe");
+        list.icons.insert(PathBuf::from("exited.exe"), None);
+        let population = || Population {
+            processes: vec![process(10, 100, path.to_str().unwrap())],
+            samples: BTreeMap::new(),
+            total_memory_bytes: None,
+        };
+        let icons = list.update(Message::Loaded(Ok(population())), &mut settings, &runtime);
+        assert_eq!(list.rows.len(), 1);
+        assert!(list.refreshing);
+        assert!(list.icons.is_empty());
+        assert!(icons.units() > 0);
+        assert_eq!(
+            list.update(Message::Refresh, &mut settings, &runtime)
+                .units(),
+            0
+        );
+        drop(icons);
+
+        let _ = list.update(
+            Message::IconsLoaded(Ok(HashMap::from([(path.clone(), None)]))),
+            &mut settings,
+            &runtime,
+        );
+        assert!(!list.refreshing);
+        assert!(list.icons.contains_key(&path));
+        // Cache failed extractions too, so subsequent refreshes do not repeat them.
+        assert_eq!(
+            list.update(Message::Loaded(Ok(population())), &mut settings, &runtime)
+                .units(),
+            0
+        );
+        assert!(!list.refreshing);
+        let _ = list.update(
+            Message::IconsLoaded(Err("worker unavailable".into())),
+            &mut settings,
+            &runtime,
+        );
+        assert!(!list.refreshing);
+        assert_eq!(list.error.as_deref(), Some("worker unavailable"));
+    }
+
     #[test]
     fn header_stays_clickable_after_scrolling_process_rows() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
@@ -2185,6 +2427,25 @@ mod tests {
         list.column_widths[Sort::Name as usize] = Some(400.0);
         list.rebuild();
         assert_eq!(list.column_width(Sort::Name), 400.0);
+    }
+
+    #[test]
+    fn auto_fit_keeps_the_largest_padding_for_repeated_names() {
+        let mut list = ProcessList {
+            processes: vec![process(10, 100, "app.exe"), process(11, 200, "app.exe")],
+            ..ProcessList::default()
+        };
+        for process in &mut list.processes {
+            process.name = "a_long_executable_name_shared_by_the_group.exe".into();
+        }
+        list.rebuild();
+        list.expanded.insert(list.rows[0].key.clone());
+        list.rebuild();
+        assert_eq!(list.rows.len(), 3);
+        assert_eq!(
+            list.auto_width(Sort::Name),
+            (measure_column_text(&list.processes[0].name) + 76.0).ceil()
+        );
     }
 
     #[test]

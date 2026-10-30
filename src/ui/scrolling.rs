@@ -43,10 +43,125 @@ fn needs_rows(offset: f32, height: f32, start: f32, end: f32, first: bool, last:
 pub(super) fn table_surface<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    Element::new(ScrollContent {
-        content: content.into(),
-        behavior: Behavior::Surface,
-    })
+    iced::widget::Stack::new()
+        .push(content)
+        .push_under(
+            iced::widget::Canvas::new(TableSurface::Background)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .into()
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TableSurface {
+    Background,
+    Outline,
+}
+#[derive(Default)]
+struct SurfaceState {
+    cache: iced::widget::canvas::Cache,
+    style: Cell<Option<(TableSurface, iced::Color)>>,
+}
+impl<Message> iced::widget::canvas::Program<Message> for TableSurface {
+    type State = SurfaceState;
+
+    fn draw(
+        &self,
+        state: &SurfaceState,
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Path, Stroke};
+        let color = match self {
+            Self::Background => theme.extended_palette().background.weak.color,
+            Self::Outline => super::widgets::surface(theme).border.color,
+        };
+        let style = (*self, color);
+        if state.style.replace(Some(style)) != Some(style) {
+            state.cache.clear();
+        }
+        // Retain geometry across redraws, including antialias coverage at fractional bounds.
+        vec![state.cache.draw_with_bounds(
+            renderer,
+            Rectangle::with_size(bounds.size()).expand(1.0),
+            |frame| {
+                if matches!(self, Self::Outline) {
+                    if bounds.width > 1.0 && bounds.height > 1.0 {
+                        // Stroke only the outline; a transparent quad still paints every pixel.
+                        let path = Path::rounded_rectangle(
+                            iced::Point::new(0.5, 0.5),
+                            Size::new(bounds.width - 1.0, bounds.height - 1.0),
+                            (super::design::CARD_RADIUS - 0.5).into(),
+                        );
+                        frame.stroke(&path, Stroke::default().with_width(1.0).with_color(color));
+                    }
+                    return;
+                }
+                let radius = super::design::CARD_RADIUS;
+                // Small paths let the software renderer skip masking the untouched
+                // portion of a large table background during partial repaints.
+                // Overlap internal edges to avoid antialiasing seams at fractional DPI.
+                let columns = ((bounds.width / 64.0) as usize).max(1);
+                let rows = ((bounds.height / 64.0) as usize).max(1);
+                for y in 0..rows {
+                    for x in 0..columns {
+                        let tile = Rectangle {
+                            x: x as f32 * 64.0,
+                            y: y as f32 * 64.0,
+                            width: if x + 1 == columns {
+                                bounds.width - x as f32 * 64.0
+                            } else {
+                                65.0
+                            },
+                            height: if y + 1 == rows {
+                                bounds.height - y as f32 * 64.0
+                            } else {
+                                65.0
+                            },
+                        };
+                        let corners = iced::border::Radius {
+                            top_left: if x == 0 && y == 0 { radius } else { 0.0 },
+                            top_right: if x + 1 == columns && y == 0 {
+                                radius
+                            } else {
+                                0.0
+                            },
+                            bottom_left: if x == 0 && y + 1 == rows { radius } else { 0.0 },
+                            bottom_right: if x + 1 == columns && y + 1 == rows {
+                                radius
+                            } else {
+                                0.0
+                            },
+                        };
+                        frame.fill(
+                            &Path::rounded_rectangle(tile.position(), tile.size(), corners),
+                            color,
+                        );
+                    }
+                }
+            },
+        )]
+    }
+}
+pub(super) fn table_frame<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    iced::widget::Stack::new()
+        .push(
+            iced::widget::container(content)
+                .padding(1)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true),
+        )
+        .push_under(
+            iced::widget::Canvas::new(TableSurface::Outline)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .into()
 }
 pub(super) fn repaint_group<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
@@ -58,7 +173,6 @@ pub(super) fn repaint_group<'a, Message: 'a>(
 }
 
 enum Behavior<'a, Message> {
-    Surface,
     Scroll,
     Group,
     Buffer(Buffer<'a, Message>),
@@ -175,62 +289,6 @@ impl<Message> Widget<Message, Theme, Renderer> for ScrollContent<'_, Message> {
                 }
             }
         } else {
-            if matches!(self.behavior, Behavior::Surface) {
-                use iced::advanced::Renderer as _;
-                let bounds = layout.bounds();
-                let radius = super::design::CARD_RADIUS;
-                // Small quads let the software renderer skip masking the untouched
-                // portion of a large table background during partial repaints.
-                // Overlap internal edges to avoid antialiasing seams at fractional DPI.
-                let columns = ((bounds.width / 64.0) as usize).max(1);
-                let rows = ((bounds.height / 64.0) as usize).max(1);
-                for y in 0..rows {
-                    for x in 0..columns {
-                        let tile = Rectangle {
-                            x: bounds.x + x as f32 * 64.0,
-                            y: bounds.y + y as f32 * 64.0,
-                            width: if x + 1 == columns {
-                                bounds.width - x as f32 * 64.0
-                            } else {
-                                65.0
-                            },
-                            height: if y + 1 == rows {
-                                bounds.height - y as f32 * 64.0
-                            } else {
-                                65.0
-                            },
-                        };
-                        renderer.fill_quad(
-                            renderer::Quad {
-                                bounds: tile,
-                                border: iced::Border {
-                                    radius: iced::border::Radius {
-                                        top_left: if x == 0 && y == 0 { radius } else { 0.0 },
-                                        top_right: if x + 1 == columns && y == 0 {
-                                            radius
-                                        } else {
-                                            0.0
-                                        },
-                                        bottom_left: if x == 0 && y + 1 == rows {
-                                            radius
-                                        } else {
-                                            0.0
-                                        },
-                                        bottom_right: if x + 1 == columns && y + 1 == rows {
-                                            radius
-                                        } else {
-                                            0.0
-                                        },
-                                    },
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            },
-                            theme.extended_palette().background.weak.color,
-                        );
-                    }
-                }
-            }
             self.content
                 .as_widget()
                 .draw(tree, renderer, theme, style, layout, cursor, viewport);
@@ -422,6 +480,134 @@ fn check_scroll_damage_with_delta<M>(
 mod tests {
     use super::*;
     #[test]
+    fn table_surfaces_cache_geometry_and_track_theme_and_size() {
+        use iced::advanced::renderer::{Headless as _, Renderer as _};
+        for outline in [false, true] {
+            let mut renderer =
+                Renderer::new(super::super::design::typography::FONT, iced::Pixels(14.0));
+            let content = iced::widget::Space::new()
+                .width(Length::Fill)
+                .height(Length::Fill);
+            let mut view: Element<'_, ()> = if outline {
+                table_frame(content)
+            } else {
+                table_surface(content)
+            };
+            let mut tree = Tree::new(&view);
+            let mut previous = Vec::new();
+            let mut screenshots = Vec::new();
+            for (frame, (theme, size)) in [
+                (Theme::Light, Size::new(220.0, 120.0)),
+                (Theme::Light, Size::new(220.0, 120.0)),
+                (Theme::Dark, Size::new(220.0, 120.0)),
+                (Theme::Dark, Size::new(220.0, 120.0)),
+                (Theme::Dark, Size::new(260.0, 140.0)),
+                (Theme::Dark, Size::new(260.0, 140.0)),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let bounds = Rectangle::with_size(size);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                renderer.reset(bounds);
+                view.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &theme,
+                    &renderer::Style::default(),
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &bounds,
+                );
+                let damage = iced::advanced::graphics::damage::diff(
+                    &previous,
+                    renderer.layers(),
+                    |layer| vec![layer.bounds],
+                    iced_tiny_skia::Layer::damage,
+                );
+                assert_eq!(damage.is_empty(), frame % 2 == 1);
+                previous = renderer.layers().to_vec();
+                screenshots.push(renderer.screenshot(
+                    Size::new(size.width as u32, size.height as u32),
+                    1.0,
+                    theme.palette().background,
+                ));
+            }
+            assert_eq!(screenshots[0], screenshots[1]);
+            assert_ne!(screenshots[1], screenshots[2]);
+            assert_eq!(screenshots[2], screenshots[3]);
+            assert_eq!(screenshots[4], screenshots[5]);
+        }
+    }
+
+    #[test]
+    fn table_outline_matches_native_border_without_a_full_surface_quad() {
+        use iced::advanced::renderer::{Headless as _, Renderer as _};
+        for theme in [Theme::Light, Theme::Dark] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let render = |outline| {
+                    let mut renderer =
+                        Renderer::new(super::super::design::typography::FONT, iced::Pixels(14.0));
+                    let content = iced::widget::Space::new().width(220).height(120);
+                    let mut view: Element<'_, ()> = if outline {
+                        table_frame(content)
+                    } else {
+                        iced::widget::container(content)
+                            .padding(1)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .clip(true)
+                            .style(|theme| iced::widget::container::Style {
+                                background: None,
+                                ..super::super::widgets::surface(theme)
+                            })
+                            .into()
+                    };
+                    let bounds = Rectangle::with_size(Size::new(222.0, 122.0));
+                    let mut tree = Tree::new(&view);
+                    let node = view.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(Size::ZERO, bounds.size()),
+                    );
+                    renderer.reset(bounds);
+                    view.as_widget().draw(
+                        &tree,
+                        &mut renderer,
+                        &theme,
+                        &renderer::Style::default(),
+                        Layout::new(&node),
+                        mouse::Cursor::Unavailable,
+                        &bounds,
+                    );
+                    if outline {
+                        assert!(renderer.layers().iter().all(|layer| layer.quads.is_empty()));
+                    }
+                    renderer.screenshot(
+                        Size::new((222.0 * scale) as u32, (122.0 * scale) as u32),
+                        scale,
+                        theme.palette().background,
+                    )
+                };
+                let expected = render(false);
+                let actual = render(true);
+                let max = actual
+                    .iter()
+                    .zip(&expected)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap();
+                // The two path builders differ slightly in rounded-corner antialiasing.
+                assert!(max <= 12, "outline changed at scale {scale}: delta {max}");
+            }
+        }
+    }
+
+    #[test]
     fn shared_scroll_preserves_native_pixels_after_scrolling() {
         use iced::advanced::renderer::{Headless as _, Renderer as _};
         let render = |shared, scale| {
@@ -584,8 +770,8 @@ mod tests {
                 };
                 let expected = render(false);
                 let actual = render(true);
-                // Interior pixels must remain exact. At a handful of outer-edge
-                // joins, antialias coverage can differ by at most 6/255.
+                // Interior pixels remain exact; the canvas and native corner
+                // paths can differ slightly in antialias coverage.
                 let mismatch = actual.iter().zip(&expected).filter(|(a, b)| a != b).count();
                 let max_difference = actual
                     .iter()
@@ -594,7 +780,7 @@ mod tests {
                     .max()
                     .unwrap_or_default();
                 assert!(
-                    mismatch <= 18 && max_difference <= 6,
+                    mismatch <= 240 && max_difference <= 8,
                     "surface changed at scale {scale}: {mismatch} channels, delta {max_difference}"
                 );
                 let width = (132.0 * scale) as usize;

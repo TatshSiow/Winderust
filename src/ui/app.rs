@@ -426,6 +426,7 @@ impl Message {
                 | Self::Catalog(_)
                 | Self::PowerPlans(_)
                 | Self::Processes(process_list::Message::Loaded(_))
+                | Self::Processes(process_list::Message::IconsLoaded(_))
                 | Self::Preferences(settings_pages::Message::Checked(..))
         )
     }
@@ -2174,7 +2175,7 @@ impl WinderustApp {
             container(
                 container(super::motion::wrap(
                     super::motion::wrap(
-                        content,
+                        super::scrolling::repaint_group(content),
                         true,
                         super::motion::Effect::Content(self.power_source as u64),
                     ),
@@ -2931,6 +2932,10 @@ mod tests {
     fn exit_guard_keeps_pending_completions_but_rejects_new_work() {
         assert!(
             Message::Processes(process_list::Message::Loaded(Err("fixture".into())))
+                .allowed_during_exit()
+        );
+        assert!(
+            Message::Processes(process_list::Message::IconsLoaded(Err("fixture".into())))
                 .allowed_during_exit()
         );
         let mut editor = settings_pages::Editor::default();
