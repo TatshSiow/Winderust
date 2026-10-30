@@ -602,50 +602,10 @@ impl Model {
     }
 }
 fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Element<'_, Message> {
-    use crate::action_log::ActionLogResult;
     let mut rows = column![];
     for entry in logs.iter().rev().take(20) {
-        let style = match entry.result {
-            ActionLogResult::Applied | ActionLogResult::Restored => text::success,
-            ActionLogResult::Skipped => text::warning,
-            ActionLogResult::Failed => text::danger,
-        };
-        let description = format!(
-            "{} · {}",
-            super::action_log::action_log_feature_label(entry.feature),
-            entry.reason
-        );
-        rows = rows.push(iced::widget::tooltip(
-            button(
-                row![
-                    text(super::action_log::action_log_time_label(
-                        entry.timestamp_epoch_ms
-                    ))
-                    .size(design::typography::CAPTION)
-                    .style(text::secondary)
-                    .width(64),
-                    text(super::action_log::action_log_result_label(entry.result))
-                        .size(design::typography::CAPTION)
-                        .style(style)
-                        .width(64),
-                    container(
-                        text(description.clone())
-                            .size(design::typography::CAPTION)
-                            .wrapping(text::Wrapping::None)
-                    )
-                    .width(Fill)
-                    .clip(true),
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
-            )
-            .width(Fill)
-            .padding([6, 4])
-            .style(super::widgets::quiet)
-            .on_press(Message::Navigate(Page::ActionLog)),
-            text(description),
-            iced::widget::tooltip::Position::Top,
-        ));
+        rows = rows
+            .push(responsive(move |size| recent_log_row(entry, size.width)).height(iced::Shrink));
         rows = rows.push(iced::widget::rule::horizontal(1));
     }
     let content: Element<'_, Message> = if logs.is_empty() {
@@ -695,6 +655,59 @@ fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Eleme
     .height(height)
     .style(super::widgets::surface)
     .into()
+}
+fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Element<'_, Message> {
+    use crate::action_log::ActionLogResult;
+    const COLUMN_WIDTH: f32 = 64.0;
+    const PADDING: [u16; 2] = [6, 4];
+    let style = match entry.result {
+        ActionLogResult::Applied | ActionLogResult::Restored => text::success,
+        ActionLogResult::Skipped => text::warning,
+        ActionLogResult::Failed => text::danger,
+    };
+    let description = format!(
+        "{} · {}",
+        super::action_log::action_log_feature_label(entry.feature),
+        entry.reason
+    );
+    let row = button(
+        row![
+            text(super::action_log::action_log_time_label(
+                entry.timestamp_epoch_ms
+            ))
+            .size(design::typography::CAPTION)
+            .style(text::secondary)
+            .width(COLUMN_WIDTH),
+            text(super::action_log::action_log_result_label(entry.result))
+                .size(design::typography::CAPTION)
+                .style(style)
+                .width(COLUMN_WIDTH),
+            container(
+                text(description.clone())
+                    .size(design::typography::CAPTION)
+                    .wrapping(text::Wrapping::None)
+                    .shaping(iced::advanced::text::Shaping::Advanced)
+            )
+            .width(Fill)
+            .clip(true),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center),
+    )
+    .width(Fill)
+    .padding(PADDING)
+    .style(super::widgets::quiet)
+    .on_press(Message::Navigate(Page::ActionLog));
+    let available =
+        (width - 2.0 * (COLUMN_WIDTH + f32::from(PADDING[1])) - 2.0 * design::space::SMALL as f32)
+            .max(0.0);
+    if super::widgets::text_width(&description, design::typography::CAPTION) > available {
+        iced::widget::tooltip(row, text(description), iced::widget::tooltip::Position::Top)
+            .style(super::widgets::surface)
+            .into()
+    } else {
+        row.into()
+    }
 }
 fn push_bounded<T>(history: &mut VecDeque<T>, sample: T) {
     if history.len() == HISTORY_LEN {
@@ -1357,6 +1370,70 @@ fn activity_label(settings: &Settings, sample: &Sample) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recent_log_tooltip_tracks_truncation_and_preserves_navigation() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        let entry = crate::action_log::ActionLogEntry {
+            sequence: 1,
+            batch_id: 1,
+            timestamp_epoch_ms: 1_700_000_000_000,
+            feature: crate::action_log::ActionLogFeature::ProcessPriority,
+            process_id: Some(1234),
+            process_name: "app.exe".into(),
+            result: crate::action_log::ActionLogResult::Applied,
+            reason: "Applied configured process policy".into(),
+        };
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut view: Element<'_, Message> = responsive(|size| recent_log_row(&entry, size.width))
+            .height(iced::Shrink)
+            .into();
+        let mut tree = Tree::new(&view);
+        // Reuse the widget state while resizing in both directions.
+        for (width, truncated) in [(900.0, false), (220.0, true), (900.0, false)] {
+            let bounds = Rectangle::with_size(iced::Size::new(width, 100.0));
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, bounds.size()),
+            );
+            let position = Layout::new(&node).bounds().center();
+            let cursor = mouse::Cursor::Available(position);
+            let mut messages = Vec::new();
+            for event in [
+                mouse::Event::CursorMoved { position },
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+            ] {
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &iced::Event::Mouse(event),
+                    Layout::new(&node),
+                    cursor,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &bounds,
+                );
+            }
+            assert!(matches!(
+                messages.last(),
+                Some(Message::Navigate(Page::ActionLog))
+            ));
+            assert_eq!(
+                view.as_widget_mut()
+                    .overlay(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &bounds,
+                        iced::Vector::ZERO,
+                    )
+                    .is_some(),
+                truncated
+            );
+        }
+    }
+
     #[test]
     fn chart_hover_overlay_fits_edges_and_short_charts() {
         use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout, Shell};
