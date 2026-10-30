@@ -12,6 +12,7 @@ mod cpu_allocation;
 mod cpu_limiter;
 mod design;
 mod home;
+mod hotkeys;
 mod memory_trim;
 mod motion;
 mod navigation;

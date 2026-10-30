@@ -23,8 +23,9 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
   and active section visible. The remembered navigation-collapsed preference
   controls only this secondary panel.
 - Global search opens a focused palette above the page without opening or changing
-  secondary navigation. Results show function names and parent sections. Enter
-  opens the first result; Escape, Close, or clicking outside dismisses the palette.
+  secondary navigation. Follow the compact Fumadocs reference: a 640px upper-center panel, borderless search field, Esc keycap, and compact category-filter row over a dimmed backdrop. Match the filter row to the search panel background. Esc uses the standard shared button; the dropdown uses the standard shared Select with project colors and interaction styles. Tint the selected compact result to identify the Enter target. Vertically center icons, one- or two-line labels, and chevrons within each fixed-height result row. Keep the search panel shadow-free: upstream tiny-skia quad shadows draw outside partial repaint damage and accumulate black patches. Empty All searches omit the result list; typing or choosing a category reveals inset results. Results show function names and parent sections. Enter
+  opens the selected result; Up/Down move selection and scroll it into view. New queries and filters select the first result. Escape, Close, or clicking outside dismisses the palette.
+- Search defaults to Ctrl+K or / within the app window, respecting keys captured by text inputs and menus. Settings > Winderust Behaviour provides primary and alternate shortcut recording, clearing, and default restoration through normal Save. The rail Search entry matches other navigation item heights, icon/label spacing, and vertical centering. Show the active shortcut in its hover tooltip rather than a third rail text row; give Search only a subtle tint with neutral text while the palette is open, retaining the current page as the primary selection.
 - Combined navigation scales from 248px to 320px; secondary labels wrap at narrow
   widths. Keep navigation layout changes immediate and the right status rail independent.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.

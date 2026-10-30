@@ -185,6 +185,8 @@ pub struct GeneralSettings {
     pub animation_mode: AnimationMode,
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
+    #[serde(default)]
+    pub search_hotkeys: super::SearchHotkeys,
     pub check_interval_ms: u64,
 }
 
@@ -1762,6 +1764,7 @@ impl Default for Settings {
                 show_feature_status_on_cards: true,
                 animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
+                search_hotkeys: super::SearchHotkeys::default(),
                 check_interval_ms: 1000,
             },
             advanced: AdvancedSettings::default(),

@@ -9,6 +9,7 @@ use rust_i18n::t;
 
 #[derive(Default)]
 pub(super) struct Editor {
+    pub(super) hotkey_capture: Option<SearchHotkeySlot>,
     color: Option<String>,
     failure_threshold: Option<String>,
     accent_expanded: bool,
@@ -18,6 +19,25 @@ pub(super) struct Editor {
     pub(super) download: Option<String>,
     pub(super) update_error: Option<String>,
     pub(super) show_update: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SearchHotkeySlot {
+    Primary,
+    Secondary,
+}
+impl SearchHotkeySlot {
+    fn binding(self, settings: &SearchHotkeys) -> &KeyboardShortcut {
+        match self {
+            Self::Primary => &settings.primary,
+            Self::Secondary => &settings.secondary,
+        }
+    }
+    fn binding_mut(self, settings: &mut SearchHotkeys) -> &mut KeyboardShortcut {
+        match self {
+            Self::Primary => &mut settings.primary,
+            Self::Secondary => &mut settings.secondary,
+        }
+    }
 }
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Flag {
@@ -35,6 +55,10 @@ pub(super) enum Flag {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Flag(Flag, bool),
+    RecordSearchHotkey(SearchHotkeySlot),
+    CancelSearchHotkey,
+    SetSearchHotkey(SearchHotkeySlot, Option<KeyboardShortcut>),
+    ResetSearchHotkeys,
     Language(AppLanguage),
     Animation(AnimationMode),
     Theme(AppThemeMode),
@@ -71,6 +95,7 @@ impl Editor {
     }
 
     pub(super) fn reset_drafts(&mut self) {
+        self.hotkey_capture = None;
         self.color = None;
         self.failure_threshold = None;
         self.latest = None;
@@ -91,6 +116,8 @@ impl Editor {
 
     pub(super) fn update_ui(&mut self, current_channel: UpdateChannel, message: Message) {
         match message {
+            Message::RecordSearchHotkey(slot) => self.hotkey_capture = Some(slot),
+            Message::CancelSearchHotkey => self.hotkey_capture = None,
             Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
             Message::DismissUpdate => self.show_update = false,
             Message::Checked(channel, result) => {
@@ -115,6 +142,22 @@ impl Editor {
 
     pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
         match m {
+            Message::SetSearchHotkey(slot, shortcut) => {
+                let binding = slot.binding_mut(&mut s.general.search_hotkeys);
+                if let Some(shortcut) = shortcut {
+                    *binding = shortcut;
+                } else {
+                    binding.enabled = false;
+                }
+                self.hotkey_capture = None;
+            }
+            Message::ResetSearchHotkeys => {
+                s.general.search_hotkeys = SearchHotkeys::default();
+                self.hotkey_capture = None;
+            }
+            Message::RecordSearchHotkey(_) | Message::CancelSearchHotkey => {
+                self.update_ui(s.general.update_channel, m)
+            }
             Message::Flag(flag, value) => match flag {
                 Flag::Enabled => s.general.enabled = value,
                 Flag::Startup => s.general.startup_with_windows = value,
@@ -220,6 +263,35 @@ impl Editor {
             | Message::EditColor(_) => {}
         }
     }
+    fn search_hotkey_row<'a>(
+        &self,
+        s: &'a Settings,
+        slot: SearchHotkeySlot,
+        label: &str,
+    ) -> Element<'a, Message> {
+        let binding = slot.binding(&s.general.search_hotkeys);
+        let recording = self.hotkey_capture == Some(slot);
+        let value = if recording {
+            t!("settings.shortcut_record_prompt").to_string()
+        } else if binding.enabled {
+            binding.to_string()
+        } else {
+            t!("common.disabled").to_string()
+        };
+        widgets::settings_card(widgets::setting_row(
+            label,
+            row![
+                button(text(value)).on_press(Message::RecordSearchHotkey(slot)),
+                button(text(t!("settings.clear_shortcut").to_string()))
+                    .style(widgets::tertiary_button)
+                    .on_press(Message::SetSearchHotkey(slot, None)),
+            ]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center),
+        ))
+        .into()
+    }
+
     pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
         let flag = |key: &str, value, flag| {
             widgets::settings_card(widgets::setting_row(
@@ -275,6 +347,21 @@ impl Editor {
                     .align_x(iced::Center)
                     .width(design::STANDALONE_NUMERIC_WIDTH),
                 )),
+                widgets::heading(
+                    t!("settings.keyboard_shortcuts").to_string(),
+                    design::typography::BODY
+                ),
+                text(t!("settings.shortcut_help").to_string())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+                self.search_hotkey_row(s, SearchHotkeySlot::Primary, "settings.search_shortcut"),
+                self.search_hotkey_row(
+                    s,
+                    SearchHotkeySlot::Secondary,
+                    "settings.search_alternate_shortcut"
+                ),
+                row![button(text(t!("settings.reset_shortcuts").to_string()))
+                    .on_press(Message::ResetSearchHotkeys)],
                 widgets::heading(
                     t!("settings.settings_files").to_string(),
                     design::typography::BODY
@@ -892,6 +979,41 @@ fn logo() -> iced::widget::image::Handle {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_hotkey_record_clear_and_reset_keep_slots_independent() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        let original = settings.general.search_hotkeys.clone();
+        editor.update_ui(
+            settings.general.update_channel,
+            Message::RecordSearchHotkey(SearchHotkeySlot::Primary),
+        );
+        assert_eq!(editor.hotkey_capture, Some(SearchHotkeySlot::Primary));
+        assert_eq!(settings.general.search_hotkeys, original);
+        let shortcut = super::super::hotkeys::capture(
+            &iced::keyboard::Key::Character("j".into()),
+            iced::keyboard::Modifiers::CTRL,
+        )
+        .unwrap();
+        editor.update(
+            &mut settings,
+            Message::SetSearchHotkey(SearchHotkeySlot::Primary, Some(shortcut.clone())),
+        );
+        assert_eq!(settings.general.search_hotkeys.primary, shortcut);
+        assert_eq!(
+            settings.general.search_hotkeys.secondary,
+            original.secondary
+        );
+        assert!(editor.hotkey_capture.is_none());
+        editor.update(
+            &mut settings,
+            Message::SetSearchHotkey(SearchHotkeySlot::Secondary, None),
+        );
+        assert!(!settings.general.search_hotkeys.secondary.enabled);
+        editor.update(&mut settings, Message::ResetSearchHotkeys);
+        assert_eq!(settings.general.search_hotkeys, original);
+    }
+
     #[test]
     fn ui_only_preferences_need_no_mutable_settings() {
         let settings = Settings::default();

@@ -232,6 +232,22 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         let search = if matches!(extra, Some(26..=28)) {
             app.settings.general.navigation_collapsed = true;
+            if extra == Some(26) {
+                let _ = app.update(Message::SearchKeyboard {
+                    key: iced::keyboard::Key::Character("/".into()),
+                    modifiers: iced::keyboard::Modifiers::empty(),
+                    repeat: false,
+                    status: iced::event::Status::Captured,
+                });
+                assert!(!app.navigation_search_open);
+                let _ = app.update(Message::SearchKeyboard {
+                    key: iced::keyboard::Key::Character("k".into()),
+                    modifiers: iced::keyboard::Modifiers::CTRL,
+                    repeat: false,
+                    status: iced::event::Status::Ignored,
+                });
+                assert!(app.navigation_search_open);
+            }
             let open = app.update(Message::OpenNavigationSearch);
             if extra != Some(26) {
                 let _ = app.update(Message::NavigationSearch(
@@ -242,6 +258,24 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     }
                     .into(),
                 ));
+            }
+            if extra == Some(27) {
+                let down = || Message::SearchKeyboard {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown),
+                    modifiers: iced::keyboard::Modifiers::empty(),
+                    repeat: false,
+                    status: iced::event::Status::Ignored,
+                };
+                let _ = app.update(down());
+                assert_eq!(app.navigation_search_selected, 1);
+                let expected = app.search_choices()[1];
+                let _ = app.update(Message::ConfirmSearch);
+                assert_eq!(app.page, expected);
+                assert!(!app.navigation_search_open);
+                let _ = app.update(Message::Page(Page::Home));
+                let _ = app.update(Message::OpenNavigationSearch);
+                let _ = app.update(Message::NavigationSearch("cpu".into()));
+                let _ = app.update(down());
             }
             open
         } else {

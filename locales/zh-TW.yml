@@ -237,6 +237,7 @@ runtime_status:
   processor_affinity_hard_active: "處理器親和性（硬式）作用中。"
 
 home:
+  search: "搜尋"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
   current_mode: "目前模式"
@@ -269,6 +270,7 @@ home:
   enabled_features: "已啟用功能"
   search_placeholder: "搜尋功能..."
   search_results: "搜尋結果"
+  search_filter: "篩選"
   no_matching_functions: "沒有相符的功能"
   main_sections: "主要區段"
   collecting: "收集中"
@@ -377,6 +379,13 @@ process_list:
   adaptive_engine: "自適應引擎"
 
 settings:
+  keyboard_shortcuts: "鍵盤快捷鍵"
+  search_shortcut: "搜尋快捷鍵"
+  search_alternate_shortcut: "備用搜尋快捷鍵"
+  shortcut_record_prompt: "請按下快捷鍵…"
+  shortcut_help: "點選快捷鍵後，按下字母、數字、符號或 F1–F24，可搭配 Ctrl、Alt、Shift。Esc 取消。快捷鍵僅在 Winderust 視窗內生效，且不會攔截文字欄位的輸入。"
+  clear_shortcut: "清除"
+  reset_shortcuts: "還原預設快捷鍵"
   animation_mode: "動畫"
   functionality: "功能設定"
   launch_settings: "啟動設定"

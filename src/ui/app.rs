@@ -76,6 +76,8 @@ pub(crate) fn run(
                     smoke: smoke::Run::requested(),
                     navigation_search: String::new(),
                     navigation_search_open: false,
+                    navigation_search_scope: SearchScope(None),
+                    navigation_search_selected: 0,
                     expanded_section: None,
                     status_collapsed: false,
                     feature_info_expanded: false,
@@ -199,17 +201,20 @@ pub(crate) fn run(
             } else {
                 Subscription::none()
             },
-            if app.navigation_search_open {
-                iced::event::listen_with(|event, _, _| match event {
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-                        ..
-                    }) => Some(Message::CloseNavigationSearch),
-                    _ => None,
-                })
-            } else {
-                Subscription::none()
-            },
+            iced::event::listen_with(|event, status, _| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    repeat,
+                    ..
+                }) => Some(Message::SearchKeyboard {
+                    key,
+                    modifiers,
+                    repeat,
+                    status,
+                }),
+                _ => None,
+            }),
             if app.page == Page::ProcessList && !app.navigation_search_open {
                 iced::event::listen_with(|event, status, _| match event {
                     iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -229,12 +234,67 @@ pub(crate) fn run(
     .run()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SearchScope(Option<Page>);
+impl std::fmt::Display for SearchScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            &self
+                .0
+                .map(Page::label)
+                .unwrap_or_else(|| t!("common.all").to_string()),
+        )
+    }
+}
+
+fn navigation_search_choices(query: &str, advanced: bool, scope: SearchScope) -> Vec<Page> {
+    let mut pages = if query.trim().is_empty() {
+        navigation::dashboard_sections_in_nav_order(advanced)
+            .into_iter()
+            .filter(|section| scope.0 == Some(section.landing_page))
+            .flat_map(|section| {
+                std::iter::once(section.landing_page).chain(section.pages.iter().copied())
+            })
+            .collect::<Vec<_>>()
+    } else {
+        navigation::dashboard_search_pages(query, advanced)
+    };
+    if let Some(section) = scope.0 {
+        pages.retain(|page| page.section_landing_page() == section);
+    }
+    pages.dedup();
+    pages
+}
+
+fn search_selection(selected: usize, count: usize, down: bool) -> usize {
+    if count == 0 {
+        0
+    } else if down {
+        selected.saturating_add(1).min(count - 1)
+    } else {
+        selected.saturating_sub(1).min(count - 1)
+    }
+}
+
+fn navigation_search_panel<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Container<'a, Message> {
+    // Software-rendered quad shadows bypass partial repaint clipping.
+    container(content)
+        .width(Fill)
+        .max_width(640)
+        .clip(true)
+        .style(widgets::surface)
+}
+
 struct WinderustApp {
     #[cfg(feature = "render-smoke")]
     smoke: Option<smoke::Run>,
     appearance: Theme,
     navigation_search: String,
     navigation_search_open: bool,
+    navigation_search_scope: SearchScope,
+    navigation_search_selected: usize,
     expanded_section: Option<Page>,
     status_collapsed: bool,
     feature_info_expanded: bool,
@@ -300,6 +360,14 @@ enum Message {
     NavigationSearch(String),
     OpenNavigationSearch,
     CloseNavigationSearch,
+    NavigationSearchScope(SearchScope),
+    SearchKeyboard {
+        key: iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+        repeat: bool,
+        status: iced::event::Status,
+    },
+    ConfirmSearch,
     DismissError,
     NavigateHistory(bool),
     ToggleNavigation,
@@ -364,6 +432,98 @@ impl Message {
 }
 
 impl WinderustApp {
+    fn search_shortcut_hint(&self) -> String {
+        let shortcuts = &self.settings.global().general.search_hotkeys;
+        [&shortcuts.primary, &shortcuts.secondary]
+            .into_iter()
+            .find(|shortcut| shortcut.enabled)
+            .map(ToString::to_string)
+            .unwrap_or_default()
+    }
+
+    fn search_choices(&self) -> Vec<Page> {
+        navigation_search_choices(
+            &self.navigation_search,
+            self.settings.global().advanced.show_advanced_controls,
+            self.navigation_search_scope,
+        )
+    }
+
+    fn scroll_search_selection(&self) -> Task<Message> {
+        iced::widget::operation::scroll_to(
+            "navigation-search-results",
+            iced::widget::scrollable::AbsoluteOffset {
+                x: None,
+                y: Some((self.navigation_search_selected as f32 * 50.0 - 125.0).max(0.0)),
+            },
+        )
+    }
+
+    fn search_keyboard(
+        &mut self,
+        key: iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+        repeat: bool,
+        status: iced::event::Status,
+    ) -> Task<Message> {
+        use iced::keyboard::{key::Named, Key};
+        if self.closing
+            || self.hidden
+            || self.preferences.show_update
+            || !self.error_message.is_empty()
+        {
+            return Task::none();
+        }
+        if self.page == Page::WinderustBehaviour {
+            if let Some(slot) = self.preferences.hotkey_capture {
+                if !repeat {
+                    if key == Key::Named(Named::Escape) {
+                        return self.update(Message::Preferences(
+                            settings_pages::Message::CancelSearchHotkey,
+                        ));
+                    }
+                    if let Some(shortcut) = super::hotkeys::capture(&key, modifiers) {
+                        return self.update(Message::Preferences(
+                            settings_pages::Message::SetSearchHotkey(slot, Some(shortcut)),
+                        ));
+                    }
+                }
+                return Task::none();
+            }
+        }
+        if self.navigation_search_open {
+            match key.as_ref() {
+                Key::Named(Named::Escape) => return self.update(Message::CloseNavigationSearch),
+                Key::Named(Named::ArrowUp | Named::ArrowDown)
+                    if status == iced::event::Status::Ignored && modifiers.is_empty() =>
+                {
+                    let count = self.search_choices().len();
+                    self.navigation_search_selected = search_selection(
+                        self.navigation_search_selected,
+                        count,
+                        key == Key::Named(Named::ArrowDown),
+                    );
+                    return self.scroll_search_selection();
+                }
+                Key::Named(Named::Enter) if status == iced::event::Status::Ignored && !repeat => {
+                    return self.update(Message::ConfirmSearch)
+                }
+                _ => return Task::none(),
+            }
+        }
+        if !repeat
+            && super::hotkeys::opens_search(
+                &self.settings.global().general.search_hotkeys,
+                &key,
+                modifiers,
+                status,
+            )
+        {
+            return self.update(Message::OpenNavigationSearch);
+        }
+        Task::none()
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         if self.exiting && !message.allowed_during_exit() {
             // Discard native picker edits, but release its pending flag.
@@ -376,9 +536,38 @@ impl WinderustApp {
             #[cfg(feature = "render-smoke")]
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
             Message::DismissError => self.error_message.clear(),
-            Message::NavigationSearch(value) => self.navigation_search = value,
+            Message::SearchKeyboard {
+                key,
+                modifiers,
+                repeat,
+                status,
+            } => return self.search_keyboard(key, modifiers, repeat, status),
+            Message::NavigationSearch(value) => {
+                self.navigation_search = value;
+                self.navigation_search_selected = 0;
+                return self.scroll_search_selection();
+            }
+            Message::NavigationSearchScope(scope) => {
+                self.navigation_search_scope = scope;
+                self.navigation_search_selected = 0;
+                return self.scroll_search_selection();
+            }
+            Message::ConfirmSearch => {
+                if self.navigation_search_open {
+                    if let Some(page) = self
+                        .search_choices()
+                        .get(self.navigation_search_selected)
+                        .copied()
+                    {
+                        return self.update(Message::Page(page));
+                    }
+                }
+            }
             Message::OpenNavigationSearch => {
                 self.navigation_search_open = true;
+                self.navigation_search_scope = SearchScope(None);
+                self.navigation_search_selected = 0;
+                self.preferences.hotkey_capture = None;
                 return iced::widget::operation::focus("navigation-search");
             }
             Message::CloseNavigationSearch => {
@@ -501,7 +690,9 @@ impl WinderustApp {
                 }
             }
             Message::Preferences(
-                message @ (settings_pages::Message::ToggleAccent
+                message @ (settings_pages::Message::RecordSearchHotkey(_)
+                | settings_pages::Message::CancelSearchHotkey
+                | settings_pages::Message::ToggleAccent
                 | settings_pages::Message::DismissUpdate
                 | settings_pages::Message::Checked(..)),
             ) => {
@@ -887,6 +1078,7 @@ impl WinderustApp {
                 }
             }
             Message::Page(page) => {
+                self.preferences.hotkey_capture = None;
                 self.navigation_history.visit(page);
                 self.feature_info_expanded = false;
                 let path = navigation::breadcrumb_path(page);
@@ -1671,12 +1863,38 @@ impl WinderustApp {
         let rail = container(
             column![
                 iced::widget::tooltip(
-                    button(container(navigation::glyph("icons/search.svg")).center_x(Fill))
-                        .width(Fill)
-                        .height(36)
-                        .style(widgets::quiet)
-                        .on_press(Message::OpenNavigationSearch),
-                    text(t!("home.search_placeholder").to_string()),
+                    button(
+                        container(
+                            column![
+                                navigation::glyph("icons/search.svg"),
+                                text(t!("home.search").to_string())
+                                    .size(design::typography::BADGE)
+                                    .width(Fill)
+                                    .align_x(iced::Center),
+                            ]
+                            .spacing(design::space::TIGHT)
+                            .align_x(iced::Center)
+                        )
+                        .center_x(Fill)
+                        .center_y(Fill)
+                    )
+                    .width(Fill)
+                    .height(design::NAVIGATION_ITEM_HEIGHT)
+                    .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
+                    .selected(self.navigation_search_open, |theme, status| {
+                        let mut style = widgets::quiet(theme, status);
+                        if status == iced::widget::button::Status::Active {
+                            style.background =
+                                Some(theme.palette().primary.scale_alpha(0.05).into());
+                        }
+                        style
+                    })
+                    .on_press(Message::OpenNavigationSearch),
+                    text(format!(
+                        "{} {}",
+                        t!("home.search_placeholder"),
+                        self.search_shortcut_hint()
+                    )),
                     iced::widget::tooltip::Position::Right,
                 )
                 .style(widgets::surface),
@@ -2075,27 +2293,20 @@ impl WinderustApp {
             .into();
         if self.navigation_search_open {
             let searching = !self.navigation_search.trim().is_empty();
-            let choices = if searching {
-                navigation::dashboard_search_pages(
-                    &self.navigation_search,
-                    self.settings.global().advanced.show_advanced_controls,
-                )
-            } else {
-                navigation::dashboard_sections_in_nav_order(
-                    self.settings.global().advanced.show_advanced_controls,
-                )
-                .into_iter()
-                .map(|section| section.landing_page)
-                .collect()
-            };
-            let mut results = column![].spacing(design::space::TIGHT);
-            if choices.is_empty() {
+            let choices = navigation_search_choices(
+                &self.navigation_search,
+                self.settings.global().advanced.show_advanced_controls,
+                self.navigation_search_scope,
+            );
+            let show_results = searching || self.navigation_search_scope.0.is_some();
+            let mut results = column![].spacing(design::space::TINY);
+            if show_results && choices.is_empty() {
                 results = results.push(
                     container(text(t!("home.no_matching_functions").to_string()))
                         .padding(design::space::MEDIUM as u16),
                 );
             }
-            let first_result = choices.first().copied();
+            let selected_result = choices.get(self.navigation_search_selected).copied();
             for page in choices {
                 let mut label = column![text(page.label()).size(design::typography::BODY)];
                 let section = page.section_landing_page();
@@ -2114,51 +2325,83 @@ impl WinderustApp {
                             navigation::glyph("icons/chevron-right.svg"),
                         ]
                         .spacing(design::space::MEDIUM)
+                        .height(Fill)
                         .align_y(iced::Center),
                     )
                     .width(Fill)
-                    .padding(design::space::MEDIUM as u16)
-                    .style(widgets::quiet)
+                    .height(48)
+                    .padding([6, 12])
+                    .style(move |theme, status| {
+                        if Some(page) == selected_result {
+                            widgets::selected(theme, status)
+                        } else {
+                            widgets::quiet(theme, status)
+                        }
+                    })
                     .on_press(Message::Page(page)),
                 );
             }
             let mut input = text_input(&t!("home.search_placeholder"), &self.navigation_search)
                 .id("navigation-search")
-                .padding(widgets::SEARCH_INPUT_PADDING)
+                .size(design::typography::SECTION)
+                .padding([12, 0])
+                .style(|theme, status| {
+                    let mut style = iced::widget::text_input::default(theme, status);
+                    style.background = iced::Background::Color(iced::Color::TRANSPARENT);
+                    style.border = iced::Border::default();
+                    style
+                })
                 .on_input(Message::NavigationSearch);
-            if let Some(page) = first_result {
-                input = input.on_submit(Message::Page(page));
+            if selected_result.is_some() {
+                input = input.on_submit(Message::ConfirmSearch);
             }
-            let search = container(
-                column![
+            let scopes = std::iter::once(SearchScope(None))
+                .chain(
+                    navigation::dashboard_sections_in_nav_order(
+                        self.settings.global().advanced.show_advanced_controls,
+                    )
+                    .into_iter()
+                    .map(|section| SearchScope(Some(section.landing_page))),
+                )
+                .collect();
+            let mut search_content = column![
+                container(
                     row![
                         navigation::glyph("icons/search.svg"),
-                        widgets::search_field(
-                            input,
-                            searching.then(|| Message::NavigationSearch(String::new())),
-                        ),
-                        button(text(t!("common.close").to_string()))
-                            .style(widgets::quiet)
+                        input,
+                        button(text("Esc").size(design::typography::CAPTION))
                             .on_press(Message::CloseNavigationSearch),
                     ]
+                    .spacing(design::space::MEDIUM)
+                    .align_y(iced::Center)
+                )
+                .padding([4, 16]),
+                iced::widget::rule::horizontal(1),
+                container(
+                    row![
+                        text(t!("home.search_filter").to_string())
+                            .size(design::typography::CAPTION)
+                            .style(text::secondary),
+                        super::select::Select::new(
+                            scopes,
+                            Some(self.navigation_search_scope),
+                            Message::NavigationSearchScope
+                        )
+                        .width(168),
+                    ]
                     .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                    iced::widget::rule::horizontal(1),
-                    text(if searching {
-                        t!("home.search_results")
-                    } else {
-                        t!("home.main_sections")
-                    })
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
-                    container(scrollable(results)).max_height(360),
-                ]
-                .spacing(design::space::MEDIUM),
-            )
-            .padding(design::space::MEDIUM as u16)
-            .width(Fill)
-            .max_width(560)
-            .style(widgets::surface);
+                    .align_y(iced::Center)
+                )
+                .padding([6, 12]),
+            ];
+            if show_results {
+                search_content = search_content.push(iced::widget::rule::horizontal(1)).push(
+                    container(scrollable(results).id("navigation-search-results"))
+                        .max_height(320)
+                        .padding(6),
+                );
+            }
+            let search = navigation_search_panel(search_content);
             return iced::widget::stack![
                 layout,
                 iced::widget::mouse_area(
@@ -2173,7 +2416,7 @@ impl WinderustApp {
                 .on_press(Message::CloseNavigationSearch),
                 container(iced::widget::opaque(search))
                     .padding(iced::Padding {
-                        top: 48.0,
+                        top: 120.0,
                         right: 24.0,
                         bottom: 24.0,
                         left: 24.0
@@ -2600,6 +2843,122 @@ fn ui_tick_interval(hidden: bool, retry_pending: bool) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_navigation_stays_bounded_and_tracks_selected_result() {
+        assert_eq!(search_selection(0, 0, true), 0);
+        assert_eq!(search_selection(0, 3, false), 0);
+        assert_eq!(search_selection(0, 3, true), 1);
+        assert_eq!(search_selection(2, 3, true), 2);
+        assert_eq!(search_selection(8, 2, true), 1);
+        let pages = navigation_search_choices("process", false, SearchScope(None));
+        assert!(pages.len() > 1);
+        let selected = search_selection(0, pages.len(), true);
+        assert_eq!(pages.get(selected), pages.get(1));
+        assert_ne!(pages.get(selected), pages.first());
+    }
+
+    #[test]
+    fn search_panel_partial_repaints_match_full_frames() {
+        use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
+        let theme = Theme::custom_with_fn("test", design::palette(false), design::extended_palette);
+        let bounds = iced::Rectangle::with_size(iced::Size::new(800.0, 400.0));
+        let viewport =
+            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(800, 400), 1.0);
+        let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut pixels = tiny_skia::Pixmap::new(800, 400).unwrap();
+        let mut mask = tiny_skia::Mask::new(800, 400).unwrap();
+        let mut previous = Vec::new();
+        let mut tree = Tree::empty();
+        for query in ["", "c", "cp", "cpu", ""] {
+            let panel = navigation_search_panel(iced::widget::column![
+                text_input("Search", query).padding(12),
+                iced::widget::rule::horizontal(1),
+                container(
+                    iced::widget::row![
+                        text("Filter")
+                            .size(design::typography::CAPTION)
+                            .style(text::secondary),
+                        super::super::select::Select::new(
+                            vec![SearchScope(None), SearchScope(Some(Page::PowerPlanControl))],
+                            Some(SearchScope(None)),
+                            Message::NavigationSearchScope,
+                        )
+                        .width(168),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center)
+                )
+                .padding(12),
+            ]);
+            let mut view: Element<'_, Message> = container(panel).padding(60).into();
+            tree.diff(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, bounds.size()),
+            );
+            renderer.reset(bounds);
+            view.as_widget().draw(
+                &tree,
+                &mut renderer,
+                &theme,
+                &iced::advanced::renderer::Style {
+                    text_color: theme.palette().text,
+                },
+                Layout::new(&node),
+                iced::mouse::Cursor::Unavailable,
+                &bounds,
+            );
+            let damage = if previous.is_empty() {
+                vec![bounds]
+            } else {
+                iced::advanced::graphics::damage::group(
+                    iced::advanced::graphics::damage::diff(
+                        &previous,
+                        renderer.layers(),
+                        |layer| vec![layer.bounds],
+                        iced_tiny_skia::Layer::damage,
+                    ),
+                    bounds,
+                )
+            };
+            renderer.draw(
+                &mut pixels.as_mut(),
+                &mut mask,
+                &viewport,
+                &damage,
+                theme.palette().background,
+            );
+            let mut full = tiny_skia::Pixmap::new(800, 400).unwrap();
+            renderer.draw(
+                &mut full.as_mut(),
+                &mut mask,
+                &viewport,
+                &[bounds],
+                theme.palette().background,
+            );
+            assert!(
+                pixels.data() == full.data(),
+                "Search panel accumulated stale pixels for query {query:?}"
+            );
+            previous = renderer.layers().to_vec();
+        }
+    }
+
+    #[test]
+    fn search_scopes_filter_results_and_keep_the_empty_all_dialog_compact() {
+        assert!(navigation_search_choices("", true, SearchScope(None)).is_empty());
+        let scope = SearchScope(Some(Page::PowerPlanControl));
+        let pages = navigation_search_choices("", false, scope);
+        assert!(pages.contains(&Page::PowerPlanControl));
+        assert!(pages.contains(&Page::ByActivity));
+        assert!(pages
+            .iter()
+            .all(|page| page.section_landing_page() == Page::PowerPlanControl));
+        assert!(navigation_search_choices("memory", false, scope).is_empty());
+        assert!(!navigation_search_choices("memory", false, SearchScope(None)).is_empty());
+    }
+
     #[test]
     fn exit_guard_keeps_pending_completions_but_rejects_new_work() {
         assert!(
