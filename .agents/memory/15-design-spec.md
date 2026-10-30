@@ -59,6 +59,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 - Navigation selection uses a rounded vertical pill; tabs use an accent underline with a tinted background; power-source selection uses a dot.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
+- Left navigation and the right panel share docked chrome surfaces with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
 - Base surfaces use cool pale neutrals in light mode and slate tones in dark mode; panels have subtle 1px outlines. Accent color marks primary action, active navigation, selection, and important status.
 - Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers.
 - Do not add purple/blue gradients, decorative blobs, glow backgrounds, or one-note palettes.

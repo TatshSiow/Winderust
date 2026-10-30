@@ -189,7 +189,10 @@ impl Editor {
         entries: &'a [ActionLogEntry],
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        iced::widget::responsive(move |size| self.view_at_size(entries, candidates, size)).into()
+        super::widgets::table_frame(iced::widget::responsive(move |size| {
+            self.view_at_size(entries, candidates, size)
+        }))
+        .into()
     }
 
     fn view_at_size<'a>(

@@ -24,13 +24,22 @@ pub(super) fn rules_table<'a, M: 'a>(
     ])
     .width(Fill)
     .clip(true)
-    .style(|theme| {
-        let mut style = surface(theme);
-        style.border.width = 1.0;
-        style.border.color = control_border(theme);
-        style
-    }))
+    .style(surface))
     .into()
+}
+
+pub(super) fn table_frame<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+) -> iced::widget::Container<'a, M> {
+    iced::widget::container(content)
+        .padding(1)
+        .width(Fill)
+        .height(Fill)
+        .clip(true)
+        .style(|theme| iced::widget::container::Style {
+            background: None,
+            ..surface(theme)
+        })
 }
 
 pub(super) fn process_rule_row<'a, M: Clone + 'a>(
@@ -1155,15 +1164,7 @@ pub(super) fn modal_frame<'a, M: 'a>(
     .max_width(size.0)
     .height(Fill)
     .max_height(size.1)
-    .style(|theme: &iced::Theme| container::Style {
-        background: Some(theme.palette().background.into()),
-        border: iced::Border {
-            color: theme.extended_palette().background.strong.color,
-            width: 1.0,
-            radius: design::CARD_RADIUS.into(),
-        },
-        ..Default::default()
-    })
+    .style(surface)
     .into()
 }
 

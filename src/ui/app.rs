@@ -2139,7 +2139,7 @@ impl WinderustApp {
                 side_panel_width
             }
             - 2.0 * page_padding as f32
-            - design::space::SMALL as f32;
+            - if side_panel.is_some() { 1.0 } else { 0.0 };
         let main_width = main_width.min(design::CONTENT_WIDTH as f32);
         let actions = header
             .wrap()
@@ -2226,7 +2226,7 @@ impl WinderustApp {
                 .center_x(Fill)
                 .height(Fill)
         ]
-        .spacing(design::space::SMALL)
+        .spacing(0)
         .height(Fill);
         let has_side_panel = side_panel.is_some();
         let panel: Element<'_, Message> = if let Some(panel) = side_panel {
@@ -2255,7 +2255,7 @@ impl WinderustApp {
                     text(t!("nav.expand_side_panel").to_string()),
                     iced::widget::tooltip::Position::Left,
                 )
-                .style(container::bordered_box)
+                .style(widgets::surface)
                 .into()
             } else {
                 panel_toggle.into()
@@ -2285,10 +2285,9 @@ impl WinderustApp {
             iced::widget::Space::new().into()
         };
         let layout: Element<'_, Message> = layout
-            .push(super::motion::wrap(
-                panel,
+            .push(widgets::optional_content(
+                row![iced::widget::rule::vertical(1), panel].height(Fill),
                 has_side_panel,
-                super::motion::Effect::Visible,
             ))
             .into();
         if self.navigation_search_open {

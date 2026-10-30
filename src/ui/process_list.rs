@@ -1117,7 +1117,7 @@ impl ProcessList {
         if let Some(e) = &self.error {
             body = body.push(text(e));
         }
-        body = body.push(responsive(move |size| {
+        body = body.push(super::widgets::table_frame(responsive(move |size| {
             let widths = self.layout_widths(size.width);
             let name_width = widths[Sort::Name as usize];
             let sort_header = |col: Sort, width| {
@@ -1306,15 +1306,9 @@ impl ProcessList {
                 - design::space::SMALL as f32
                 + 32.0;
             scrollable(scrolling::table_surface(
-                container(
-                    column![
-                        container(header).height(32).style(super::widgets::surface),
-                        table,
-                    ]
+                container(column![container(header).height(32), table,].height(Fill))
+                    .width(size.width.max(table_width))
                     .height(Fill),
-                )
-                .width(size.width.max(table_width))
-                .height(Fill),
             ))
             .direction(iced::widget::scrollable::Direction::Horizontal(
                 iced::widget::scrollable::Scrollbar::default(),
@@ -1322,7 +1316,7 @@ impl ProcessList {
             .width(Fill)
             .height(Fill)
             .into()
-        }));
+        })));
         let body = mouse_area(body).on_move(Message::PointerMoved);
         if let Some((stopping, tree)) = &self.stopping {
             let dialog = container(
@@ -1759,15 +1753,7 @@ impl ProcessList {
                     .max_width(960)
                     .height(Fill)
                     .max_height(680)
-                    .style(|theme| container::Style {
-                        background: Some(theme.palette().background.into()),
-                        border: iced::Border {
-                            color: theme.extended_palette().background.strong.color,
-                            width: 1.0,
-                            radius: design::CARD_RADIUS.into(),
-                        },
-                        ..Default::default()
-                    })
+                    .style(super::widgets::surface)
                 ))
                 .padding(design::space::MEDIUM as u16)
                 .center_x(Fill)
