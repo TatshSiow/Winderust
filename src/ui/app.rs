@@ -30,7 +30,7 @@ use crate::{
 // Iced supplies logical pixels; do not apply the monitor DPI a second time.
 fn shell_widths(width: f32) -> (f32, f32, u16) {
     (
-        (width * 0.18).clamp(240.0, design::NAVIGATION_WIDTH),
+        (width * 0.18).clamp(248.0, design::NAVIGATION_WIDTH),
         (width * 0.21).clamp(240.0, design::SIDE_PANEL_WIDTH),
         if width < 1280.0 {
             design::space::MEDIUM
@@ -75,6 +75,7 @@ pub(crate) fn run(
                     #[cfg(feature = "render-smoke")]
                     smoke: smoke::Run::requested(),
                     navigation_search: String::new(),
+                    navigation_search_open: false,
                     expanded_section: None,
                     status_collapsed: false,
                     feature_info_expanded: false,
@@ -151,7 +152,10 @@ pub(crate) fn run(
         ..Default::default()
     })
     .settings(iced::Settings {
-        default_font: design::typography::FONT,
+        default_font: iced::Font {
+            weight: iced::font::Weight::Normal,
+            ..design::typography::FONT
+        },
         default_text_size: design::typography::BODY.into(),
         ..Default::default()
     })
@@ -195,7 +199,18 @@ pub(crate) fn run(
             } else {
                 Subscription::none()
             },
-            if app.page == Page::ProcessList {
+            if app.navigation_search_open {
+                iced::event::listen_with(|event, _, _| match event {
+                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                        ..
+                    }) => Some(Message::CloseNavigationSearch),
+                    _ => None,
+                })
+            } else {
+                Subscription::none()
+            },
+            if app.page == Page::ProcessList && !app.navigation_search_open {
                 iced::event::listen_with(|event, status, _| match event {
                     iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                         key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
@@ -219,6 +234,7 @@ struct WinderustApp {
     smoke: Option<smoke::Run>,
     appearance: Theme,
     navigation_search: String,
+    navigation_search_open: bool,
     expanded_section: Option<Page>,
     status_collapsed: bool,
     feature_info_expanded: bool,
@@ -282,6 +298,8 @@ enum Message {
     #[cfg(feature = "render-smoke")]
     SmokeScreenshot(iced::window::Screenshot),
     NavigationSearch(String),
+    OpenNavigationSearch,
+    CloseNavigationSearch,
     DismissError,
     NavigateHistory(bool),
     ToggleNavigation,
@@ -359,6 +377,14 @@ impl WinderustApp {
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
             Message::DismissError => self.error_message.clear(),
             Message::NavigationSearch(value) => self.navigation_search = value,
+            Message::OpenNavigationSearch => {
+                self.navigation_search_open = true;
+                return iced::widget::operation::focus("navigation-search");
+            }
+            Message::CloseNavigationSearch => {
+                self.navigation_search_open = false;
+                self.navigation_search.clear();
+            }
             Message::ToggleNavigation => {
                 let patch = crate::application::NavigationCollapsedPatch {
                     base_revision: self.settings.base_revision(),
@@ -371,10 +397,19 @@ impl WinderustApp {
             }
             Message::ToggleFeatureInfo => self.feature_info_expanded = !self.feature_info_expanded,
             Message::ToggleSection(page) => {
-                if self.page != page {
-                    return self.update(Message::Page(page));
+                self.navigation_search_open = false;
+                self.navigation_search.clear();
+                let collapsed = self.settings.global().general.navigation_collapsed;
+                let reopen = if collapsed {
+                    self.update(Message::ToggleNavigation)
+                } else {
+                    Task::none()
+                };
+                if self.page != page || collapsed {
+                    return Task::batch([reopen, self.update(Message::Page(page))]);
                 }
                 self.expanded_section = (self.expanded_section != Some(page)).then_some(page);
+                return reopen;
             }
             Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
             Message::Status(status_rail::Message::RelaunchAdmin) => {
@@ -390,14 +425,13 @@ impl WinderustApp {
             Message::Home(home::Message::Navigate(page)) => {
                 return self.update(Message::Page(page))
             }
-            Message::Home(home::Message::PauseMetrics(value)) => {
-                self.home.metrics_paused = value;
+            Message::Home(home::Message::HoverChart(kind, slot)) => {
+                self.home.hover_chart(kind, slot)
             }
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {
-                    Ok(sample) if !self.home.metrics_paused => self.home.record(sample),
-                    Ok(_) => {}
+                    Ok(sample) => self.home.record(sample),
                     Err(error) => self.error_message = error,
                 }
             }
@@ -858,7 +892,10 @@ impl WinderustApp {
                 let path = navigation::breadcrumb_path(page);
                 self.breadcrumb = path;
                 self.page = page;
-                self.expanded_section = Some(page.section_landing_page());
+                self.navigation_search_open = false;
+                self.navigation_search.clear();
+                let section = page.section_landing_page();
+                self.expanded_section = navigation::has_children(section).then_some(section);
                 if page == Page::Win32PrioritySeparation {
                     self.priority_separation.refresh();
                 }
@@ -1038,7 +1075,6 @@ impl WinderustApp {
                 }
                 if self.page == Page::Home
                     && !self.hidden
-                    && !self.home.metrics_paused
                     && !self.sampling
                     && self.sampled_at.elapsed() >= Duration::from_secs(1)
                 {
@@ -1606,233 +1642,166 @@ impl WinderustApp {
             .padding(design::space::SECTION as u16))
             .into();
         }
-        let collapsed = self.settings.global().general.navigation_collapsed;
-        let mut navigation = column![]
-            .spacing(design::space::TINY)
-            .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
-            .width(Fill);
-        if collapsed {
-            navigation = navigation.push(
-                button(
-                    container(navigation::glyph("icons/search.svg"))
-                        .center_x(Fill)
-                        .center_y(Fill),
-                )
-                .width(Fill)
-                .height(design::NAVIGATION_ROW_HEIGHT)
-                .on_press(Message::ToggleNavigation)
-                .style(widgets::quiet),
-            );
-        } else {
-            navigation = navigation.push(
-                container(widgets::search_field(
-                    text_input(&t!("home.search_placeholder"), &self.navigation_search)
-                        .padding(widgets::SEARCH_INPUT_PADDING)
-                        .on_input(Message::NavigationSearch),
-                    (!self.navigation_search.is_empty())
-                        .then(|| Message::NavigationSearch(String::new())),
-                ))
-                .center_y(design::NAVIGATION_ROW_HEIGHT),
-            );
-        }
-        let search_pages = navigation::dashboard_search_pages(
-            &self.navigation_search,
-            self.settings.global().advanced.show_advanced_controls,
-        );
-        let mut utilities = column![]
-            .spacing(design::space::TINY)
-            .padding([design::space::SMALL as u16, design::space::CONTROL as u16]);
+        let navigation_open =
+            !self.settings.global().general.navigation_collapsed && self.expanded_section.is_some();
+        let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
+        let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
         for section in Page::sections() {
             if section.landing_page == Page::AdvancedControls
                 && !self.settings.global().advanced.show_advanced_controls
             {
                 continue;
             }
-            let matches = |page: Page| {
-                self.navigation_search.is_empty()
-                    || search_pages.contains(&page)
-                    || page
-                        .label()
-                        .to_lowercase()
-                        .contains(&self.navigation_search.to_lowercase())
-            };
-            let visible =
-                matches(section.landing_page) || section.pages.iter().copied().any(matches);
-            let mut label = row![
-                widgets::active_indicator(self.page == section.landing_page),
-                navigation::icon(section.landing_page, self.page == section.landing_page)
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center);
-            if collapsed {
-                // Balance the selection marker so the icon remains centered.
-                label = label.push(iced::widget::Space::new().width(3));
-            } else {
-                label = label.push(navigation::label(section.landing_page));
-                if self
-                    .settings
-                    .global()
-                    .general
-                    .show_enabled_feature_counts_in_sidebar
-                {
-                    if let Some(count) = navigation::section_enabled_feature_count(
-                        &self.settings,
-                        section.landing_page,
-                    ) {
-                        label = label.push(
-                            container(text(count.to_string()).size(design::typography::BADGE))
-                                .padding([
-                                    design::space::TINY as u16,
-                                    design::space::CONTROL as u16,
-                                ])
-                                .style(move |theme| widgets::indicator_chip(theme, count > 0)),
-                        );
-                    }
-                }
-            }
-            let expandable = !collapsed && section.pages.iter().any(|p| *p != section.landing_page);
-            if expandable {
-                label = label.push(super::motion::wrap(
-                    navigation::glyph("icons/chevron-right.svg"),
-                    self.expanded_section == Some(section.landing_page),
-                    super::motion::Effect::Chevron,
-                ));
-            }
-            let section_header = button(container(label.height(Fill)).width(Fill).align_x(
-                if collapsed {
-                    iced::alignment::Horizontal::Center
+            let page = section.landing_page;
+            let item = navigation::rail_item(
+                page,
+                self.page.section_landing_page() == page,
+                if navigation::has_children(page) {
+                    Message::ToggleSection(page)
                 } else {
-                    iced::Left
+                    Message::Page(page)
                 },
-            ))
-            .height(design::NAVIGATION_ROW_HEIGHT)
-            .padding(design::NAVIGATION_ROW_PADDING)
-            .width(Fill)
-            .on_press(if expandable {
-                Message::ToggleSection(section.landing_page)
+            );
+            if matches!(page, Page::ActionLog | Page::SettingsHome | Page::About) {
+                utilities = utilities.push(item);
             } else {
-                Message::Page(section.landing_page)
-            })
-            .selected(self.page == section.landing_page, widgets::selected);
-            let section_header: Element<'_, Message> = if collapsed {
+                primary = primary.push(item);
+            }
+        }
+        let rail = container(
+            column![
                 iced::widget::tooltip(
-                    section_header,
-                    text(section.landing_page.label()),
+                    button(container(navigation::glyph("icons/search.svg")).center_x(Fill))
+                        .width(Fill)
+                        .height(36)
+                        .style(widgets::quiet)
+                        .on_press(Message::OpenNavigationSearch),
+                    text(t!("home.search_placeholder").to_string()),
                     iced::widget::tooltip::Position::Right,
                 )
-                .style(container::bordered_box)
-                .into()
-            } else {
-                section_header.into()
-            };
-            let mut children = Vec::new();
-            for page in section.pages.iter().filter(|p| **p != section.landing_page) {
-                let mut label = row![
-                    widgets::active_indicator(self.page == *page),
-                    navigation::icon(*page, self.page == *page),
-                    navigation::label(*page),
-                ]
-                .spacing(design::space::SMALL)
-                .height(Fill)
-                .align_y(iced::Center);
-                if navigation::feature_page_enabled(&self.settings, *page) == Some(true) {
-                    label = label.push(
-                        container(iced::widget::Space::new())
+                .style(widgets::surface),
+                scrollable(primary)
+                    .direction(iced::widget::scrollable::Direction::Vertical(
+                        iced::widget::scrollable::Scrollbar::new()
                             .width(3)
-                            .height(18)
-                            .style(move |theme: &Theme| container::Style {
+                            .scroller_width(3),
+                    ))
+                    .height(Fill),
+                iced::widget::rule::horizontal(1),
+                utilities,
+            ]
+            .spacing(design::space::TIGHT)
+            .height(Fill),
+        )
+        .padding(design::space::CONTROL as u16)
+        .width(design::NAVIGATION_RAIL_WIDTH)
+        .height(Fill)
+        .style(widgets::navigation_surface);
+        let mut navigation = row![rail, iced::widget::rule::vertical(1)];
+        if navigation_open {
+            let section = self.expanded_section.unwrap_or(Page::Home);
+            let title = section.label();
+            let mut panel_title =
+                row![widgets::heading(title, design::typography::SECTION).width(Fill),]
+                    .align_y(iced::Center)
+                    .spacing(design::space::TIGHT);
+            if self
+                .settings
+                .global()
+                .general
+                .show_enabled_feature_counts_in_sidebar
+            {
+                if let Some(count) =
+                    navigation::section_enabled_feature_count(&self.settings, section)
+                {
+                    panel_title = panel_title.push(
+                        container(text(count.to_string()).size(design::typography::BADGE))
+                            .padding([2, 6])
+                            .style(move |theme| widgets::indicator_chip(theme, count > 0)),
+                    );
+                }
+            }
+            let close = iced::widget::tooltip(
+                button(navigation::glyph("icons/x.svg"))
+                    .padding(4)
+                    .style(widgets::quiet)
+                    .on_press(Message::ToggleNavigation),
+                text(t!("common.close").to_string()),
+                iced::widget::tooltip::Position::Bottom,
+            )
+            .style(widgets::surface);
+            panel_title = panel_title.push(close);
+            let mut pages = column![].spacing(design::space::TIGHT);
+            let mut choices = Vec::new();
+            if let Some(group) = Page::sections().iter().find(|s| s.landing_page == section) {
+                choices.extend(group.pages.iter().copied().filter(|p| *p != section));
+            }
+            for page in choices {
+                let label = page.label();
+                let mut entry = row![text(label).size(design::typography::BODY).width(Fill)]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center);
+                if navigation::feature_page_enabled(&self.settings, page) == Some(true) {
+                    entry = entry.push(
+                        container(iced::widget::Space::new())
+                            .width(6)
+                            .height(6)
+                            .style(|theme: &Theme| container::Style {
                                 background: Some(theme.palette().success.into()),
-                                border: iced::border::rounded(2),
+                                border: iced::border::rounded(3),
                                 ..Default::default()
                             }),
                     );
                 }
-                children.push(super::motion::wrap(
-                    button(label)
+                pages = pages.push(
+                    button(entry)
                         .width(Fill)
-                        .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
-                        .on_press(Message::Page(*page))
-                        .padding([design::space::SMALL as u16, design::space::MEDIUM as u16])
-                        .selected(self.page == *page, widgets::selected),
-                    matches(*page),
-                    super::motion::Effect::Visible,
-                ));
+                        .padding([design::space::MEDIUM as u16, design::space::SMALL as u16])
+                        .selected(self.page == page, widgets::selected)
+                        .on_press(Message::Page(page)),
+                );
             }
-            let section_content = super::motion::wrap(
-                navigation::section(
-                    section_header,
-                    children,
-                    !collapsed
-                        && (self.expanded_section == Some(section.landing_page)
-                            || !self.navigation_search.is_empty()),
-                ),
-                visible,
-                super::motion::Effect::Visible,
+            navigation = navigation.push(
+                container(
+                    column![
+                        panel_title,
+                        iced::widget::rule::horizontal(1),
+                        scrollable(pages).height(Fill),
+                    ]
+                    .spacing(design::space::MEDIUM)
+                    .height(Fill),
+                )
+                .padding(design::space::MEDIUM as u16)
+                .width(Fill)
+                .height(Fill)
+                .style(widgets::navigation_surface),
             );
-            if matches!(
-                section.landing_page,
-                Page::ActionLog | Page::SettingsHome | Page::About
-            ) {
-                utilities = utilities.push(section_content);
-            } else {
-                navigation = navigation.push(section_content);
-            }
+            navigation = navigation.push(iced::widget::rule::vertical(1));
         }
-        let mut toggle_content = row![];
-        toggle_content = toggle_content
-            .push(navigation::glyph(if collapsed {
-                "icons/panel-left-open.svg"
-            } else {
-                "icons/panel-left-close.svg"
-            }))
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center);
-        if !collapsed {
-            toggle_content = toggle_content.push(
-                text(t!("nav.collapse_navigation").to_string()).size(design::typography::SECONDARY),
-            );
-        }
-        let navigation_toggle =
-            widgets::sidebar_toggle(container(toggle_content.height(Fill)).width(Fill).align_x(
-                if collapsed {
-                    iced::alignment::Horizontal::Center
-                } else {
-                    iced::Left
-                },
-            ))
-            .on_press(Message::ToggleNavigation);
-        let navigation_toggle: Element<'_, Message> = if collapsed {
-            iced::widget::tooltip(
-                navigation_toggle,
-                text(t!("nav.expand_navigation").to_string()),
-                iced::widget::tooltip::Position::Right,
-            )
-            .style(container::bordered_box)
-            .into()
+        let navigation_width = if navigation_open {
+            navigation_width
         } else {
-            navigation_toggle.into()
+            design::NAVIGATION_RAIL_WIDTH + 1.0
         };
-        utilities = utilities
-            .push(iced::widget::rule::horizontal(1))
-            .push(navigation_toggle);
+        let navigation = container(navigation)
+            .width(navigation_width)
+            .height(Fill)
+            .style(widgets::navigation_surface);
         let side_panel = self.side_panel(self.page);
-        const BREADCRUMB_TEXT_SIZE: u32 = design::typography::TITLE;
+        const BREADCRUMB_TEXT_SIZE: u32 = design::typography::SECONDARY;
         let mut header = row![].align_y(iced::Center);
-        for (index, page) in self.breadcrumb.iter().copied().enumerate() {
+        let parents = &self.breadcrumb[..self.breadcrumb.len().saturating_sub(1)];
+        for (index, page) in parents.iter().copied().enumerate() {
             let mut item = row![].spacing(design::space::COMPACT).align_y(iced::Center);
             if index > 0 {
                 item = item.push(navigation::glyph("icons/chevron-right.svg"));
             }
-            let label: Element<'_, Message> = if index + 1 < self.breadcrumb.len() {
-                button(widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE))
+            item = item.push(
+                button(text(page.label()).size(BREADCRUMB_TEXT_SIZE))
                     .padding(0)
                     .style(widgets::quiet)
-                    .on_press(Message::Page(page))
-                    .into()
-            } else {
-                widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE).into()
-            };
-            item = item.push(label);
+                    .on_press(Message::Page(page)),
+            );
             header = header.push(super::motion::wrap(
                 container(item).padding(iced::Padding {
                     left: if index > 0 {
@@ -1842,12 +1811,11 @@ impl WinderustApp {
                     },
                     ..Default::default()
                 }),
-                index < self.breadcrumb.len(),
+                true,
                 super::motion::Effect::Visible,
             ));
         }
-        let breadcrumb_width: f32 = self
-            .breadcrumb
+        let breadcrumb_width: f32 = parents
             .iter()
             .enumerate()
             .map(|(index, page)| {
@@ -1858,9 +1826,19 @@ impl WinderustApp {
                         0.0
                     }
             })
-            .sum();
-        let breadcrumb =
-            container(header.wrap().vertical_spacing(design::space::SMALL)).width(Fill);
+            .sum::<f32>()
+            .max(widgets::text_width(
+                &self.page.label(),
+                design::typography::TITLE,
+            ));
+        let title = widgets::heading(self.page.label(), design::typography::TITLE);
+        let breadcrumb = container(if parents.is_empty() {
+            column![title]
+        } else {
+            column![header.wrap().vertical_spacing(design::space::TIGHT), title]
+                .spacing(design::space::SMALL)
+        })
+        .width(Fill);
         let mut actions_width = 0.0;
         let mut profile_controls = None;
         let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
@@ -1934,11 +1912,7 @@ impl WinderustApp {
             );
         }
         let main_width = width
-            - if collapsed {
-                design::SIDEBAR_COLLAPSED_WIDTH
-            } else {
-                navigation_width
-            }
+            - navigation_width
             - if side_panel.is_none() {
                 0.0
             } else if self.status_collapsed {
@@ -1948,6 +1922,7 @@ impl WinderustApp {
             }
             - 2.0 * page_padding as f32
             - design::space::SMALL as f32;
+        let main_width = main_width.min(design::CONTENT_WIDTH as f32);
         let actions = header
             .wrap()
             .vertical_spacing(design::space::SMALL)
@@ -2001,7 +1976,12 @@ impl WinderustApp {
                 self.feature_info_expanded,
             ));
         }
-        let mut body = column![heading].spacing(design::space::MEDIUM).height(Fill);
+        let heading = container(heading)
+            .max_width(design::CONTENT_WIDTH)
+            .width(Fill);
+        let mut body = column![container(heading).center_x(Fill)]
+            .spacing(design::space::WIDE)
+            .height(Fill);
         let content = self.page_view();
         body = body.push(
             container(
@@ -2022,20 +2002,7 @@ impl WinderustApp {
             .height(Fill),
         );
         let layout = row![
-            super::motion::wrap(
-                container(
-                    container(column![scrollable(navigation).height(Fill), utilities].height(Fill))
-                        .width(Fill)
-                        .height(Fill)
-                        .style(widgets::navigation_surface)
-                )
-                .width(Fill),
-                !collapsed,
-                super::motion::Effect::Width {
-                    min: design::SIDEBAR_COLLAPSED_WIDTH,
-                    max: navigation_width
-                }
-            ),
+            navigation,
             container(body)
                 .padding([design::space::SECTION as u16, page_padding])
                 .center_x(Fill)
@@ -2088,7 +2055,8 @@ impl WinderustApp {
                     .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
                     .height(Fill),
                 )
-                .width(Fill),
+                .width(Fill)
+                .style(widgets::navigation_surface),
                 !self.status_collapsed,
                 super::motion::Effect::Width {
                     min: design::SIDEBAR_COLLAPSED_WIDTH,
@@ -2105,6 +2073,115 @@ impl WinderustApp {
                 super::motion::Effect::Visible,
             ))
             .into();
+        if self.navigation_search_open {
+            let searching = !self.navigation_search.trim().is_empty();
+            let choices = if searching {
+                navigation::dashboard_search_pages(
+                    &self.navigation_search,
+                    self.settings.global().advanced.show_advanced_controls,
+                )
+            } else {
+                navigation::dashboard_sections_in_nav_order(
+                    self.settings.global().advanced.show_advanced_controls,
+                )
+                .into_iter()
+                .map(|section| section.landing_page)
+                .collect()
+            };
+            let mut results = column![].spacing(design::space::TIGHT);
+            if choices.is_empty() {
+                results = results.push(
+                    container(text(t!("home.no_matching_functions").to_string()))
+                        .padding(design::space::MEDIUM as u16),
+                );
+            }
+            let first_result = choices.first().copied();
+            for page in choices {
+                let mut label = column![text(page.label()).size(design::typography::BODY)];
+                let section = page.section_landing_page();
+                if section != page {
+                    label = label.push(
+                        text(section.label())
+                            .size(design::typography::SECONDARY)
+                            .style(text::secondary),
+                    );
+                }
+                results = results.push(
+                    button(
+                        row![
+                            navigation::icon(page, false),
+                            label.width(Fill),
+                            navigation::glyph("icons/chevron-right.svg"),
+                        ]
+                        .spacing(design::space::MEDIUM)
+                        .align_y(iced::Center),
+                    )
+                    .width(Fill)
+                    .padding(design::space::MEDIUM as u16)
+                    .style(widgets::quiet)
+                    .on_press(Message::Page(page)),
+                );
+            }
+            let mut input = text_input(&t!("home.search_placeholder"), &self.navigation_search)
+                .id("navigation-search")
+                .padding(widgets::SEARCH_INPUT_PADDING)
+                .on_input(Message::NavigationSearch);
+            if let Some(page) = first_result {
+                input = input.on_submit(Message::Page(page));
+            }
+            let search = container(
+                column![
+                    row![
+                        navigation::glyph("icons/search.svg"),
+                        widgets::search_field(
+                            input,
+                            searching.then(|| Message::NavigationSearch(String::new())),
+                        ),
+                        button(text(t!("common.close").to_string()))
+                            .style(widgets::quiet)
+                            .on_press(Message::CloseNavigationSearch),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                    iced::widget::rule::horizontal(1),
+                    text(if searching {
+                        t!("home.search_results")
+                    } else {
+                        t!("home.main_sections")
+                    })
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+                    container(scrollable(results)).max_height(360),
+                ]
+                .spacing(design::space::MEDIUM),
+            )
+            .padding(design::space::MEDIUM as u16)
+            .width(Fill)
+            .max_width(560)
+            .style(widgets::surface);
+            return iced::widget::stack![
+                layout,
+                iced::widget::mouse_area(
+                    container(iced::widget::Space::new())
+                        .width(Fill)
+                        .height(Fill)
+                        .style(|_| container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.3).into()),
+                            ..Default::default()
+                        }),
+                )
+                .on_press(Message::CloseNavigationSearch),
+                container(iced::widget::opaque(search))
+                    .padding(iced::Padding {
+                        top: 48.0,
+                        right: 24.0,
+                        bottom: 24.0,
+                        left: 24.0
+                    })
+                    .center_x(Fill),
+            ]
+            .into();
+        }
         let modal = match self.page {
             Page::CpuSetsSoft => self
                 .soft_allocation
@@ -2366,7 +2443,11 @@ impl WinderustApp {
                 .map(Message::Processes),
             Page::Home => self
                 .home
-                .view(&self.settings, &self.status.feature_status)
+                .view(
+                    &self.settings,
+                    &self.status.feature_status,
+                    &self.status.action_log_entries,
+                )
                 .map(Message::Home),
             Page::WinderustBehaviour
             | Page::LanguageAndAppearance

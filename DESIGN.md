@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-09-09
+- Last refreshed: 2026-10-30
 - Primary product surfaces: Windows desktop app shell, process controls, automation settings, status dashboard, and Action Log.
 - Evidence reviewed: `.agents/memory/15-design-spec.md`, `.agents/memory/20-project-scope.md`,
   `src/application/`, `src/runtime/`, `src/control/`, `src/platform/windows/`,
@@ -43,10 +43,10 @@
 - Tradeoffs: Separate pages add one navigation item but remove mode ambiguity and conflicting ownership.
 
 ## Visual language
-- Color: Neutral surfaces with the configured accent for active state and semantic warning/danger colors.
-- Typography: Compact hierarchy with readable labels and muted supporting text.
-- Spacing/layout rhythm: Dense, stable rows using existing constants and setting groups.
-- Shape/radius/elevation: Existing Winderust surface and control radii; no new visual layer.
+- Color: Cool pale background, white panels, and a muted blue-gray navigation surface in light mode; corresponding slate surfaces in dark mode. Configured accent marks selection and primary actions; status colors remain semantic.
+- Typography: Segoe UI, regular 14px body text, 13px navigation labels, semibold headings, and prominent 28px dashboard values.
+- Spacing/layout rhythm: More breathing room between panels with 16px shared card padding and 12px gaps; keep operational tables dense and stable.
+- Shape/radius/elevation: 10px panel corners, 6px control corners, and subtle 1px panel outlines; avoid decorative shadows and blur.
 - Motion: Small control transitions respect Animation Mode. Page, panel, and content-layout changes remain immediate; `.agents/memory/15-design-spec.md` is the authority for motion and scrolling.
 - Imagery/iconography: Bundled Lucide SVG navigation/action icons.
 
@@ -74,7 +74,7 @@
 - Error: Show actionable status and Action Log entries without repeated spam.
 - Success: Reflect applied process counts and per-rule indicators.
 - Process actions: Stacked parent rows show only `Stop process tree`, covering every process in the stack and their descendants; expanded sub-items show both stop actions. Non-stacked rows show `Stop process`, plus `Stop process tree` only when the process currently has children.
-- Navigation: Language and Appearance can show enabled-feature count pills beside Winderust Features, Power Plan Control, Priority Control, and CPU Control while the sidebar is expanded; collapsed navigation keeps icons unbadged and aligned.
+- Navigation: Language and Appearance can show enabled-feature count pills in the secondary header for Winderust Features, Power Plan Control, Priority Control, and CPU Control; the primary rail stays unbadged.
 - Cards: Language and Appearance can show Enabled or Disabled pills on cards for pages with a top-level feature switch. Cards without a single enabled state remain unbadged.
 - Disabled: Preserve configured rules while restoring managed process state. Process List keeps
   Advanced Suspend/Resume visible but disables Suspend for inaccessible, protected, Session 0,
@@ -110,9 +110,9 @@
 ## Iced presentation
 - Use the native Windows title bar, resize borders, and window buttons through Iced decorations. Keep close requests routed through existing unsaved-change and tray handling.
 - Status/error text and chart series use Iced semantic styles and theme palette colors.
-- Use Iced's native widgets and interaction states with Winderust's neutral light/charcoal palette. Keep shared borderless card surfaces, selected navigation, and hover/press feedback in widgets.rs.
+- Use Iced's native widgets and interaction states with Winderust's pale light/slate palette. Keep shared outlined panel surfaces, tinted selected navigation, and hover/press feedback in widgets.rs.
 - The Windows/custom accent preference seeds the primary palette; shared neutral surface, border, and muted-text roles preserve hierarchy across light and dark themes.
-- Reserve filled primary buttons for primary commands. Use text buttons for secondary commands, gentle accent interaction shading, and borderless surfaces.
+- Reserve filled primary buttons for primary commands. Use text buttons for secondary commands, gentle accent interaction shading, and subtle panel outlines.
 - Keep application-specific layout: grouped navigation, readable page headings, compact dashboard charts, constrained form rows, status rails, and scrollbar spacing.
 - Retain bundled icons, charts, and bounded motion where standard widgets do not cover existing functionality.
 - Add custom styling only for a concrete requirement unsupported by Iced's built-ins.
@@ -120,52 +120,44 @@
 ## Open questions
 - None blocking implementation. Density preferences can be adjusted after reviewing native screenshots.
 
-## Kraken Desktop reference
-- User reference: https://www.kraken.com/desktop (reviewed 2026-09-08).
-- Observed in the app screenshots: compact module headers, aligned data, fine dividers, dark neutral surfaces, and selective accent color.
-- Adapt the desktop application's hierarchy, not the surrounding promotional artwork or trading workflows.
-- Use neutral charcoal surfaces in dark mode and neutral pale surfaces in light mode; keep gentle accent tinting in interaction states. Preserve System/Light/Dark and the existing accent preference.
-- Page title and power-source controls share a compact toolbar; navigation uses tighter rows; dashboard charts and shortcuts form aligned modules; status groups use dividers instead of stacked nested cards.
-- Keep the native Windows frame, all feature routes, existing safety behavior, and motion preferences. No new styling framework or dependencies.
-- Reference PNGs are local review artifacts under target/design-reference/. Render checks use --features render-smoke -- --render-smoke (English/light 1120x760, Traditional Chinese/dark 900x620).
-
-## Minimal surface refinement
-- The supplied reference images emphasize color and hierarchy rather than outlined cards. Remove redundant outlines from headers, navigation, setting groups, and logs.
-- Distinguish major dashboard/navigation surfaces with a slight theme-derived tone shift. Use spacing for setting groups and fine rules only where useful for data alignment.
-- Selected tabs use the shared gentle accent-filled selection surface; inactive tabs are quiet. Navigation and menu selections retain accent text. Hover, selected, and pressed surfaces use the current accent at 10%, 15%, and 20% opacity. Disabled cards and buttons retain their surface with muted text. Reserve solid accent fills for primary actions such as Save.
-- Keep standard Iced inputs, dropdowns, hover/disabled states, Windows framing, and existing functionality. Shared style functions address the requested refinement without a custom widget system.
-
-- Landing-page navigation cards and Home shortcuts use the shared borderless surface and respond across the full card on hover. Search functions through the sidebar; do not duplicate its search field on Home. The entire card is clickable; setting rows and expandable groups also use visible card surfaces.
+## Current dashboard reference (2026-10-30)
+- Reference: the user's supplied light Windows dashboard image. The user requested the direction across the entire interface, including navigation.
+- Apply pale blue-gray chrome, white panels with fine cool borders, restrained rounded corners, generous panel spacing, clear metric hierarchy, and tinted active navigation across existing pages.
+- The latest sidebar reference replaces the nested tree with a permanent icon-and-label rail and a separate secondary navigation panel. Both panels dock flush to the window edges with square corners and thin vertical dividers, without outer gaps or floating card outlines; preserve every feature route and pinned utility links.
+- Keep System/Light/Dark, Windows/custom accent, native window framing, localization, and existing motion preferences.
+- Center content within a maximum 1440px workspace. Forms, tables, and page headings keep their current ownership and controls.
+- Home follows the latest dark dashboard reference: a two-by-two CPU/RAM/Disk I/O/Network I/O chart grid above equal-width Enabled Features and Recent Logs panels. Size the cards from available content height as well as width. Use four metric columns in wide, short workspaces (at least 1280px wide and below 680px high); otherwise use two columns from 720px wide, or one column below that. Omit redundant dashboard subtitles at every size. Keep chart cards at least 200px high and summary panels at least 160px high; use page scrolling only when these readable minimums cannot fit. Charts show a 60-second history, scale labels and legends. Hover uses a floating, viewport-clamped tooltip with the sample timestamp, named series values, a dashed crosshair, and point markers; CPU headers show Usage on the left and Frequency on the right. Render only recorded chart samples; missing history stays blank while sampled zero remains visible. RAM headers show Usage with a Used label and used/total capacity on the left and Available on the right. Disk and Network I/O headers show their two named, curve-colored metrics on the left and Total on the right; network uses decimal Mb/s, and CPU frequency is explicitly relative on its shared percentage scale. Enabled Features and Recent Logs retain fixed card geometry and headers. Enabled Features has no View All footer; Recent Logs retains its Details footer. Center empty messages within the content area; populated lists use inset scrolling inside the cards. Recent Logs shows actual Action Log outcomes and links to Log. Main section shortcuts live in navigation and global search rather than the dashboard. Dashboard sampling runs only while Home is shown and the window is not hidden to tray; omit manual Pause/Resume metrics controls.
+- Only display available real telemetry. The reference's GPU, watts, battery estimates, and generic optimization claims do not authorize new backend features or simulated values.
+- Shared setting cards, landing links, dialogs, and status surfaces use the same palette and geometry; retain dense borderless process and log tables, virtualization, and runtime safety.
+- Render checks use `--features render-smoke -- --render-smoke` for all pages in English/light and Traditional Chinese/dark, plus compact navigation, expanded groups, and large desktop layouts.
 
 ## Interaction and readability refinement
 - Use Windows Segoe UI typography for small-text readability in Iced, with 14px body text and 13px sidebar labels. Keep Iced's existing advanced shaping, system font fallback, and DPI-aware software text rendering; do not add a second renderer or claim ClearType support.
-- Combine Winderust's compact icon rows and inline feature status with Kraken's quiet neutral surfaces and selective accent. Hover changes the surface; pressing strengthens feedback without changing layout geometry.
-- Expanded navigation has a fixed 264px width. Long labels stay on one line inside clipped slots, with full labels available in native Iced tooltips. Chevron controls have a fixed width.
+- Combine Winderust's compact icon rows and inline feature status with the current reference's light panel hierarchy and selective accent. Hover changes the surface; pressing strengthens feedback without changing layout geometry.
+- The primary navigation rail is 88px wide with vertically stacked icons and 11px centered, wrapping labels. Every primary item is 64px high; center the icon and actual one- or two-line label together vertically, with equal top and bottom insets. Icons and labels center on the full tile width; group chevrons overlay the right edge of the icon row and align with the icon centerline. The thin primary scrollbar floats within the outer padding so it does not shift the main entries relative to the footer. Combined navigation scales from 248px to 320px; the secondary list wraps long labels to preserve the narrow-window work area. The right status dock retains its separate compact width.
 - Page introductions start collapsed behind the localized Feature info header action and reset when navigating. Keep static descriptions and cautions in Feature info; retain validation and live runtime warnings beside their controls.
 - Native render checks also cover expanded English/Chinese help, long English navigation at minimum width, and the compact sidebar.
 
-## GPUI setting-card structure target
+## Setting-card structure
 The source-mapped hierarchy corrections are implemented. See [the design integrity review](docs/iced-design-integrity.md) for the original findings, corrections, and verification limits. Card surfaces alone are not evidence of parity.
-- The latest user direction supersedes the earlier flat setting-group treatment. Follow the former GPUI setting_action_card and setting_group layout from commit cab3186.
+- Keep standalone setting rows and expandable groups on shared panel surfaces, applying the current dashboard reference to their colors, borders, and spacing.
 - Each standalone setting row has a full-width, small-radius card surface. Keep labels and their controls together, with consistent padding and vertical alignment.
-- Chevrons are passive indicators inside a shared clickable row/header, never separate icon buttons. Sidebar section rows navigate to their landing page and expand; clicking the current section toggles its children.
+- Chevrons are passive indicators inside shared clickable controls. Primary section entries navigate to their landing page and open the secondary panel; selecting the current landing section toggles that panel. Secondary lists show the existing section pages without a redundant landing-page row; primary category buttons open their landing pages.
 - Each expandable group is one enclosing card containing its full-width clickable header, state chevron, and body. Preserve the existing collapse state and motion preferences.
-- Use widgets::settings_card for standalone rows and widgets::setting_group for independent header actions and flat expandable bodies. Compose standard Iced containers/buttons; use Iced rounded_box styling without outlines and the existing hover styles. Do not restore GPUI dependencies or vendored code.
+- Use widgets::settings_card for standalone rows and widgets::setting_group for independent header actions and flat expandable bodies. Compose standard Iced containers/buttons; use the shared subtly outlined surfaces and existing hover styles. Do not restore GPUI dependencies or vendored code.
 - Custom rule and exclusion rows have card boundaries. Process List remains a dense table, matching the old GPUI design. Headers, explanatory text, and command bars do not need independent cards.
 
-- All card surfaces are borderless, including hover and pressed states. Use background shading and spacing to separate cards; retain native input/control boundaries.
+- Card outlines remain stable across hover and pressed states; background shading supplies interaction feedback. Retain native input/control boundaries.
 
-## Original layout reference — 2026-09-09
-- Reference: user-provided GPUI screenshots and `cab3186:src/ui/app/shared/page_navigation.rs`; `CONTENT_MAX_WIDTH` was 1040 pixels.
-- Center a maximum 1040-pixel workspace in the area beside the sidebar. Keep headings, forms, dashboard, and tables aligned to that frame.
-- Use 28-pixel semibold page headings with Home breadcrumbs. Retain Segoe UI and native Windows framing.
-- Home: CPU/RAM/I/O across the first row; Network and Enabled Features across the second; section shortcuts below in three columns. Narrow windows use two columns.
-- Pin Log, Settings, About, and the sidebar toggle below the scrollable main navigation.
+## Operational layout rules
+- Keep headings, forms, dashboard, and tables aligned within the shared workspace.
+- Use 28-pixel semibold page headings with compact parent breadcrumbs above the current title. Retain Segoe UI and native Windows framing.
+- Home section shortcuts follow the charts and feature status; narrow windows use two shortcut columns.
+- Pin Log, Settings, and About below the scrollable primary navigation. Search opens an independent palette above the page; the category header X hides only the secondary navigation panel.
 - Landing cards are compact, single-line navigation rows. Descriptions remain available on feature pages through Feature info.
 - Process List keeps its virtualization and configurable columns, with 52-pixel rows, aligned names/icons, and internal row dividers. Action Log uses aligned table columns and hover text for truncated reasons.
-- Cards use charcoal #191b1e over #0f1011 in dark mode, white over neutral gray in light mode; keep card outlines absent.
 
-- Adaptive Engine uses numeric steppers with units and contextual help, right-aligned switches, equal-width tuning tabs, and section breadcrumbs. Its 320px desktop side panel sits outside the 1040px content frame; below 1400px it follows the editor to preserve form width.
+- Adaptive Engine uses numeric steppers with units and contextual help, right-aligned switches, equal-width tuning tabs, and section breadcrumbs. Its 320px desktop side panel sits outside the main content frame; below 1400px it follows the editor to preserve form width.
 - Adaptive Engine Priority Control keeps each control's advanced options in its own expandable row, aligned under Focus, Visible Window, and Background. Process and Memory Priority include detection and priority-preservation controls. Disabling detection falls through to the next applicable tier without changing CPU restraint's focus protection. Process Priority always protects existing High/Realtime classes; optional same-or-higher/lower preservation defaults off. Memory preservation defaults on. Both detection layers default on, retaining existing behavior. Custom presets capture these options; built-in presets restore their defaults.
 
 - Shared setting rows use a right-aligned On/Off switch or bounded numeric stepper. Status and tuning presets use the shell dock on desktop and a compact disclosure at narrow widths. Preserve all additional policy options below the main Adaptive Engine table. About groups identity and update controls into separate surfaces; Appearance orders Language, Accent, Theme, Animation and uses square color swatches. Unsaved settings remain in a lower-right notice.
@@ -179,3 +171,10 @@ Dropdowns use the shared Select control: a native Iced pick-list field with a na
 The shared extended palette defines neutral navigation, card/field, button, border, and muted-text roles. Accent fills, checkbox marks, and switch thumbs follow the original Winderust rule: white in light mode; in dark mode, white when weighted RGB brightness (0.299R + 0.587G + 0.114B) is below 140, otherwise #111111. Keep semantic status colors distinct. Windows appearance comes from UISettings.GetColorValue; explicit theme and custom accent preferences override system values.
 
 Inactive navigation icons and resting control borders use neutral tones. Active navigation retains the accent; enabled switch thumbs use the shared theme-and-accent foreground rule. Expanded setting groups have no header divider and use evenly spaced rows, and the active custom color swatch has a contrasting outline. Appearance dropdowns use the shared select width.
+
+## Two-panel sidebar reference (2026-10-30)
+- Reference: the user supplied a narrow labeled icon rail alongside a separately outlined Power menu with a header close button. Global search uses a focused search palette above the page, with results, Enter to open, and Escape/outside-click dismissal; it never opens or changes the secondary navigation. Apply this structure to all existing Winderust categories in both themes.
+- Active section styling remains visible in the primary rail while visiting any child page. Enabled-feature counts belong in the secondary header; enabled page markers remain in its list.
+- The remembered navigation-collapsed preference controls the secondary panel. Clicking a primary category can reopen it; Search leaves its state unchanged. Direct leaf pages use only the primary rail.
+- Global search finds pages across all categories and respects Advanced Controls visibility. Choosing a result closes and clears the palette and navigates to that page and its category.
+- Use existing Iced widgets, scrolling, bundled icons, and shared styling; navigation panel layout changes are immediate. Do not change runtime feature ownership or settings.

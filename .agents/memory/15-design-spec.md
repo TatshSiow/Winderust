@@ -4,21 +4,29 @@ This file describes the current app design direction. Use it when changing Iced 
 
 ## Product Feel
 
-Winderust is an operational Windows power and process-control utility. The UI should feel dense, calm, scannable, and repeat-use friendly. Do not turn it into a marketing page, hero layout, or decorative dashboard.
+Winderust is an operational Windows power and process-control utility. The UI should feel calm, scannable, and repeat-use friendly, with the light dashboard reference supplied on 2026-10-30 guiding all pages and navigation. Do not turn it into a marketing page, hero layout, or decorative dashboard.
 
-Prefer visible state, compact controls, and predictable rows over large illustrations or card-heavy presentation.
+Prefer visible state, compact controls, and predictable rows. Use pale blue-gray chrome, white finely outlined panels, and more panel spacing; preserve dense operational tables.
 
 ## App Shell
 
 - Use the native Windows title bar and resize borders through Iced window decorations, with left navigation and a right work area.
 - Windows owns the title bar and window buttons. Keep native close requests routed through the existing tray, unsaved-change, and shutdown handling.
-- The sidebar is grouped by product area through `Page::sections()`. It is
-  searchable when expanded and keeps a search action in its remembered compact
-  icon rail; the quiet navigation-styled toggle stays below a divider in normal
-  sidebar flow rather than floating over content. Keep icon and row geometry
-  stable between expanded and compact states; selected and hover
-  surfaces retain rounded compact-row geometry instead of being edge-clipped.
-  Show a search field when expanded and a search action when compact.
+- The sidebar uses a permanent 88px icon-and-label rail and a secondary navigation panel. Both dock flush to the window edges with square corners and thin vertical dividers; omit outer gaps and floating card outlines.
+  Main entries are 64px high; center each icon and its actual one- or two-line label together vertically with equal top and bottom insets.
+  Group chevrons overlay the right edge of the icon row, aligned to the icon
+  centerline; they never displace centered content. The thin primary scrollbar
+  stays within the outer padding so main and footer entries share one centerline.
+  Log, Settings, and About stay pinned below the scrollable primary list.
+- Selecting a category opens its secondary panel with a heading, close X,
+  and that category's existing pages without a redundant landing-page row. Closing the panel keeps the rail
+  and active section visible. The remembered navigation-collapsed preference
+  controls only this secondary panel.
+- Global search opens a focused palette above the page without opening or changing
+  secondary navigation. Results show function names and parent sections. Enter
+  opens the first result; Escape, Close, or clicking outside dismisses the palette.
+- Combined navigation scales from 248px to 320px; secondary labels wrap at narrow
+  widths. Keep navigation layout changes immediate and the right status rail independent.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
@@ -30,7 +38,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Use fixed or computed widths for tables and policy columns. Do not let dynamic labels resize the process list.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
-- Keep surface and control corner radii small and consistent. Do not introduce large rounded marketing panels.
+- Use shared 10px surface and 6px control corner radii consistently. Do not introduce large rounded marketing panels.
 
 ## Components
 
@@ -50,7 +58,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Navigation selection uses a rounded vertical pill; tabs use an accent underline with a tinted background; power-source selection uses a dot.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
-- Base surfaces are neutral and restrained. Accent color marks primary action, active navigation, selection, and important status.
+- Base surfaces use cool pale neutrals in light mode and slate tones in dark mode; panels have subtle 1px outlines. Accent color marks primary action, active navigation, selection, and important status.
 - Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers.
 - Do not add purple/blue gradients, decorative blobs, glow backgrounds, or one-note palettes.
 - Status colors should stay semantic: success for active/applied, warning for caution, danger for destructive or failed actions.
@@ -84,7 +92,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Delete opens confirmation for the selected process or stack members only, without descendants. Tree termination remains an explicit context-menu action; Cancel submits no termination.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Filters, column visibility, and memory value/percentage controls belong in the Settings side panel.
-- Language and Appearance owns the enabled-feature counts toggle. When enabled, expanded navigation shows numeric pills beside Winderust Features, Power Plan Control, Priority Control, and CPU Control based on each section's enabled modules; collapsed navigation keeps the pills hidden to preserve icon alignment.
+- Language and Appearance owns the enabled-feature counts toggle. When enabled, the secondary navigation header shows a numeric pill for Winderust Features, Power Plan Control, Priority Control, and CPU Control based on the section's enabled modules; the primary rail stays unbadged.
 - Language and Appearance separately owns the feature-card status toggle. When enabled, shared landing and search-result cards show Enabled or Disabled pills only for pages backed by a top-level feature switch; pages without a single enabled state remain unbadged.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Columns are resizable and initially fit their content. Double-click a divider to auto-fit; the last visible column fills remaining width. Preserve the layout tests.
@@ -172,3 +180,21 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Avoid duplicated help text between inline descriptions, info popovers, and How it works.
 
 - Adaptive Engine CPU Behaviour presents shared detection/timing once, followed by three sibling policy groups. Zoning has its own live/preset expansion state and 1-99 foreground share. Limiter percentage always means background capacity; its allocation method stays visible when zones are enabled. Show zoning's throughput warning and verified status/counts, not configured enablement as proof of application.
+
+## Current reference layout
+
+- The user approved the 2026-10-30 light dashboard direction across all UI and the sidebar; `DESIGN.md` records the reference mapping.
+- The later two-panel sidebar reference uses an 88px icon-and-label rail, a separate closable category menu, and tinted selected entries. Keep all existing categories and global search.
+- Use 16px card padding, 12px card gaps, regular Segoe UI body text, semibold headings, and prominent dashboard values.
+- Put compact parent breadcrumbs above the current page title.
+- Home uses a two-by-two chart grid above Enabled Features and Recent Logs. Shared content is capped at 1440px.
+- Dense virtual process and log tables retain borderless tiled backgrounds and existing row geometry.
+- Keep System/Light/Dark and custom/system accent behavior. Do not infer new telemetry or optimization guarantees from the reference image.
+
+## Home dashboard
+
+- Follow the latest dashboard reference: a 2x2 CPU/RAM/Disk I/O/Network I/O chart grid, then equal-width Enabled Features and Recent Logs panels. Adapt card heights to available content height. Use four metric columns at widths of at least 1280px and heights below 680px, two columns from 720px wide, otherwise one column. Omit redundant dashboard subtitles at every size. Preserve readable minimum card sizes and retain page scrolling only when they cannot fit; the feature and log lists scroll independently.
+- Charts show 60 seconds of real history with axes and legends. Hover shows a floating tooltip with the actual sample timestamp and named series values, plus a dashed crosshair and point markers. Clamp the tooltip to the viewport, including compact charts. CPU headers show Usage on the left and Frequency on the right. Render only recorded chart samples: missing history stays blank, actual zero samples remain visible. RAM headers show Usage with a Used label and used/total capacity on the left and Available on the right. Disk and Network I/O headers show their two named, curve-colored metrics on the left and Total on the right. Network uses decimal Mb/s. CPU frequency is explicitly relative on the shared percentage scale, with the current GHz value shown separately.
+- Enabled Features and Recent Logs preserve card height and fixed headers in both empty and populated states. Enabled Features has no View All footer; Recent Logs retains its Details footer. Center empty messages in the remaining content area; populated lists use inset scrolling with space for the scrollbar and links to their full pages. Recent Logs uses actual Action Log outcomes, never fabricated INFO/WARN events. Keep unavailable telemetry and empty logs honest.
+- Keep category shortcuts in navigation and global search; omit the old dashboard shortcut grid.
+- Dashboard sampling runs only while Home is selected and the window is not hidden to tray. Do not add manual Pause/Resume metrics controls; background automation retains its independent monitoring.

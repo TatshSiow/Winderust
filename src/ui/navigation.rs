@@ -52,40 +52,63 @@ pub(super) fn breadcrumb_path(page: Page) -> Vec<Page> {
     path
 }
 
-pub(super) fn section<'a, Message: 'a>(
-    header: impl Into<Element<'a, Message>>,
-    children: Vec<Element<'a, Message>>,
-    expanded: bool,
-) -> Element<'a, Message> {
-    let mut section = iced::widget::column![header.into()];
-    // An empty column still participates in spacing; leaf pages must have no child slot.
-    if !children.is_empty() {
-        section = section.push(super::motion::wrap(
-            iced::widget::column(children)
-                .spacing(design::space::TINY)
-                .padding(iced::Padding {
-                    top: design::space::TINY as f32,
-                    right: design::space::COMPACT as f32,
-                    left: design::space::COMPACT as f32,
-                    bottom: 0.0,
-                }),
-            expanded,
-            super::motion::Effect::Visible,
-        ));
-    }
-    section.into()
+pub(super) fn has_children(page: Page) -> bool {
+    Page::sections().iter().any(|section| {
+        section.landing_page == page && section.pages.iter().any(|child| *child != page)
+    })
 }
 
-pub(super) fn label<'a, Message: 'a>(page: Page) -> Element<'a, Message> {
-    use iced::widget::{container, text};
-    container(
-        text(page.label())
-            .size(design::typography::SECONDARY)
-            .wrapping(text::Wrapping::None),
+pub(super) fn rail_item<'a, Message: Clone + 'a>(
+    page: Page,
+    selected: bool,
+    message: Message,
+) -> Element<'a, Message> {
+    use iced::widget::{column, container, stack, text};
+    let mut icon_row = stack![container(icon(page, selected))
+        .center_x(iced::Fill)
+        .height(design::ICON_SIZE)];
+    if has_children(page) {
+        icon_row = icon_row.push(
+            container(
+                iced::widget::svg(
+                    crate::ui::assets::iced_icon("icons/chevron-right.svg")
+                        .expect("Navigation chevron is bundled"),
+                )
+                .width(12)
+                .height(12)
+                .style(|theme: &Theme, _| iced::widget::svg::Style {
+                    color: Some(super::widgets::muted_color(theme)),
+                }),
+            )
+            .align_right(iced::Fill)
+            .center_y(design::ICON_SIZE),
+        );
+    }
+    let content = column![
+        icon_row,
+        container(
+            text(page.label())
+                .size(design::typography::BADGE)
+                .width(iced::Fill)
+                .align_x(iced::Center),
+        )
+        .width(iced::Fill)
+        .max_height(30)
+        .clip(true),
+    ]
+    .spacing(design::space::TIGHT)
+    .align_x(iced::Center);
+    iced::widget::tooltip(
+        super::widgets::button(container(content).center_x(iced::Fill).center_y(iced::Fill))
+            .width(iced::Fill)
+            .height(design::NAVIGATION_ITEM_HEIGHT)
+            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
+            .selected(selected, super::widgets::selected)
+            .on_press(message),
+        text(page.label()),
+        iced::widget::tooltip::Position::Right,
     )
-    .width(iced::Fill)
-    .height(design::ICON_SIZE)
-    .clip(true)
+    .style(super::widgets::surface)
     .into()
 }
 
@@ -602,33 +625,74 @@ mod tests {
 
     use super::*;
     #[test]
-    fn leaf_navigation_keeps_one_layout_child_after_first_visit() {
-        let build = |expanded, children| {
-            section::<()>(
-                iced::widget::Space::new().height(design::NAVIGATION_ROW_HEIGHT),
-                children,
-                expanded,
-            )
-        };
-        for expanded in [false, true] {
-            assert_eq!(build(expanded, vec![]).as_widget().children().len(), 1);
+    fn rail_items_fit_their_width_and_keep_geometry_when_selected() {
+        fn leaves(
+            node: &iced::advanced::layout::Node,
+            offset: iced::Point,
+            bounds: &mut Vec<iced::Rectangle>,
+        ) {
+            let local = node.bounds();
+            let origin = iced::Point::new(offset.x + local.x, offset.y + local.y);
+            if node.children().is_empty() {
+                bounds.push(iced::Rectangle::new(origin, local.size()));
+            } else {
+                for child in node.children() {
+                    leaves(child, origin, bounds);
+                }
+            }
         }
-        let child = || {
-            iced::widget::Space::new()
-                .height(design::NAVIGATION_CHILD_ROW_HEIGHT)
-                .into()
-        };
-        let mut collapsed = build(false, vec![child()]);
-        assert_eq!(collapsed.as_widget().children().len(), 2);
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let mut tree = iced::advanced::widget::Tree::new(&collapsed);
-        let layout = collapsed.as_widget_mut().layout(
-            &mut tree,
-            &renderer,
-            &iced::advanced::layout::Limits::new(iced::Size::ZERO, iced::Size::new(300.0, 900.0)),
-        );
-        assert_eq!(layout.size().height, design::NAVIGATION_ROW_HEIGHT as f32);
-        assert_eq!(build(true, vec![child()]).as_widget().children().len(), 2);
+        for section in Page::sections() {
+            let mut sizes = Vec::new();
+            for selected in [false, true] {
+                let mut view = rail_item(section.landing_page, selected, ());
+                let mut tree = iced::advanced::widget::Tree::new(&view);
+                let layout = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &iced::advanced::layout::Limits::new(
+                        iced::Size::ZERO,
+                        iced::Size::new(design::NAVIGATION_RAIL_WIDTH - 12.0, 900.0),
+                    ),
+                );
+                assert!(layout.size().width <= design::NAVIGATION_RAIL_WIDTH - 12.0);
+                assert_eq!(layout.size().height, design::NAVIGATION_ITEM_HEIGHT as f32);
+                let mut bounds = Vec::new();
+                leaves(&layout, iced::Point::ORIGIN, &mut bounds);
+                let icon = bounds
+                    .iter()
+                    .find(|bounds| bounds.size() == iced::Size::new(18.0, 18.0))
+                    .expect("Rail item contains its icon");
+                assert_eq!(icon.x + icon.width / 2.0, layout.size().width / 2.0);
+                let label = bounds
+                    .iter()
+                    .find(|bounds| bounds.width > 18.0 && bounds.height > 12.0)
+                    .expect("Rail item contains its label");
+                let top = icon.y;
+                let bottom = layout.size().height - (label.y + label.height);
+                assert!(
+                    (top - bottom).abs() < 0.01,
+                    "Unequal rail insets: {top} / {bottom}"
+                );
+                assert!(
+                    (label.y - (icon.y + icon.height) - design::space::TIGHT as f32).abs() < 0.01
+                );
+                if has_children(section.landing_page) {
+                    let chevron = bounds
+                        .iter()
+                        .find(|bounds| bounds.size() == iced::Size::new(12.0, 12.0))
+                        .expect("Group contains a chevron");
+                    assert_eq!(chevron.y + chevron.height / 2.0, icon.y + icon.height / 2.0);
+                    assert!(chevron.x > icon.x + icon.width);
+                }
+                sizes.push(layout.size());
+            }
+            assert_eq!(sizes[0], sizes[1]);
+        }
+        assert!(!has_children(Page::Home));
+        assert!(!has_children(Page::ProcessList));
+        assert!(has_children(Page::PowerPlanControl));
+        assert!(has_children(Page::SettingsHome));
     }
     #[test]
     fn every_page_has_a_bundled_icon_and_sidebar_counts_follow_feature_settings() {

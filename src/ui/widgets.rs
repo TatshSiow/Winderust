@@ -3,8 +3,8 @@ use crate::power::PowerPlan;
 use iced::widget::{row, text};
 use iced::{Element, Fill};
 
-pub(super) const CARD_GAP: u32 = design::space::SMALL;
-pub(super) const CARD_PADDING: u32 = design::space::MEDIUM;
+pub(super) const CARD_GAP: u32 = design::space::MEDIUM;
+pub(super) const CARD_PADDING: u32 = design::space::LARGE;
 pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
 pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
 
@@ -922,7 +922,11 @@ pub(super) fn navigation_surface(theme: &iced::Theme) -> iced::widget::container
 pub(super) fn surface(theme: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(theme.extended_palette().background.weak.color.into()),
-        border: iced::border::rounded(design::CARD_RADIUS),
+        border: iced::Border {
+            color: control_border(theme).scale_alpha(0.75),
+            width: 1.0,
+            radius: design::CARD_RADIUS.into(),
+        },
         ..Default::default()
     }
 }
@@ -934,6 +938,17 @@ pub(super) fn selected(
     let mut style = quiet(theme, status);
     if status != iced::widget::button::Status::Disabled {
         style.text_color = theme.palette().primary;
+        style.background = Some(
+            theme
+                .palette()
+                .primary
+                .scale_alpha(match status {
+                    iced::widget::button::Status::Hovered => 0.16,
+                    iced::widget::button::Status::Pressed => 0.22,
+                    _ => 0.10,
+                })
+                .into(),
+        );
     }
     style
 }
@@ -1080,7 +1095,7 @@ mod tests {
     #[test]
     fn interactive_surfaces_distinguish_hover_press_selection_and_disabled() {
         for theme in [Theme::CatppuccinLatte, Theme::CatppuccinMocha] {
-            assert_eq!(selected(&theme, Status::Active).background, None);
+            assert_ne!(selected(&theme, Status::Active).background, None);
             assert_eq!(
                 selected(&theme, Status::Active).text_color,
                 theme.palette().primary
@@ -1095,13 +1110,8 @@ mod tests {
                 let pressed = style(&theme, Status::Pressed);
                 assert_ne!(active.background, hovered.background);
                 assert_ne!(hovered.background, pressed.background);
-                assert_eq!(
-                    hovered.background,
-                    quiet(&theme, Status::Hovered).background
-                );
-                assert_eq!(active.border.width, 0.0);
-                assert_eq!(hovered.border.width, 0.0);
-                assert_eq!(pressed.border.width, 0.0);
+                assert_eq!(active.border.width, hovered.border.width);
+                assert_eq!(active.border.width, pressed.border.width);
                 assert_eq!(active.border.radius, hovered.border.radius);
                 assert_ne!(
                     style(&theme, Status::Disabled).text_color,

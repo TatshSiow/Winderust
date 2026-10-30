@@ -34,7 +34,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(26) {
+    if extra == Some(35) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
@@ -61,6 +61,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25) => Page::ProcessPriority,
+            Some(26..=34) => Page::Home,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -69,7 +70,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else {
             crate::config::AppLanguage::English
         };
-        app.settings.general.theme_mode = if chinese || extra.is_some_and(|i| i >= 13) {
+        app.settings.general.theme_mode = if chinese || extra.is_some_and(|i| i >= 14) {
             crate::config::AppThemeMode::Dark
         } else {
             crate::config::AppThemeMode::Light
@@ -96,6 +97,22 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.expanded_section, Some(Page::PowerPlanControl));
             let _ = app.update(Message::Page(page));
             assert_eq!(app.expanded_section, Some(page.section_landing_page()));
+            app.settings.general.navigation_collapsed = true;
+            let _ = app.update(Message::ToggleSection(Page::PowerPlanControl));
+            assert!(!app.settings.global().general.navigation_collapsed);
+            assert_eq!(app.expanded_section, Some(Page::PowerPlanControl));
+            let _ = app.update(Message::OpenNavigationSearch);
+            assert!(app.navigation_search_open);
+            let _ = app.update(Message::NavigationSearch("cpu".into()));
+            let _ = app.update(Message::CloseNavigationSearch);
+            assert!(!app.navigation_search_open);
+            assert!(app.navigation_search.is_empty());
+            app.settings.general.navigation_collapsed = true;
+            let _ = app.update(Message::OpenNavigationSearch);
+            assert!(app.settings.global().general.navigation_collapsed);
+            let _ = app.update(Message::Page(page));
+            assert!(!app.navigation_search_open);
+            assert!(app.navigation_search.is_empty());
         }
         if extra == Some(0) {
             let _ = app.update(Message::Efficiency(
@@ -185,27 +202,78 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if extra == Some(17) {
             app.adaptive = adaptive_engine::Editor::default();
         }
-        return Some(Task::batch([
-            iced::window::resize(
-                window,
-                iced::Size::new(
-                    if extra.is_some_and(|i| i >= 13) {
-                        1920.0
-                    } else if chinese || extra.is_some() {
-                        900.0
+        if matches!(extra, Some(13 | 29..=34)) {
+            app.home.populate_smoke_history();
+            app.settings.general.enabled = true;
+            app.settings.cpu_limiter.enabled = true;
+            app.settings.process_priority.enabled = true;
+            app.settings.memory_trim.enabled = true;
+            app.settings.io_priority.enabled = true;
+            use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
+            app.status.action_log_entries = Arc::new(
+                (0..10)
+                    .map(|index| ActionLogEntry {
+                        sequence: index + 1,
+                        batch_id: index + 1,
+                        timestamp_epoch_ms: 1_770_000_000_000 + index as u128 * 10_000,
+                        feature: ActionLogFeature::MemoryTrim,
+                        process_id: Some(1234),
+                        process_name: "example.exe".into(),
+                        result: if index % 3 == 0 {
+                            ActionLogResult::Skipped
+                        } else {
+                            ActionLogResult::Applied
+                        },
+                        reason: "Render-smoke fixture: memory trim completed.".into(),
+                    })
+                    .collect(),
+            );
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        let search = if matches!(extra, Some(26..=28)) {
+            app.settings.general.navigation_collapsed = true;
+            let open = app.update(Message::OpenNavigationSearch);
+            if extra != Some(26) {
+                let _ = app.update(Message::NavigationSearch(
+                    if extra == Some(27) {
+                        "cpu"
                     } else {
-                        1120.0
-                    },
-                    if extra.is_some_and(|i| i >= 13) {
-                        1080.0
-                    } else if chinese {
-                        620.0
-                    } else {
-                        760.0
-                    },
-                ),
+                        "zzzz-no-match"
+                    }
+                    .into(),
+                ));
+            }
+            open
+        } else {
+            Task::none()
+        };
+        let size = match extra {
+            Some(30) => iced::Size::new(1280.0, 720.0),
+            Some(31) => iced::Size::new(1440.0, 900.0),
+            Some(32) => iced::Size::new(1920.0, 720.0),
+            Some(33) => iced::Size::new(900.0, 1000.0),
+            Some(34) => iced::Size::new(1536.0, 960.0),
+            _ => iced::Size::new(
+                if extra.is_some_and(|i| i >= 13) {
+                    1920.0
+                } else if chinese || extra.is_some() {
+                    900.0
+                } else {
+                    1120.0
+                },
+                if extra.is_some_and(|i| i >= 13) {
+                    1080.0
+                } else if chinese {
+                    620.0
+                } else {
+                    760.0
+                },
             ),
+        };
+        return Some(Task::batch([
+            iced::window::resize(window, size),
             navigate,
+            search,
         ]));
     }
     run.ticks += 1;
@@ -263,6 +331,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        94
+        103
     );
 }

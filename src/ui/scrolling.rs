@@ -537,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn table_background_matches_native_surface_at_fractional_dpi() {
+    fn table_background_matches_native_panel_fill_at_fractional_dpi() {
         use iced::advanced::renderer::{Headless as _, Renderer as _};
         for theme in [Theme::Light, Theme::Dark] {
             for scale in [1.0, 1.25, 1.5, 2.0] {
@@ -549,7 +549,12 @@ mod tests {
                         table_surface(content)
                     } else {
                         iced::widget::container(content)
-                            .style(super::super::widgets::surface)
+                            .style(|theme| {
+                                let mut style = super::super::widgets::surface(theme);
+                                // Dense virtual tables retain their borderless tiled background.
+                                style.border.width = 0.0;
+                                style
+                            })
                             .into()
                     };
                     let bounds = Rectangle::with_size(Size::new(132.0, 100.0));

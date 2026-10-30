@@ -77,7 +77,7 @@ pub struct PageSection {
     pub pages: &'static [Page],
 }
 
-const OVERVIEW_PAGES: [Page; 1] = [Page::Home];
+const HOME_PAGES: [Page; 1] = [Page::Home];
 const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
 const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
     Page::ByForeground,
@@ -120,7 +120,7 @@ const ADVANCED_CONTROLS_PAGES: [Page; 3] = [
 const PAGE_SECTIONS: [PageSection; 10] = [
     PageSection {
         landing_page: Page::Home,
-        pages: &OVERVIEW_PAGES,
+        pages: &HOME_PAGES,
     },
     PageSection {
         landing_page: Page::ProcessList,

@@ -237,9 +237,6 @@ runtime_status:
   processor_affinity_hard_active: "處理器親和性（硬式）作用中。"
 
 home:
-  pause_metrics: "暫停更新指標"
-  resume_metrics: "恢復更新指標"
-  home: "總覽"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
   current_mode: "目前模式"
@@ -253,7 +250,10 @@ home:
   cpu_frequency: "頻率"
   memory_usage: "RAM"
   memory_used: "使用量"
-  memory_cache: "快取"
+  memory_available: "可用記憶體"
+  cpu_frequency_relative: "時脈（相對值）"
+  recent_logs: "最近紀錄"
+  details: "詳細紀錄"
   io_usage: "磁碟 I/O"
   io_total: "總計"
   io_read: "讀取"
