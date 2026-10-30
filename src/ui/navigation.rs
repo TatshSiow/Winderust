@@ -98,18 +98,13 @@ pub(super) fn rail_item<'a, Message: Clone + 'a>(
     ]
     .spacing(design::space::TIGHT)
     .align_x(iced::Center);
-    iced::widget::tooltip(
-        super::widgets::button(container(content).center_x(iced::Fill).center_y(iced::Fill))
-            .width(iced::Fill)
-            .height(design::NAVIGATION_ITEM_HEIGHT)
-            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-            .selected(selected, super::widgets::selected)
-            .on_press(message),
-        text(page.label()),
-        iced::widget::tooltip::Position::Right,
-    )
-    .style(super::widgets::surface)
-    .into()
+    super::widgets::button(container(content).center_x(iced::Fill).center_y(iced::Fill))
+        .width(iced::Fill)
+        .height(design::NAVIGATION_ITEM_HEIGHT)
+        .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
+        .selected(selected, super::widgets::selected)
+        .on_press(message)
+        .into()
 }
 
 pub(super) fn page_feature_info(page: Page) -> String {
