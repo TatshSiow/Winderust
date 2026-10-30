@@ -12,22 +12,18 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 
 - Use the native Windows title bar and resize borders through Iced window decorations, with left navigation and a right work area.
 - Windows owns the title bar and window buttons. Keep native close requests routed through the existing tray, unsaved-change, and shutdown handling.
-- The sidebar uses a permanent 88px icon-and-label rail and a secondary navigation panel. Both dock flush to the window edges with square corners and thin vertical dividers; omit outer gaps and floating card outlines.
-  Main entries are 64px high; center each icon and its actual one- or two-line label together vertically with equal top and bottom insets.
-  Group chevrons overlay the right edge of the icon row, aligned to the icon
-  centerline; they never displace centered content. The thin primary scrollbar
-  stays within the outer padding so main and footer entries share one centerline.
-  Log, Settings, and About stay pinned below the scrollable primary list.
-- Selecting a category opens its secondary panel with a heading, close X,
-  and that category's existing pages without a redundant landing-page row. Closing the panel keeps the rail
-  and active section visible. The remembered navigation-collapsed preference
-  controls only this secondary panel.
-- Global search opens a focused palette above the page without opening or changing
-  secondary navigation. Follow the compact Fumadocs reference: a 640px upper-center panel, borderless search field, Esc keycap, and compact category-filter row over a dimmed backdrop. Match the filter row to the search panel background. Esc uses the standard shared button; the dropdown uses the standard shared Select with project colors and interaction styles. Tint the selected compact result to identify the Enter target. Vertically center icons, one- or two-line labels, and chevrons within each fixed-height result row. Keep the search panel shadow-free: upstream tiny-skia quad shadows draw outside partial repaint damage and accumulate black patches. Empty All searches omit the result list; typing or choosing a category reveals inset results. Results show function names and parent sections. Enter
+- Use a permanent 88px icon-and-label rail. Main entries are 64px high; center each icon and its actual one- or two-line label together vertically with equal top and bottom insets.
+  Group chevrons overlay the icon row's right edge. Keep the thin primary scrollbar within the outer padding. Log, Settings, and About stay below the scrollable primary list.
+- Secondary navigation always floats in a 252px overlay adjacent to its parent, using the existing surface, border, and radius. Clamp it inside the window and scroll long lists. Opening or dismissing it never changes main-content geometry.
+  Hover a parent for 250ms to open or switch its child menu. Clicking a rail item navigates directly to its page and dismisses pending or open flyouts. Keep it open over either area, allow 300ms to cross between them, and cancel outdated timers. Wake only for a pending delay; do not poll while idle.
+  Choosing a page closes the flyout. Outside clicks, Escape, and window focus loss dismiss it without changing the current page or active rail highlight.
+- Flyouts list only child pages. Use a plain section heading for context, with existing enabled-feature count chips and individual status dots. Do not include a parent-page navigation entry or pin action. There is no persistent secondary sidebar or saved navigation mode. Category landing pages stay accessible directly from the rail and expose their existing child-page cards.
+- Tab focuses rail entries; Up/Down move rail focus, Enter/Space opens the focused page, and Right Arrow opens a category's child flyout with its first child focused. Up/Down/Tab move through child pages; Enter selects; Escape/Left dismisses and returns focus to the parent. Show focus outlines, reveal offscreen parents, and keep focused items visible. Touch users can navigate through category landing-page cards without hover.
+- Global search opens a focused palette above the page. Dismiss floating navigation
+  before opening search. Follow the compact Fumadocs reference: a 640px upper-center panel, borderless search field, Esc keycap, and compact category-filter row over a dimmed backdrop. Match the filter row to the search panel background. Esc uses the standard shared button; the dropdown uses the standard shared Select with project colors and interaction styles. Tint the selected compact result to identify the Enter target. Vertically center icons, one- or two-line labels, and chevrons within each fixed-height result row. Keep the search panel shadow-free: upstream tiny-skia quad shadows draw outside partial repaint damage and accumulate black patches. Empty All searches omit the result list; typing or choosing a category reveals inset results. Results show function names and parent sections. Enter
   opens the selected result; Up/Down move selection and scroll it into view. New queries and filters select the first result. Escape, Close, or clicking outside dismisses the palette.
 - Search defaults to Ctrl+K or / within the app window, respecting keys captured by text inputs and menus. Settings > Winderust Behaviour provides primary and alternate shortcut recording, clearing, and default restoration through normal Save. The rail Search entry matches other navigation item heights, icon/label spacing, and vertical centering. Navigation entries, including Search, have no hover tooltips. Keep Search to its icon and label; give Search only a subtle tint with neutral text while the palette is open, retaining the current page as the primary selection.
-- Combined navigation scales from 248px to 320px; secondary labels wrap at narrow
-  widths. Keep navigation layout changes immediate and the right status rail independent.
+- The rail stays 88px wide plus its divider. Keep content geometry independent of flyout state and the right status rail independent.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
@@ -59,7 +55,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 - Navigation selection uses a rounded vertical pill; tabs use an accent underline with a tinted background; power-source selection uses a dot.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
-- Left navigation and the right panel share docked chrome surfaces with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
+- The navigation rail and right panel use docked chrome with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Floating navigation uses the shared outlined surface. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
 - Base surfaces use cool pale neutrals in light mode and slate tones in dark mode; panels have subtle 1px outlines. Accent color marks primary action, active navigation, selection, and important status.
 - Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers.
 - Do not add purple/blue gradients, decorative blobs, glow backgrounds, or one-note palettes.

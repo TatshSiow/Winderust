@@ -4,6 +4,205 @@ use crate::ui::{self, Page};
 use iced::{Element, Theme};
 use rust_i18n::t;
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+const OPEN_DELAY: Duration = Duration::from_millis(250);
+const CLOSE_DELAY: Duration = Duration::from_millis(300);
+
+#[derive(Debug, Clone)]
+pub(super) enum Event {
+    Hover(Page),
+    Leave(Page),
+    OpenKeyboard(Page),
+    Enter,
+    Exit,
+    Dismiss,
+    Blur,
+    Tick(Instant),
+    Select(Page),
+    Search,
+    FocusMove(Option<Page>, bool),
+    Tab(Option<Page>, bool),
+    Key(iced::keyboard::Key, bool),
+}
+
+#[derive(Default)]
+pub(super) struct Flyout {
+    pub section: Option<Page>,
+    pub selected: Option<usize>,
+    hovered: Option<Page>,
+    inside: bool,
+    pending_open: Option<(Page, Instant)>,
+    close_at: Option<Instant>,
+}
+
+impl Flyout {
+    pub fn timer(&self) -> Option<(Instant, Duration)> {
+        self.pending_open
+            .map(|(_, due)| (due, OPEN_DELAY))
+            .or_else(|| self.close_at.map(|due| (due, CLOSE_DELAY)))
+    }
+
+    pub fn dismiss(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn update(&mut self, event: &Event, now: Instant) {
+        match *event {
+            Event::OpenKeyboard(page) => {
+                self.section = Some(page);
+                self.pending_open = None;
+                self.close_at = None;
+                self.selected = Some(0);
+            }
+            Event::Hover(page) => {
+                self.hovered = Some(page);
+                self.close_at = None;
+                self.pending_open =
+                    (self.section != Some(page)).then_some((page, now + OPEN_DELAY));
+            }
+            Event::Leave(page) if self.hovered == Some(page) => {
+                self.hovered = None;
+                self.pending_open = None;
+                if !self.inside && self.section.is_some() {
+                    self.close_at = Some(now + CLOSE_DELAY);
+                }
+            }
+            Event::Enter => {
+                self.inside = true;
+                self.pending_open = None;
+                self.close_at = None;
+            }
+            Event::Exit => {
+                self.inside = false;
+                if self.hovered.is_none() {
+                    self.close_at = Some(now + CLOSE_DELAY);
+                }
+            }
+            Event::Tick(_) => {
+                if let Some((page, due)) = self.pending_open {
+                    if now >= due {
+                        self.section = Some(page);
+                        self.selected = None;
+                        self.pending_open = None;
+                    }
+                }
+                if self.close_at.is_some_and(|due| now >= due) {
+                    self.dismiss();
+                }
+            }
+            Event::Dismiss => self.dismiss(),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod flyout_tests {
+    use super::*;
+
+    #[test]
+    fn hover_delays_cancel_stale_opens_and_allow_crossing_into_the_panel() {
+        let start = Instant::now();
+        let mut state = Flyout::default();
+        let mut send = |event, millis| {
+            let now = start + Duration::from_millis(millis);
+            state.update(&event, now);
+            state.section
+        };
+        assert_eq!(send(Event::Hover(Page::SettingsHome), 0), None);
+        assert_eq!(send(Event::Tick(start), 249), None);
+        assert_eq!(send(Event::Hover(Page::PowerPlanControl), 249), None);
+        assert_eq!(send(Event::Leave(Page::SettingsHome), 250), None);
+        assert_eq!(send(Event::Tick(start), 498), None);
+        assert_eq!(send(Event::Tick(start), 499), Some(Page::PowerPlanControl));
+        send(Event::Leave(Page::PowerPlanControl), 500);
+        send(Event::Enter, 650);
+        assert_eq!(send(Event::Tick(start), 900), Some(Page::PowerPlanControl));
+        send(Event::Exit, 1000);
+        send(Event::Hover(Page::PowerPlanControl), 1299);
+        assert_eq!(send(Event::Tick(start), 1400), Some(Page::PowerPlanControl));
+        send(Event::Leave(Page::PowerPlanControl), 1500);
+        assert_eq!(send(Event::Tick(start), 1799), Some(Page::PowerPlanControl));
+        assert_eq!(send(Event::Tick(start), 1800), None);
+        assert!(state.timer().is_none());
+    }
+
+    #[test]
+    fn keyboard_open_and_dismissal_cancel_pending_timers() {
+        let now = Instant::now();
+        let mut state = Flyout::default();
+        state.update(&Event::Hover(Page::SettingsHome), now);
+        state.update(&Event::Leave(Page::SettingsHome), now);
+        assert!(state.timer().is_none());
+        state.update(&Event::Hover(Page::SettingsHome), now);
+        state.update(&Event::OpenKeyboard(Page::PowerPlanControl), now);
+        assert_eq!(state.section, Some(Page::PowerPlanControl));
+        assert!(state.timer().is_none());
+        state.update(&Event::Tick(now), now + Duration::from_secs(1));
+        assert_eq!(state.section, Some(Page::PowerPlanControl));
+        state.update(&Event::Hover(Page::SettingsHome), now);
+        state.update(&Event::Dismiss, now);
+        state.update(&Event::Tick(now), now + Duration::from_secs(1));
+        assert_eq!(state.section, None);
+        state.update(&Event::OpenKeyboard(Page::SettingsHome), now);
+        assert_eq!(state.selected, Some(0));
+        state.dismiss();
+        assert_eq!(state.section, None);
+        assert!(state.timer().is_none());
+    }
+}
+
+pub(super) fn rail_id(page: Option<Page>) -> iced::advanced::widget::Id {
+    format!("navigation-{page:?}").into()
+}
+
+pub(super) fn item_style(
+    theme: &Theme,
+    status: iced::widget::button::Status,
+    active: bool,
+    focused: bool,
+) -> iced::widget::button::Style {
+    let mut style = if active {
+        super::widgets::selected(theme, status)
+    } else {
+        super::widgets::quiet(theme, status)
+    };
+    if focused {
+        style.border.color = theme.palette().primary;
+        style.border.width = 2.0;
+    }
+    style
+}
+
+pub(super) fn children(section: Page) -> Vec<Page> {
+    Page::sections()
+        .iter()
+        .find(|group| group.landing_page == section)
+        .map(|group| {
+            group
+                .pages
+                .iter()
+                .copied()
+                .filter(|p| *p != section)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(super) fn is_utility(page: Page) -> bool {
+    matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
+}
+
+pub(super) fn rail_pages(show_advanced: bool) -> Vec<Page> {
+    let (mut primary, utilities): (Vec<_>, Vec<_>) = Page::sections()
+        .iter()
+        .map(|section| section.landing_page)
+        .filter(|page| *page != Page::AdvancedControls || show_advanced)
+        .partition(|page| !is_utility(*page));
+    primary.extend(utilities);
+    primary
+}
 
 pub(super) struct History {
     pages: Vec<Page>,

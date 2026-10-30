@@ -34,12 +34,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(35) {
+    if extra == Some(38) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11)
+            matches!(index, 1 | 5 | 7 | 9 | 11 | 36)
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -61,7 +61,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25) => Page::ProcessPriority,
-            Some(26..=34) => Page::Home,
+            Some(26..=37) => Page::Home,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -70,11 +70,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else {
             crate::config::AppLanguage::English
         };
-        app.settings.general.theme_mode = if chinese || extra.is_some_and(|i| i >= 14) {
-            crate::config::AppThemeMode::Dark
-        } else {
-            crate::config::AppThemeMode::Light
-        };
+        app.settings.general.theme_mode =
+            if chinese || extra.is_some_and(|i| (14..=34).contains(&i)) {
+                crate::config::AppThemeMode::Dark
+            } else {
+                crate::config::AppThemeMode::Light
+            };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
         // Exercise disclosure messages and long/compact navigation without enabling automation.
@@ -86,30 +87,30 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if extra == Some(0) {
             let section = Page::SettingsHome;
-            let _ = app.update(Message::ToggleSection(section));
+            let _ = app.update(Message::Navigation(navigation::Event::Select(section)));
             assert_eq!(app.page, section);
-            assert_eq!(app.expanded_section, Some(section));
-            let _ = app.update(Message::ToggleSection(section));
-            assert_eq!(app.expanded_section, None);
-            let _ = app.update(Message::ToggleSection(section));
-            assert_eq!(app.expanded_section, Some(section));
-            let _ = app.update(Message::ToggleSection(Page::PowerPlanControl));
-            assert_eq!(app.expanded_section, Some(Page::PowerPlanControl));
+            assert_eq!(app.navigation.section, None);
             let _ = app.update(Message::Page(page));
-            assert_eq!(app.expanded_section, Some(page.section_landing_page()));
-            app.settings.general.navigation_collapsed = true;
-            let _ = app.update(Message::ToggleSection(Page::PowerPlanControl));
-            assert!(!app.settings.global().general.navigation_collapsed);
-            assert_eq!(app.expanded_section, Some(Page::PowerPlanControl));
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )));
+            assert_eq!(app.page, page);
+            assert_eq!(app.navigation.section, Some(section));
+            let _ = app.update(Message::Navigation(navigation::Event::Dismiss));
+            assert_eq!(app.navigation.section, None);
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                Page::PowerPlanControl,
+            )));
+            assert_eq!(app.navigation.section, Some(Page::PowerPlanControl));
+            let _ = app.update(Message::Page(page));
+            assert_eq!(app.navigation.section, None);
             let _ = app.update(Message::OpenNavigationSearch);
             assert!(app.navigation_search_open);
             let _ = app.update(Message::NavigationSearch("cpu".into()));
             let _ = app.update(Message::CloseNavigationSearch);
             assert!(!app.navigation_search_open);
             assert!(app.navigation_search.is_empty());
-            app.settings.general.navigation_collapsed = true;
             let _ = app.update(Message::OpenNavigationSearch);
-            assert!(app.settings.global().general.navigation_collapsed);
             let _ = app.update(Message::Page(page));
             assert!(!app.navigation_search_open);
             assert!(app.navigation_search.is_empty());
@@ -121,11 +122,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else if extra == Some(1) {
             let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::Collapse));
         }
-        if extra == Some(3) {
-            app.settings.general.navigation_collapsed = true;
-        }
         if let Some(index @ 4..=12) = extra {
-            app.settings.general.navigation_collapsed = false;
             if index <= 10 {
                 use adaptive_engine::{Message as AdaptiveMessage, TuningTab};
                 if index == 4 {
@@ -231,7 +228,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         let search = if matches!(extra, Some(26..=28)) {
-            app.settings.general.navigation_collapsed = true;
             if extra == Some(26) {
                 let _ = app.update(Message::SearchKeyboard {
                     key: iced::keyboard::Key::Character("/".into()),
@@ -281,7 +277,49 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else {
             Task::none()
         };
+        let navigation = if matches!(extra, Some(35..=37)) {
+            let section = if extra == Some(36) {
+                Page::AdvancedControls
+            } else {
+                Page::SettingsHome
+            };
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )));
+            assert_eq!(app.page, page);
+            assert_eq!(app.navigation.selected, Some(0));
+            let _ = app.update(Message::Navigation(navigation::Event::Key(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::End),
+                false,
+            )));
+            assert_eq!(
+                app.navigation.selected,
+                Some(navigation::children(section).len() - 1)
+            );
+            let _ = app.update(Message::Navigation(navigation::Event::Key(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                false,
+            )));
+            assert_eq!(app.page, *navigation::children(section).last().unwrap());
+            assert_eq!(app.navigation.section, None);
+            let _ = app.update(Message::Page(page));
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )));
+            let _ = app.update(Message::Navigation(navigation::Event::Key(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                false,
+            )));
+            assert_eq!(app.page, page);
+            assert_eq!(app.navigation.section, None);
+            app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )))
+        } else {
+            Task::none()
+        };
         let size = match extra {
+            Some(35..=37) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -308,6 +346,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::window::resize(window, size),
             navigate,
             search,
+            navigation,
         ]));
     }
     run.ticks += 1;
@@ -365,6 +404,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        103
+        106
     );
 }

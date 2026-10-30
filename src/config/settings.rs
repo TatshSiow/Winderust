@@ -175,8 +175,6 @@ pub struct GeneralSettings {
     pub accent: AccentSettings,
     #[serde(default)]
     pub language: AppLanguage,
-    #[serde(default)]
-    pub navigation_collapsed: bool,
     #[serde(default = "default_true")]
     pub show_enabled_feature_counts_in_sidebar: bool,
     #[serde(default = "default_true")]
@@ -1759,7 +1757,6 @@ impl Default for Settings {
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
-                navigation_collapsed: false,
                 show_enabled_feature_counts_in_sidebar: true,
                 show_feature_status_on_cards: true,
                 animation_mode: AnimationMode::System,

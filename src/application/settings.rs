@@ -29,10 +29,6 @@ struct SettingsDraft {
 }
 
 impl SettingsDraft {
-    fn base_revision(&self) -> SettingsRevision {
-        self.base_revision
-    }
-
     fn mark_changed(&mut self) {
         self.edit_revision = self.edit_revision.wrapping_add(1);
     }
@@ -88,12 +84,6 @@ impl Default for AutoExclusionPatch {
             memory_trim: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NavigationCollapsedPatch {
-    pub base_revision: SettingsRevision,
-    pub navigation_collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,19 +237,6 @@ impl SettingsCoordinator {
         }
         self.runtime_snapshot.persisted_revision = self.persisted_revision;
         self.runtime_snapshot.clone()
-    }
-
-    fn apply_navigation_collapsed_patch(
-        &mut self,
-        draft: &mut SettingsDraft,
-        patch: NavigationCollapsedPatch,
-    ) -> SettingsResult<bool> {
-        self.apply_runtime_patch(draft, patch.base_revision, |settings| {
-            set_enabled_value(
-                &mut settings.general.navigation_collapsed,
-                patch.navigation_collapsed,
-            )
-        })
     }
 
     fn apply_auto_exclusion_patch(
@@ -431,10 +408,6 @@ impl SettingsEditor {
         self.coordinator.load_error.as_deref()
     }
 
-    pub(crate) fn base_revision(&self) -> SettingsRevision {
-        self.draft.base_revision()
-    }
-
     pub(crate) fn select_power_source(&mut self, profile: PowerSourceProfile) {
         self.selected_power_source = profile;
     }
@@ -504,14 +477,6 @@ impl SettingsEditor {
                 changed
             },
         )
-    }
-
-    pub(crate) fn apply_navigation_collapsed_patch(
-        &mut self,
-        patch: NavigationCollapsedPatch,
-    ) -> SettingsResult<bool> {
-        self.coordinator
-            .apply_navigation_collapsed_patch(&mut self.draft, patch)
     }
 
     pub(crate) fn apply_auto_exclusion_patch(
@@ -1007,14 +972,6 @@ mod tests {
                 );
                 assert!(editor.load_error().is_some());
                 assert!(startup_probe.applied_values().is_empty());
-                let patch = NavigationCollapsedPatch {
-                    base_revision: editor.base_revision(),
-                    navigation_collapsed: !editor.global().general.navigation_collapsed,
-                };
-                assert_eq!(
-                    editor.apply_navigation_collapsed_patch(patch),
-                    Err(SettingsCoordinatorError::RecoveryRequired)
-                );
                 assert_eq!(
                     editor.set_master_enabled(!editor.global().general.enabled),
                     Err(SettingsCoordinatorError::RecoveryRequired)
@@ -1028,7 +985,7 @@ mod tests {
                     Err(SettingsCoordinatorError::RecoveryRequired)
                 );
                 let mut exclusions = AutoExclusionPatch {
-                    base_revision: editor.base_revision(),
+                    base_revision: editor.draft.base_revision,
                     ..Default::default()
                 };
                 exclusions.cpu_limiter.push(r"C:\Apps\test.exe".into());
@@ -1066,17 +1023,14 @@ mod tests {
                         .check_interval_ms,
                     1234
                 );
-                let patch = NavigationCollapsedPatch {
-                    base_revision: editor.base_revision(),
-                    ..patch
-                };
-                assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
+                let enabled = !editor.global().general.enabled;
+                assert!(editor.set_master_enabled(enabled).unwrap());
                 assert_eq!(
                     config::storage::load_from_path(&path)
                         .unwrap()
                         .general
-                        .navigation_collapsed,
-                    patch.navigation_collapsed
+                        .enabled,
+                    enabled
                 );
                 std::fs::remove_file(path).unwrap();
                 std::fs::remove_file(import_path).unwrap();
@@ -1098,16 +1052,14 @@ mod tests {
             Box::new(FakeStartupRegistration::new(Ok(()))),
         );
         assert!(editor.load_error().is_none());
-        let patch = NavigationCollapsedPatch {
-            base_revision: editor.base_revision(),
-            navigation_collapsed: true,
-        };
-        assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
-        assert!(
+        let enabled = !editor.global().general.enabled;
+        assert!(editor.set_master_enabled(enabled).unwrap());
+        assert_eq!(
             config::storage::load_from_path(&path)
                 .unwrap()
                 .general
-                .navigation_collapsed
+                .enabled,
+            enabled
         );
         std::fs::remove_file(path).unwrap();
     }
@@ -1238,12 +1190,11 @@ mod tests {
         let (mut coordinator, mut draft, _storage) = load_ok_with_fixtures();
         draft.general.check_interval_ms = 1_337;
         let stale = coordinator.persisted_revision().next();
-        let patch = NavigationCollapsedPatch {
+        let patch = AutoExclusionPatch {
             base_revision: stale,
-            navigation_collapsed: true,
+            ..Default::default()
         };
-
-        let result = coordinator.apply_navigation_collapsed_patch(&mut draft, patch);
+        let result = coordinator.apply_auto_exclusion_patch(&mut draft, &patch);
         assert!(matches!(
             result,
             Err(SettingsCoordinatorError::StalePatch { .. })
@@ -1296,30 +1247,6 @@ mod tests {
             .iter()
             .any(|rule| rule.executable_path == expected_path));
         assert_eq!(draft.base_revision, coordinator.persisted_revision());
-    }
-
-    #[test]
-    fn navigation_patch_persists_only_navigation_and_preserves_other_draft_edits() {
-        let (mut coordinator, mut draft, storage) = load_ok_with_fixtures();
-        draft.general.check_interval_ms = 1_337;
-        let patch = NavigationCollapsedPatch {
-            base_revision: draft.base_revision,
-            navigation_collapsed: true,
-        };
-
-        assert!(coordinator
-            .apply_navigation_collapsed_patch(&mut draft, patch)
-            .expect("apply navigation patch"));
-
-        let saved = storage.saved_payloads();
-        assert_eq!(saved.len(), 1);
-        assert!(saved[0].general.navigation_collapsed);
-        assert_eq!(
-            saved[0].general.check_interval_ms,
-            Settings::default().general.check_interval_ms
-        );
-        assert_eq!(draft.general.check_interval_ms, 1_337);
-        assert!(draft.general.navigation_collapsed);
     }
 
     #[test]

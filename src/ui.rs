@@ -16,6 +16,7 @@ mod hotkeys;
 mod memory_trim;
 mod motion;
 mod navigation;
+mod navigation_flyout;
 mod popover;
 mod power_rules;
 mod priority_control;
