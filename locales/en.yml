@@ -69,7 +69,6 @@ common:
   loading: "Loading…"
   loading_running_apps: "Loading running apps…"
   running_apps_load_failed: "Could not load running apps: %{error}"
-  process_population_paused: "Running app loading is paused"
   add: "Add"
   create: "Create"
   clear: "Clear"
@@ -289,8 +288,6 @@ home:
 
 process_list:
   plans_not_loaded: "Power plans have not loaded. Select Refresh to retry."
-  pause_population: Pause population
-  resume_population: Resume population
   filter: "Filter"
   grouping: "Grouping"
   metrics: "Metrics"

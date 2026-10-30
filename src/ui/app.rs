@@ -892,7 +892,7 @@ impl WinderustApp {
             Message::Catalog(result) => {
                 self.catalog_loading = false;
                 match result {
-                    Ok(candidates) if !self.processes.population_paused => {
+                    Ok(candidates) => {
                         self.unavailable_candidates = candidates
                             .iter()
                             .filter(|candidate| !candidate.info.has_suspendable_instance)
@@ -902,7 +902,6 @@ impl WinderustApp {
                             .collect();
                         self.candidates = candidates;
                     }
-                    Ok(_) => {}
                     Err(error) => self.error_message = error,
                 }
             }
@@ -1089,30 +1088,28 @@ impl WinderustApp {
                 if page_needs_power_plans(page) {
                     tasks.push(self.load_power_plans());
                 }
-                if !self.processes.population_paused {
-                    if page == Page::ProcessList {
-                        tasks.push(
-                            self.processes
-                                .update(
-                                    process_list::Message::Refresh,
-                                    &mut self.settings,
-                                    &self.runtime,
-                                )
-                                .map(Message::Processes),
-                        );
-                    }
-                    if (page.supports_power_source_profiles() || page == Page::ActionLog)
-                        && !self.catalog_loading
-                    {
-                        self.catalog_loading = true;
-                        tasks.push(
-                            tasks::run({
-                                let cached = self.candidates.clone();
-                                move || super::app_picker::load(cached)
-                            })
-                            .map(|result| Message::Catalog(result.and_then(|result| result))),
-                        );
-                    }
+                if page == Page::ProcessList {
+                    tasks.push(
+                        self.processes
+                            .update(
+                                process_list::Message::Refresh,
+                                &mut self.settings,
+                                &self.runtime,
+                            )
+                            .map(Message::Processes),
+                    );
+                }
+                if (page.supports_power_source_profiles() || page == Page::ActionLog)
+                    && !self.catalog_loading
+                {
+                    self.catalog_loading = true;
+                    tasks.push(
+                        tasks::run({
+                            let cached = self.candidates.clone();
+                            move || super::app_picker::load(cached)
+                        })
+                        .map(|result| Message::Catalog(result.and_then(|result| result))),
+                    );
                 }
                 return Task::batch(tasks);
             }
@@ -1122,19 +1119,10 @@ impl WinderustApp {
                 return self.load_power_plans();
             }
             Message::Processes(message) => {
-                if self.processes.population_paused
-                    && matches!(
-                        message,
-                        process_list::Message::Refresh | process_list::Message::Loaded(_)
-                    )
-                {
-                    self.processes.discard(message);
-                } else {
-                    return self
-                        .processes
-                        .update(message, &mut self.settings, &self.runtime)
-                        .map(Message::Processes);
-                }
+                return self
+                    .processes
+                    .update(message, &mut self.settings, &self.runtime)
+                    .map(Message::Processes);
             }
             Message::Wake => {
                 self.sync_tray();
@@ -1226,7 +1214,7 @@ impl WinderustApp {
                         self.publish_settings();
                     }
                 }
-                if !self.hidden && !self.processes.population_paused {
+                if !self.hidden {
                     if self.page == Page::ProcessList
                         && self.process_sampled_at.elapsed() >= Duration::from_secs(1)
                     {

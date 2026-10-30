@@ -125,7 +125,6 @@ pub(super) enum MenuBranch {
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
-    PausePopulation(bool),
     Refresh,
     Loaded(Result<Population, String>),
     Search(String),
@@ -164,7 +163,6 @@ pub(super) enum Message {
 }
 
 pub(super) struct ProcessList {
-    pub(super) population_paused: bool,
     processes: Vec<ProcessInfo>,
     rows: Vec<Entry>,
     offsets: Vec<f32>,
@@ -212,7 +210,6 @@ impl Default for ProcessList {
             search: String::new(),
             offset: std::cell::Cell::new(0.0),
             refreshing: false,
-            population_paused: false,
             error: None,
             hide_inaccessible: true,
             grouped: true,
@@ -240,27 +237,6 @@ impl ProcessList {
         self.context.is_some() && self.selected.is_some()
     }
 
-    pub(super) fn discard(&mut self, message: Message) {
-        if matches!(message, Message::Loaded(_)) {
-            self.refreshing = false;
-        }
-        self.clear();
-    }
-    pub(super) fn clear(&mut self) {
-        self.rows_revision = self.rows_revision.wrapping_add(1);
-        self.processes.clear();
-        self.rows.clear();
-        self.offsets = vec![0.0];
-        self.samples.clear();
-        self.cpu.clear();
-        self.icons.clear();
-        self.expanded.clear();
-        self.focused = None;
-        self.selected = None;
-        self.context = None;
-        self.stopping = None;
-        self.offset.set(0.0);
-    }
     pub(super) fn update(
         &mut self,
         message: Message,
@@ -268,7 +244,6 @@ impl ProcessList {
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
         match message {
-            Message::PausePopulation(value) => self.population_paused = value,
             Message::Refresh if !self.refreshing => {
                 self.refreshing = true;
                 let cached = self.icons.keys().cloned().collect::<HashSet<_>>();
@@ -1092,22 +1067,6 @@ impl ProcessList {
             ),
             Space::new().width(Fill),
             text(t!("process_list.count", count = self.processes.len()).to_string()),
-            button(text(
-                if self.population_paused {
-                    t!("process_list.resume_population")
-                } else {
-                    t!("process_list.pause_population")
-                }
-                .to_string()
-            ))
-            .on_press(Message::PausePopulation(!self.population_paused)),
-            iced::widget::tooltip(
-                button(super::navigation::glyph("icons/refresh-cw.svg"))
-                    .style(super::widgets::quiet)
-                    .on_press(Message::Refresh),
-                text(t!("settings.refresh").to_string()),
-                iced::widget::tooltip::Position::Bottom,
-            ),
         ]
         .spacing(design::space::SMALL)
         .align_y(iced::Center);
@@ -2174,8 +2133,6 @@ mod tests {
             list.focused.as_ref().unwrap().2.processes[0].creation_time,
             Some(100)
         );
-        list.clear();
-        assert!(list.focused.is_none());
     }
 
     #[test]
@@ -2322,7 +2279,8 @@ mod tests {
         assert!(list.rows[1].nested);
         assert_ne!(list.rows_revision, revision);
         assert_eq!(list.offsets.last(), Some(&(4.0 * ROW_HEIGHT)));
-        list.clear();
+        list.processes.clear();
+        list.rebuild();
         assert_eq!(list.offsets, vec![0.0]);
     }
     #[test]

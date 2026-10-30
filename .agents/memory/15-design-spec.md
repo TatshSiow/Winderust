@@ -83,7 +83,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 
 ## Process List
 
-- The process list is a dense table, not a card grid.
+- The process list is a dense table, not a card grid. Refresh automatically about once per second only while its page is shown and the window is not hidden to tray. Its command row contains search and process count; omit manual refresh and population pause controls.
 - Keep process icon, grouped process row, PID/count, and policy columns visible and stable.
 - Keep the User column at the right edge. Show the exact process token account when available. When Windows denies token access, show `Unavailable · S#` with an explanatory tooltip; identify kernel pseudo-processes as `Windows kernel`.
 - Keep Windows-critical processes visible as read-only `Protected system process` rows in Process List, omit them from every Add process picker, and fail closed when criticality cannot be verified.

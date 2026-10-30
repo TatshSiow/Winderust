@@ -69,7 +69,6 @@ common:
   loading: "載入中…"
   loading_running_apps: "正在載入執行中的應用程式…"
   running_apps_load_failed: "無法載入執行中的應用程式：%{error}"
-  process_population_paused: "執行中應用程式載入已暫停"
   add: "新增"
   create: "建立"
   clear: "清除"
@@ -289,8 +288,6 @@ home:
 
 process_list:
   plans_not_loaded: "電源計畫尚未載入。請按重新整理以重試。"
-  pause_population: "暫停更新程序清單"
-  resume_population: "恢復更新程序清單"
   filter: "篩選"
   grouping: "分組"
   metrics: "指標"
