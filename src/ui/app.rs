@@ -2079,34 +2079,27 @@ impl WinderustApp {
             .height(Fill)
             .style(widgets::navigation_surface);
         let side_panel = self.side_panel(self.page);
-        const BREADCRUMB_TEXT_SIZE: u32 = design::typography::SECONDARY;
-        let mut header = row![].align_y(iced::Center);
-        let parents = &self.breadcrumb[..self.breadcrumb.len().saturating_sub(1)];
-        for (index, page) in parents.iter().copied().enumerate() {
+        const BREADCRUMB_TEXT_SIZE: u32 = design::typography::SUBTITLE;
+        let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
+        for (index, page) in self.breadcrumb.iter().copied().enumerate() {
             let mut item = row![].spacing(design::space::COMPACT).align_y(iced::Center);
             if index > 0 {
                 item = item.push(navigation::glyph("icons/chevron-right.svg"));
             }
-            item = item.push(
-                button(text(page.label()).size(BREADCRUMB_TEXT_SIZE))
-                    .padding(0)
-                    .style(widgets::quiet)
-                    .on_press(Message::Page(page)),
-            );
-            header = header.push(super::motion::wrap(
-                container(item).padding(iced::Padding {
-                    left: if index > 0 {
-                        design::space::COMPACT as f32
-                    } else {
-                        0.0
-                    },
-                    ..Default::default()
-                }),
-                true,
-                super::motion::Effect::Visible,
-            ));
+            item = if page == self.page {
+                item.push(widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE))
+            } else {
+                item.push(
+                    button(text(page.label()).size(BREADCRUMB_TEXT_SIZE))
+                        .padding(0)
+                        .style(widgets::quiet)
+                        .on_press(Message::Page(page)),
+                )
+            };
+            header = header.push(item);
         }
-        let breadcrumb_width: f32 = parents
+        let breadcrumb_width: f32 = self
+            .breadcrumb
             .iter()
             .enumerate()
             .map(|(index, page)| {
@@ -2117,19 +2110,9 @@ impl WinderustApp {
                         0.0
                     }
             })
-            .sum::<f32>()
-            .max(widgets::text_width(
-                &self.page.label(),
-                design::typography::TITLE,
-            ));
-        let title = widgets::heading(self.page.label(), design::typography::TITLE);
-        let breadcrumb = container(if parents.is_empty() {
-            column![title]
-        } else {
-            column![header.wrap().vertical_spacing(design::space::TIGHT), title]
-                .spacing(design::space::SMALL)
-        })
-        .width(Fill);
+            .sum();
+        let breadcrumb =
+            container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill);
         let mut actions_width = 0.0;
         let mut profile_controls = None;
         let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);

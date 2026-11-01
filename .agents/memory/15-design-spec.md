@@ -184,7 +184,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 - The user approved the 2026-10-30 light dashboard direction across all UI and the sidebar; `DESIGN.md` records the reference mapping.
 - The later two-panel sidebar reference uses an 88px icon-and-label rail, a separate closable category menu, and tinted selected entries. Keep all existing categories and global search.
 - Use 16px card padding, 12px card gaps, regular Segoe UI body text, semibold headings, and prominent dashboard values.
-- Put compact parent breadcrumbs above the current page title.
+- Use one 18px breadcrumb heading on every page: Home > section > current page, omitting unused levels. Ancestors are clickable; the current page is semibold text. Home shows only Home. Wrap the path in narrow windows; do not repeat the current page as a separate title.
 - Home uses a two-by-two chart grid above Enabled Features and Recent Logs. Shared content is capped at 1440px.
 - Dense virtual process and log tables retain borderless tiled backgrounds and existing row geometry.
 - Keep System/Light/Dark and custom/system accent behavior. Do not infer new telemetry or optimization guarantees from the reference image.

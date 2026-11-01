@@ -151,7 +151,7 @@ The source-mapped hierarchy corrections are implemented. See [the design integri
 
 ## Operational layout rules
 - Keep headings, forms, dashboard, and tables aligned within the shared workspace.
-- Use 28-pixel semibold page headings with compact parent breadcrumbs above the current title. Retain Segoe UI and native Windows framing.
+- Use one 18px breadcrumb heading on every page: Home > section > current page, omitting unused levels. Ancestors are clickable; the current page is semibold text. Home shows only Home. Wrap the path in narrow windows; do not repeat the current page as a separate title. Retain Segoe UI and native Windows framing.
 - Home section shortcuts follow the charts and feature status; narrow windows use two shortcut columns.
 - Pin Log, Settings, and About below the scrollable primary navigation. Search opens an independent palette above the page; the category header X hides only the secondary navigation panel.
 - Landing cards are compact, single-line navigation rows. Descriptions remain available on feature pages through Feature info.
