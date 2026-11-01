@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, pick_list};
+use super::widgets::{action_button, pick_list};
 use crate::application::{Win32PrioritySeparationError, Win32PrioritySeparationService};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -203,11 +203,11 @@ impl Editor {
             .push(
                 row![
                     iced::widget::Space::new().width(Fill),
-                    button(text(t!("settings.refresh").to_string())).on_press(Message::Refresh),
-                    button(text(t!("settings.save_backup").to_string())).on_press(Message::Backup),
-                    button(text(t!("settings.restore_backup").to_string()))
+                    action_button(t!("settings.refresh").to_string()).on_press(Message::Refresh),
+                    action_button(t!("settings.save_backup").to_string()).on_press(Message::Backup),
+                    action_button(t!("settings.restore_backup").to_string())
                         .on_press_maybe(self.backup.map(|_| Message::Restore)),
-                    button(text(t!("settings.apply").to_string()))
+                    action_button(t!("settings.apply").to_string())
                         .style(super::widgets::primary_button)
                         .on_press(Message::Apply)
                 ]

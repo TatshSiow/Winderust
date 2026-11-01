@@ -169,6 +169,7 @@ impl Editor {
                     button(container(text(t!("action_log.clear").to_string())).center_x(Fill))
                         .width(Fill)
                         .height(32)
+                        .style(super::widgets::danger_button)
                         .on_press_maybe((has_entries || has_summaries).then_some(Message::Clear)),
                     button(container(text(t!("action_log.export_csv").to_string())).center_x(Fill))
                         .width(Fill)

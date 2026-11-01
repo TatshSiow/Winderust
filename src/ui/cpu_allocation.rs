@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, text_input};
+use super::widgets::{action_button, button, checkbox, icon_button, text_input};
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
 use crate::foreground::executable_path_key;
@@ -309,7 +309,7 @@ impl Editor {
         };
         let header = row![
             text(title).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::ClosePreset)
+            icon_button("icons/x.svg").on_press(Message::ClosePreset)
         ]
         .align_y(iced::Center);
         let mut cpus = row![].spacing(design::space::CONTROL);
@@ -339,10 +339,12 @@ impl Editor {
                 )
                 .width(100)
                 .height(64)
-                .style(if selected {
-                    super::widgets::primary_button
-                } else {
-                    super::widgets::tertiary_button
+                .style(move |theme, status| {
+                    if selected {
+                        super::widgets::tab_style(theme, status, true)
+                    } else {
+                        super::widgets::tertiary_button(theme, status)
+                    }
                 })
                 .on_press_maybe(
                     (!self.preset_read_only).then_some(Message::PresetMask(self.preset_mask ^ bit)),
@@ -387,14 +389,14 @@ impl Editor {
         }
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
+            action_button(t!("common.cancel").to_string())
                 .style(super::widgets::tertiary_button)
                 .on_press(Message::ClosePreset)
         ]
         .spacing(design::space::SMALL);
         if !self.preset_read_only {
             footer = footer.push(
-                button(text(t!("common.save").to_string()))
+                action_button(t!("common.save").to_string())
                     .style(super::widgets::primary_button)
                     .on_press_maybe(
                         (valid_name && self.preset_mask != 0).then_some(Message::SavePreset),
@@ -432,9 +434,7 @@ impl Editor {
                     .width(Fill)
                     .style(super::widgets::quiet)
                     .on_press(message.clone()),
-                    button(super::navigation::glyph("icons/info.svg"))
-                        .style(super::widgets::quiet)
-                        .on_press(message)
+                    icon_button("icons/info.svg").on_press(message)
                 ]
                 .align_y(iced::Center)
                 .spacing(design::space::TIGHT),
@@ -457,12 +457,7 @@ impl Editor {
                         .style(super::widgets::quiet)
                         .on_press(Message::EditPreset(i)),
                     iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::EditPreset(i)),
+                        icon_button("icons/pencil.svg").on_press(Message::EditPreset(i)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top
                     ),

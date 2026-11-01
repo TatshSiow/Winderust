@@ -638,13 +638,17 @@ fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Eleme
             row![
                 iced::widget::Space::new().width(Fill),
                 button(
-                    row![
-                        text(t!("home.details").to_string()),
-                        super::navigation::glyph("icons/chevron-right.svg")
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
+                    container(
+                        row![
+                            text(t!("home.details").to_string()),
+                            super::navigation::glyph("icons/chevron-right.svg")
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center)
+                    )
+                    .center_y(Fill)
                 )
+                .height(design::BUTTON_HEIGHT)
                 .on_press(Message::Navigate(Page::ActionLog)),
             ],
         ]

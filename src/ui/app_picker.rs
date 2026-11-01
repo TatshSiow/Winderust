@@ -83,7 +83,7 @@ pub(super) fn view<'a, M: Clone + 'static>(
             }),
             (enabled && !query.is_empty()).then(|| select(String::new())),
         ),
-        widgets::button(text(t!("common.add").to_string()))
+        widgets::action_button(t!("common.add").to_string())
             .style(crate::ui::widgets::primary_button)
             .on_press_maybe(add),
     ]

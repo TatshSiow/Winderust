@@ -280,11 +280,7 @@ pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Ele
             )
             .width(Fill)
             .height(32)
-            .style(|theme, status| {
-                let mut style = iced::widget::button::primary(theme, status);
-                style.border.radius = design::CONTROL_RADIUS.into();
-                style
-            })
+            .style(primary_button)
             .on_press(message)
         )
         .padding([design::space::MEDIUM as u16, 0])
@@ -353,12 +349,33 @@ pub(super) fn button<'a, M: 'a>(
         .style(secondary_button)
 }
 
+pub(super) fn action_button<'a, M: 'a>(
+    label: impl Into<String>,
+) -> super::animated_controls::Button<'a, M> {
+    button(
+        iced::widget::container(text(label.into()).size(design::typography::BODY)).center_y(Fill),
+    )
+    .height(design::BUTTON_HEIGHT)
+    .padding([0, design::space::MEDIUM as u16])
+}
+
+pub(super) fn icon_button<'a, M: 'a>(
+    icon: &'static str,
+) -> super::animated_controls::Button<'a, M> {
+    button(super::navigation::glyph(icon))
+        .padding(7)
+        .width(design::BUTTON_HEIGHT)
+        .height(design::BUTTON_HEIGHT)
+        .style(quiet)
+}
+
 pub(super) fn primary_button(
     theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let mut style = iced::widget::button::primary(theme, status);
     style.border.radius = design::CONTROL_RADIUS.into();
+    style.border.width = 1.0;
     style
 }
 
@@ -368,13 +385,18 @@ pub(super) fn secondary_button(
 ) -> iced::widget::button::Style {
     use iced::widget::button::Status;
     let mut style = quiet(theme, status);
-    let alpha = match status {
-        Status::Active => 0.15,
-        Status::Hovered => 0.23,
-        Status::Pressed => 0.30,
-        Status::Disabled => 0.06,
+    let disabled = status == Status::Disabled;
+    style.border.width = 1.0;
+    style.border.color = control_border(theme).scale_alpha(if disabled { 0.35 } else { 0.75 });
+    style.text_color = theme
+        .palette()
+        .primary
+        .scale_alpha(if disabled { 0.35 } else { 1.0 });
+    style.background = match status {
+        Status::Hovered => Some(theme.palette().primary.scale_alpha(0.08).into()),
+        Status::Pressed => Some(theme.palette().primary.scale_alpha(0.14).into()),
+        _ => None,
     };
-    style.background = Some(theme.palette().primary.scale_alpha(alpha).into());
     style
 }
 
@@ -382,8 +404,26 @@ pub(super) fn tertiary_button(
     theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::secondary(theme, status);
-    style.border.radius = design::CONTROL_RADIUS.into();
+    use iced::widget::button::Status;
+    let mut style = secondary_button(theme, status);
+    style.text_color = if status == Status::Disabled {
+        muted_color(theme).scale_alpha(0.5)
+    } else {
+        theme.palette().text
+    };
+    style.background = match status {
+        Status::Hovered => Some(theme.extended_palette().background.neutral.color.into()),
+        Status::Pressed => Some(
+            theme
+                .extended_palette()
+                .background
+                .strong
+                .color
+                .scale_alpha(0.6)
+                .into(),
+        ),
+        _ => None,
+    };
     style
 }
 
@@ -393,6 +433,7 @@ pub(super) fn danger_button(
 ) -> iced::widget::button::Style {
     let mut style = iced::widget::button::danger(theme, status);
     style.border.radius = design::CONTROL_RADIUS.into();
+    style.border.width = 1.0;
     style
 }
 
@@ -719,14 +760,7 @@ pub(super) fn control_button(
     theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = quiet(theme, status);
-    if matches!(
-        status,
-        iced::widget::button::Status::Active | iced::widget::button::Status::Disabled
-    ) {
-        style.background = Some(theme.extended_palette().background.neutral.color.into());
-    }
-    style
+    tertiary_button(theme, status)
 }
 
 pub(super) fn stepper<'a, M: Clone + 'a>(
@@ -1003,8 +1037,8 @@ mod tests {
                     primary_button(&blue, status).background
                 );
                 assert_ne!(
-                    secondary_button(&red, status).background,
-                    secondary_button(&blue, status).background
+                    secondary_button(&red, status).text_color,
+                    secondary_button(&blue, status).text_color
                 );
                 assert_eq!(
                     tertiary_button(&red, status).background,
@@ -1111,8 +1145,8 @@ mod tests {
                 control_button(&theme, Status::Active).background
             );
             assert_ne!(
-                control_button(&theme, Status::Active).background,
-                quiet(&theme, Status::Active).background
+                control_button(&theme, Status::Active).border,
+                quiet(&theme, Status::Active).border
             );
         }
     }

@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, pick_list, slider, text_input};
+use super::widgets::{action_button, button, icon_button, pick_list, slider, text_input};
 use crate::application::AdvancedPowerPlanTuningService;
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
@@ -419,11 +419,13 @@ impl Editor {
         body = body
             .push(super::widgets::settings_card(
                 row![
-                    button(text(t!("processor_power.refresh_values").to_string()))
+                    action_button(t!("processor_power.refresh_values").to_string())
                         .on_press_maybe(self.target.as_ref().map(|_| Message::Refresh)),
-                    button(text(t!("settings.apply").to_string())).on_press_maybe(
-                        (self.values.is_some() && self.dirty).then_some(Message::Apply)
-                    )
+                    action_button(t!("settings.apply").to_string())
+                        .style(super::widgets::primary_button)
+                        .on_press_maybe(
+                            (self.values.is_some() && self.dirty).then_some(Message::Apply)
+                        )
                 ]
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
@@ -445,7 +447,7 @@ impl Editor {
         };
         let header = row![
             text(title).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::ClosePreset)
+            icon_button("icons/x.svg").on_press(Message::ClosePreset)
         ]
         .align_y(iced::Center);
         let mut form = column![widgets::settings_card(
@@ -487,7 +489,7 @@ impl Editor {
         )));
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
+            action_button(t!("common.cancel").to_string())
                 .style(widgets::tertiary_button)
                 .on_press(Message::ClosePreset)
         ]
@@ -500,7 +502,7 @@ impl Editor {
                 );
             }
             footer = footer.push(
-                button(text(t!("common.save").to_string()))
+                action_button(t!("common.save").to_string())
                     .style(widgets::primary_button)
                     .on_press_maybe(
                         valid_name(presets, index, &p.name).then_some(Message::SavePreset),
@@ -534,8 +536,7 @@ impl Editor {
                     .width(Fill)
                     .style(super::widgets::quiet)
                     .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p))),
-                    button(super::navigation::glyph("icons/info.svg"))
-                        .style(super::widgets::quiet)
+                    icon_button("icons/info.svg")
                         .on_press(Message::OpenPreset(PresetTarget::BuiltIn(p)))
                 ]
                 .spacing(design::space::TIGHT)
@@ -554,11 +555,7 @@ impl Editor {
                         .style(super::widgets::quiet)
                         .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
                     iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
+                        icon_button("icons/pencil.svg")
                             .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top

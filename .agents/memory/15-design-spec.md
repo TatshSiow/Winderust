@@ -51,7 +51,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 
 ## Visual Language
 
-- Reuse `design.rs` tokens and `widgets.rs` styles. Primary buttons use accent color, secondary buttons use an accent tint, tertiary buttons use neutral gray, and destructive actions use danger styling.
+- Reuse `design.rs` tokens and `widgets.rs` styles. Buttons share 6px corners, 14px labels, and stable 1px outlines. Standard text actions and utility icons are 32px high; text actions use 12px horizontal padding through the shared action helper. Primary actions use a solid accent fill; secondary actions use a neutral outline with accent text; tertiary actions use a neutral outline and text. Quiet utilities show hover feedback; destructive actions use danger colors; persistent choices use accent outlines and tint. Preserve explicit dense-row and navigation geometry, native input, disabled states, and theme/accent support. Keep action feedback distinct from persistent selection.
 - Navigation selection uses a rounded vertical pill. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 

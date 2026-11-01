@@ -1,6 +1,6 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
 use super::design;
-use super::widgets::button;
+use super::widgets::action_button;
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
@@ -282,7 +282,7 @@ pub(super) fn view<'a>(
         && !crate::privilege::is_running_as_admin()
     {
         body = body.push(
-            button(text(t!("admin_rights.relaunch").to_string())).on_press(Message::RelaunchAdmin),
+            action_button(t!("admin_rights.relaunch").to_string()).on_press(Message::RelaunchAdmin),
         );
     }
     let content: Element<'a, Message> = scrollable(

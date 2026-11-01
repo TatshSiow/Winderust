@@ -1,6 +1,8 @@
 use super::super::design;
 use super::super::priority_control::{self, Kind, Tier, Value};
-use super::super::widgets::{self, button, pick_list, setting_row, settings_card, slider, switch};
+use super::super::widgets::{
+    self, action_button, icon_button, pick_list, setting_row, settings_card, slider, switch,
+};
 use super::super::{cpu_allocation, cpu_limiter};
 use super::PlanCatalog;
 use crate::config::*;
@@ -353,7 +355,7 @@ pub(super) fn view<'a>(
         ));
         if matches!(plans, PlanCatalog::Unavailable) {
             body = body.push(
-                button(text(t!("settings.refresh").to_string())).on_press(Message::ReloadPlans),
+                action_button(t!("settings.refresh").to_string()).on_press(Message::ReloadPlans),
             );
         }
     }
@@ -400,9 +402,7 @@ pub(super) fn view<'a>(
             );
         }
         controls = controls.push(iced::widget::tooltip(
-            button(text("\u{21ba}"))
-                .width(32)
-                .on_press(Message::ResetPriority(kind)),
+            icon_button("icons/rotate-ccw.svg").on_press(Message::ResetPriority(kind)),
             text(t!("common.default").to_string()),
             iced::widget::tooltip::Position::Top,
         ));

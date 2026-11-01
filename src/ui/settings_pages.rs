@@ -1,6 +1,6 @@
 use super::design;
 use super::widgets::{self, Choice};
-use super::widgets::{button, pick_list, text_input};
+use super::widgets::{action_button, button, pick_list, text_input};
 use crate::ui::scrolling::scrollable;
 use crate::{config::*, ui::Page};
 use iced::widget::{column, row, text};
@@ -281,8 +281,8 @@ impl Editor {
         widgets::settings_card(widgets::setting_row(
             label,
             row![
-                button(text(value)).on_press(Message::RecordSearchHotkey(slot)),
-                button(text(t!("settings.clear_shortcut").to_string()))
+                action_button(value).on_press(Message::RecordSearchHotkey(slot)),
+                action_button(t!("settings.clear_shortcut").to_string())
                     .style(widgets::tertiary_button)
                     .on_press(Message::SetSearchHotkey(slot, None)),
             ]
@@ -360,16 +360,16 @@ impl Editor {
                     SearchHotkeySlot::Secondary,
                     "settings.search_alternate_shortcut"
                 ),
-                row![button(text(t!("settings.reset_shortcuts").to_string()))
+                row![action_button(t!("settings.reset_shortcuts").to_string())
                     .on_press(Message::ResetSearchHotkeys)],
                 widgets::heading(
                     t!("settings.settings_files").to_string(),
                     design::typography::BODY
                 ),
                 row![
-                    button(text(t!("settings.export_settings").to_string()))
+                    action_button(t!("settings.export_settings").to_string())
                         .on_press(Message::Export),
-                    button(text(t!("settings.import_settings").to_string()))
+                    action_button(t!("settings.import_settings").to_string())
                         .on_press(Message::Import),
                 ]
                 .spacing(design::space::SMALL)
@@ -403,13 +403,13 @@ impl Editor {
                                 .into(),
                                 iced::widget::container(
                                     column![
-                                        button(text(t!("common.edit").to_string()))
+                                        action_button(t!("common.edit").to_string())
                                             .width(Fill)
                                             .style(widgets::quiet)
                                             .on_press(Message::EditColor(*color)),
-                                        button(text(t!("common.remove").to_string()))
+                                        action_button(t!("common.remove").to_string())
                                             .width(Fill)
-                                            .style(widgets::quiet)
+                                            .style(widgets::danger_button)
                                             .on_press(Message::RemoveColor(chunk_index * 8 + i)),
                                     ]
                                     .spacing(design::space::TINY),
@@ -452,7 +452,7 @@ impl Editor {
                         )
                         .on_input(Message::AccentHex)
                         .width(130),
-                        button(text(t!("common.save").to_string()))
+                        action_button(t!("common.save").to_string())
                             .style(widgets::primary_button)
                             .on_press_maybe(
                                 self.color
@@ -585,7 +585,7 @@ impl Editor {
                     ),
                 ] {
                     links = links.push(
-                        button(text(t!(key).to_string())).on_press(Message::Open(url.into())),
+                        action_button(t!(key).to_string()).on_press(Message::Open(url.into())),
                     );
                 }
                 let identity = widgets::settings_card(
@@ -630,7 +630,7 @@ impl Editor {
                                     |v| Message::Channel(v.0)
                                 )
                                 .width(design::SELECT_WIDTH),
-                                button(text(t!("about.check_for_updates").to_string()))
+                                action_button(t!("about.check_for_updates").to_string())
                                     .on_press_maybe((!self.checking).then_some(Message::Check))
                             ]
                             .spacing(design::space::MEDIUM)
@@ -672,7 +672,8 @@ impl Editor {
                 }
                 if let Some(url) = &self.download {
                     body = body.push(
-                        button(text(t!("about.download_update").to_string()))
+                        action_button(t!("about.download_update").to_string())
+                            .style(widgets::primary_button)
                             .on_press(Message::Open(url.clone())),
                     );
                 }

@@ -26,7 +26,8 @@ pub(super) mod typography {
     pub const TITLE: u32 = 28;
 }
 
-pub(super) const CONTROL_PADDING: [u16; 2] = [5, 10];
+pub(super) const CONTROL_PADDING: [u16; 2] = [5, 12];
+pub(super) const BUTTON_HEIGHT: u32 = 32;
 pub(super) const SELECT_PADDING: [u16; 2] = [7, 12];
 pub(super) const INPUT_PADDING: u16 = 5;
 pub(super) const CHECKBOX_SIZE: u32 = 16;

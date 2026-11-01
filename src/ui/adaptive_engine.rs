@@ -4,7 +4,7 @@ use super::priority_control::{
     process_io_priority_setting_label, process_memory_priority_setting_label,
     process_priority_setting_label, process_thread_priority_setting_label,
 };
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{action_button, button, checkbox, icon_button, pick_list, text_input};
 use crate::automation::RuntimeStatusSnapshot;
 use crate::config::*;
 use crate::power::ProcessorBoostMode;
@@ -386,7 +386,7 @@ impl Editor {
         };
         let header = row![
             text(title).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::Cancel)
+            icon_button("icons/x.svg").on_press(Message::Cancel)
         ]
         .align_y(iced::Center);
         let name = super::widgets::settings_card(
@@ -403,25 +403,25 @@ impl Editor {
             .align_y(iced::Center);
         if let Some(index) = self.editing.filter(|_| !self.read_only) {
             footer = footer.push(
-                button(text(t!("common.remove").to_string()))
+                action_button(t!("common.remove").to_string())
                     .style(super::widgets::danger_button)
                     .on_press(Message::Delete(index)),
             );
         }
         if !self.read_only {
             footer = footer.push(
-                button(text(t!("adaptive_engine.use_current_settings").to_string()))
+                action_button(t!("adaptive_engine.use_current_settings").to_string())
                     .on_press(Message::UseCurrent),
             );
         }
         footer = footer.push(
-            button(text(t!("common.cancel").to_string()))
+            action_button(t!("common.cancel").to_string())
                 .style(super::widgets::tertiary_button)
                 .on_press(Message::Cancel),
         );
         if !self.read_only {
             footer = footer.push(
-                button(text(t!("common.save").to_string()))
+                action_button(t!("common.save").to_string())
                     .style(super::widgets::primary_button)
                     .on_press_maybe(
                         (!self.name.trim().is_empty() && self.invalid_numbers.is_empty())
@@ -1905,9 +1905,7 @@ impl Editor {
                     .width(Fill)
                     .style(super::widgets::quiet)
                     .on_press(Message::BuiltIn(p)),
-                    button(super::navigation::glyph("icons/info.svg"))
-                        .style(super::widgets::quiet)
-                        .on_press(Message::ViewBuiltIn(p))
+                    icon_button("icons/info.svg").on_press(Message::ViewBuiltIn(p))
                 ]
                 .spacing(design::space::TIGHT)
                 .align_y(iced::Center),
@@ -1930,12 +1928,7 @@ impl Editor {
                         .style(super::widgets::quiet)
                         .on_press(Message::Apply(i)),
                     iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::Edit(i)),
+                        icon_button("icons/pencil.svg").on_press(Message::Edit(i)),
                         text(t!("adaptive_engine.edit_preset").to_string()),
                         iced::widget::tooltip::Position::Top,
                     ),

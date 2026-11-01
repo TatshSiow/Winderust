@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, slider, text_input};
+use super::widgets::{action_button, checkbox, icon_button, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
@@ -216,14 +216,12 @@ impl CpuLimiter {
             None => Message::Default(tier, value),
         };
         row![
-            button(super::navigation::glyph("icons/minus.svg"))
-                .padding(7)
-                .height(32)
+            icon_button("icons/minus.svg")
+                .style(super::widgets::control_button)
                 .on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
             slider(1..=100, value, change).width(Fill),
-            button(super::navigation::glyph("icons/plus.svg"))
-                .padding(7)
-                .height(32)
+            icon_button("icons/plus.svg")
+                .style(super::widgets::control_button)
                 .on_press_maybe((value < 100).then(|| change(value.saturating_add(1)))),
             text_input("1-100", &self.number(path, tier, value))
                 .on_input(move |raw| Message::Number(index, tier, raw))
@@ -332,12 +330,7 @@ impl CpuLimiter {
                 cells,
                 row![
                     iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::Edit(index)),
+                        icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top
                     ),
@@ -421,15 +414,15 @@ impl CpuLimiter {
         }
         let header = row![
             text(t!("common.edit").to_string()).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::CancelRule)
+            icon_button("icons/x.svg").on_press(Message::CancelRule)
         ]
         .align_y(iced::Center);
         let footer = row![
             iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
+            action_button(t!("common.cancel").to_string())
                 .style(super::widgets::tertiary_button)
                 .on_press(Message::CancelRule),
-            button(text(t!("common.save").to_string()))
+            action_button(t!("common.save").to_string())
                 .style(super::widgets::primary_button)
                 .on_press_maybe((!self.has_invalid_inputs()).then_some(Message::SaveRule))
         ]

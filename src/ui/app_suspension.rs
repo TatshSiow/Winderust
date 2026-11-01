@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{action_button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
@@ -249,14 +249,14 @@ impl Editor {
                 .any(|p| process_setting_matches(p, &r.executable_path));
             let state = column![
                 text(indicator(status, &r.executable_path, blocked)),
-                button(text(
+                action_button(
                     t!(if frozen {
                         "app_suspension.thaw"
                     } else {
                         "app_suspension.freeze"
                     })
                     .to_string()
-                ))
+                )
                 .on_press_maybe(
                     (frozen || (status.enabled && r.enabled && !blocked))
                         .then_some(Message::Toggle(i))

@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use widgets::{button, text_input};
+use widgets::{action_button, button, icon_button, text_input};
 
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill, Subscription, Task, Theme};
@@ -1801,32 +1801,32 @@ impl WinderustApp {
                     .to_string(),
                 ));
                 actions = actions.push(
-                    button(text(t!("common.cancel").to_string()))
+                    action_button(t!("common.cancel").to_string())
                         .style(widgets::tertiary_button)
                         .on_press(Message::Stay),
                 );
                 if self.pending_changes() {
                     actions = actions
                         .push(
-                            button(text(t!("exit_prompt.save_and_exit").to_string()))
+                            action_button(t!("exit_prompt.save_and_exit").to_string())
                                 .style(widgets::primary_button)
                                 .on_press(Message::Save),
                         )
                         .push(
-                            button(text(t!("exit_prompt.without_saving").to_string()))
+                            action_button(t!("exit_prompt.without_saving").to_string())
                                 .style(widgets::danger_button)
                                 .on_press(Message::DiscardAndClose),
                         );
                 } else {
                     actions = actions.push(
-                        button(text(t!("tray.exit").to_string()))
+                        action_button(t!("tray.exit").to_string())
                             .style(widgets::danger_button)
                             .on_press(Message::DiscardAndClose),
                     );
                 }
             } else if !self.exiting {
                 actions = actions.push(
-                    button(text(t!("common.done").to_string()))
+                    action_button(t!("common.done").to_string())
                         .style(widgets::tertiary_button)
                         .on_press(Message::DismissError),
                 );
@@ -1984,15 +1984,12 @@ impl WinderustApp {
                     text(self.preferences.latest.clone().unwrap_or_default()),
                     row![
                         iced::widget::Space::new().width(Fill),
-                        button(text(t!("about.download_update").to_string())).on_press_maybe(
-                            self.preferences
-                                .download
-                                .clone()
-                                .map(|url| Message::Preferences(settings_pages::Message::Open(
-                                    url
-                                )))
-                        ),
-                        button(text(t!("common.cancel").to_string()))
+                        action_button(t!("about.download_update").to_string())
+                            .style(widgets::primary_button)
+                            .on_press_maybe(self.preferences.download.clone().map(|url| {
+                                Message::Preferences(settings_pages::Message::Open(url))
+                            })),
+                        action_button(t!("common.cancel").to_string())
                             .style(crate::ui::widgets::tertiary_button)
                             .on_press(Message::Preferences(settings_pages::Message::DismissUpdate))
                     ]
@@ -2231,9 +2228,7 @@ impl WinderustApp {
                             .height(iced::Length::Shrink)
                             .width(Fill),
                         iced::widget::tooltip(
-                            button(navigation::glyph("icons/x.svg"))
-                                .style(widgets::quiet)
-                                .on_press(Message::ToggleFeatureInfo),
+                            icon_button("icons/x.svg").on_press(Message::ToggleFeatureInfo),
                             text(t!("common.close").to_string()),
                             iced::widget::tooltip::Position::Left,
                         ),
@@ -2537,10 +2532,10 @@ impl WinderustApp {
                         text(t!("unsaved.message").to_string()),
                         row![
                             iced::widget::Space::new().width(Fill),
-                            button(text(t!("common.discard").to_string()))
+                            action_button(t!("common.discard").to_string())
                                 .style(crate::ui::widgets::tertiary_button)
                                 .on_press(Message::Cancel),
-                            button(text(t!("common.save").to_string()))
+                            action_button(t!("common.save").to_string())
                                 .style(crate::ui::widgets::primary_button)
                                 .on_press(Message::Save)
                         ]

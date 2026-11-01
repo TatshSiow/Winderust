@@ -1,6 +1,6 @@
 use super::design;
-use super::widgets::{self, checkbox, Choice};
-use super::widgets::{button, pick_list, slider, text_input};
+use super::widgets::{self, checkbox, icon_button, Choice};
+use super::widgets::{action_button, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
 use crate::{
     config::{ByCpuLoadRule, ByTimeRule, CpuUsageComparison, Settings, WeekdaySetting},
@@ -390,12 +390,7 @@ impl Editor {
             let header = header.push(
                 row![
                     iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(widgets::quiet)
-                            .on_press(Message::Edit(index)),
+                        icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top
                     ),
@@ -614,15 +609,15 @@ impl Editor {
                 .to_string()
             )
             .width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::Cancel)
+            icon_button("icons/x.svg").on_press(Message::Cancel)
         ]
         .align_y(iced::Center);
         let footer = row![
             iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
+            action_button(t!("common.cancel").to_string())
                 .style(widgets::tertiary_button)
                 .on_press(Message::Cancel),
-            button(text(t!("common.save").to_string()))
+            action_button(t!("common.save").to_string())
                 .style(widgets::primary_button)
                 .on_press_maybe((self.valid() && !name.trim().is_empty()).then_some(Message::Save))
         ]

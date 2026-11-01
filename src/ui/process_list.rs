@@ -1,6 +1,6 @@
 use super::design;
 use super::priority_control::{Kind, Value};
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{action_button, button, checkbox, pick_list, text_input};
 use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
 use crate::config::*;
 use crate::foreground::{
@@ -1298,10 +1298,10 @@ impl ProcessList {
                     ),
                     row![
                         Space::new().width(Fill),
-                        button(text(t!("process_list.kill").to_string()))
+                        action_button(t!("process_list.kill").to_string())
                             .style(super::widgets::danger_button)
                             .on_press(Message::ConfirmStop),
-                        button(text(t!("common.cancel").to_string()))
+                        action_button(t!("common.cancel").to_string())
                             .style(crate::ui::widgets::tertiary_button)
                             .on_press(Message::CancelStop),
                     ]
@@ -1366,9 +1366,12 @@ impl ProcessList {
                                 super::navigation::glyph("icons/chevron-right.svg"),
                             ]
                             .spacing(design::space::SMALL)
+                            .height(Fill)
                             .align_y(iced::Center),
                         )
                         .width(Fill)
+                        .height(design::BUTTON_HEIGHT)
+                        .padding([0, design::space::MEDIUM as u16])
                         .style(super::widgets::quiet)
                         .on_press(Message::MenuBranch(MenuBranch::Efficiency));
                         let mut menu = column![
@@ -1381,9 +1384,12 @@ impl ProcessList {
                                         super::navigation::glyph("icons/chevron-right.svg")
                                     ]
                                     .spacing(design::space::SMALL)
+                                    .height(Fill)
                                     .align_y(iced::Center)
                                 )
                                 .width(Fill)
+                                .height(design::BUTTON_HEIGHT)
+                                .padding([0, design::space::MEDIUM as u16])
                                 .style(super::widgets::quiet)
                                 .on_press(Message::MenuBranch(MenuBranch::Types))
                             )
@@ -1426,7 +1432,7 @@ impl ProcessList {
                             }
                             menu = menu.push(
                                 mouse_area(
-                                    button(text(t!(key).to_string()))
+                                    action_button(t!(key).to_string())
                                         .width(Fill)
                                         .style(move |theme, status| {
                                             let mut style = super::widgets::quiet(theme, status);
@@ -1491,7 +1497,7 @@ impl ProcessList {
                                 [(true, "common.enabled"), (false, "common.disabled")]
                             {
                                 options = options.push(
-                                    button(text(t!(key).to_string()))
+                                    action_button(t!(key).to_string())
                                         .width(Fill)
                                         .style(if self.efficiency == Some(enabled) {
                                             super::widgets::selected
@@ -1529,9 +1535,12 @@ impl ProcessList {
                                                 .width(design::ICON_SIZE)
                                             ]
                                             .spacing(design::space::SMALL)
+                                            .height(Fill)
                                             .align_y(iced::Center),
                                         )
                                         .width(Fill)
+                                        .height(design::BUTTON_HEIGHT)
+                                        .padding([0, design::space::MEDIUM as u16])
                                         .style(if self.menu_branch == MenuBranch::Levels(kind) {
                                             super::widgets::selected
                                         } else {
@@ -1552,7 +1561,7 @@ impl ProcessList {
                                 {
                                     let selected = self.current.contains(&value);
                                     levels = levels.push(
-                                        button(text(value.to_string()))
+                                        action_button(value.to_string())
                                             .width(Fill)
                                             .style(move |theme, status| {
                                                 let mut style = if selected {
@@ -1614,7 +1623,7 @@ impl ProcessList {
                     ]
                     .width(Fill)
                     .spacing(design::space::TIGHT),
-                    button(text("\u{00d7}")).on_press(Message::CloseSelection),
+                    super::widgets::icon_button("icons/x.svg").on_press(Message::CloseSelection),
                 ]
                 .spacing(design::space::MEDIUM)
                 .align_y(iced::Center),
@@ -1663,17 +1672,17 @@ impl ProcessList {
                         .push(self.immediate_priorities(settings, eligible))
                         .push(
                             row![
-                                button(text(t!(suspension_label).to_string())).on_press_maybe(
+                                action_button(t!(suspension_label).to_string()).on_press_maybe(
                                     suspendable
                                         .then_some(Message::Action(Action::Suspend(!suspended)))
                                 ),
-                                button(text(t!("process_list.open_process_location").to_string()))
+                                action_button(t!("process_list.open_process_location").to_string())
                                     .on_press_maybe(
                                         (!selection.path.is_empty())
                                             .then_some(Message::OpenLocation)
                                     ),
                                 Space::new().width(Fill),
-                                button(text(t!(stop_label).to_string()))
+                                action_button(t!(stop_label).to_string())
                                     .style(super::widgets::danger_button)
                                     .on_press_maybe(eligible.then_some(Message::Stop(tree))),
                             ]
