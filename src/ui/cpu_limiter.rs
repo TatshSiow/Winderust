@@ -238,12 +238,11 @@ impl CpuLimiter {
         path: &str,
         value: u8,
     ) -> Element<'_, Message> {
-        row![
+        column![
             text(super::widgets::label_with_unit(&tier.label(), "%")).width(Fill),
-            iced::widget::container(self.limit_control(index, tier, path, value)).width(420)
+            self.limit_control(index, tier, path, value)
         ]
-        .spacing(design::space::MEDIUM)
-        .align_y(iced::Center)
+        .spacing(design::space::SMALL)
         .into()
     }
     pub(super) fn view<'a>(
@@ -490,6 +489,28 @@ fn rule_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn limit_labels_and_controls_fit_beside_the_dock() {
+        use iced::advanced::{layout, widget::Tree};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let editor = CpuLimiter::default();
+        for tier in Tier::ALL {
+            let mut view = editor.limit_row(None, tier, "", 50);
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(400.0, 1000.0)),
+            );
+            let label = node.children()[0].bounds();
+            let control = node.children()[1].bounds();
+            assert_eq!(label.width, 400.0);
+            assert_eq!(control.width, 400.0);
+            assert!(control.y >= label.y + label.height);
+            assert!(control.height <= 40.0);
+        }
+    }
+
     #[test]
     fn rule_status_uses_confirmed_limited_apps_and_enable_switches() {
         let mut rule = new_cpu_limiter_rule(r"C:\Apps\test.exe");

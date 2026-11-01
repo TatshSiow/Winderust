@@ -45,7 +45,7 @@ pub(super) const NAVIGATION_RAIL_WIDTH: f32 = 88.0;
 pub(super) const NAVIGATION_FLYOUT_WIDTH: f32 = 252.0;
 pub(super) const NAVIGATION_ITEM_HEIGHT: u32 = 64;
 pub(super) const SIDE_PANEL_WIDTH: f32 = 320.0;
-pub(super) const SIDEBAR_COLLAPSED_WIDTH: f32 = 64.0;
+pub(super) const PAGE_BREADCRUMB_HEIGHT: u32 = 48;
 pub(super) const NAVIGATION_ROW_HEIGHT: u32 = 44;
 
 pub(super) fn palette(light: bool, accent: Option<iced::Color>) -> iced::theme::Palette {

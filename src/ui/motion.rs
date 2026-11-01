@@ -29,10 +29,6 @@ pub(super) enum Effect {
         interactive: bool,
     },
     Chevron,
-    Width {
-        min: f32,
-        max: f32,
-    },
     Visible,
     // Keep independent widget state when changing pages or tabs.
     Content(u64),
@@ -83,11 +79,7 @@ impl<M> Motion<'_, M> {
 }
 impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
     fn size(&self) -> Size<Length> {
-        let mut size = self.content.as_widget().size();
-        if let Effect::Width { min, max } = self.effect {
-            size.width = Length::Fixed(if self.target { max } else { min });
-        }
-        size
+        self.content.as_widget().size()
     }
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -135,16 +127,10 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
         if self.hidden() {
             return layout::Node::with_children(Size::ZERO, vec![layout::Node::new(Size::ZERO)]);
         }
-        let adjusted = if let Effect::Width { min, max } = self.effect {
-            let width = if self.target { max } else { min };
-            limits.width(width).min_width(width).max_width(width)
-        } else {
-            *limits
-        };
         let child = self
             .content
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, &adjusted);
+            .layout(&mut tree.children[0], renderer, limits);
         layout::Node::with_children(child.size(), vec![child])
     }
     fn draw(
@@ -416,14 +402,7 @@ mod tests {
     #[test]
     fn layout_changes_are_immediate_and_do_not_schedule_animation() {
         let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        for effect in [
-            Effect::Visible,
-            Effect::Width {
-                min: 56.0,
-                max: 320.0,
-            },
-            Effect::Content(1),
-        ] {
+        for effect in [Effect::Visible, Effect::Content(1)] {
             let mut widget = Motion::<()> {
                 content: iced::widget::Space::new()
                     .width(Length::Fill)
@@ -442,9 +421,6 @@ mod tests {
                 &layout::Limits::new(Size::ZERO, Size::new(500.0, 500.0)),
             );
             assert_eq!(node.size().height, 100.0);
-            if matches!(widget.effect, Effect::Width { .. }) {
-                assert_eq!(node.size().width, 320.0);
-            }
             let state = tree.state.downcast_ref::<State>();
             assert!(!state.animation.is_animating());
         }

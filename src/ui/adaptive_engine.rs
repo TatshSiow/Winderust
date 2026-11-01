@@ -501,7 +501,7 @@ impl Editor {
                 Message::TuningTab(next),
             ));
         }
-        body = body.push(iced::widget::container(tabs).style(super::widgets::tab_bar));
+        body = body.push(iced::widget::container(tabs.wrap()).style(super::widgets::tab_bar));
         let header = body;
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
@@ -1818,7 +1818,7 @@ impl Editor {
                     ]
                     .spacing(design::space::MEDIUM),
                 ));
-                body = body.push(table.width(Fill));
+                body = body.push(super::scrolling::horizontal_table(table.width(Fill), 900.0));
             }
             TuningTab::CustomRules => {}
         }
@@ -2308,10 +2308,12 @@ mod tests {
         );
         for expanded in [false, true] {
             editor.priority_expanded[0].fill(expanded);
-            super::super::scrolling::check_scroll_damage(
-                editor.view(&settings, &[]),
-                iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0)),
-            );
+            for width in [430.0, 1040.0] {
+                super::super::scrolling::check_scroll_damage(
+                    editor.view(&settings, &[]),
+                    iced::Rectangle::with_size(iced::Size::new(width, 700.0)),
+                );
+            }
         }
     }
 

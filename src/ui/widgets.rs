@@ -152,6 +152,8 @@ pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
     show_status: bool,
 ) -> Element<'a, M> {
     use iced::widget::container;
+    let tiers: Vec<_> = tiers.into_iter().collect();
+    let min_width = 720.0 + 100.0 * tiers.len() as f32 + if show_status { 140.0 } else { 0.0 };
     let mut header = row![text(rust_i18n::t!("common.enable").to_string()).width(48)]
         .spacing(design::space::MEDIUM);
     if show_status {
@@ -181,7 +183,7 @@ pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
     } else {
         iced::widget::keyed_column(rows).into()
     };
-    rules_table(header, rows)
+    super::scrolling::horizontal_table(rules_table(header, rows), min_width)
 }
 
 pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
@@ -422,16 +424,6 @@ pub(super) fn danger_button(
     style.border.radius = design::CONTROL_RADIUS.into();
     style.border.width = 1.0;
     style
-}
-
-pub(super) fn sidebar_toggle<'a, M: 'a>(
-    content: impl Into<Element<'a, M>>,
-) -> super::animated_controls::Button<'a, M> {
-    button(content)
-        .width(Fill)
-        .height(design::NAVIGATION_ROW_HEIGHT)
-        .padding([design::space::COMPACT as u16, 13])
-        .style(quiet)
 }
 
 pub(super) const SEARCH_INPUT_PADDING: iced::Padding = iced::Padding {
@@ -821,6 +813,27 @@ fn step_values(
 }
 #[cfg(test)]
 mod step_tests {
+    #[test]
+    fn narrow_tables_scroll_without_compressing_their_columns() {
+        use iced::advanced::{layout, widget::Tree};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        for width in [430.0, 1200.0] {
+            let mut view: iced::Element<'_, ()> = crate::ui::scrolling::horizontal_table(
+                iced::widget::Space::new().width(iced::Fill).height(60),
+                900.0,
+            );
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 1000.0)),
+            );
+            assert_eq!(node.bounds().width, width);
+            assert_eq!(node.children()[0].bounds().width, width.max(900.0));
+            assert!(node.bounds().height < 100.0);
+        }
+    }
+
     #[test]
     fn setting_descriptions_wrap_without_clipping_rows_or_controls() {
         use iced::advanced::{layout, widget::Tree};

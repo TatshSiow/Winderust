@@ -34,7 +34,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(47) {
+    if extra == Some(51) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
@@ -69,6 +69,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(44) => Page::CpuSetsSoft,
             Some(45) => Page::ProcessorAffinityHard,
             Some(46) => Page::AdvancedPowerPlanTuning,
+            Some(47) => Page::AdaptiveEngine,
+            Some(48) => Page::ProcessList,
+            Some(49) => Page::ActionLog,
+            Some(50) => Page::WinderustBehaviour,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -100,8 +104,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
         }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
+        let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
         assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
+        assert_eq!(app.side_panel_open, was_open);
+        let _ = app.update(Message::CloseSidePanel);
         if !navigation::page_feature_info(page).is_empty() {
             assert!(app.side_panel(page).is_some());
         }
@@ -198,9 +205,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
         }
         if extra == Some(9) {
-            let before = app.status_collapsed;
-            let _ = app.update(Message::ToggleStatus);
-            assert_eq!(app.status_collapsed, !before);
+            let before = app.side_panel_open;
+            let _ = app.update(Message::ToggleSidePanel);
+            assert_eq!(app.side_panel_open, !before);
         }
         if extra == Some(18) {
             app.settings.background_efficiency.enabled = true;
@@ -348,9 +355,24 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
             let _ = app.update(Message::SidePanelTab(SidePanelTab::Info));
             assert_eq!(app.side_panel_tab, SidePanelTab::Info);
-            if app.status_collapsed {
-                let _ = app.update(Message::ToggleStatus);
-            }
+            let _ = app.update(Message::ToggleSidePanel);
+            assert!(app.side_panel_open);
+            let _ = app.update(Message::SearchKeyboard {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                modifiers: iced::keyboard::Modifiers::empty(),
+                repeat: false,
+                status: iced::event::Status::Ignored,
+            });
+            assert!(app.side_panel_open);
+            assert_eq!(app.page, page);
+            let _ = app.update(Message::OpenNavigationSearch);
+            assert!(app.side_panel_open);
+            let _ = app.update(Message::CloseNavigationSearch);
+            let _ = app.update(Message::Navigation(navigation::Event::Dismiss));
+            assert!(app.side_panel_open);
+            let _ = app.update(Message::CloseSidePanel);
+            assert!(!app.side_panel_open);
+            let _ = app.update(Message::ToggleSidePanel);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         if matches!(extra, Some(44..=46)) {
@@ -362,11 +384,17 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::SidePanelTab(tab));
             assert_eq!(app.side_panel_tab, tab);
             assert!(app.side_panel(page).is_some());
-            app.status_collapsed = false;
+            let _ = app.update(Message::ToggleSidePanel);
+            assert!(app.side_panel_open);
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if matches!(extra, Some(47..=50)) {
+            let _ = app.update(Message::ToggleSidePanel);
+            assert!(app.side_panel_open);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=46) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -451,6 +479,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        115
+        119
     );
 }

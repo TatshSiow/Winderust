@@ -174,6 +174,8 @@ pub(super) fn repaint_group<'a, Message: 'a>(
 
 enum Behavior<'a, Message> {
     Scroll,
+    Table(f32),
+    FillWidth,
     Group,
     Buffer(Buffer<'a, Message>),
 }
@@ -186,6 +188,25 @@ pub(super) fn scrollable<'a, Message: 'a>(
         content: content.into(),
         behavior: Behavior::Scroll,
     }))
+}
+
+/// Keep dense columns readable when the dock reduces the editing area.
+pub(super) fn horizontal_table<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+    min_width: f32,
+) -> Element<'a, Message> {
+    let table = iced::widget::scrollable(Element::new(ScrollContent {
+        content: content.into(),
+        behavior: Behavior::Table(min_width),
+    }))
+    .direction(iced::widget::scrollable::Direction::Horizontal(
+        iced::widget::scrollable::Scrollbar::new(),
+    ))
+    .width(Length::Fill);
+    Element::new(ScrollContent {
+        content: table.into(),
+        behavior: Behavior::FillWidth,
+    })
 }
 
 struct ScrollContent<'a, Message> {
@@ -217,7 +238,13 @@ impl<Message> Widget<Message, Theme, Renderer> for ScrollContent<'_, Message> {
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.content.as_widget_mut().layout(tree, renderer, limits)
+        let limits = match self.behavior {
+            Behavior::Table(min_width) => limits.width(min_width.max(limits.min().width)),
+            // Carry the viewport width through the scrollable's unbounded horizontal limits.
+            Behavior::FillWidth => limits.min_width(limits.max().width),
+            _ => *limits,
+        };
+        self.content.as_widget_mut().layout(tree, renderer, &limits)
     }
     fn draw(
         &self,
@@ -229,7 +256,7 @@ impl<Message> Widget<Message, Theme, Renderer> for ScrollContent<'_, Message> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        if matches!(self.behavior, Behavior::Group) {
+        if matches!(self.behavior, Behavior::Group | Behavior::FillWidth) {
             use iced::advanced::Renderer as _;
             if let Some(clip) = layout.bounds().intersection(viewport) {
                 renderer.with_layer(clip, |renderer| {

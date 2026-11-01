@@ -31,7 +31,7 @@ use crate::{
 fn shell_widths(width: f32) -> (f32, f32, u16) {
     (
         design::NAVIGATION_RAIL_WIDTH + 1.0,
-        (width * 0.21).clamp(240.0, design::SIDE_PANEL_WIDTH),
+        design::SIDE_PANEL_WIDTH,
         if width < 1280.0 {
             design::space::MEDIUM
         } else {
@@ -64,6 +64,89 @@ impl SidePanelTab {
         })
         .to_string()
     }
+}
+
+fn page_header<'a>(
+    breadcrumb: Element<'a, Message>,
+    profiles: Option<Element<'a, Message>>,
+    panel_button: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut toolbar = row![profiles.unwrap_or_else(|| iced::widget::Space::new().into())]
+        .push(iced::widget::Space::new().width(Fill))
+        .height(design::BUTTON_HEIGHT)
+        .align_y(iced::Center);
+    if let Some(button) = panel_button {
+        toolbar = toolbar.push(button);
+    }
+    column![
+        container(breadcrumb).center_y(design::PAGE_BREADCRUMB_HEIGHT),
+        toolbar,
+    ]
+    .spacing(design::space::SMALL)
+    .width(Fill)
+    .into()
+}
+
+fn page_canvas<'a>(
+    heading: Element<'a, Message>,
+    content: Element<'a, Message>,
+) -> Element<'a, Message> {
+    container(
+        container(
+            column![heading, content]
+                .spacing(design::space::WIDE)
+                .height(Fill),
+        )
+        .max_width(design::CONTENT_WIDTH)
+        .width(Fill)
+        .height(Fill),
+    )
+    .center_x(Fill)
+    .height(Fill)
+    .into()
+}
+
+fn side_panel_dock<'a>(
+    workspace: Element<'a, Message>,
+    panel: Option<Element<'a, Message>>,
+    width: f32,
+) -> Element<'a, Message> {
+    let dock: Element<'a, Message> = if let Some(panel) = panel {
+        let close = iced::widget::tooltip(
+            widgets::icon_button("icons/x.svg").on_press(Message::CloseSidePanel),
+            text(t!("common.close").to_string()),
+            iced::widget::tooltip::Position::Left,
+        )
+        .style(widgets::surface);
+        let panel_surface = container(
+            column![
+                row![
+                    widgets::heading(t!("nav.side_panel").to_string(), design::typography::BODY),
+                    iced::widget::Space::new().width(Fill),
+                    close,
+                ]
+                .align_y(iced::Center),
+                panel,
+            ]
+            .spacing(design::space::MEDIUM)
+            .height(Fill),
+        )
+        .padding(design::space::MEDIUM as u16)
+        .width(width)
+        .height(Fill)
+        .style(widgets::navigation_surface);
+        row![
+            iced::widget::rule::vertical(1),
+            super::scrolling::repaint_group(panel_surface),
+        ]
+        .into()
+    } else {
+        iced::widget::Space::new().into()
+    };
+    row![container(workspace).width(Fill).height(Fill), dock]
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn feature_info_sidebar<'a>(
@@ -156,7 +239,7 @@ pub(crate) fn run(
                     navigation_search_scope: SearchScope(None),
                     navigation_search_selected: 0,
                     navigation: navigation::Flyout::default(),
-                    status_collapsed: false,
+                    side_panel_open: false,
                     side_panel_tab: SidePanelTab::Status,
                     preferences: settings_pages::Editor::default(),
                     home: home::Model::default(),
@@ -385,7 +468,7 @@ struct WinderustApp {
     navigation_search_scope: SearchScope,
     navigation_search_selected: usize,
     navigation: navigation::Flyout,
-    status_collapsed: bool,
+    side_panel_open: bool,
     side_panel_tab: SidePanelTab,
     preferences: settings_pages::Editor,
     home: home::Model,
@@ -461,7 +544,8 @@ enum Message {
     NavigateHistory(bool),
     Navigation(navigation::Event),
     SidePanelTab(SidePanelTab),
-    ToggleStatus,
+    ToggleSidePanel,
+    CloseSidePanel,
     Preferences(settings_pages::Message),
     ColorChosen(Option<u32>, Result<Option<u32>, String>),
     Status(status_rail::Message),
@@ -859,7 +943,11 @@ impl WinderustApp {
             }
             Message::Navigation(event) => return self.update_navigation(event),
             Message::SidePanelTab(tab) => self.side_panel_tab = tab,
-            Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
+            Message::ToggleSidePanel => {
+                self.side_panel_open = !self.side_panel_open;
+                self.navigation.dismiss();
+            }
+            Message::CloseSidePanel => self.side_panel_open = false,
             Message::Status(status_rail::Message::RelaunchAdmin) => {
                 if crate::privilege::relaunch_as_admin() {
                     return self.update(Message::Close);
@@ -2229,110 +2317,58 @@ impl WinderustApp {
             }
             profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
-        let header: Element<'_, Message> = if let Some(profiles) = profile_controls {
-            column![breadcrumb, profiles]
-                .spacing(design::space::SMALL)
-                .into()
-        } else {
-            breadcrumb.into()
-        };
-        let heading = container(header)
-            .padding([design::space::SMALL as u16, 0])
-            .max_width(design::CONTENT_WIDTH)
-            .width(Fill);
-        let mut body = column![container(heading).center_x(Fill)]
-            .spacing(design::space::WIDE)
-            .height(Fill);
-        let content = self.page_view();
-        body = body.push(
-            container(
-                container(super::motion::wrap(
-                    super::motion::wrap(
-                        super::scrolling::repaint_group(content),
-                        true,
-                        super::motion::Effect::Content(self.power_source as u64),
-                    ),
-                    true,
-                    super::motion::Effect::Content(widgets::stable_key(&self.page)),
-                ))
-                .max_width(design::CONTENT_WIDTH)
-                .width(Fill)
-                .height(Fill),
+        let panel_button = side_panel.as_ref().map(|_| {
+            button(
+                row![
+                    navigation::glyph("icons/panel-right-open.svg"),
+                    text(t!("nav.side_panel").to_string()),
+                ]
+                .spacing(design::space::CONTROL)
+                .height(Fill)
+                .align_y(iced::Center),
             )
-            .center_x(Fill)
-            .height(Fill),
+            .height(design::BUTTON_HEIGHT)
+            .padding([0, design::space::MEDIUM as u16])
+            .style(if self.side_panel_open {
+                widgets::selected
+            } else {
+                widgets::secondary_button
+            })
+            .on_press(Message::ToggleSidePanel)
+            .into()
+        });
+        let heading = page_header(
+            breadcrumb.into(),
+            profile_controls.map(Into::into),
+            panel_button,
         );
+        let content = container(super::motion::wrap(
+            super::motion::wrap(
+                super::scrolling::repaint_group(self.page_view()),
+                true,
+                super::motion::Effect::Content(self.power_source as u64),
+            ),
+            true,
+            super::motion::Effect::Content(widgets::stable_key(&self.page)),
+        ))
+        .width(Fill)
+        .height(Fill);
+        let body = page_canvas(heading, content.into());
+        let panel_visible = self.side_panel_open && side_panel.is_some();
         let layout = row![
             navigation,
             container(body)
                 .padding([design::space::SECTION as u16, page_padding])
-                .center_x(Fill)
-                .height(Fill)
-        ]
-        .spacing(0)
-        .height(Fill);
-        let has_side_panel = side_panel.is_some();
-        let panel: Element<'_, Message> = if let Some(panel) = side_panel {
-            let panel_toggle = widgets::sidebar_toggle(
-                row![
-                    text(if self.status_collapsed {
-                        String::new()
-                    } else {
-                        t!("nav.collapse_side_panel").to_string()
-                    })
-                    .size(design::typography::SECONDARY)
-                    .width(Fill),
-                    navigation::glyph(if self.status_collapsed {
-                        "icons/panel-right-open.svg"
-                    } else {
-                        "icons/panel-right-close.svg"
-                    }),
-                ]
-                .height(Fill)
-                .align_y(iced::Center),
-            )
-            .on_press(Message::ToggleStatus);
-            let panel_toggle: Element<'_, Message> = if self.status_collapsed {
-                iced::widget::tooltip(
-                    panel_toggle,
-                    text(t!("nav.expand_side_panel").to_string()),
-                    iced::widget::tooltip::Position::Left,
-                )
-                .style(widgets::surface)
-                .into()
-            } else {
-                panel_toggle.into()
-            };
-            super::motion::wrap(
-                container(
-                    column![
-                        container(widgets::optional_content(panel, !self.status_collapsed))
-                            .height(Fill)
-                            .padding([0, design::space::CONTROL as u16]),
-                        iced::widget::rule::horizontal(1),
-                        panel_toggle
-                    ]
-                    .spacing(design::space::TINY)
-                    .padding([design::space::SMALL as u16, design::space::CONTROL as u16])
-                    .height(Fill),
-                )
                 .width(Fill)
-                .style(widgets::navigation_surface),
-                !self.status_collapsed,
-                super::motion::Effect::Width {
-                    min: design::SIDEBAR_COLLAPSED_WIDTH,
-                    max: side_panel_width,
-                },
-            )
-        } else {
-            iced::widget::Space::new().into()
-        };
-        let layout: Element<'_, Message> = layout
-            .push(widgets::optional_content(
-                row![iced::widget::rule::vertical(1), panel].height(Fill),
-                has_side_panel,
-            ))
-            .into();
+                .height(Fill),
+        ]
+        .height(Fill)
+        .into();
+        let layout = side_panel_dock(
+            layout,
+            side_panel.filter(|_| panel_visible),
+            side_panel_width,
+        );
         if self.navigation_search_open {
             let searching = !self.navigation_search.trim().is_empty();
             let choices = navigation_search_choices(
@@ -2542,7 +2578,15 @@ impl WinderustApp {
                 self.pending_changes(),
                 super::motion::Effect::Visible
             ))
-            .padding(design::space::LARGE as u16)
+            .padding(iced::Padding {
+                right: design::space::LARGE as f32
+                    + if panel_visible {
+                        side_panel_width + 1.0
+                    } else {
+                        0.0
+                    },
+                ..iced::Padding::new(design::space::LARGE as f32)
+            })
             .width(Fill)
             .height(Fill)
             .align_x(iced::Right)
@@ -2886,6 +2930,108 @@ fn ui_tick_interval(hidden: bool, retry_pending: bool) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn dock_reserves_content_width_and_keeps_header_alignment() {
+        use iced::advanced::{layout, widget::Tree};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        for width in [780.0, 1440.0, 1800.0] {
+            let size = iced::Size::new(width, 600.0);
+            let mut expected = None;
+            for profiles in [false, true] {
+                for available in [false, true] {
+                    for open in [false, true] {
+                        let heading = page_header(
+                            text("Home > Section > Feature").into(),
+                            profiles
+                                .then(|| button(text("Plugged In / On Battery")).height(32).into()),
+                            available.then(|| button(text("Side panel")).height(32).into()),
+                        );
+                        let workspace = page_canvas(
+                            heading,
+                            iced::widget::Space::new().width(Fill).height(Fill).into(),
+                        );
+                        let panel = (available && open)
+                            .then(|| iced::widget::Space::new().height(Fill).into());
+                        let mut view = side_panel_dock(workspace, panel, 320.0);
+                        let mut tree = Tree::new(&view);
+                        let node = view.as_widget_mut().layout(
+                            &mut tree,
+                            &renderer,
+                            &layout::Limits::new(iced::Size::ZERO, size),
+                        );
+                        let available_width = width - if available && open { 321.0 } else { 0.0 };
+                        assert_eq!(node.children()[0].size().width, available_width);
+                        if available && open {
+                            assert_eq!(node.children()[1].bounds().x, available_width);
+                        }
+                        let workspace = &node.children()[0].children()[0];
+                        let canvas = &workspace.children()[0];
+                        let column = &canvas.children()[0];
+                        let mut bounds = column.children()[1].bounds();
+                        assert_eq!(column.children()[0].bounds().x, bounds.x);
+                        bounds.x += canvas.bounds().x;
+                        let content_width = available_width.min(design::CONTENT_WIDTH as f32);
+                        assert_eq!(bounds.x, (available_width - content_width) / 2.0);
+                        assert_eq!(bounds.width, content_width);
+                        if let Some(expected) = expected {
+                            assert_eq!(bounds.y, expected);
+                        } else {
+                            expected = Some(bounds.y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dock_and_page_controls_remain_interactive_together() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let workspace: Element<'_, Message> = button(text("Background action"))
+            .width(Fill)
+            .height(Fill)
+            .on_press(Message::Save)
+            .into();
+        let panel = button(text("Panel action"))
+            .width(Fill)
+            .height(Fill)
+            .on_press(Message::Cancel)
+            .into();
+        let mut view = side_panel_dock(workspace, Some(panel), 320.0);
+        let mut tree = Tree::new(&view);
+        let size = iced::Size::new(900.0, 620.0);
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(iced::Size::ZERO, size),
+        );
+        for (cursor, outside) in [
+            (iced::Point::new(100.0, 200.0), true),
+            (iced::Point::new(800.0, 200.0), false),
+        ] {
+            let mut messages = Vec::new();
+            for event in [
+                iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
+                iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
+            ] {
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &iced::Event::Mouse(event),
+                    Layout::new(&node),
+                    iced::mouse::Cursor::Available(cursor),
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &node.bounds(),
+                );
+            }
+            assert_eq!(messages.len(), 1);
+            assert!(matches!(messages[0], Message::Save) == outside);
+            assert!(matches!(messages[0], Message::Cancel) != outside);
+        }
+    }
+
+    #[test]
     fn feature_info_fits_the_sidebar_without_changing_its_bounds() {
         use super::*;
         use iced::advanced::{layout, widget::Tree};
@@ -2943,6 +3089,140 @@ mod tests {
         let selected = search_selection(0, pages.len(), true);
         assert_eq!(pages.get(selected), pages.get(1));
         assert_ne!(pages.get(selected), pages.first());
+    }
+
+    #[test]
+    fn dock_preserves_page_scroll_and_repaints_cleanly() {
+        use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
+        struct ReadScroll(f32);
+        impl iced::advanced::widget::Operation<()> for ReadScroll {
+            fn traverse(
+                &mut self,
+                operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<()>),
+            ) {
+                operate(self);
+            }
+            fn scrollable(
+                &mut self,
+                id: Option<&iced::advanced::widget::Id>,
+                _bounds: iced::Rectangle,
+                _content_bounds: iced::Rectangle,
+                translation: iced::Vector,
+                _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+            ) {
+                if id == Some(&iced::advanced::widget::Id::from("workspace")) {
+                    self.0 = translation.y;
+                }
+            }
+        }
+        let mut palette = design::palette(false, None);
+        palette.background = iced::Color::BLACK;
+        let theme = Theme::custom_with_fn("AMOLED test", palette, design::extended_palette);
+        let size = iced::Size::new(900, 620);
+        let bounds =
+            iced::Rectangle::with_size(iced::Size::new(size.width as f32, size.height as f32));
+        let viewport = iced::advanced::graphics::Viewport::with_physical_size(size, 1.0);
+        let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut pixels = tiny_skia::Pixmap::new(size.width, size.height).unwrap();
+        let mut mask = tiny_skia::Mask::new(size.width, size.height).unwrap();
+        let mut previous = Vec::new();
+        let mut tree = Tree::empty();
+        for (step, open) in [false, true, true, true, false, true]
+            .into_iter()
+            .enumerate()
+        {
+            let workspace: Element<'_, Message> = scrollable(
+                container(text(format!("Page {step}")))
+                    .width(Fill)
+                    .height(2000)
+                    .style(widgets::surface),
+            )
+            .id("workspace")
+            .width(Fill)
+            .height(Fill)
+            .into();
+            let panel = open.then(|| {
+                scrollable(
+                    iced::widget::column(
+                        (0..step * 5).map(|item| text(format!("Panel {step}, item {item}")).into()),
+                    )
+                    .spacing(12),
+                )
+                .height(Fill)
+                .into()
+            });
+            let mut view = side_panel_dock(workspace, panel, design::SIDE_PANEL_WIDTH);
+            tree.diff(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, bounds.size()),
+            );
+            if step == 0 {
+                let mut scroll = iced::advanced::widget::operation::scrollable::scroll_to::<()>(
+                    "workspace".into(),
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: None,
+                        y: Some(250.0),
+                    },
+                );
+                view.as_widget_mut()
+                    .operate(&mut tree, Layout::new(&node), &renderer, &mut scroll);
+            }
+            let mut offset = ReadScroll(0.0);
+            view.as_widget_mut()
+                .operate(&mut tree, Layout::new(&node), &renderer, &mut offset);
+            assert_eq!(
+                offset.0.abs(),
+                250.0,
+                "Dock reset the page scroll at step {step}"
+            );
+            renderer.reset(bounds);
+            view.as_widget().draw(
+                &tree,
+                &mut renderer,
+                &theme,
+                &iced::advanced::renderer::Style {
+                    text_color: theme.palette().text,
+                },
+                Layout::new(&node),
+                iced::mouse::Cursor::Unavailable,
+                &bounds,
+            );
+            let damage = if previous.is_empty() {
+                vec![bounds]
+            } else {
+                iced::advanced::graphics::damage::group(
+                    iced::advanced::graphics::damage::diff(
+                        &previous,
+                        renderer.layers(),
+                        |layer| vec![layer.bounds],
+                        iced_tiny_skia::Layer::damage,
+                    ),
+                    bounds,
+                )
+            };
+            renderer.draw(
+                &mut pixels.as_mut(),
+                &mut mask,
+                &viewport,
+                &damage,
+                theme.palette().background,
+            );
+            let mut full = tiny_skia::Pixmap::new(size.width, size.height).unwrap();
+            renderer.draw(
+                &mut full.as_mut(),
+                &mut mask,
+                &viewport,
+                &[bounds],
+                theme.palette().background,
+            );
+            assert!(
+                pixels.data() == full.data(),
+                "Dock left stale pixels at step {step}"
+            );
+            previous = renderer.layers().to_vec();
+        }
     }
 
     #[test]
@@ -3128,9 +3408,8 @@ mod tests {
             let (navigation, panel, padding) = shell_widths(width);
             assert_eq!(navigation, design::NAVIGATION_RAIL_WIDTH + 1.0);
             assert!(panel <= design::SIDE_PANEL_WIDTH);
-            let content =
-                width - navigation - panel - 2.0 * padding as f32 - design::space::SMALL as f32;
-            assert!(content >= 380.0, "{width}: {content}");
+            let content = width - navigation - 2.0 * padding as f32;
+            assert!(content >= 800.0, "{width}: {content}");
         }
         assert_eq!(
             shell_widths(1920.0),
@@ -3140,11 +3419,8 @@ mod tests {
                 design::space::WIDE as u16
             )
         );
-        let (navigation, panel, padding) = shell_widths(900.0);
-        assert!(
-            900.0 - navigation - panel - 2.0 * padding as f32 - design::space::SMALL as f32
-                >= 380.0
-        );
+        let (navigation, _, padding) = shell_widths(900.0);
+        assert!(900.0 - navigation - 2.0 * padding as f32 >= 780.0);
     }
 
     #[test]

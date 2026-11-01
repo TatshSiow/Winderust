@@ -24,7 +24,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   opens the selected result; Up/Down move selection and scroll it into view. New queries and filters select the first result. Escape, Close, or clicking outside dismisses the palette.
 - Search defaults to Ctrl+K or / within the app window, respecting keys captured by text inputs and menus. Settings > Winderust Behaviour provides primary and alternate shortcut recording, clearing, and default restoration through normal Save. The rail Search entry matches other navigation item heights, icon/label spacing, and vertical centering. Navigation entries, including Search, have no hover tooltips. Keep Search to its icon and label; give Search only a subtle tint with neutral text while the palette is open, retaining the current page as the primary selection.
 - The rail stays 88px wide plus its divider. Keep content geometry independent of flyout state and the right status rail independent.
-- The main page area scrolls vertically and keeps content constrained with stable width behavior.
+- Center the shared header and content canvas within the work area beside the primary rail and any open side panel, with shared padding and a 1440px width cap. Every page reserves the same 48px breadcrumb area and 32px toolbar, including pages without power-source selectors, so page content starts at a stable position.
+- The right side panel is a 320px dock beside the editor, reserving its own width without covering content. Both areas remain interactive. Start closed and retain its open state throughout navigation, search, focus changes, and settings edits. Close only through panel controls. Pages without panel content use the full canvas and preserve the session's open preference for the next supported page. Keep existing tabs, scrolling, and actions. The unsaved-settings notice stays within the editing area, and dialogs cover both areas. There is no collapsed strip or persisted mode setting.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::page_view` in `src/ui/app.rs`.
 
@@ -32,7 +33,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 - Use Iced rows and columns with explicit `Fill`, `Shrink`, and constrained widths for flexible children.
 - Rows and table headers should have stable heights across state changes.
-- Use fixed or computed widths for tables and policy columns. Do not let dynamic labels resize the process list.
+- Use fixed or computed widths for tables and policy columns. Dense rule tables scroll horizontally when the dock leaves too little room; slider labels sit above their controls. Do not let dynamic labels resize the process list.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
 - Use shared 10px surface and 6px control corner radii consistently. Do not introduce large rounded marketing panels.
@@ -55,7 +56,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Navigation selection uses a rounded vertical pill. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
-- The navigation rail and right panel use docked chrome with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Floating navigation uses the shared outlined surface. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
+- The navigation rail and docked right panel use edge-aligned chrome with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Floating navigation uses the shared outlined surface. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
 - Base surfaces use cool pale neutrals in light mode and slate tones in dark mode; panels have subtle 1px outlines. Accent color marks primary action, active navigation, selection, and important status.
 - Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers. Derive workspace, navigation, card/field, button, border, divider, and muted-text colors from the selected accent using restrained grayscale tints in the shared palette. Chart series and informational Process List colors also follow accent roles. Keep body/help text readable, semantic success/warning/danger distinct, and existing contrast rules for accent fills and marks. Accent changes must refresh the complete theme immediately, including cached chart/table surfaces.
 - Language and Appearance offers System, Light, Dark, and AMOLED. AMOLED uses a pure-black workspace and docked navigation with near-black accent-tinted cards and controls; retain readable borders, semantic status colors, and dark-mode contrast rules. System continues to follow Windows light/dark selection.
@@ -114,7 +115,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ### CPU Allocation
 
-- Runtime-backed feature pages use a fixed status rail at the right edge instead of interrupting
+- Runtime-backed feature pages use the shared docked status panel at the right edge instead of interrupting
   the settings flow. Every rail uses the same Running / Not running / Unknown state, process
   counts, and latest success/failure Action Log summary; unavailable snapshot metrics show an
   em dash rather than a fabricated zero. Action counts and latest outcomes are runtime telemetry,
@@ -124,7 +125,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
-  tabs, matching the navigation panel structure.
+  tabs, alongside Info in the shared docked panel.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
   delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
   edit, and view use the existing full-window modal style.
