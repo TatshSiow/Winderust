@@ -207,10 +207,11 @@ pub enum AppThemeMode {
     System,
     Light,
     Dark,
+    Amoled,
 }
 
 impl AppThemeMode {
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+    pub const ALL: [Self; 4] = [Self::System, Self::Light, Self::Dark, Self::Amoled];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

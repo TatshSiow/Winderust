@@ -815,10 +815,13 @@ mod tests {
             .memory_trim
             .system_memory_load_threshold_percent = 72;
 
-        let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
-        let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
+        for mode in AppThemeMode::ALL {
+            settings.general.theme_mode = mode;
+            let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
+            let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
-        assert_eq!(parsed, settings);
+            assert_eq!(parsed, settings);
+        }
     }
 
     #[test]

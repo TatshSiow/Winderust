@@ -70,6 +70,21 @@ fn tint(gray: u8, accent: iced::Color, amount: f32) -> iced::Color {
     iced::theme::palette::mix(iced::Color::from_rgb8(gray, gray, gray), accent, amount)
 }
 
+pub(super) fn amoled_theme(accent: Option<iced::Color>) -> iced::Theme {
+    use iced::theme::palette::Pair;
+    let palette = iced::theme::Palette {
+        background: iced::Color::BLACK,
+        ..palette(false, accent)
+    };
+    iced::Theme::custom_with_fn("Winderust AMOLED", palette, |palette| {
+        let mut colors = extended_palette(palette);
+        colors.background.weaker = Pair::new(iced::Color::BLACK, palette.text);
+        colors.background.weak = Pair::new(tint(8, palette.primary, 0.002), palette.text);
+        colors.background.neutral = Pair::new(tint(20, palette.primary, 0.006), palette.text);
+        colors
+    })
+}
+
 /// Low-chroma surfaces share the selected accent without competing with controls.
 pub(super) fn extended_palette(palette: iced::theme::Palette) -> iced::theme::palette::Extended {
     use iced::theme::palette::{Extended, Pair};
@@ -115,8 +130,14 @@ fn accent_foreground(accent: iced::Color, dark: bool) -> iced::Color {
 mod tests {
     #[test]
     fn accent_tints_stay_readable_and_preserve_semantic_colors() {
+        use crate::config::AppThemeMode;
         use iced::{Color, Theme};
-        for light in [false, true] {
+        for mode in [
+            AppThemeMode::Light,
+            AppThemeMode::Dark,
+            AppThemeMode::Amoled,
+        ] {
+            let light = mode == AppThemeMode::Light;
             let accents = [
                 Color::from_rgb8(215, 60, 80),
                 Color::from_rgb8(40, 130, 225),
@@ -127,17 +148,34 @@ mod tests {
                 Color::WHITE,
             ];
             let themes = accents.map(|accent| {
-                Theme::custom_with_fn(
-                    "accent",
-                    super::palette(light, Some(accent)),
-                    super::extended_palette,
-                )
+                if mode == AppThemeMode::Amoled {
+                    super::amoled_theme(Some(accent))
+                } else {
+                    Theme::custom_with_fn(
+                        "accent",
+                        super::palette(light, Some(accent)),
+                        super::extended_palette,
+                    )
+                }
             });
             for (index, theme) in themes.iter().enumerate() {
                 let palette = theme.palette();
                 let colors = theme.extended_palette();
                 assert_eq!(colors.is_dark, !light);
                 assert_eq!(palette.primary, accents[index]);
+                if mode == AppThemeMode::Amoled {
+                    assert_eq!(palette.background, Color::BLACK);
+                    assert_eq!(colors.background.weaker.color, Color::BLACK);
+                    assert!(colors.background.weak.color.relative_luminance() > 0.0);
+                    assert!(
+                        colors.background.weak.color.relative_luminance()
+                            < colors.background.neutral.color.relative_luminance()
+                    );
+                    assert!(
+                        colors.background.neutral.color.relative_luminance()
+                            < colors.background.strong.color.relative_luminance()
+                    );
+                }
                 for color in [
                     palette.background,
                     colors.background.weaker.color,
@@ -158,7 +196,13 @@ mod tests {
                 assert_eq!(palette.danger, themes[0].palette().danger);
             }
             for pair in themes.windows(2) {
-                assert_ne!(pair[0].palette().background, pair[1].palette().background);
+                if mode != AppThemeMode::Amoled {
+                    assert_ne!(pair[0].palette().background, pair[1].palette().background);
+                }
+                assert_ne!(
+                    pair[0].extended_palette().background.weak.color,
+                    pair[1].extended_palette().background.weak.color
+                );
                 assert_ne!(
                     pair[0].extended_palette().background.strong.color,
                     pair[1].extended_palette().background.strong.color

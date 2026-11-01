@@ -1920,6 +1920,11 @@ fn system_appearance_uses_windows_events_without_power_automation() {
         &settings,
         WindowsAutomationEvent::PowerChanged
     ));
+
+    settings.general.theme_mode = AppThemeMode::Amoled;
+    assert!(appearance_events_required(&settings));
+    settings.general.accent.source = AccentColorSource::Custom;
+    assert!(!appearance_events_required(&settings));
 }
 
 #[test]

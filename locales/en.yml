@@ -85,7 +85,7 @@ common:
   remove: "Remove"
   save: "Save"
   theme: "Theme"
-  theme_help: "Use a light or dark appearance, or follow the Windows theme."
+  theme_help: "Choose Light, Dark, or AMOLED (a pure-black background), or follow the Windows theme."
   language: "Language"
   language_help: "Choose the language used by the interface."
   unknown: "Unknown"
@@ -142,6 +142,7 @@ theme:
   system: "Follow system"
   light: "Light"
   dark: "Dark"
+  amoled: "AMOLED"
 
 accent:
   source: "Accent color"

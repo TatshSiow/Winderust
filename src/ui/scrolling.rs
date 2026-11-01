@@ -491,6 +491,7 @@ mod tests {
         };
         let blue = accent_theme(iced::Color::from_rgb8(40, 130, 225));
         let red = accent_theme(iced::Color::from_rgb8(215, 60, 80));
+        let amoled = super::super::design::amoled_theme(Some(iced::Color::from_rgb8(215, 60, 80)));
         for outline in [false, true] {
             let mut renderer =
                 Renderer::new(super::super::design::typography::FONT, iced::Pixels(14.0));
@@ -516,6 +517,8 @@ mod tests {
                 (blue.clone(), Size::new(260.0, 140.0)),
                 (red.clone(), Size::new(260.0, 140.0)),
                 (red.clone(), Size::new(260.0, 140.0)),
+                (amoled.clone(), Size::new(260.0, 140.0)),
+                (amoled.clone(), Size::new(260.0, 140.0)),
             ]
             .into_iter()
             .enumerate()
@@ -542,7 +545,11 @@ mod tests {
                     |layer| vec![layer.bounds],
                     iced_tiny_skia::Layer::damage,
                 );
-                assert_eq!(damage.is_empty(), frame % 2 == 1);
+                // AMOLED reuses the dark outline; only its surface fill changes.
+                assert_eq!(
+                    damage.is_empty(),
+                    frame % 2 == 1 || (outline && frame == 10)
+                );
                 previous = renderer.layers().to_vec();
                 screenshots.push(renderer.screenshot(
                     Size::new(size.width as u32, size.height as u32),
@@ -558,6 +565,8 @@ mod tests {
             assert_eq!(screenshots[6], screenshots[7]);
             assert_ne!(screenshots[7], screenshots[8]);
             assert_eq!(screenshots[8], screenshots[9]);
+            assert_ne!(screenshots[9], screenshots[10]);
+            assert_eq!(screenshots[10], screenshots[11]);
         }
     }
 

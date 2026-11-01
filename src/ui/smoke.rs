@@ -34,12 +34,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(38) {
+    if extra == Some(44) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11 | 36)
+            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42)
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -62,6 +62,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(23) => Page::About,
             Some(25) => Page::ProcessPriority,
             Some(26..=37) => Page::Home,
+            Some(38 | 42 | 43) => Page::Home,
+            Some(39) => Page::ProcessList,
+            Some(40) => Page::LanguageAndAppearance,
+            Some(41) => Page::AdaptiveEngine,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -86,6 +90,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
+        if extra.is_some_and(|i| i >= 38) {
+            let _ = app.update(Message::Preferences(settings_pages::Message::Theme(
+                crate::config::AppThemeMode::Amoled,
+            )));
+            assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
+        }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
         let navigate = app.update(Message::Page(page));
         assert!(!app.feature_info_expanded);
@@ -207,7 +217,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if extra == Some(17) {
             app.adaptive = adaptive_engine::Editor::default();
         }
-        if matches!(extra, Some(13 | 29..=34)) {
+        if matches!(extra, Some(13 | 29..=34 | 38 | 42 | 43)) {
             app.home.populate_smoke_history();
             app.settings.general.enabled = true;
             app.settings.cpu_limiter.enabled = true;
@@ -235,7 +245,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             );
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
-        let search = if matches!(extra, Some(26..=28)) {
+        let search = if matches!(extra, Some(26..=28 | 43)) {
             if extra == Some(26) {
                 let _ = app.update(Message::SearchKeyboard {
                     key: iced::keyboard::Key::Character("/".into()),
@@ -255,7 +265,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let open = app.update(Message::OpenNavigationSearch);
             if extra != Some(26) {
                 let _ = app.update(Message::NavigationSearch(
-                    if extra == Some(27) {
+                    if matches!(extra, Some(27 | 43)) {
                         "cpu"
                     } else {
                         "zzzz-no-match"
@@ -285,7 +295,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else {
             Task::none()
         };
-        let navigation = if matches!(extra, Some(35..=37)) {
+        let navigation = if matches!(extra, Some(35..=37 | 42)) {
             let section = if extra == Some(36) {
                 Page::AdvancedControls
             } else {
@@ -327,7 +337,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Task::none()
         };
         let size = match extra {
-            Some(35..=37) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -412,6 +422,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        106
+        112
     );
 }

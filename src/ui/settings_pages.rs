@@ -709,6 +709,7 @@ fn theme_label(v: AppThemeMode) -> String {
         AppThemeMode::System => t!("theme.system"),
         AppThemeMode::Light => t!("theme.light"),
         AppThemeMode::Dark => t!("theme.dark"),
+        AppThemeMode::Amoled => t!("theme.amoled"),
     }
     .to_string()
 }
@@ -737,7 +738,7 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
     );
     let light = match s.theme_mode {
         AppThemeMode::Light => true,
-        AppThemeMode::Dark => false,
+        AppThemeMode::Dark | AppThemeMode::Amoled => false,
         AppThemeMode::System => system.as_ref().is_none_or(|appearance| appearance.light),
     };
     let accent = if s.accent.source == AccentColorSource::Custom {
@@ -745,6 +746,9 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
     } else {
         system.map(|appearance| rgb(appearance.accent))
     };
+    if s.theme_mode == AppThemeMode::Amoled {
+        return design::amoled_theme(accent);
+    }
     let palette = design::palette(light, accent);
     Theme::custom_with_fn("Winderust", palette, design::extended_palette)
 }

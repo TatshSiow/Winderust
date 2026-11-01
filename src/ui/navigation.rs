@@ -718,7 +718,8 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "winderust behaviour startup tray automation toggle action log detail fail failure suppression export import".to_string(),
         ],
         Page::LanguageAndAppearance => vec![
-            "language appearance theme dark light system accent color palette localization display ui sidebar enabled feature counts status cards pills".to_string(),
+            t!("common.theme_help").to_string(),
+            "language appearance theme dark light amoled oled pure black system accent color palette localization display ui sidebar enabled feature counts status cards pills".to_string(),
         ],
         Page::ExperimentalFeatures => vec![
             t!("settings.expose_all_priority_values_help").to_string(),

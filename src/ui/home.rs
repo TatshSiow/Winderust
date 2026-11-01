@@ -1776,6 +1776,7 @@ mod tests {
         };
         let blue = accent_theme(iced::Color::from_rgb8(40, 130, 225));
         let red = accent_theme(iced::Color::from_rgb8(215, 60, 80));
+        let amoled = design::amoled_theme(Some(iced::Color::from_rgb8(215, 60, 80)));
         // Repeat unchanged frames, then change each cached drawing input.
         for (index, (value, hovered, theme, maximum, kind, size)) in [
             (75.0, None, Theme::Dark, 100.0, Cpu, normal),
@@ -1791,6 +1792,8 @@ mod tests {
             (74.0, None, blue, 200.0, Memory, small),
             (74.0, None, red.clone(), 200.0, Memory, small),
             (74.0, None, red, 200.0, Memory, small),
+            (74.0, None, amoled.clone(), 200.0, Memory, small),
+            (74.0, None, amoled, 200.0, Memory, small),
         ]
         .into_iter()
         .enumerate()
@@ -1827,7 +1830,7 @@ mod tests {
                 ),
                 bounds,
             );
-            if matches!(index, 1 | 3 | 10 | 12) {
+            if matches!(index, 1 | 3 | 10 | 12 | 14) {
                 assert!(damage.is_empty(), "unchanged chart damaged {damage:?}");
             } else {
                 assert!(!damage.is_empty(), "changed chart did not repaint");
