@@ -946,7 +946,7 @@ impl ProcessList {
         )
     }
     fn immediate_priorities(&self, settings: &Settings, eligible: bool) -> Element<'_, Message> {
-        let mut controls = column![].spacing(design::space::SMALL);
+        let mut controls = Vec::new();
         for kind in [
             Kind::Process,
             Kind::Thread,
@@ -982,11 +982,9 @@ impl ProcessList {
                 )
                 .into()
             };
-            controls = controls.push(super::widgets::settings_card(super::widgets::setting_row(
-                &key, control,
-            )));
+            controls.push(super::widgets::setting_row(&key, control).into());
         }
-        controls.into()
+        super::widgets::settings_card(super::widgets::settings_rows(controls)).into()
     }
 
     pub(super) fn side_panel(&self) -> Element<'_, Message> {

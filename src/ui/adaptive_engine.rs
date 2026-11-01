@@ -420,9 +420,16 @@ impl Editor {
                     ),
             );
         }
-        let mut body = column![name, self.tuning_view(live, true, candidates)]
-            .spacing(design::space::MEDIUM)
-            .height(Fill);
+        let mut body = column![
+            super::widgets::heading(
+                t!("common.preset_details").to_string(),
+                design::typography::BODY
+            ),
+            name,
+            self.tuning_view(live, true, candidates)
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill);
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
@@ -558,8 +565,9 @@ impl Editor {
                     .into(),
                 ]);
                 body = body
-                    .push(text(
+                    .push(super::widgets::heading(
                         t!("adaptive_engine_process.shared_detection").to_string(),
+                        design::typography::BODY,
                     ))
                     .push(super::widgets::settings_card(pressure));
                 let action = super::widgets::switch(
@@ -741,102 +749,127 @@ impl Editor {
                 body = body.push(super::widgets::setting_title(
                     "adaptive_engine.base_processor_policy",
                 ));
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.core_parking_min",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.core_parking_min
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.processor_min",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.performance_min
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.processor_max",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.performance_max
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "processor_power.boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.base_processor_policy.boost_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "processor_power.boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.base_processor_policy.boost_mode
-                )));
+                body = body.push(super::widgets::settings_card(
+                    super::widgets::settings_rows([
+                        number!(
+                            "processor_power.core_parking_min",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.core_parking_min
+                        )
+                        .into(),
+                        number!(
+                            "processor_power.processor_min",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.performance_min
+                        )
+                        .into(),
+                        number!(
+                            "processor_power.processor_max",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.performance_max
+                        )
+                        .into(),
+                        number!(
+                            "processor_power.boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.base_processor_policy.boost_policy
+                        )
+                        .into(),
+                        choice!(
+                            s,
+                            "processor_power.boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.base_processor_policy.boost_mode
+                        )
+                        .into(),
+                    ]),
+                ));
 
                 body = body.push(super::widgets::setting_title(
                     "adaptive_engine.background_pressure_profile",
                 ));
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.ac_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.background_pressure_profile.ac_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.ac_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.background_pressure_profile.ac_mode
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.battery_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.background_pressure_profile.battery_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.battery_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.background_pressure_profile.battery_mode
-                )));
+                body = body.push(super::widgets::settings_card(
+                    super::widgets::settings_rows([
+                        number!(
+                            "adaptive_engine.ac_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.background_pressure_profile.ac_policy
+                        )
+                        .into(),
+                        choice!(
+                            s,
+                            "adaptive_engine.ac_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.background_pressure_profile.ac_mode
+                        )
+                        .into(),
+                        number!(
+                            "adaptive_engine.battery_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.background_pressure_profile.battery_policy
+                        )
+                        .into(),
+                        choice!(
+                            s,
+                            "adaptive_engine.battery_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.background_pressure_profile.battery_mode
+                        )
+                        .into(),
+                    ]),
+                ));
 
                 body = body.push(super::widgets::setting_title(
                     "adaptive_engine.focus_and_launch_profile",
                 ));
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.ac_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.focus_and_launch_profile.ac_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.ac_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.focus_and_launch_profile.ac_mode
-                )));
-                body = body.push(super::widgets::settings_card(number!(
-                    "adaptive_engine.battery_boost_policy",
-                    0,
-                    100,
-                    adaptive_engine.focus_and_launch_profile.battery_policy
-                )));
-                body = body.push(super::widgets::settings_card(choice!(
-                    s,
-                    "adaptive_engine.battery_boost_mode",
-                    ProcessorBoostMode,
-                    &ProcessorBoostMode::ALL,
-                    boost_label,
-                    adaptive_engine.focus_and_launch_profile.battery_mode
-                )));
+                body = body.push(super::widgets::settings_card(
+                    super::widgets::settings_rows([
+                        number!(
+                            "adaptive_engine.ac_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.focus_and_launch_profile.ac_policy
+                        )
+                        .into(),
+                        choice!(
+                            s,
+                            "adaptive_engine.ac_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.focus_and_launch_profile.ac_mode
+                        )
+                        .into(),
+                        number!(
+                            "adaptive_engine.battery_boost_policy",
+                            0,
+                            100,
+                            adaptive_engine.focus_and_launch_profile.battery_policy
+                        )
+                        .into(),
+                        choice!(
+                            s,
+                            "adaptive_engine.battery_boost_mode",
+                            ProcessorBoostMode,
+                            &ProcessorBoostMode::ALL,
+                            boost_label,
+                            adaptive_engine.focus_and_launch_profile.battery_mode
+                        )
+                        .into(),
+                    ]),
+                ));
             }
             TuningTab::PriorityControl => {
                 let mut table = column![row![

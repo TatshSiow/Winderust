@@ -47,6 +47,9 @@ nav:
   about: "About"
 
 common:
+  preset_details: "Preset details"
+  rule_details: "Rule details"
+  power_plan_selection: "Power plan selection"
   applied: "Applied"
   waiting: "Waiting"
   error: "Error"
@@ -377,6 +380,10 @@ process_list:
   adaptive_engine: "Adaptive Engine"
 
 settings:
+  control_visibility: "Control visibility"
+  win32_priority_separation_saved_values: "Saved values"
+  interface: "Interface"
+  navigation_display: "Navigation and feature cards"
   keyboard_shortcuts: "Keyboard Shortcuts"
   search_shortcut: "Search shortcut"
   search_alternate_shortcut: "Alternate search shortcut"
@@ -486,6 +493,7 @@ settings:
   import_settings: "Import settings (.toml)"
 
 processor_power:
+  processor_settings: "Processor settings"
   title: "Advanced Power Plan Tuning"
   help: "Applies custom AC and battery core parking, processor performance, and processor boost mode values to the selected Windows power plan."
   effective_power_mode: "Windows power mode: %{mode}"
@@ -548,6 +556,9 @@ processor_power:
   applied_custom: "Applied custom processor tuning to %{plan}."
 
 by_activity:
+  power_plans: "Power plans"
+  input_detection: "Input detection"
+  timing: "Timing"
   invalid_timing: "Enter an idle timeout from 1 to 3600 seconds and a check interval from 250 to 60000 milliseconds."
   intro_1: "By Activity switches power plans from keyboard, mouse, and controller activity."
   intro_2: "Idle and active plans are selected below; input detection controls when the app changes state."
@@ -571,6 +582,7 @@ by_foreground:
   target_power_plan: "Target power plan"
 
 by_time:
+  schedule: "Schedule"
   intro_1: "By Time switches power plans based on the current day and time."
   intro_2: "Each rule can use its own target plan; overnight ranges are supported."
   enable: "Enable By Time"
@@ -593,6 +605,7 @@ weekday:
   sun: "Sun"
 
 by_cpu_load:
+  condition: "CPU load condition"
   if: "If"
   intro_1: "By CPU Load switches the whole system power plan when total processor usage crosses a threshold for a duration."
   intro_2: "Use these for plan automation; use CPU Limiter when a specific process needs a processor limit."
@@ -705,6 +718,7 @@ adaptive_engine:
   cpu_pressure_help: "Applies the configured priority and efficiency policy while CPU pressure is high, then tracks hot apps for stronger restraint and recovery."
 
 app_suspension:
+  behavior: "Suspension behavior"
   download: "Download"
   upload: "Upload"
   intro_1: "App Suspension pauses selected background apps after a delay to reduce CPU usage."
@@ -1099,6 +1113,7 @@ by_running_app:
   indicator_active: "Active"
 
 cpu_limiter:
+  limits: "CPU time limits"
   invalid_limit: "Enter a CPU time value from 1 to 100."
   enable: "Enable CPU Limiter"
   intro_1: "CPU Limiter briefly freezes and resumes selected app groups to target a chosen share of CPU time."

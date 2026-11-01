@@ -19,7 +19,7 @@ pub(super) fn rules_table<'a, M: 'a>(
                 text_color: Some(muted_color(theme)),
                 ..Default::default()
             }),
-        iced::widget::rule::horizontal(1),
+        settings_divider(),
         rows,
     ])
     .width(Fill)
@@ -50,7 +50,7 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
                 .center_x(80)
                 .into()
         ),
-        iced::widget::rule::horizontal(1)
+        settings_divider()
     ]
     .into()
 }
@@ -464,7 +464,7 @@ pub(super) fn text_input<'a, M: Clone + 'a>(
         .style(|theme, status| {
             let mut style = iced::widget::text_input::default(theme, status);
             style.placeholder = muted_color(theme);
-            style.background = theme.extended_palette().background.weak.color.into();
+            style.background = theme.extended_palette().background.neutral.color.into();
             style.border.radius = design::CONTROL_RADIUS.into();
             if matches!(status, iced::widget::text_input::Status::Active) {
                 style.border.color = control_border(theme);
@@ -497,9 +497,8 @@ pub(super) fn select_field(
 ) -> iced::widget::pick_list::Style {
     use iced::widget::pick_list::{self, Status};
     let mut style = pick_list::default(theme, status);
-    style.background = surface(theme)
-        .background
-        .unwrap_or_else(|| theme.palette().background.into());
+    let background = theme.extended_palette().background.neutral.color;
+    style.background = background.into();
     style.text_color = theme.palette().text;
     style.handle_color = muted_color(theme);
     style.border.radius = design::CONTROL_RADIUS.into();
@@ -509,9 +508,8 @@ pub(super) fn select_field(
         Status::Opened { .. } => theme.palette().primary,
     };
     if matches!(status, Status::Hovered) {
-        style.background = quiet(theme, iced::widget::button::Status::Hovered)
-            .background
-            .unwrap_or(style.background);
+        style.background =
+            iced::theme::palette::mix(background, theme.palette().primary, 0.08).into();
     }
     style
 }
@@ -617,7 +615,7 @@ pub(super) fn settings_rows<'a, M: 'a>(
 
 pub(super) fn settings_divider<'a>() -> iced::widget::Rule<'a> {
     iced::widget::rule::horizontal(1).style(|theme: &iced::Theme| iced::widget::rule::Style {
-        color: control_border(theme).scale_alpha(0.5),
+        color: control_border(theme).scale_alpha(0.3),
         ..iced::widget::rule::default(theme)
     })
 }
@@ -1120,8 +1118,13 @@ mod tests {
     }
 
     #[test]
-    fn surface_tints_and_control_marks_follow_accent_in_both_themes() {
-        for light in [false, true] {
+    fn surface_tints_and_control_marks_follow_accent_in_all_themes() {
+        use crate::config::AppThemeMode;
+        for mode in [
+            AppThemeMode::Light,
+            AppThemeMode::Dark,
+            AppThemeMode::Amoled,
+        ] {
             let themes = [
                 iced::Color::from_rgb8(240, 80, 100),
                 iced::Color::from_rgb8(50, 160, 240),
@@ -1130,19 +1133,27 @@ mod tests {
                 iced::Color::from_rgb8(255, 235, 20),
             ]
             .map(|accent| {
-                let palette = design::palette(light, Some(accent));
-                Theme::custom_with_fn("test", palette, design::extended_palette)
+                if mode == AppThemeMode::Amoled {
+                    design::amoled_theme(Some(accent))
+                } else {
+                    let palette = design::palette(mode == AppThemeMode::Light, Some(accent));
+                    Theme::custom_with_fn("test", palette, design::extended_palette)
+                }
             });
-            assert_ne!(
-                themes[0].palette().background,
-                themes[1].palette().background
-            );
-            for surface in [navigation_surface, super::surface] {
+            if mode != AppThemeMode::Amoled {
                 assert_ne!(
-                    surface(&themes[0]).background,
-                    surface(&themes[1]).background
+                    themes[0].palette().background,
+                    themes[1].palette().background
+                );
+                assert_ne!(
+                    navigation_surface(&themes[0]).background,
+                    navigation_surface(&themes[1]).background
                 );
             }
+            assert_ne!(
+                super::surface(&themes[0]).background,
+                super::surface(&themes[1]).background
+            );
             assert_ne!(
                 control_button(&themes[0], Status::Hovered).background,
                 control_button(&themes[1], Status::Hovered).background
@@ -1169,6 +1180,18 @@ mod tests {
             );
             assert_ne!(toggle(&themes[0]).background, toggle(&themes[1]).background);
             for theme in &themes {
+                let field = select_field(theme, iced::widget::pick_list::Status::Active);
+                let hover = select_field(theme, iced::widget::pick_list::Status::Hovered);
+                assert_eq!(
+                    field.background,
+                    iced::Background::Color(theme.extended_palette().background.neutral.color)
+                );
+                assert_ne!(Some(field.background), super::surface(theme).background);
+                assert_ne!(field.background, hover.background);
+                let iced::Background::Color(hover_color) = hover.background else {
+                    panic!("field hover must use an opaque surface");
+                };
+                assert_eq!(hover_color.a, 1.0);
                 let expected = theme.extended_palette().primary.base.text;
                 assert_eq!(checkbox(theme).icon_color, expected);
                 assert_eq!(toggle(theme).foreground, iced::Background::Color(expected));
@@ -1224,12 +1247,12 @@ pub(super) fn modal_frame<'a, M: 'a>(
     footer: impl Into<Element<'a, M>>,
     size: (u32, u32),
 ) -> Element<'a, M> {
-    use iced::widget::{column, container, rule};
+    use iced::widget::{column, container};
     container(column![
         container(header).padding(16),
-        rule::horizontal(1),
+        settings_divider(),
         container(body).padding(16).height(Fill),
-        rule::horizontal(1),
+        settings_divider(),
         container(footer)
             .padding(16)
             .width(Fill)

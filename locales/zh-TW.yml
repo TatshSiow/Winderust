@@ -47,6 +47,9 @@ nav:
   about: "關於"
 
 common:
+  preset_details: "預設詳細資料"
+  rule_details: "規則詳細資料"
+  power_plan_selection: "電源計畫選擇"
   applied: "已套用"
   waiting: "等待中"
   error: "錯誤"
@@ -379,6 +382,10 @@ process_list:
   adaptive_engine: "自適應引擎"
 
 settings:
+  control_visibility: "控制項顯示"
+  win32_priority_separation_saved_values: "已儲存的數值"
+  interface: "介面"
+  navigation_display: "導覽與功能卡片"
   keyboard_shortcuts: "鍵盤快捷鍵"
   search_shortcut: "搜尋快捷鍵"
   search_alternate_shortcut: "備用搜尋快捷鍵"
@@ -488,6 +495,7 @@ settings:
   import_settings: "匯入設定（.toml）"
 
 processor_power:
+  processor_settings: "處理器設定"
   title: "進階電源計畫調校"
   help: "將自訂 AC 與電池核心停駐、處理器效能百分比套用到選取的 Windows 電源計畫。"
   effective_power_mode: "Windows 電源模式：%{mode}"
@@ -550,6 +558,9 @@ processor_power:
   applied_custom: "已將自訂處理器調校套用到 %{plan}。"
 
 by_activity:
+  power_plans: "電源計畫"
+  input_detection: "輸入偵測"
+  timing: "時間設定"
   invalid_timing: "請輸入 1 至 3600 秒的閒置逾時，以及 250 至 60000 毫秒的檢查間隔。"
   intro_1: "操作狀態排程會根據鍵盤、滑鼠與控制器活動切換電源計畫。"
   intro_2: "可在下方選擇閒置與活動時的電源計畫；輸入偵測會控制應用程式何時切換狀態。"
@@ -573,6 +584,7 @@ by_foreground:
   target_power_plan: "目標電源計畫"
 
 by_time:
+  schedule: "排程"
   intro_1: "時間規則會根據目前日期與時間切換電源計畫。"
   intro_2: "每個規則都可使用自己的目標電源計畫，並支援跨夜時段。"
   enable: "啟用時間規則"
@@ -595,6 +607,7 @@ weekday:
   sun: "週日"
 
 by_cpu_load:
+  condition: "CPU 負載條件"
   if: "如果"
   intro_1: "CPU 負載計畫會在整體處理器使用率超過門檻並持續一段時間後切換全系統電源計畫。"
   intro_2: "這裡用於電源計畫自動化；特定程序需要處理器上限時，請使用 CPU 上限規則。"
@@ -707,6 +720,7 @@ adaptive_engine:
   cpu_pressure_help: "CPU 壓力高時套用設定的優先順序與效率策略，再追蹤高負載應用程式以進行更強限制與還原。"
 
 app_suspension:
+  behavior: "暫停行為"
   download: "下載"
   upload: "上傳"
   intro_1: "應用程式暫停會在延遲後暫停選取的背景應用程式，以降低 CPU 使用率。"
@@ -1102,6 +1116,7 @@ by_running_app:
   indicator_active: "作用中"
 
 cpu_limiter:
+  limits: "CPU 時間限制"
   invalid_limit: "??? 1 ? 100 ??? CPU ?????"
   enable: "啟用 CPU 限制器"
   intro_1: "CPU 限制器會短暫凍結與恢復選取的應用程式群組，以達到所選的 CPU 時間目標。"

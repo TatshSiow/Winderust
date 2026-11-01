@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::slider;
+use super::widgets::{self, slider};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row};
 use iced::{Element, Fill};
@@ -103,10 +103,7 @@ pub(super) fn view<'a>(
         super::widgets::plan(guid.clone(), plans, action)
     };
     let flag = |key: &str, value, action: fn(bool) -> Message| {
-        super::widgets::settings_card(super::widgets::setting_row(
-            key,
-            super::widgets::switch(value, Some(action)),
-        ))
+        widgets::setting_row(key, widgets::switch(value, Some(action)))
     };
     let number = |key: &str,
                   value: String,
@@ -114,9 +111,8 @@ pub(super) fn view<'a>(
                   step: u64,
                   unit: &str,
                   action: fn(String) -> Message| {
-        super::widgets::settings_card(super::widgets::setting_row_with_unit(
-            key,
-            unit,
+        column![
+            widgets::setting_title_with_unit(key, unit),
             row![
                 slider(
                     *range.start() as u32..=*range.end() as u32,
@@ -124,71 +120,100 @@ pub(super) fn view<'a>(
                     move |v| action(v.to_string())
                 )
                 .step(step as u32)
-                .width(180),
-                super::widgets::stepper(&value, range, step, Some(action))
+                .width(Fill),
+                widgets::stepper(&value, range, step, Some(action))
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center),
-        ))
+        ]
+        .spacing(design::space::SMALL)
+        .into()
     };
     scrollable(
         column![
-            flag("by_activity.enable", activity.enabled, Message::Enabled),
-            super::widgets::settings_card(super::widgets::setting_row(
-                "by_activity.idle_plan",
-                iced::widget::container(plan_picker(
-                    &activity.power_plans.power_save_guid,
-                    Message::IdlePlan
-                ))
-                .width(design::SELECT_WIDTH)
+            widgets::settings_card(flag(
+                "by_activity.enable",
+                activity.enabled,
+                Message::Enabled
             )),
-            super::widgets::settings_card(super::widgets::setting_row(
-                "by_activity.active_plan",
-                iced::widget::container(plan_picker(
-                    &activity.power_plans.performance_guid,
-                    Message::ActivePlan
-                ))
-                .width(design::SELECT_WIDTH)
-            )),
-            flag(
-                "by_activity.keyboard_input",
-                activity.input_detection.keyboard,
-                Message::Keyboard
+            widgets::heading(
+                rust_i18n::t!("by_activity.power_plans").to_string(),
+                design::typography::BODY
             ),
-            flag(
-                "by_activity.mouse_input",
-                activity.input_detection.mouse,
-                Message::Mouse
+            widgets::settings_card(widgets::settings_rows([
+                widgets::setting_row(
+                    "by_activity.idle_plan",
+                    iced::widget::container(plan_picker(
+                        &activity.power_plans.power_save_guid,
+                        Message::IdlePlan
+                    ))
+                    .width(design::SELECT_WIDTH)
+                )
+                .into(),
+                widgets::setting_row(
+                    "by_activity.active_plan",
+                    iced::widget::container(plan_picker(
+                        &activity.power_plans.performance_guid,
+                        Message::ActivePlan
+                    ))
+                    .width(design::SELECT_WIDTH)
+                )
+                .into(),
+            ])),
+            widgets::heading(
+                rust_i18n::t!("by_activity.input_detection").to_string(),
+                design::typography::BODY
             ),
-            flag(
-                "by_activity.controller_input",
-                activity.input_detection.controller,
-                Message::Controller
+            widgets::settings_card(widgets::settings_rows([
+                flag(
+                    "by_activity.keyboard_input",
+                    activity.input_detection.keyboard,
+                    Message::Keyboard
+                )
+                .into(),
+                flag(
+                    "by_activity.mouse_input",
+                    activity.input_detection.mouse,
+                    Message::Mouse
+                )
+                .into(),
+                flag(
+                    "by_activity.controller_input",
+                    activity.input_detection.controller,
+                    Message::Controller
+                )
+                .into(),
+            ])),
+            widgets::heading(
+                rust_i18n::t!("by_activity.timing").to_string(),
+                design::typography::BODY
             ),
-            number(
-                "by_activity.idle_timeout",
-                inputs
-                    .idle
-                    .clone()
-                    .unwrap_or_else(|| activity.idle_timeout_seconds.to_string()),
-                1..=3600,
-                1,
-                "s",
-                Message::IdleTimeout
-            ),
-            number(
-                "by_activity.check_interval",
-                inputs
-                    .interval
-                    .clone()
-                    .unwrap_or_else(|| settings.general.check_interval_ms.to_string()),
-                CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS,
-                250,
-                "ms",
-                Message::CheckInterval
-            )
+            widgets::settings_card(widgets::settings_rows([
+                number(
+                    "by_activity.idle_timeout",
+                    inputs
+                        .idle
+                        .clone()
+                        .unwrap_or_else(|| activity.idle_timeout_seconds.to_string()),
+                    1..=3600,
+                    1,
+                    "s",
+                    Message::IdleTimeout
+                ),
+                number(
+                    "by_activity.check_interval",
+                    inputs
+                        .interval
+                        .clone()
+                        .unwrap_or_else(|| settings.general.check_interval_ms.to_string()),
+                    CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS,
+                    250,
+                    "ms",
+                    Message::CheckInterval
+                ),
+            ])),
         ]
-        .spacing(super::widgets::CARD_GAP),
+        .spacing(widgets::CARD_GAP),
     )
     .height(Fill)
     .into()

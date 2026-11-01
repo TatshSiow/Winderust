@@ -101,8 +101,8 @@ pub(super) fn extended_palette(palette: iced::theme::Palette) -> iced::theme::pa
         )
     };
     colors.background.weaker = Pair::new(color(26, 239, 0.018, 0.06), palette.text); // navigation
-    colors.background.weak = Pair::new(color(30, 255, 0.018, 0.016), palette.text); // cards / fields
-    colors.background.neutral = Pair::new(color(40, 242, 0.026, 0.045), palette.text); // buttons
+    colors.background.weak = Pair::new(color(30, 255, 0.018, 0.016), palette.text); // cards
+    colors.background.neutral = Pair::new(color(40, 242, 0.026, 0.045), palette.text); // fields / buttons
     colors.background.strong = Pair::new(color(62, 223, 0.04, 0.065), palette.text); // borders
     colors.secondary.base = Pair::new(color(176, 94, 0.06, 0.045), palette.background);
     let foreground = accent_foreground(palette.primary, colors.is_dark);

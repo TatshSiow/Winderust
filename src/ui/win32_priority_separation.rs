@@ -146,6 +146,10 @@ impl Editor {
                 })
         };
         let mut body = column![
+            super::widgets::heading(
+                t!("settings.win32_priority_separation_saved_values").to_string(),
+                design::typography::BODY
+            ),
             super::widgets::settings_card(super::widgets::settings_rows([
                 super::widgets::setting_row(
                     "settings.win32_priority_separation_current",
@@ -164,10 +168,11 @@ impl Editor {
             ])),
             super::widgets::heading(
                 t!("settings.win32_priority_separation_scheduler_policy").to_string(),
-                design::typography::SECONDARY
+                design::typography::BODY
             )
         ]
         .spacing(super::widgets::CARD_GAP);
+        let mut policy = Vec::new();
         for (field, key, mask, bits) in [
             (Field::Duration, "quantum_duration", 0x30, vec![0x20, 0x10]),
             (
@@ -183,22 +188,31 @@ impl Editor {
                 .map(|bits| Choice(bits, field_label(field, bits)))
                 .collect::<Vec<_>>();
             let selected = normalize(self.value) & mask;
-            body = body.push(super::widgets::settings_card(super::widgets::setting_row(
-                &format!("settings.win32_priority_separation_{key}"),
-                pick_list(
-                    choices,
-                    Some(Choice(selected, field_label(field, selected))),
-                    move |v| Message::Field(field, v.0),
+            policy.push(
+                super::widgets::setting_row(
+                    &format!("settings.win32_priority_separation_{key}"),
+                    pick_list(
+                        choices,
+                        Some(Choice(selected, field_label(field, selected))),
+                        move |v| Message::Field(field, v.0),
+                    )
+                    .width(design::SELECT_WIDTH),
                 )
-                .width(design::SELECT_WIDTH),
-            )));
+                .into(),
+            );
         }
         let value = normalize(self.value);
-        body = body
-            .push(super::widgets::settings_card(super::widgets::setting_row(
+        policy.push(
+            super::widgets::setting_row(
                 "settings.win32_priority_separation_resulting_value",
                 display(format!("0x{value:02X} ({value})")),
-            )))
+            )
+            .into(),
+        );
+        body = body
+            .push(super::widgets::settings_card(
+                super::widgets::settings_rows(policy),
+            ))
             .push(
                 row![
                     iced::widget::Space::new().width(Fill),

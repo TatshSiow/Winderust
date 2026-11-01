@@ -403,7 +403,7 @@ impl Editor {
                 id,
                 column![
                     container(header).padding(widgets::CARD_PADDING as u16),
-                    iced::widget::rule::horizontal(1)
+                    widgets::settings_divider()
                 ]
                 .into(),
             ));
@@ -447,7 +447,7 @@ impl Editor {
             RuleRef::Time(r) => (&r.name, &r.power_plan_guid),
             RuleRef::Cpu(r) => (&r.name, &r.power_plan_guid),
         };
-        let mut controls = column![].spacing(design::space::COMPACT);
+        let mut controls = column![].spacing(design::space::MEDIUM);
         match rule {
             RuleRef::Time(r) => {
                 let mut days = row![];
@@ -467,37 +467,44 @@ impl Editor {
                     ));
                 }
                 let days = container(days).style(widgets::tab_bar);
-                controls = controls.push(days).push(
-                    row![
-                        container(widgets::settings_card(
-                            column![
-                                text(t!("by_time.start").to_string()),
-                                text_input(
-                                    "HH:MM",
-                                    &self.input(id, Field::Start, r.start_time.clone())
-                                )
-                                .on_input(move |v| Message::Start(index, v))
-                                .width(Fill)
-                            ]
-                            .spacing(design::space::SMALL)
-                        ))
-                        .width(Fill),
-                        container(widgets::settings_card(
-                            column![
-                                text(t!("by_time.end").to_string()),
-                                text_input(
-                                    "HH:MM",
-                                    &self.input(id, Field::End, r.end_time.clone())
-                                )
-                                .on_input(move |v| Message::End(index, v))
-                                .width(Fill)
-                            ]
-                            .spacing(design::space::SMALL)
-                        ))
-                        .width(Fill)
-                    ]
-                    .spacing(design::space::MEDIUM),
-                );
+                controls = controls
+                    .push(widgets::heading(
+                        t!("by_time.schedule").to_string(),
+                        design::typography::BODY,
+                    ))
+                    .push(widgets::settings_card(widgets::settings_rows([
+                        days.into(),
+                        row![
+                            container(
+                                column![
+                                    text(t!("by_time.start").to_string()),
+                                    text_input(
+                                        "HH:MM",
+                                        &self.input(id, Field::Start, r.start_time.clone())
+                                    )
+                                    .on_input(move |v| Message::Start(index, v))
+                                    .width(Fill)
+                                ]
+                                .spacing(design::space::SMALL)
+                            )
+                            .width(Fill),
+                            container(
+                                column![
+                                    text(t!("by_time.end").to_string()),
+                                    text_input(
+                                        "HH:MM",
+                                        &self.input(id, Field::End, r.end_time.clone())
+                                    )
+                                    .on_input(move |v| Message::End(index, v))
+                                    .width(Fill)
+                                ]
+                                .spacing(design::space::SMALL)
+                            )
+                            .width(Fill)
+                        ]
+                        .spacing(design::space::MEDIUM)
+                        .into(),
+                    ])));
             }
             RuleRef::Cpu(r) => {
                 let choices = vec![
@@ -515,20 +522,22 @@ impl Editor {
                     ),
                 ];
                 let selected = choices.iter().find(|c| c.0 == r.comparison).cloned();
-                controls = controls
-                    .push(widgets::settings_card(widgets::setting_row(
+                let condition = widgets::settings_rows([
+                    widgets::setting_row(
                         "by_cpu_load.if",
                         pick_list(choices, selected, move |v| Message::Comparison(index, v.0))
                             .width(design::SELECT_WIDTH),
-                    )))
-                    .push(self.number(
+                    )
+                    .into(),
+                    self.number(
                         (id, index),
                         Field::Threshold,
                         "by_cpu_load.threshold",
                         u32::from(r.threshold_percent),
                         100,
                         Message::Threshold,
-                    ));
+                    ),
+                ]);
                 let upper = self.number(
                     (id, index),
                     Field::Upper,
@@ -537,11 +546,12 @@ impl Editor {
                     100,
                     Message::Upper,
                 );
-                controls = controls
-                    .push(super::widgets::optional_content(
-                        upper,
+                let condition = condition
+                    .push(widgets::optional_content(
+                        column![widgets::settings_divider(), upper].spacing(design::space::MEDIUM),
                         r.comparison == CpuUsageComparison::Between,
                     ))
+                    .push(widgets::settings_divider())
                     .push(self.number(
                         (id, index),
                         Field::Duration,
@@ -549,48 +559,62 @@ impl Editor {
                         r.duration_seconds.min(86400) as u32,
                         86400,
                         Message::Duration,
-                    ))
-                    .push(widgets::settings_card(widgets::setting_row(
+                    ));
+                let plans = widgets::settings_rows([
+                    widgets::setting_row(
                         "by_running_app.power_plan",
                         widgets::plan(guid.clone(), plans, move |v| Message::Plan(index, v)),
-                    )))
-                    .push(widgets::settings_card(
-                        column![
-                            widgets::setting_row(
-                                "by_cpu_load.else",
-                                widgets::switch(
-                                    r.else_enabled,
-                                    Some(move |v| Message::Else(index, v))
-                                )
-                            ),
-                            widgets::optional_content(
-                                column![
-                                    widgets::settings_divider(),
-                                    widgets::setting_row(
-                                        "by_running_app.power_plan",
-                                        widgets::plan(
-                                            r.else_power_plan_guid.clone(),
-                                            plans,
-                                            move |v| Message::ElsePlan(index, v)
-                                        )
-                                    )
-                                ]
-                                .spacing(design::space::MEDIUM),
-                                r.else_enabled
-                            )
-                        ]
-                        .spacing(design::space::MEDIUM),
-                    ));
+                    )
+                    .into(),
+                    widgets::setting_row(
+                        "by_cpu_load.else",
+                        widgets::switch(r.else_enabled, Some(move |v| Message::Else(index, v))),
+                    )
+                    .into(),
+                ])
+                .push(widgets::optional_content(
+                    column![
+                        widgets::settings_divider(),
+                        widgets::setting_row(
+                            "by_running_app.power_plan",
+                            widgets::plan(r.else_power_plan_guid.clone(), plans, move |v| {
+                                Message::ElsePlan(index, v)
+                            })
+                        )
+                    ]
+                    .spacing(design::space::MEDIUM),
+                    r.else_enabled,
+                ));
+                controls = controls
+                    .push(widgets::heading(
+                        t!("by_cpu_load.condition").to_string(),
+                        design::typography::BODY,
+                    ))
+                    .push(widgets::settings_card(condition))
+                    .push(widgets::heading(
+                        t!("common.power_plan_selection").to_string(),
+                        design::typography::BODY,
+                    ))
+                    .push(widgets::settings_card(plans));
             }
         }
 
         if kind == Kind::Time {
-            controls = controls.push(widgets::settings_card(widgets::setting_row(
-                "by_running_app.power_plan",
-                widgets::plan(guid.clone(), plans, move |v| Message::Plan(index, v)),
-            )));
+            controls = controls
+                .push(widgets::heading(
+                    t!("common.power_plan_selection").to_string(),
+                    design::typography::BODY,
+                ))
+                .push(widgets::settings_card(widgets::setting_row(
+                    "by_running_app.power_plan",
+                    widgets::plan(guid.clone(), plans, move |v| Message::Plan(index, v)),
+                )));
         }
         let content = column![
+            widgets::heading(
+                t!("common.rule_details").to_string(),
+                design::typography::BODY
+            ),
             widgets::settings_card(
                 column![
                     text(t!("common.rule_name").to_string()),
@@ -647,22 +671,20 @@ impl Editor {
         action: fn(usize, String) -> Message,
     ) -> Element<'static, Message> {
         let (id, index) = target;
-        widgets::settings_card(
-            row![
-                text(widgets::label_with_unit(
-                    &t!(label),
-                    if field == Field::Duration { "s" } else { "%" }
-                ))
-                .width(180),
-                slider(0..=max, value, move |v| action(index, v.to_string())),
-                text_input("", &self.input(id, field, value.to_string()))
-                    .on_input(move |v| action(index, v))
-                    .width(design::NUMERIC_WIDTH)
-            ]
-            .spacing(design::space::COMPACT)
-            .height(widgets::SETTING_ROW_HEIGHT)
-            .align_y(iced::Center),
-        )
+        row![
+            text(widgets::label_with_unit(
+                &t!(label),
+                if field == Field::Duration { "s" } else { "%" }
+            ))
+            .width(180),
+            slider(0..=max, value, move |v| action(index, v.to_string())),
+            text_input("", &self.input(id, field, value.to_string()))
+                .on_input(move |v| action(index, v))
+                .width(design::NUMERIC_WIDTH)
+        ]
+        .spacing(design::space::COMPACT)
+        .height(widgets::SETTING_ROW_HEIGHT)
+        .align_y(iced::Center)
         .into()
     }
 }

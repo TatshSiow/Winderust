@@ -278,7 +278,7 @@ impl Editor {
         } else {
             t!("common.disabled").to_string()
         };
-        widgets::settings_card(widgets::setting_row(
+        widgets::setting_row(
             label,
             row![
                 action_button(value).on_press(Message::RecordSearchHotkey(slot)),
@@ -288,17 +288,18 @@ impl Editor {
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center),
-        ))
+        )
         .into()
     }
 
     pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
-        let flag = |key: &str, value, flag| {
-            widgets::settings_card(widgets::setting_row(
+        let flag_row = |key: &str, value, flag| {
+            widgets::setting_row(
                 key,
                 widgets::switch(value, Some(move |value| Message::Flag(flag, value))),
-            ))
+            )
         };
+        let flag = |key: &str, value, flag| widgets::settings_card(flag_row(key, value, flag));
         let body = match page {
             Page::WinderustBehaviour => column![
                 widgets::heading(
@@ -310,43 +311,48 @@ impl Editor {
                     t!("settings.launch_settings").to_string(),
                     design::typography::BODY
                 ),
-                column![
-                    flag(
+                widgets::settings_card(widgets::settings_rows([
+                    flag_row(
                         "settings.startup_windows",
                         s.general.startup_with_windows,
                         Flag::Startup
-                    ),
-                    flag(
+                    )
+                    .into(),
+                    flag_row(
                         "settings.start_minimized",
                         s.general.start_minimized,
                         Flag::Minimized
-                    ),
-                    flag("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
-                ]
-                .spacing(widgets::CARD_GAP),
+                    )
+                    .into(),
+                    flag_row("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray).into(),
+                ])),
                 widgets::heading(
                     t!("settings.advanced").to_string(),
                     design::typography::BODY
                 ),
-                flag(
-                    "settings.allow_cross_session_process_control",
-                    s.general.allow_cross_session_process_control,
-                    Flag::CrossSession
-                ),
-                widgets::settings_card(widgets::setting_row(
-                    "settings.failure_suppression_threshold",
-                    text_input(
-                        "",
-                        self.failure_threshold.as_deref().unwrap_or(
-                            &s.advanced
-                                .execution_failure_suppression_threshold
-                                .to_string()
-                        )
+                widgets::settings_card(widgets::settings_rows([
+                    flag_row(
+                        "settings.allow_cross_session_process_control",
+                        s.general.allow_cross_session_process_control,
+                        Flag::CrossSession
                     )
-                    .on_input(Message::FailureThreshold)
-                    .align_x(iced::Center)
-                    .width(design::STANDALONE_NUMERIC_WIDTH),
-                )),
+                    .into(),
+                    widgets::setting_row(
+                        "settings.failure_suppression_threshold",
+                        text_input(
+                            "",
+                            self.failure_threshold.as_deref().unwrap_or(
+                                &s.advanced
+                                    .execution_failure_suppression_threshold
+                                    .to_string()
+                            )
+                        )
+                        .on_input(Message::FailureThreshold)
+                        .align_x(iced::Center)
+                        .width(design::STANDALONE_NUMERIC_WIDTH),
+                    )
+                    .into(),
+                ])),
                 widgets::heading(
                     t!("settings.keyboard_shortcuts").to_string(),
                     design::typography::BODY
@@ -354,26 +360,35 @@ impl Editor {
                 text(t!("settings.shortcut_help").to_string())
                     .size(design::typography::SECONDARY)
                     .style(text::secondary),
-                self.search_hotkey_row(s, SearchHotkeySlot::Primary, "settings.search_shortcut"),
-                self.search_hotkey_row(
-                    s,
-                    SearchHotkeySlot::Secondary,
-                    "settings.search_alternate_shortcut"
-                ),
-                row![action_button(t!("settings.reset_shortcuts").to_string())
-                    .on_press(Message::ResetSearchHotkeys)],
+                widgets::settings_card(widgets::settings_rows([
+                    self.search_hotkey_row(
+                        s,
+                        SearchHotkeySlot::Primary,
+                        "settings.search_shortcut"
+                    ),
+                    self.search_hotkey_row(
+                        s,
+                        SearchHotkeySlot::Secondary,
+                        "settings.search_alternate_shortcut"
+                    ),
+                    row![action_button(t!("settings.reset_shortcuts").to_string())
+                        .on_press(Message::ResetSearchHotkeys)]
+                    .into(),
+                ])),
                 widgets::heading(
                     t!("settings.settings_files").to_string(),
                     design::typography::BODY
                 ),
-                row![
-                    action_button(t!("settings.export_settings").to_string())
-                        .on_press(Message::Export),
-                    action_button(t!("settings.import_settings").to_string())
-                        .on_press(Message::Import),
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
+                widgets::settings_card(
+                    row![
+                        action_button(t!("settings.export_settings").to_string())
+                            .on_press(Message::Export),
+                        action_button(t!("settings.import_settings").to_string())
+                            .on_press(Message::Import),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                ),
             ]
             .spacing(super::widgets::CARD_GAP),
             Page::LanguageAndAppearance => {
@@ -468,21 +483,59 @@ impl Editor {
                 ]
                 .spacing(design::space::COMPACT);
                 column![
-                    super::widgets::settings_card(widgets::setting_row(
-                        "common.language",
-                        pick_list(
-                            AppLanguage::ALL
-                                .into_iter()
-                                .map(|v| Choice(v, v.native_label().to_owned()))
-                                .collect::<Vec<_>>(),
-                            Some(Choice(
-                                s.general.language,
-                                s.general.language.native_label().to_owned()
-                            )),
-                            |v| Message::Language(v.0)
+                    widgets::heading(
+                        t!("settings.interface").to_string(),
+                        design::typography::BODY
+                    ),
+                    widgets::settings_card(widgets::settings_rows([
+                        widgets::setting_row(
+                            "common.language",
+                            pick_list(
+                                AppLanguage::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, v.native_label().to_owned()))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.language,
+                                    s.general.language.native_label().to_owned()
+                                )),
+                                |v| Message::Language(v.0)
+                            )
+                            .width(design::SELECT_WIDTH)
                         )
-                        .width(design::SELECT_WIDTH)
-                    )),
+                        .into(),
+                        widgets::setting_row(
+                            "common.theme",
+                            pick_list(
+                                AppThemeMode::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, theme_label(v)))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.theme_mode,
+                                    theme_label(s.general.theme_mode)
+                                )),
+                                |v| Message::Theme(v.0)
+                            )
+                            .width(design::SELECT_WIDTH)
+                        )
+                        .into(),
+                        widgets::setting_row(
+                            "settings.animation_mode",
+                            pick_list(
+                                AnimationMode::ALL
+                                    .map(|v| Choice(v, animation_label(v)))
+                                    .to_vec(),
+                                Some(Choice(
+                                    s.general.animation_mode,
+                                    animation_label(s.general.animation_mode)
+                                )),
+                                |v| Message::Animation(v.0),
+                            )
+                            .width(design::SELECT_WIDTH),
+                        )
+                        .into(),
+                    ])),
                     super::widgets::setting_group(
                         "accent.source".to_string(),
                         self.accent_expanded,
@@ -508,61 +561,48 @@ impl Editor {
                         .width(design::SELECT_WIDTH),
                         custom
                     ),
-                    super::widgets::settings_card(widgets::setting_row(
-                        "common.theme",
-                        pick_list(
-                            AppThemeMode::ALL
-                                .into_iter()
-                                .map(|v| Choice(v, theme_label(v)))
-                                .collect::<Vec<_>>(),
-                            Some(Choice(
-                                s.general.theme_mode,
-                                theme_label(s.general.theme_mode)
-                            )),
-                            |v| Message::Theme(v.0)
-                        )
-                        .width(design::SELECT_WIDTH)
-                    )),
-                    widgets::settings_card(widgets::setting_row(
-                        "settings.animation_mode",
-                        pick_list(
-                            AnimationMode::ALL
-                                .map(|v| Choice(v, animation_label(v)))
-                                .to_vec(),
-                            Some(Choice(
-                                s.general.animation_mode,
-                                animation_label(s.general.animation_mode)
-                            )),
-                            |v| Message::Animation(v.0),
-                        )
-                        .width(design::SELECT_WIDTH),
-                    )),
-                    flag(
-                        "settings.show_enabled_feature_counts_in_sidebar",
-                        s.general.show_enabled_feature_counts_in_sidebar,
-                        Flag::FeatureCounts
+                    widgets::heading(
+                        t!("settings.navigation_display").to_string(),
+                        design::typography::BODY
                     ),
-                    flag(
-                        "settings.show_feature_status_on_cards",
-                        s.general.show_feature_status_on_cards,
-                        Flag::CardStatus
-                    ),
+                    widgets::settings_card(widgets::settings_rows([
+                        flag_row(
+                            "settings.show_enabled_feature_counts_in_sidebar",
+                            s.general.show_enabled_feature_counts_in_sidebar,
+                            Flag::FeatureCounts
+                        )
+                        .into(),
+                        flag_row(
+                            "settings.show_feature_status_on_cards",
+                            s.general.show_feature_status_on_cards,
+                            Flag::CardStatus
+                        )
+                        .into(),
+                    ])),
                 ]
-                .spacing(super::widgets::CARD_GAP)
+                .spacing(widgets::CARD_GAP)
             }
             Page::ExperimentalFeatures => column![
-                flag(
-                    "settings.expose_all_priority_values",
-                    s.advanced.expose_all_priority_values,
-                    Flag::AdvancedValues
+                widgets::heading(
+                    t!("settings.control_visibility").to_string(),
+                    design::typography::BODY
                 ),
-                flag(
-                    "settings.show_advanced_controls",
-                    s.advanced.show_advanced_controls,
-                    Flag::AdvancedControls
-                ),
+                widgets::settings_card(widgets::settings_rows([
+                    flag_row(
+                        "settings.expose_all_priority_values",
+                        s.advanced.expose_all_priority_values,
+                        Flag::AdvancedValues
+                    )
+                    .into(),
+                    flag_row(
+                        "settings.show_advanced_controls",
+                        s.advanced.show_advanced_controls,
+                        Flag::AdvancedControls
+                    )
+                    .into(),
+                ]))
             ]
-            .spacing(super::widgets::CARD_GAP),
+            .spacing(widgets::CARD_GAP),
             Page::About => {
                 let mut links = row![].spacing(design::space::SMALL);
                 for (key, url) in [

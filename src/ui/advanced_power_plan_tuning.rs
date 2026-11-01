@@ -452,27 +452,37 @@ impl Editor {
             icon_button("icons/x.svg").on_press(Message::ClosePreset)
         ]
         .align_y(iced::Center);
-        let mut form = column![widgets::settings_card(
-            column![
-                text(t!("processor_power.preset_name").to_string()),
-                text_input(&t!("processor_power.preset_name_placeholder"), &p.name)
-                    .on_input_maybe(editable.then_some(Message::PresetName)),
-                text(t!("processor_power.preset_name_help").to_string()).style(text::secondary)
-            ]
-            .spacing(design::space::SMALL)
-        )]
+        let mut form = column![
+            widgets::heading(
+                t!("common.preset_details").to_string(),
+                design::typography::BODY
+            ),
+            widgets::settings_card(
+                column![
+                    text(t!("processor_power.preset_name").to_string()),
+                    text_input(&t!("processor_power.preset_name_placeholder"), &p.name)
+                        .on_input_maybe(editable.then_some(Message::PresetName)),
+                    text(t!("processor_power.preset_name_help").to_string()).style(text::secondary)
+                ]
+                .spacing(design::space::SMALL)
+            )
+        ]
         .spacing(widgets::CARD_GAP);
+        let mut values = Vec::new();
         for (field, label, value) in fields(p.values) {
-            form = form.push(widgets::settings_card(widgets::setting_row_with_unit(
-                label,
-                "%",
-                widgets::stepper(
-                    &value.to_string(),
-                    0..=100,
-                    1,
-                    editable.then_some(move |v| Message::PresetValueText(field, v)),
-                ),
-            )));
+            values.push(
+                widgets::setting_row_with_unit(
+                    label,
+                    "%",
+                    widgets::stepper(
+                        &value.to_string(),
+                        0..=100,
+                        1,
+                        editable.then_some(move |v| Message::PresetValueText(field, v)),
+                    ),
+                )
+                .into(),
+            );
         }
         let boost: Element<'_, Message> = if editable {
             pick_list(
@@ -485,10 +495,13 @@ impl Editor {
         } else {
             text(BoostChoice(p.values.boost_mode).to_string()).into()
         };
-        form = form.push(widgets::settings_card(widgets::setting_row(
-            "processor_power.boost_mode",
-            boost,
-        )));
+        values.push(widgets::setting_row("processor_power.boost_mode", boost).into());
+        form = form
+            .push(widgets::heading(
+                t!("processor_power.processor_settings").to_string(),
+                design::typography::BODY,
+            ))
+            .push(widgets::settings_card(widgets::settings_rows(values)));
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
             action_button(t!("common.cancel").to_string())

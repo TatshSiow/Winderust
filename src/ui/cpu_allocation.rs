@@ -354,7 +354,11 @@ impl Editor {
                     && p.name.trim().eq_ignore_ascii_case(self.preset_name.trim())
             });
         let mut body = column![
-            super::widgets::settings_card(
+            super::widgets::heading(
+                t!("common.preset_details").to_string(),
+                design::typography::BODY
+            ),
+            super::widgets::settings_card(super::widgets::settings_rows([
                 column![
                     text(t!("cpu_allocation.preset_name").to_string()),
                     text_input(
@@ -365,14 +369,14 @@ impl Editor {
                     text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
                 ]
                 .spacing(design::space::SMALL)
-            ),
-            super::widgets::settings_card(
+                .into(),
                 column![
                     text(t!("cpu_allocation.selected_logical_cpus").to_string()),
                     cpus.wrap()
                 ]
                 .spacing(design::space::SMALL)
-            )
+                .into(),
+            ]))
         ]
         .spacing(design::space::MEDIUM);
         if self.preset_mask == 0 {

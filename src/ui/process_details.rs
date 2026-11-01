@@ -279,6 +279,7 @@ pub(super) fn view<'a>(
         design::typography::BODY
     ),]
     .spacing(widgets::CARD_GAP);
+    let mut exclusions = Vec::new();
     for (key, included, adaptive_rule) in [
         ("nav.adaptive_engine", adaptive, true),
         ("nav.background_efficiency", efficiency, false),
@@ -289,23 +290,28 @@ pub(super) fn view<'a>(
         ];
         let selected = options[usize::from(!included)].clone();
         let include = options[0].clone();
-        body = body.push(settings_card(setting_row(
-            key,
-            pick_list(options, Some(selected), move |value| {
-                if adaptive_rule {
-                    Message::Adaptive(value == include)
-                } else {
-                    Message::Efficiency(value == include)
-                }
-            })
-            .width(design::SELECT_WIDTH),
-        )));
+        exclusions.push(
+            setting_row(
+                key,
+                pick_list(options, Some(selected), move |value| {
+                    if adaptive_rule {
+                        Message::Adaptive(value == include)
+                    } else {
+                        Message::Efficiency(value == include)
+                    }
+                })
+                .width(design::SELECT_WIDTH),
+            )
+            .into(),
+        );
     }
+    body = body.push(settings_card(widgets::settings_rows(exclusions)));
     body = body.push(widgets::heading(
         t!("process_list.details_power").to_string(),
         design::typography::BODY,
     ));
     if let PlanCatalog::Loaded(plans) = plans {
+        let mut power = Vec::new();
         for foreground in [true, false] {
             let selected = if foreground {
                 s.by_foreground
@@ -335,16 +341,20 @@ pub(super) fn view<'a>(
                 }
             }
             let selected = options.iter().find(|p| p.0 == selected).cloned();
-            body = body.push(settings_card(setting_row(
-                if foreground {
-                    "process_list.power_plan_foreground"
-                } else {
-                    "process_list.power_plan_running"
-                },
-                pick_list(options, selected, move |p| Message::Power(foreground, p.0))
-                    .width(design::SELECT_WIDTH),
-            )));
+            power.push(
+                setting_row(
+                    if foreground {
+                        "process_list.power_plan_foreground"
+                    } else {
+                        "process_list.power_plan_running"
+                    },
+                    pick_list(options, selected, move |p| Message::Power(foreground, p.0))
+                        .width(design::SELECT_WIDTH),
+                )
+                .into(),
+            );
         }
+        body = body.push(settings_card(widgets::settings_rows(power)));
     } else {
         body = body.push(text(
             t!(match plans {
@@ -359,9 +369,11 @@ pub(super) fn view<'a>(
             );
         }
     }
-    let mut header = row![text(t!("process_list.details_priority").to_string()).width(Fill)]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center);
+    let mut header = row![text(t!("common.control").to_string())
+        .size(design::typography::CAPTION)
+        .width(Fill)]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center);
     for tier in Tier::ALL {
         header = header.push(
             container(text(tier.label()).size(design::typography::CAPTION))
@@ -407,10 +419,14 @@ pub(super) fn view<'a>(
             iced::widget::tooltip::Position::Top,
         ));
         priorities = priorities
-            .push(iced::widget::rule::horizontal(1))
+            .push(widgets::settings_divider())
             .push(container(controls).padding(widgets::CARD_PADDING as u16));
     }
     body = body
+        .push(widgets::heading(
+            t!("process_list.details_priority").to_string(),
+            design::typography::BODY,
+        ))
         .push(container(priorities).width(Fill).style(widgets::surface))
         .push(widgets::heading(
             t!("nav.cpu_control").to_string(),

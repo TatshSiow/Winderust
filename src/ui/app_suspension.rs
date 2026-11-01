@@ -160,16 +160,25 @@ impl Editor {
         unavailable: &[String],
         candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
-            "app_suspension.enable",
-            super::widgets::switch(s.enabled, Some(Message::Enabled))
-        )),]
+        let mut body = column![
+            super::widgets::heading(
+                t!("app_suspension.behavior").to_string(),
+                design::typography::BODY
+            ),
+            super::widgets::settings_card(super::widgets::settings_rows([
+                super::widgets::setting_row(
+                    "app_suspension.enable",
+                    super::widgets::switch(s.enabled, Some(Message::Enabled))
+                )
+                .into(),
+                delay_row(
+                    Delay::Background,
+                    "app_suspension.background_delay",
+                    s.background_delay_seconds,
+                ),
+            ])),
+        ]
         .spacing(super::widgets::CARD_GAP);
-        body = body.push(super::widgets::settings_card(delay_row(
-            Delay::Background,
-            "app_suspension.background_delay",
-            s.background_delay_seconds,
-        )));
         for (i, key, enabled, toggle, rows) in [
             (
                 0,
@@ -224,6 +233,10 @@ impl Editor {
                 controls,
             ));
         }
+        body = body.push(super::widgets::heading(
+            t!("common.rules").to_string(),
+            design::typography::BODY,
+        ));
         body = body.push(super::app_picker::view(
             &self.path,
             candidates,
@@ -317,7 +330,7 @@ impl Editor {
                         .center_x(80)
                         .into(),
                     ),
-                    iced::widget::rule::horizontal(1)
+                    super::widgets::settings_divider()
                 ]
                 .into(),
             ));

@@ -182,7 +182,7 @@ impl Editor {
                                 .center_x(80)
                                 .into(),
                             ),
-                            iced::widget::rule::horizontal(1)
+                            widgets::settings_divider()
                         ]
                         .into(),
                     ));

@@ -340,7 +340,7 @@ impl CpuLimiter {
             );
             cards.push((
                 super::widgets::stable_key(&rule.executable_path),
-                column![header, iced::widget::rule::horizontal(1)].into(),
+                column![header, super::widgets::settings_divider()].into(),
             ));
         }
         body = body.push(super::widgets::process_rules_table_with_actions(
@@ -372,8 +372,12 @@ impl CpuLimiter {
                 .style(move |theme| super::widgets::rule_status_chip(theme, key))
         ]
         .align_y(iced::Center)]
-        .spacing(24);
+        .spacing(super::widgets::CARD_GAP);
 
+        details = details.push(super::widgets::heading(
+            t!("common.rule_details").to_string(),
+            design::typography::BODY,
+        ));
         details = details.push(super::widgets::settings_card(
             column![
                 super::app_picker::app_name(&rule.executable_path, candidates),
@@ -381,6 +385,7 @@ impl CpuLimiter {
             ]
             .spacing(design::space::SMALL),
         ));
+        let mut limits = Vec::new();
         for (tier, (mode, value)) in Tier::ALL.into_iter().zip([
             (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
             (
@@ -392,8 +397,9 @@ impl CpuLimiter {
                 rule.background_allowed_cpu_time_percent,
             ),
         ]) {
-            let mut card = super::widgets::settings_rows([super::widgets::setting_row(
+            let mut controls = column![super::widgets::setting_row_with_unit(
                 tier.key(),
+                "%",
                 pick_list(
                     ProcessRuleMode::ALL
                         .into_iter()
@@ -403,15 +409,26 @@ impl CpuLimiter {
                     move |m| Message::RuleMode(index, tier, m.0),
                 )
                 .width(design::SELECT_WIDTH),
-            )
-            .into()]);
+            )]
+            .spacing(design::space::SMALL);
             if mode == ProcessRuleMode::Enabled {
-                card = card
-                    .push(super::widgets::settings_divider())
-                    .push(self.limit_row(Some(index), tier, &rule.executable_path, value));
+                controls = controls.push(self.limit_control(
+                    Some(index),
+                    tier,
+                    &rule.executable_path,
+                    value,
+                ));
             }
-            details = details.push(super::widgets::settings_card(card));
+            limits.push(controls.into());
         }
+        details = details
+            .push(super::widgets::heading(
+                t!("cpu_limiter.limits").to_string(),
+                design::typography::BODY,
+            ))
+            .push(super::widgets::settings_card(
+                super::widgets::settings_rows(limits),
+            ));
         let header = row![
             text(t!("common.edit").to_string()).width(Fill),
             icon_button("icons/x.svg").on_press(Message::CancelRule)
