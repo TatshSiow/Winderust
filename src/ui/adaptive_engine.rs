@@ -454,7 +454,7 @@ impl Editor {
         macro_rules! toggle {($key:expr,$($field:ident).+) => {row![
             setting_label($key).width(Fill),
             super::widgets::switch(s.$($field).+, editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v)))
-        ].spacing(design::space::SMALL).height(super::widgets::SETTING_ROW_HEIGHT).align_y(iced::Center)};}
+        ].spacing(design::space::SMALL).align_y(iced::Center)};}
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
             let key=stringify!($($field).+);
             let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
@@ -462,10 +462,10 @@ impl Editor {
             row![setting_label_with_unit($key, unit).width(Fill),
                 super::widgets::stepper(&value, $min..=$max, 1,
                     editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
-            ].spacing(design::space::SMALL).height(46).align_y(iced::Center)
+            ].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)
         }};}
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+ $(, $color:expr)?) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0)))$(.option_color($color))?.width(Fill).into()}else{text($label(selected)).into()};control}};}
-        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).height(46).align_y(iced::Center)};}
+        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)};}
         if !preset {
             body = body.push(super::widgets::settings_card(toggle!(
                 "adaptive_engine.enable",
@@ -725,10 +725,9 @@ impl Editor {
                     "adaptive_engine.processor_power_policy",
                     adaptive_engine.processor_power_policy_enabled
                 )));
-                body = body.push(
-                    text(t!("adaptive_engine.base_processor_policy").to_string())
-                        .size(design::typography::SECTION),
-                );
+                body = body.push(super::widgets::setting_title(
+                    "adaptive_engine.base_processor_policy",
+                ));
                 body = body.push(super::widgets::settings_card(number!(
                     "processor_power.core_parking_min",
                     0,
@@ -762,10 +761,9 @@ impl Editor {
                     adaptive_engine.base_processor_policy.boost_mode
                 )));
 
-                body = body.push(
-                    text(t!("adaptive_engine.background_pressure_profile").to_string())
-                        .size(design::typography::SECTION),
-                );
+                body = body.push(super::widgets::setting_title(
+                    "adaptive_engine.background_pressure_profile",
+                ));
                 body = body.push(super::widgets::settings_card(number!(
                     "adaptive_engine.ac_boost_policy",
                     0,
@@ -795,10 +793,9 @@ impl Editor {
                     adaptive_engine.background_pressure_profile.battery_mode
                 )));
 
-                body = body.push(
-                    text(t!("adaptive_engine.focus_and_launch_profile").to_string())
-                        .size(design::typography::SECTION),
-                );
+                body = body.push(super::widgets::setting_title(
+                    "adaptive_engine.focus_and_launch_profile",
+                ));
                 body = body.push(super::widgets::settings_card(number!(
                     "adaptive_engine.ac_boost_policy",
                     0,
@@ -1809,7 +1806,9 @@ impl Editor {
         }
         if !preset && tab == TuningTab::CustomRules {
             body = body
-                .push(text(t!("adaptive_engine_process.custom_rules").to_string()))
+                .push(super::widgets::setting_title(
+                    "adaptive_engine_process.custom_rules",
+                ))
                 .push(super::app_picker::view(
                     &self.path,
                     candidates,
@@ -2001,35 +2000,26 @@ fn priority_option_row<'a>(key: &str, cells: [Element<'a, Message>; 3]) -> Eleme
     .into()
 }
 
-fn setting_label(key: &str) -> iced::widget::Row<'static, Message> {
+fn setting_label(key: &str) -> iced::widget::Column<'static, Message> {
     setting_label_with_unit(key, "")
 }
 
-fn setting_label_with_unit(key: &str, unit: &str) -> iced::widget::Row<'static, Message> {
+fn setting_label_with_unit(key: &str, unit: &str) -> iced::widget::Column<'static, Message> {
     let help_key = match key {
         "processor_power.core_parking_min" => "adaptive_engine.core_parking_min_help".to_string(),
         "processor_power.processor_min" => "adaptive_engine.processor_min_help".to_string(),
         "processor_power.processor_max" => "adaptive_engine.processor_max_help".to_string(),
         "processor_power.boost_policy" => "adaptive_engine.base_boost_policy_help".to_string(),
+        "processor_power.boost_mode" => "adaptive_engine.base_boost_mode_help".to_string(),
+        "adaptive_engine.ac_boost_policy" | "adaptive_engine.battery_boost_policy" => {
+            "adaptive_engine.profile_boost_policy_help".to_string()
+        }
+        "adaptive_engine.ac_boost_mode" | "adaptive_engine.battery_boost_mode" => {
+            "adaptive_engine.profile_boost_mode_help".to_string()
+        }
         _ => format!("{key}_help"),
     };
-    let mut label = row![super::widgets::heading(
-        super::widgets::label_with_unit(&t!(key), unit),
-        design::typography::BODY
-    )]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center);
-    let help = t!(&help_key).to_string();
-    if help != help_key {
-        label = label.push(iced::widget::tooltip(
-            super::navigation::glyph("icons/info.svg"),
-            iced::widget::container(text(help).width(320))
-                .padding(design::space::COMPACT as u16)
-                .style(super::widgets::surface),
-            iced::widget::tooltip::Position::Top,
-        ));
-    }
-    label
+    super::widgets::setting_title_with_help(key, unit, &help_key)
 }
 #[derive(Debug, Clone, PartialEq)]
 struct Choice<T>(T, String);

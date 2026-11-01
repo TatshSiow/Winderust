@@ -3,7 +3,7 @@ use super::widgets::{checkbox, pick_list};
 use crate::config::*;
 use crate::ui::process_rules::can_add_process_candidate;
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, text};
+use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::path::Path;
@@ -600,7 +600,7 @@ impl Editor {
                 group,
             ));
         }
-        body = body.push(text(localized(key, "exclusions")).size(design::typography::SECTION));
+        body = body.push(super::widgets::setting_title(&format!("{key}.exclusions")));
         body = body.push(super::app_picker::view(
             &self.path,
             candidates,

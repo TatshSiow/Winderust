@@ -231,7 +231,11 @@ impl Editor {
                 },
                 super::widgets::switch(feature.enabled, Some(Message::Enabled)),
             )),
-            super::widgets::setting_title("cpu_allocation.custom_rules"),
+            super::widgets::setting_title_with_help(
+                "cpu_allocation.custom_rules",
+                "",
+                "cpu_allocation.rules_help"
+            ),
             super::app_picker::view(
                 &self.path,
                 candidates,

@@ -467,25 +467,21 @@ impl Editor {
                 ]
                 .spacing(design::space::COMPACT);
                 column![
-                    super::widgets::settings_card(
-                        row![
-                            text(t!("common.language").to_string()).width(Fill),
-                            pick_list(
-                                AppLanguage::ALL
-                                    .into_iter()
-                                    .map(|v| Choice(v, v.native_label().to_owned()))
-                                    .collect::<Vec<_>>(),
-                                Some(Choice(
-                                    s.general.language,
-                                    s.general.language.native_label().to_owned()
-                                )),
-                                |v| Message::Language(v.0)
-                            )
-                            .width(design::SELECT_WIDTH)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .align_y(iced::Center)
-                    ),
+                    super::widgets::settings_card(widgets::setting_row(
+                        "common.language",
+                        pick_list(
+                            AppLanguage::ALL
+                                .into_iter()
+                                .map(|v| Choice(v, v.native_label().to_owned()))
+                                .collect::<Vec<_>>(),
+                            Some(Choice(
+                                s.general.language,
+                                s.general.language.native_label().to_owned()
+                            )),
+                            |v| Message::Language(v.0)
+                        )
+                        .width(design::SELECT_WIDTH)
+                    )),
                     super::widgets::setting_group(
                         "accent.source".to_string(),
                         self.accent_expanded,
@@ -511,25 +507,21 @@ impl Editor {
                         .width(design::SELECT_WIDTH),
                         custom
                     ),
-                    super::widgets::settings_card(
-                        row![
-                            text(t!("common.theme").to_string()).width(Fill),
-                            pick_list(
-                                AppThemeMode::ALL
-                                    .into_iter()
-                                    .map(|v| Choice(v, theme_label(v)))
-                                    .collect::<Vec<_>>(),
-                                Some(Choice(
-                                    s.general.theme_mode,
-                                    theme_label(s.general.theme_mode)
-                                )),
-                                |v| Message::Theme(v.0)
-                            )
-                            .width(design::SELECT_WIDTH)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .align_y(iced::Center)
-                    ),
+                    super::widgets::settings_card(widgets::setting_row(
+                        "common.theme",
+                        pick_list(
+                            AppThemeMode::ALL
+                                .into_iter()
+                                .map(|v| Choice(v, theme_label(v)))
+                                .collect::<Vec<_>>(),
+                            Some(Choice(
+                                s.general.theme_mode,
+                                theme_label(s.general.theme_mode)
+                            )),
+                            |v| Message::Theme(v.0)
+                        )
+                        .width(design::SELECT_WIDTH)
+                    )),
                     widgets::settings_card(widgets::setting_row(
                         "settings.animation_mode",
                         pick_list(

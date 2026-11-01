@@ -643,7 +643,6 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
                         )
                     ]
                     .spacing(design::space::SMALL)
-                    .height(SETTING_ROW_HEIGHT)
                     .align_y(iced::Center)
                 )
                 .width(Fill)
@@ -686,33 +685,42 @@ pub(super) fn setting_row_with_unit<'a, M: 'a>(
         action.into()
     ]
     .spacing(design::space::MEDIUM)
-    .height(SETTING_ROW_HEIGHT)
     .align_y(iced::Center)
 }
 
 pub(super) fn setting_title<'a, M: 'a>(key: &str) -> Element<'a, M> {
-    setting_title_with_unit(key, "")
+    setting_title_with_unit(key, "").into()
 }
 
-fn setting_title_with_unit<'a, M: 'a>(key: &str, unit: &str) -> Element<'a, M> {
-    let help_key = format!("{key}_help");
-    let help = rust_i18n::t!(&help_key).to_string();
-    let mut label = row![heading(
+pub(super) fn setting_title_with_unit<'a, M: 'a>(
+    key: &str,
+    unit: &str,
+) -> iced::widget::Column<'a, M> {
+    setting_title_with_help(key, unit, &format!("{key}_help"))
+}
+
+pub(super) fn setting_title_with_help<'a, M: 'a>(
+    key: &str,
+    unit: &str,
+    help_key: &str,
+) -> iced::widget::Column<'a, M> {
+    let help = rust_i18n::t!(help_key).to_string();
+    let mut label = iced::widget::column![heading(
         label_with_unit(&rust_i18n::t!(key), unit),
         design::typography::BODY
-    )]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center);
+    )
+    .width(Fill)]
+    .spacing(design::space::TIGHT)
+    .width(Fill);
     if help != help_key {
-        label = label.push(iced::widget::tooltip(
-            super::navigation::glyph("icons/info.svg"),
-            iced::widget::container(text(help).width(320))
-                .padding(design::space::MEDIUM as u16)
-                .style(surface),
-            iced::widget::tooltip::Position::Top,
-        ));
+        label = label.push(
+            text(help)
+                .size(design::typography::SECONDARY)
+                .style(text::secondary)
+                .width(Fill),
+        );
     }
-    label.into()
+    label
 }
 
 pub(super) fn switch<'a, M: Clone + 'a>(
@@ -809,6 +817,42 @@ fn step_values(
 }
 #[cfg(test)]
 mod step_tests {
+    #[test]
+    fn setting_descriptions_wrap_without_clipping_rows_or_controls() {
+        use iced::advanced::{layout, widget::Tree};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let mut heights = Vec::new();
+        for width in [760.0, 360.0] {
+            let mut view: iced::Element<'_, ()> = super::setting_row(
+                "settings.allow_cross_session_process_control",
+                super::action_button("Control").width(120).on_press(()),
+            )
+            .into();
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 1000.0)),
+            );
+            let label = &node.children()[0].children()[0];
+            assert_eq!(
+                label.children().len(),
+                2,
+                "description must be visible without hover"
+            );
+            assert!(label.bounds().height > super::SETTING_ROW_HEIGHT as f32);
+            let control = node.children()[1].bounds();
+            assert_eq!(control.width, 120.0);
+            assert_eq!(control.height, super::design::BUTTON_HEIGHT as f32);
+            assert!(control.y + control.height <= node.bounds().height);
+            heights.push(node.bounds().height);
+        }
+        assert!(
+            heights[1] > heights[0],
+            "narrow rows must grow with their descriptions"
+        );
+    }
+
     #[test]
     fn search_clear_button_preserves_size_and_emits_empty_query() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};

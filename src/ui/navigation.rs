@@ -351,18 +351,9 @@ pub(super) fn page_feature_info(page: Page) -> String {
         }
     }
     let extra: &[&str] = match page {
-        Page::CpuSetsSoft => &["cpu_allocation.rules_help", "cpu_sets_soft.warning"],
-        Page::ProcessorAffinityHard => &[
-            "cpu_allocation.rules_help",
-            "processor_affinity_hard.warning",
-        ],
+        Page::CpuSetsSoft => &["cpu_sets_soft.warning"],
+        Page::ProcessorAffinityHard => &["processor_affinity_hard.warning"],
         Page::AppSuspension => &["app_suspension.suspendable_help"],
-        Page::ProcessPriority => &["process_priority.exclusions_help"],
-        Page::ThreadPriority => &["thread_priority.exclusions_help"],
-        Page::DynamicPriorityBoost => &["dynamic_priority_boost.exclusions_help"],
-        Page::IoPriority => &["io_priority.exclusions_help"],
-        Page::GpuPriority => &["gpu_priority.exclusions_help"],
-        Page::MemoryPriority => &["memory_priority.exclusions_help"],
         Page::TimerResolution => &["timer_resolution.warning"],
         Page::Win32PrioritySeparation => &["settings.win32_priority_separation_warning"],
         Page::AdvancedPowerPlanTuning => &["processor_power.help"],
