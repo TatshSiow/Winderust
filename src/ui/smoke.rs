@@ -34,12 +34,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(51) {
+    if extra == Some(54) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45)
+            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52)
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -73,6 +73,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(48) => Page::ProcessList,
             Some(49) => Page::ActionLog,
             Some(50) => Page::WinderustBehaviour,
+            Some(51..=53) => Page::Watchdog,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -104,8 +105,51 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
         }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
+        if matches!(extra, Some(51..=53)) {
+            let mut rule =
+                crate::config::WatchdogRule::new(r"C:\Apps\Resource Monitor\sample.exe".into());
+            rule.memory.enabled = true;
+            rule.memory_unit = crate::config::WatchdogMemoryUnit::Mib;
+            rule.memory.warning.threshold = 1024;
+            rule.memory.critical.threshold = 2048;
+            rule.memory.critical.action = crate::config::WatchdogAction::Terminate;
+            app.settings
+                .edit_global(|settings| settings.watchdog.rules = vec![rule]);
+            app.watchdog = watchdog::Editor::default();
+            let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
+        }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
+        if matches!(extra, Some(51..=53)) {
+            let before = app.settings.global().watchdog.clone();
+            assert!(app.pending_editor());
+            let _ = app.update(Message::Watchdog(watchdog::Message::Threshold(
+                crate::config::WatchdogResource::Cpu,
+                false,
+                String::new(),
+            )));
+            let _ = app.search_keyboard(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                iced::keyboard::Modifiers::empty(),
+                false,
+                iced::event::Status::Ignored,
+            );
+            assert!(!app.pending_editor());
+            assert_eq!(app.settings.global().watchdog, before);
+            let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
+            if extra == Some(51) {
+                let _ = app.update(Message::Watchdog(watchdog::Message::CancelRule));
+            } else if extra == Some(52) {
+                let _ = app.update(Message::Watchdog(watchdog::Message::MonitorEnabled(
+                    crate::config::WatchdogResource::Cpu,
+                    false,
+                )));
+            } else if extra == Some(53) {
+                let _ = app.update(Message::Watchdog(watchdog::Message::Tab(
+                    crate::config::WatchdogResource::Memory,
+                )));
+            }
+        }
         assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
         assert_eq!(app.side_panel_open, was_open);
         let _ = app.update(Message::CloseSidePanel);
@@ -404,7 +448,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=53) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -435,6 +479,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         ]));
     }
     run.ticks += 1;
+    if extra == Some(53) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "watchdog-rule-details",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
     if run.ticks
         == if extra.is_some_and(|i| i >= 13) {
             12
@@ -489,6 +539,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        119
+        124
     );
 }

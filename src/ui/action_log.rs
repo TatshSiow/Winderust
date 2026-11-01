@@ -470,6 +470,7 @@ pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::GpuPriority => super::Page::GpuPriority,
         ActionLogFeature::MemoryPriority => super::Page::MemoryPriority,
         ActionLogFeature::MemoryTrim => super::Page::MemoryTrim,
+        ActionLogFeature::Watchdog => super::Page::Watchdog,
         ActionLogFeature::TimerResolution => super::Page::TimerResolution,
     };
     page.label()
@@ -535,7 +536,7 @@ const RESULTS: [ActionLogResult; 4] = [
     ActionLogResult::Skipped,
     ActionLogResult::Failed,
 ];
-const FEATURES: [ActionLogFeature; 19] = [
+const FEATURES: [ActionLogFeature; 20] = [
     ActionLogFeature::AppSuspension,
     ActionLogFeature::CpuSetsSoft,
     ActionLogFeature::ProcessorAffinityHard,
@@ -554,6 +555,7 @@ const FEATURES: [ActionLogFeature; 19] = [
     ActionLogFeature::GpuPriority,
     ActionLogFeature::MemoryPriority,
     ActionLogFeature::MemoryTrim,
+    ActionLogFeature::Watchdog,
     ActionLogFeature::TimerResolution,
 ];
 

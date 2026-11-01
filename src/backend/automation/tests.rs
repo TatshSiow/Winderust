@@ -21,6 +21,29 @@ fn runtime_settings(snapshot: Settings) -> RuntimeSettingsSnapshot {
     )
 }
 
+#[test]
+fn watchdog_alone_keeps_automation_alive_without_power_plan_rules() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    assert!(!automation_worker_required(&settings));
+    settings.watchdog.enabled = true;
+    settings
+        .watchdog
+        .rules
+        .push(crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into()));
+    assert!(automation_worker_required(&settings));
+    assert!(windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::PowerChanged
+    ));
+    assert!(!power_plan_checks_required(&settings));
+    settings.watchdog.rules[0].enabled = false;
+    assert!(!automation_worker_required(&settings));
+    settings.watchdog.rules[0].enabled = true;
+    settings.general.enabled = false;
+    assert!(!automation_worker_required(&settings));
+}
+
 fn runtime_settings_with_runtime_and_persisted_revisions(
     snapshot: Settings,
     runtime_revision: SettingsRevision,

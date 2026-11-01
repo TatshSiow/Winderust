@@ -28,6 +28,7 @@ mod settings_pages;
 mod status_rail;
 mod tasks;
 mod timer_resolution;
+mod watchdog;
 mod widgets;
 mod win32_priority_separation;
 use rust_i18n::t;
@@ -62,6 +63,7 @@ pub enum Page {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
+    Watchdog,
     ProcessorAffinityHard,
     ByForeground,
     ByTime,
@@ -102,10 +104,11 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 3] = [
+const WINDERUST_FEATURE_PAGES: [Page; 4] = [
     Page::AdaptiveEngine,
     Page::BackgroundEfficiency,
     Page::MemoryTrim,
+    Page::Watchdog,
 ];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const SETTINGS_PAGES: [Page; 3] = [
@@ -214,6 +217,7 @@ impl Page {
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
             Self::MemoryTrim => t!("nav.memory_trim"),
+            Self::Watchdog => t!("nav.watchdog"),
             Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
             Self::ByForeground => t!("nav.by_foreground"),
             Self::ByTime => t!("nav.by_time"),
@@ -239,6 +243,7 @@ impl Page {
             Self::WinderustFeatures
             | Self::AdaptiveEngine
             | Self::BackgroundEfficiency
+            | Self::Watchdog
             | Self::MemoryTrim => Self::WinderustFeatures,
             Self::PowerPlanControl
             | Self::ByActivity
@@ -308,6 +313,7 @@ mod tests {
         assert!(Page::ByForeground.supports_power_source_profiles());
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());
+        assert!(!Page::Watchdog.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
         assert!(!Page::ProcessList.supports_power_source_profiles());
         assert!(!Page::ActionLog.supports_power_source_profiles());

@@ -57,6 +57,7 @@ use crate::{
     features::power_plan_control::{
         current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
     },
+    features::winderust_features::watchdog::{WatchdogManager, WatchdogSnapshot},
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, executable_path_key,
         process_is_critical, same_executable_path, shell_window_mouse_pressed, ProcessActionTarget,
@@ -310,6 +311,7 @@ pub struct RuntimeFeatureStatus {
     pub gpu_priority: GpuPrioritySnapshot,
     pub memory_priority: MemoryPrioritySnapshot,
     pub memory_trim: MemoryTrimSnapshot,
+    pub watchdog: WatchdogSnapshot,
     pub timer_resolution: TimerResolutionSnapshot,
 }
 
@@ -1164,6 +1166,11 @@ fn run_background_automation(
             settings_changed || feature_refresh_required(settings, gpu_priority_required(settings));
         let memory_priority_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.memory_priority.enabled);
+        let watchdog_refresh_required = settings_changed
+            || feature_refresh_required(
+                configured_settings.as_ref(),
+                watchdog_required(configured_settings.as_ref()),
+            );
         let memory_trim_refresh_required = settings_changed
             || memory_trim_command_requested
             || feature_refresh_required(settings, settings.memory_trim.enabled);
@@ -1438,6 +1445,17 @@ fn run_background_automation(
             update_memory_trim_status(&shared, memory_trim_status);
             scheduler.schedule_after(RefreshDomain::MemoryTrim, now, memory_trim_refresh_interval);
         }
+        if watchdog_refresh_required && scheduler.is_due(RefreshDomain::Watchdog, now) {
+            let status =
+                runner.run_watchdog_update(configured_settings.as_ref(), &mut observations);
+            update_feature_status(
+                &shared,
+                status,
+                |status| &status.watchdog,
+                |status| &mut status.watchdog,
+            );
+            scheduler.schedule_after(RefreshDomain::Watchdog, now, Duration::from_secs(1));
+        }
         if timer_resolution_refresh_required
             && scheduler.is_due(RefreshDomain::TimerResolution, now)
         {
@@ -1477,6 +1495,11 @@ fn run_background_automation(
             wait_for,
             wait_now,
             [
+                (
+                    watchdog_refresh_required,
+                    RefreshDomain::Watchdog,
+                    Duration::from_secs(1),
+                ),
                 (
                     background_efficiency_refresh_required,
                     RefreshDomain::BackgroundEfficiency,

@@ -417,8 +417,19 @@ Assert-NoUnexpectedWriter `
 
 Assert-NoUnexpectedWriter `
     -Mechanism 'CPU Limiter thread suspension' `
-    -ApiPattern '(?:PssCaptureSnapshot|PssWalkSnapshot|SuspendThread|ResumeThread)\s*(?:,|\()' `
+    -ApiPattern '(?:PssCaptureSnapshot|PssWalkSnapshot|SuspendThread)\s*(?:,|\()' `
     -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\thread_suspension)\.rs:'
+
+Assert-NoUnexpectedWriter `
+    -Mechanism 'thread resumption' `
+    -ApiPattern 'ResumeThread\s*(?:,|\()' `
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\(?:thread_suspension|process_restart))\.rs:'
+
+Assert-SourceMatchCount `
+    -Boundary 'restart resumes only its prepared primary thread' `
+    -Pattern 'ResumeThread\s*\(' `
+    -Paths @('src/platform/windows/process_restart.rs') `
+    -ExpectedCount 1
 
 Assert-NoSourceMatch `
     -Boundary 'CPU Limiter policy uses only the typed thread-suspension adapter' `

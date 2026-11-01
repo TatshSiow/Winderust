@@ -16,6 +16,7 @@ pub(crate) mod menu_theme;
 pub(crate) mod power_plan;
 pub(crate) mod priority_efficiency;
 pub(crate) mod process;
+pub(crate) mod process_restart;
 pub(crate) mod process_termination;
 pub(crate) mod self_power;
 pub(crate) mod suspension;

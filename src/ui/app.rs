@@ -2,7 +2,7 @@ use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
     by_activity, cpu_allocation, cpu_limiter, design, home, memory_trim, navigation, power_rules,
     priority_control, process_list, process_power_plans, settings_pages, status_rail, tasks,
-    timer_resolution, widgets, win32_priority_separation,
+    timer_resolution, watchdog, widgets, win32_priority_separation,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -251,6 +251,7 @@ pub(crate) fn run(
                     catalog_sampled_at: std::time::Instant::now(),
                     suspension: app_suspension::Editor::default(),
                     trim: memory_trim::Editor::default(),
+                    watchdog: watchdog::Editor::default(),
                     timer: timer_resolution::Editor::default(),
                     priority_separation: win32_priority_separation::Editor::default(),
                     power_tuning: advanced_power_plan_tuning::Editor::default(),
@@ -480,6 +481,7 @@ struct WinderustApp {
     catalog_sampled_at: std::time::Instant,
     suspension: app_suspension::Editor,
     trim: memory_trim::Editor,
+    watchdog: watchdog::Editor,
     timer: timer_resolution::Editor,
     priority_separation: win32_priority_separation::Editor,
     power_tuning: advanced_power_plan_tuning::Editor,
@@ -555,6 +557,7 @@ enum Message {
     ExportLog(Option<PathBuf>),
     Suspension(app_suspension::Message),
     Trim(memory_trim::Message),
+    Watchdog(watchdog::Message),
     Timer(timer_resolution::Message),
     PrioritySeparation(win32_priority_separation::Message),
     PowerTuning(advanced_power_plan_tuning::Message),
@@ -674,6 +677,21 @@ impl WinderustApp {
                 }
                 _ => return Task::none(),
             }
+        }
+        if self.page == Page::Watchdog && self.watchdog.has_pending_editor() {
+            return match key {
+                Key::Named(Named::Escape) if !repeat && status == iced::event::Status::Ignored => {
+                    self.update(Message::Watchdog(watchdog::Message::CancelRule))
+                }
+                Key::Named(Named::Tab) if status == iced::event::Status::Ignored => {
+                    if modifiers.shift() {
+                        iced::widget::operation::focus_previous()
+                    } else {
+                        iced::widget::operation::focus_next()
+                    }
+                }
+                _ => Task::none(),
+            };
         }
         if !repeat
             && super::hotkeys::opens_search(
@@ -1183,6 +1201,14 @@ impl WinderustApp {
                 }
             }
             Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
+            Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
+            Message::Watchdog(watchdog::Message::Tab(resource)) => {
+                self.watchdog.select_tab(resource);
+            }
+            Message::Watchdog(message) => {
+                self.settings
+                    .edit_global(|settings| self.watchdog.update(&mut settings.watchdog, message));
+            }
             Message::Timer(timer_resolution::Message::Browse) => {
                 return self.browse(Page::TimerResolution)
             }
@@ -1285,6 +1311,10 @@ impl WinderustApp {
                                 return self.update(Message::Suspension(
                                     app_suspension::Message::Path(path),
                                 ))
+                            }
+                            Page::Watchdog => {
+                                return self
+                                    .update(Message::Watchdog(watchdog::Message::Path(path)));
                             }
                             Page::MemoryTrim => {
                                 return self.update(Message::Trim(memory_trim::Message::Path(path)))
@@ -1463,7 +1493,8 @@ impl WinderustApp {
                             .map(Message::Processes),
                     );
                 }
-                if (page.supports_power_source_profiles() || page == Page::ActionLog)
+                if (page.supports_power_source_profiles()
+                    || matches!(page, Page::ActionLog | Page::Watchdog))
                     && !self.catalog_loading
                 {
                     self.catalog_loading = true;
@@ -1502,6 +1533,11 @@ impl WinderustApp {
                     let result = match action {
                         tray::MenuAction::MasterSwitch(enabled) => {
                             self.settings.set_master_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature { id, enabled, .. }
+                            if id == Page::Watchdog as usize =>
+                        {
+                            self.settings.set_watchdog_enabled(enabled)
                         }
                         tray::MenuAction::Feature {
                             id,
@@ -1593,7 +1629,8 @@ impl WinderustApp {
                                 .map(Message::Processes),
                         );
                     }
-                    if (self.page.supports_power_source_profiles() || self.page == Page::ActionLog)
+                    if (self.page.supports_power_source_profiles()
+                        || matches!(self.page, Page::ActionLog | Page::Watchdog))
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
                     {
@@ -1652,6 +1689,12 @@ impl WinderustApp {
             }
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::Save if self.settings.validate_watchdog().is_err() => {
+                self.error_message = t!("watchdog.invalid").to_string();
+            }
+            Message::Save if self.watchdog.has_invalid_inputs() => {
+                self.error_message = t!("watchdog.invalid_duration").to_string();
             }
             Message::Save if self.adaptive.validation_error().is_some() => {
                 self.error_message = self.adaptive.validation_error().unwrap_or_default();
@@ -1763,7 +1806,9 @@ impl WinderustApp {
             || self.invalid_inputs()
     }
     fn invalid_inputs(&self) -> bool {
-        self.cpu_limiter.has_invalid_inputs()
+        self.settings.validate_watchdog().is_err()
+            || self.watchdog.has_invalid_inputs()
+            || self.cpu_limiter.has_invalid_inputs()
             || self.timer.has_invalid_inputs()
             || self.preferences.has_invalid_inputs()
             || self.adaptive.validation_error().is_some()
@@ -1786,6 +1831,7 @@ impl WinderustApp {
             || self.soft_allocation.has_pending_editor()
             || self.hard_allocation.has_pending_editor()
             || self.cpu_limiter.has_pending_editor()
+            || self.watchdog.has_pending_editor()
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
     }
@@ -1805,6 +1851,7 @@ impl WinderustApp {
         self.cpu_rules = Default::default();
         self.suspension = Default::default();
         self.trim = Default::default();
+        self.watchdog = Default::default();
         self.timer = Default::default();
         self.appearance = settings_pages::theme(&self.settings.global().general);
     }
@@ -1866,12 +1913,18 @@ impl WinderustApp {
                         .pages
                         .iter()
                         .filter_map(|page| {
-                            navigation::feature_page_enabled(settings, *page).map(|enabled| {
-                                tray::FeatureToggle {
-                                    id: *page as usize,
-                                    label: page.label(),
-                                    enabled,
-                                }
+                            navigation::feature_page_enabled(
+                                if *page == Page::Watchdog {
+                                    saved
+                                } else {
+                                    settings
+                                },
+                                *page,
+                            )
+                            .map(|enabled| tray::FeatureToggle {
+                                id: *page as usize,
+                                label: page.label(),
+                                enabled,
                             })
                         })
                         .collect();
@@ -1881,7 +1934,8 @@ impl WinderustApp {
         });
         let intent = (
             self.settings.global().general.hide_to_tray,
-            self.settings.persisted().general.start_minimized,
+            self.settings.persisted().general.start_minimized
+                || watchdog_notifications_required(self.settings.persisted()),
         );
         if !intent.0 && !intent.1 {
             tray::set_hide_on_close(false);
@@ -2504,6 +2558,10 @@ impl WinderustApp {
             .into();
         }
         let modal = match self.page {
+            Page::Watchdog => self
+                .watchdog
+                .modal(&self.candidates)
+                .map(|modal| modal.map(Message::Watchdog)),
             Page::CpuSetsSoft => self
                 .soft_allocation
                 .modal(&self.settings)
@@ -2538,15 +2596,7 @@ impl WinderustApp {
         if let Some(modal) = modal {
             return iced::widget::stack![
                 layout,
-                iced::widget::opaque(
-                    container(iced::widget::Space::new())
-                        .width(Fill)
-                        .height(Fill)
-                        .style(|_| container::Style {
-                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
-                            ..Default::default()
-                        })
-                ),
+                iced::widget::opaque(super::scrolling::modal_backdrop()),
                 container(iced::widget::opaque(modal))
                     .padding(16)
                     .center_x(Fill)
@@ -2613,6 +2663,10 @@ impl WinderustApp {
                     &self.candidates,
                 )
                 .map(Message::Suspension),
+            Page::Watchdog => self
+                .watchdog
+                .view(&self.settings.global().watchdog, &self.candidates)
+                .map(Message::Watchdog),
             Page::MemoryTrim => self
                 .trim
                 .view(&self.settings.memory_trim, &self.candidates)
@@ -2886,6 +2940,10 @@ fn priority_kind(page: Page) -> Option<priority_control::Kind> {
         Page::DynamicPriorityBoost => Some(priority_control::Kind::DynamicBoost),
         _ => None,
     }
+}
+
+fn watchdog_notifications_required(settings: &crate::config::Settings) -> bool {
+    settings.general.enabled && settings.watchdog.notifications_required()
 }
 
 fn tray_retry_due(

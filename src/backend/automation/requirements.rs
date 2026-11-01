@@ -377,7 +377,8 @@ pub(super) fn automation_worker_required(settings: &Settings) -> bool {
 
 fn automation_worker_required_for_profile(settings: &Settings) -> bool {
     settings.general.enabled
-        && (power_plan_checks_required(settings)
+        && (watchdog_required(settings)
+            || power_plan_checks_required(settings)
             || adaptive_power_plan_required(settings)
             || bottleneck_classifier_required(settings)
             || app_suspension_required(settings)
@@ -387,6 +388,10 @@ fn automation_worker_required_for_profile(settings: &Settings) -> bool {
 
 pub(super) fn bottleneck_classifier_required(settings: &Settings) -> bool {
     settings.general.enabled && settings.adaptive_engine.enabled
+}
+
+pub(super) fn watchdog_required(settings: &Settings) -> bool {
+    settings.watchdog.enabled && settings.watchdog.rules.iter().any(|rule| rule.enabled)
 }
 
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {

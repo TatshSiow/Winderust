@@ -28,6 +28,7 @@ Enter opens the focused page, and Right Arrow opens its child menu.
 - Automatic power plan switching modules
 - CPU/GPU/Memory/IO etc. Priority Control
 - Smart memory trimming for background process
+- Global Watchdog with combined app CPU and memory thresholds across matching executable processes, shared sustained usage and Windows warning/critical notifications, and optional automatic termination or restart
 - iOS inspired background app suspension
 - etc. 
 

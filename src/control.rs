@@ -8,6 +8,7 @@ pub(crate) mod memory_trim;
 pub(crate) mod power_plan;
 pub(crate) mod priority_efficiency;
 pub(crate) mod process;
+pub(crate) mod process_restart;
 pub(crate) mod process_termination;
 pub(crate) mod suspension;
 pub(crate) mod thread_priority;

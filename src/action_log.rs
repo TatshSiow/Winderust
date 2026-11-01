@@ -40,6 +40,7 @@ pub enum ActionLogFeature {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
+    Watchdog,
     TimerResolution,
 }
 

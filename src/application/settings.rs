@@ -190,9 +190,10 @@ impl SettingsCoordinator {
     }
 
     fn from_loaded_settings(
-        settings: Settings,
+        mut settings: Settings,
         storage: Box<dyn SettingsStorage>,
     ) -> (Self, SettingsDraft) {
+        settings.sync_shared_settings_to_battery();
         let revision = SettingsRevision::initial().next();
         let runtime_snapshot = RuntimeSettingsSnapshot {
             runtime_revision: SettingsRevision::initial(),
@@ -289,7 +290,8 @@ impl SettingsCoordinator {
         ensure_draft_revision(self.persisted_revision, draft.base_revision)?;
         let mut candidate = draft.value.clone();
         candidate
-            .validate_dynamic_resource_zones()
+            .validate_watchdog()
+            .and_then(|()| candidate.validate_dynamic_resource_zones())
             .map_err(SettingsCoordinatorError::Save)?;
         candidate.sync_shared_settings_to_battery();
         self.storage
@@ -461,6 +463,18 @@ impl SettingsEditor {
                     PowerSourceProfile::OnBattery => settings.battery_profile_mut(),
                 };
                 set_enabled_value(field(settings), enabled)
+            },
+        )
+    }
+
+    pub(crate) fn set_watchdog_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let changed = set_enabled_value(&mut settings.watchdog.enabled, enabled);
+                settings.sync_shared_settings_to_battery();
+                changed
             },
         )
     }
@@ -895,6 +909,42 @@ mod tests {
             self.applied.lock().expect("startup lock").push(enabled);
             self.result.clone()
         }
+    }
+
+    #[test]
+    fn watchdog_is_global_when_editing_or_toggling_from_battery() {
+        let mut settings = Settings::default();
+        settings.battery_profile_mut();
+        let storage = FakeStorage::new(settings, Ok(Settings::default()), Ok(()), Ok(()));
+        let (mut editor, _, _) =
+            editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+        editor.select_power_source(PowerSourceProfile::OnBattery);
+        editor.edit_global(|settings| {
+            let mut rule = crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into());
+            rule.memory.enabled = true;
+            settings.watchdog.rules.push(rule);
+        });
+        assert_eq!(editor.global().watchdog, editor.watchdog);
+        assert!(editor.global().watchdog.rules[0].memory.enabled);
+        editor.save().unwrap();
+        editor.set_watchdog_enabled(true).unwrap();
+        let runtime = editor.runtime_settings_snapshot();
+        assert!(runtime.value.watchdog.enabled);
+        assert_eq!(
+            runtime.value.watchdog,
+            runtime.value.battery_profile().watchdog
+        );
+        editor.select_power_source(PowerSourceProfile::PluggedIn);
+        assert_eq!(editor.global().watchdog, editor.watchdog);
+        editor.set_watchdog_enabled(false).unwrap();
+        assert!(
+            !editor
+                .runtime_settings_snapshot()
+                .value
+                .battery_profile()
+                .watchdog
+                .enabled
+        );
     }
 
     fn load_ok_with_fixtures() -> (SettingsCoordinator, SettingsDraft, FakeStorage) {

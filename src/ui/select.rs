@@ -207,6 +207,8 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        let bounds = layout.bounds();
+        // Include the field bounds so upstream cached text applies the scroll layer's mask.
         self.field.draw(
             &tree.children[0],
             renderer,
@@ -214,10 +216,9 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Widget<M, Theme, R
             style,
             layout,
             cursor,
-            viewport,
+            &bounds.union(viewport),
         );
         use iced::advanced::svg::Renderer as _;
-        let bounds = layout.bounds();
         let size = design::ICON_SIZE as f32;
         let state = tree.state.downcast_ref::<State>();
         let icon = super::assets::chevron_frame(*state.chevron.value());

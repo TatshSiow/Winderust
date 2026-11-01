@@ -1332,6 +1332,11 @@ fn enabled_features(
             .to_string(),
         ),
         (
+            Page::Watchdog,
+            settings.watchdog.enabled,
+            t!("common.rule_count", count = settings.watchdog.rules.len()).to_string(),
+        ),
+        (
             Page::MemoryTrim,
             settings.memory_trim.enabled,
             t!(

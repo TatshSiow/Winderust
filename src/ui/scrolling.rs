@@ -56,6 +56,7 @@ pub(super) fn table_surface<'a, Message: 'a>(
 enum TableSurface {
     Background,
     Outline,
+    Backdrop,
 }
 #[derive(Default)]
 struct SurfaceState {
@@ -77,6 +78,7 @@ impl<Message> iced::widget::canvas::Program<Message> for TableSurface {
         let color = match self {
             Self::Background => theme.extended_palette().background.weak.color,
             Self::Outline => super::widgets::surface(theme).border.color,
+            Self::Backdrop => iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45),
         };
         let style = (*self, color);
         if state.style.replace(Some(style)) != Some(style) {
@@ -121,6 +123,18 @@ impl<Message> iced::widget::canvas::Program<Message> for TableSurface {
                                 65.0
                             },
                         };
+                        if matches!(self, Self::Backdrop) {
+                            // Rectangle fills avoid antialias seams and double alpha at tile edges.
+                            frame.fill_rectangle(
+                                tile.position(),
+                                Size::new(
+                                    if x + 1 == columns { tile.width } else { 64.0 },
+                                    if y + 1 == rows { tile.height } else { 64.0 },
+                                ),
+                                color,
+                            );
+                            continue;
+                        }
                         let corners = iced::border::Radius {
                             top_left: if x == 0 && y == 0 { radius } else { 0.0 },
                             top_right: if x + 1 == columns && y == 0 {
@@ -163,6 +177,13 @@ pub(super) fn table_frame<'a, Message: 'a>(
         )
         .into()
 }
+
+pub(super) fn modal_backdrop<'a, Message: 'a>() -> Element<'a, Message> {
+    iced::widget::Canvas::new(TableSurface::Backdrop)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
 pub(super) fn repaint_group<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
@@ -188,6 +209,13 @@ pub(super) fn scrollable<'a, Message: 'a>(
         content: content.into(),
         behavior: Behavior::Scroll,
     }))
+}
+
+/// Keep short tab panes in one clipping layer as their content changes height.
+pub(super) fn scrollable_pane<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Scrollable<'a, Message> {
+    iced::widget::scrollable(repaint_group(content))
 }
 
 /// Keep dense columns readable when the dock reduces the editing area.
@@ -258,7 +286,8 @@ impl<Message> Widget<Message, Theme, Renderer> for ScrollContent<'_, Message> {
     ) {
         if matches!(self.behavior, Behavior::Group | Behavior::FillWidth) {
             use iced::advanced::Renderer as _;
-            if let Some(clip) = layout.bounds().intersection(viewport) {
+            // Leave room for antialias coverage along card borders.
+            if let Some(clip) = layout.bounds().expand(1.0).intersection(viewport) {
                 renderer.with_layer(clip, |renderer| {
                     self.content
                         .as_widget()
@@ -657,6 +686,56 @@ mod tests {
                 // The two path builders differ slightly in rounded-corner antialiasing.
                 assert!(max <= 12, "outline changed at scale {scale}: delta {max}");
             }
+        }
+    }
+
+    #[test]
+    fn tiled_modal_backdrop_preserves_native_pixels() {
+        use iced::advanced::renderer::{Headless as _, Renderer as _};
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let render = |tiled| {
+                let mut renderer =
+                    Renderer::new(super::super::design::typography::FONT, iced::Pixels(14.0));
+                let mut view: Element<'_, ()> = if tiled {
+                    modal_backdrop()
+                } else {
+                    iced::widget::container(iced::widget::Space::new())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(|_| iced::widget::container::Style {
+                            background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+                            ..Default::default()
+                        })
+                        .into()
+                };
+                let bounds = Rectangle::with_size(Size::new(222.0, 170.0));
+                let mut tree = Tree::new(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, bounds.size()),
+                );
+                renderer.reset(bounds);
+                view.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &Theme::Light,
+                    &renderer::Style::default(),
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &bounds,
+                );
+                renderer.screenshot(
+                    Size::new((222.0 * scale) as u32, (170.0 * scale) as u32),
+                    scale,
+                    iced::Color::WHITE,
+                )
+            };
+            assert_eq!(
+                render(true),
+                render(false),
+                "backdrop seams at scale {scale}"
+            );
         }
     }
 

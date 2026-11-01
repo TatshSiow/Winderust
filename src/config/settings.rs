@@ -61,6 +61,8 @@ pub struct Settings {
     #[serde(default)]
     pub memory_trim: MemoryTrimSettings,
     #[serde(default)]
+    pub watchdog: super::WatchdogSettings,
+    #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_battery: Option<Box<Settings>>,
@@ -74,6 +76,14 @@ pub enum PowerSourceProfile {
 }
 
 impl Settings {
+    pub fn validate_watchdog(&self) -> Result<(), String> {
+        self.watchdog.validate()?;
+        if let Some(battery) = &self.on_battery {
+            battery.validate_watchdog()?;
+        }
+        Ok(())
+    }
+
     pub fn validate_dynamic_resource_zones(&self) -> Result<(), String> {
         let process = &self.adaptive_engine_process;
         process
@@ -116,6 +126,7 @@ impl Settings {
         };
         battery.general = self.general.clone();
         battery.advanced = self.advanced.clone();
+        battery.watchdog = self.watchdog.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
         battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
         battery.advanced_power_plan_tuning_presets =
@@ -1807,6 +1818,7 @@ impl Default for Settings {
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
             memory_trim: MemoryTrimSettings::default(),
+            watchdog: super::WatchdogSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
             on_battery: None,
         }
@@ -2765,6 +2777,7 @@ mod tests {
             settings.gpu_priority.enabled,
             settings.memory_priority.enabled,
             settings.memory_trim.enabled,
+            settings.watchdog.enabled,
             settings.timer_resolution.enabled,
         ]
         .into_iter()

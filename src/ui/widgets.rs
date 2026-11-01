@@ -593,10 +593,13 @@ pub(super) fn optional_content<'a, M: 'a>(
 pub(super) fn settings_card<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
 ) -> iced::widget::Container<'a, M> {
-    iced::widget::container(content)
-        .padding(CARD_PADDING as u16)
-        .width(Fill)
-        .style(surface)
+    iced::widget::container(super::scrolling::repaint_group(
+        iced::widget::container(content)
+            .padding(CARD_PADDING as u16)
+            .width(Fill)
+            .style(surface),
+    ))
+    .width(Fill)
 }
 
 /// Separate complete settings, keeping each label, description, and control together.
