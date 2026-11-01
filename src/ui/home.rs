@@ -661,17 +661,14 @@ fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Eleme
     .into()
 }
 fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Element<'_, Message> {
-    use crate::action_log::ActionLogResult;
-    const COLUMN_WIDTH: f32 = 64.0;
+    const TIME_WIDTH: f32 = 64.0;
+    const LEVEL_WIDTH: f32 = 64.0;
     const PADDING: [u16; 2] = [6, 4];
-    let style = match entry.result {
-        ActionLogResult::Applied | ActionLogResult::Restored => text::success,
-        ActionLogResult::Skipped => text::warning,
-        ActionLogResult::Failed => text::danger,
-    };
+    let level = entry.result.level();
     let description = format!(
-        "{} · {}",
+        "{} · {}: {}",
         super::action_log::action_log_feature_label(entry.feature),
+        super::action_log::action_log_result_label(entry.result),
         entry.reason
     );
     let row = button(
@@ -681,11 +678,11 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
             ))
             .size(design::typography::CAPTION)
             .style(text::secondary)
-            .width(COLUMN_WIDTH),
-            text(super::action_log::action_log_result_label(entry.result))
+            .width(TIME_WIDTH),
+            text(super::action_log::action_log_level_label(level))
                 .size(design::typography::CAPTION)
-                .style(style)
-                .width(COLUMN_WIDTH),
+                .style(move |theme| super::action_log::action_log_level_style(theme, level))
+                .width(LEVEL_WIDTH),
             container(
                 text(description.clone())
                     .size(design::typography::CAPTION)
@@ -702,9 +699,12 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
     .padding(PADDING)
     .style(super::widgets::quiet)
     .on_press(Message::Navigate(Page::ActionLog));
-    let available =
-        (width - 2.0 * (COLUMN_WIDTH + f32::from(PADDING[1])) - 2.0 * design::space::SMALL as f32)
-            .max(0.0);
+    let available = (width
+        - TIME_WIDTH
+        - LEVEL_WIDTH
+        - 2.0 * f32::from(PADDING[1])
+        - 2.0 * design::space::SMALL as f32)
+        .max(0.0);
     if super::widgets::text_width(&description, design::typography::CAPTION) > available {
         iced::widget::tooltip(row, text(description), iced::widget::tooltip::Position::Top)
             .style(super::widgets::surface)

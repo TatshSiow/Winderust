@@ -2,7 +2,7 @@ use super::popover;
 
 use super::design;
 use super::widgets::{button, checkbox, pick_list, Choice};
-use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
+use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogLevel, ActionLogResult};
 use crate::config::ActionLogMode;
 use crate::ui::scrolling::scrollable;
 use chrono::{Local, TimeZone};
@@ -11,14 +11,14 @@ use iced::{Element, Fill};
 use rust_i18n::t;
 
 pub(super) struct Editor {
-    result: Vec<ActionLogResult>,
+    level: Vec<ActionLogLevel>,
     feature: Vec<ActionLogFeature>,
     offset: std::cell::Cell<f32>,
 }
 impl Default for Editor {
     fn default() -> Self {
         Self {
-            result: RESULTS.to_vec(),
+            level: ActionLogLevel::ALL.to_vec(),
             feature: FEATURES.to_vec(),
             offset: std::cell::Cell::new(0.0),
         }
@@ -26,9 +26,9 @@ impl Default for Editor {
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
-    Result(ActionLogResult, bool),
+    Level(ActionLogLevel, bool),
     Feature(ActionLogFeature, bool),
-    AllResults(bool),
+    AllLevels(bool),
     AllFeatures(bool),
     Scrolled(f32),
     RowPressed,
@@ -39,10 +39,10 @@ pub(super) enum Message {
 impl Editor {
     pub(super) fn update(&mut self, message: Message) {
         match message {
-            Message::Result(result, checked) => {
-                self.result.retain(|value| *value != result);
+            Message::Level(level, checked) => {
+                self.level.retain(|value| *value != level);
                 if checked {
-                    self.result.push(result);
+                    self.level.push(level);
                 }
                 self.offset.set(0.0);
             }
@@ -53,9 +53,9 @@ impl Editor {
                 }
                 self.offset.set(0.0);
             }
-            Message::AllResults(checked) => {
-                self.result = if checked {
-                    RESULTS.to_vec()
+            Message::AllLevels(checked) => {
+                self.level = if checked {
+                    ActionLogLevel::ALL.to_vec()
                 } else {
                     Vec::new()
                 };
@@ -83,23 +83,23 @@ impl Editor {
         has_entries: bool,
         has_summaries: bool,
     ) -> Element<'_, Message> {
-        let mut results = column![row![
+        let mut levels = column![row![
             button(container(text(t!("action_log.check_all").to_string())).center_x(Fill))
                 .width(Fill)
                 .height(32)
-                .on_press(Message::AllResults(true)),
+                .on_press(Message::AllLevels(true)),
             button(container(text(t!("action_log.clear_all").to_string())).center_x(Fill))
                 .width(Fill)
                 .height(32)
-                .on_press(Message::AllResults(false)),
+                .on_press(Message::AllLevels(false)),
         ]
         .spacing(design::space::SMALL),]
         .spacing(design::space::SMALL);
-        for result in RESULTS {
-            results = results.push(
-                checkbox(self.result.contains(&result))
-                    .label(action_log_result_label(result))
-                    .on_toggle(move |checked| Message::Result(result, checked)),
+        for level in ActionLogLevel::ALL {
+            levels = levels.push(
+                checkbox(self.level.contains(&level))
+                    .label(action_log_level_label(level))
+                    .on_toggle(move |checked| Message::Level(level, checked)),
             );
         }
         let mut features = column![row![
@@ -141,10 +141,10 @@ impl Editor {
                 ),
                 column![
                     super::widgets::heading(
-                        t!("action_log.result_filter").to_string(),
+                        t!("action_log.level_filter").to_string(),
                         design::typography::SECONDARY
                     ),
-                    super::widgets::settings_card(results),
+                    super::widgets::settings_card(levels),
                 ]
                 .spacing(design::space::SMALL),
                 column![
@@ -201,7 +201,7 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
         size: iced::Size,
     ) -> Element<'a, Message> {
-        let entries_filtered = action_log_filtered_entries(entries, &self.result, &self.feature);
+        let entries_filtered = action_log_filtered_entries(entries, &self.level, &self.feature);
         let groups = group_entries(&entries_filtered);
         let count = groups.len();
         let range = visible_log_range(count, self.offset.get(), size.height);
@@ -209,6 +209,7 @@ impl Editor {
             text("#").width(48),
             text(t!("action_log.time").to_string()).width(80),
             text(t!("action_log.feature").to_string()).width(140),
+            text(t!("common.level").to_string()).width(64),
             text(t!("action_log.result").to_string()).width(90),
             text(t!("action_log.process").to_string()).width(160),
             text(t!("action_log.reason").to_string()).width(Fill)
@@ -232,11 +233,7 @@ impl Editor {
         }
         for (index, group) in groups[range.clone()].iter().enumerate() {
             let entry = group[0];
-            let result_style: fn(&iced::Theme) -> iced::widget::text::Style = match entry.result {
-                ActionLogResult::Applied | ActionLogResult::Restored => text::success,
-                ActionLogResult::Skipped => text::warning,
-                ActionLogResult::Failed => text::danger,
-            };
+            let level = entry.result.level();
             entries_table = entries_table.push(
                 iced::widget::button(
                     container(
@@ -250,15 +247,18 @@ impl Editor {
                             text(action_log_feature_label(entry.feature))
                                 .size(design::typography::CAPTION)
                                 .width(140),
-                            text(action_log_result_text(entry.result))
+                            text(action_log_level_label(level))
                                 .size(design::typography::CAPTION)
-                                .style(result_style)
+                                .style(move |theme| action_log_level_style(theme, level))
+                                .width(64),
+                            text(action_log_result_label(entry.result))
+                                .size(design::typography::CAPTION)
                                 .width(90),
                             process_group(group, candidates),
                             {
                                 let fitted = super::widgets::fitted_text(
                                     &entry.reason,
-                                    size.width.max(960.0) - 600.0,
+                                    size.width.max(1024.0) - 672.0,
                                     design::typography::CAPTION,
                                 );
                                 let truncated = fitted != entry.reason;
@@ -328,7 +328,7 @@ impl Editor {
         ]
         .height(Fill);
         let table = scrollable(super::scrolling::table_surface(
-            container(table).width(size.width.max(960.0)).height(Fill),
+            container(table).width(size.width.max(1024.0)).height(Fill),
         ))
         .direction(iced::widget::scrollable::Direction::Horizontal(
             iced::widget::scrollable::Scrollbar::default(),
@@ -476,7 +476,33 @@ pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
 }
 
 pub(super) fn action_log_result_label(result: ActionLogResult) -> String {
-    action_log_result_text(result).into()
+    t!(match result {
+        ActionLogResult::Applied => "action_log.applied",
+        ActionLogResult::Restored => "action_log.restored",
+        ActionLogResult::Skipped => "action_log.skipped",
+        ActionLogResult::Failed => "action_log.failed",
+    })
+    .to_string()
+}
+
+pub(super) fn action_log_level_label(level: ActionLogLevel) -> String {
+    t!(match level {
+        ActionLogLevel::Information => "action_log.information",
+        ActionLogLevel::Warning => "action_log.warning",
+        ActionLogLevel::Error => "action_log.error",
+    })
+    .to_string()
+}
+
+pub(super) fn action_log_level_style(
+    theme: &iced::Theme,
+    level: ActionLogLevel,
+) -> iced::widget::text::Style {
+    match level {
+        ActionLogLevel::Information => iced::widget::text::Style::default(),
+        ActionLogLevel::Warning => text::warning(theme),
+        ActionLogLevel::Error => text::danger(theme),
+    }
 }
 
 pub(super) fn action_log_result_text(result: ActionLogResult) -> &'static str {
@@ -490,18 +516,19 @@ pub(super) fn action_log_result_text(result: ActionLogResult) -> &'static str {
 
 pub(super) fn action_log_filtered_entries<'a>(
     entries: &'a [ActionLogEntry],
-    result_filter: &[ActionLogResult],
+    level_filter: &[ActionLogLevel],
     feature_filter: &[ActionLogFeature],
 ) -> Vec<&'a ActionLogEntry> {
     entries
         .iter()
         .rev()
         .filter(|entry| {
-            result_filter.contains(&entry.result) && feature_filter.contains(&entry.feature)
+            level_filter.contains(&entry.result.level()) && feature_filter.contains(&entry.feature)
         })
         .collect()
 }
 
+#[cfg(test)]
 const RESULTS: [ActionLogResult; 4] = [
     ActionLogResult::Applied,
     ActionLogResult::Restored,
@@ -557,6 +584,7 @@ pub(super) fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
         "feature",
         "process_id",
         "process_name",
+        "level",
         "action",
         "result",
         "reason",
@@ -577,6 +605,7 @@ pub(super) fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
             feature.as_str(),
             process_id.as_str(),
             entry.process_name.as_str(),
+            entry.result.level().name(),
             action_log_action_label(entry.result),
             action_log_result_text(entry.result),
             entry.reason.as_str(),
@@ -633,6 +662,54 @@ fn log_label(v: ActionLogMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn level_filters_and_csv_preserve_distinct_outcomes() {
+        let mut log = crate::action_log::ActionLog::new(4);
+        log.begin_batch();
+        for (pid, result) in RESULTS.into_iter().enumerate() {
+            log.record(
+                ActionLogFeature::CpuLimiter,
+                Some(pid as u32),
+                "app.exe",
+                result,
+                "Same reason.",
+            );
+        }
+        let entries = log.entries();
+        for (level, expected) in [
+            (
+                ActionLogLevel::Information,
+                vec![ActionLogResult::Restored, ActionLogResult::Applied],
+            ),
+            (ActionLogLevel::Warning, vec![ActionLogResult::Skipped]),
+            (ActionLogLevel::Error, vec![ActionLogResult::Failed]),
+        ] {
+            let filtered = action_log_filtered_entries(&entries, &[level], &FEATURES);
+            assert_eq!(
+                filtered
+                    .iter()
+                    .map(|entry| entry.result)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(group_entries(&filtered).len(), expected.len());
+        }
+        let csv = action_log_entries_to_csv(&entries);
+        let mut reader = csv::Reader::from_reader(csv.as_bytes());
+        assert_eq!(&reader.headers().unwrap()[5], "level");
+        for (record, (level, result)) in reader.records().zip([
+            ("INFO", "Applied"),
+            ("INFO", "Restored"),
+            ("WARN", "Skipped"),
+            ("ERROR", "Failed"),
+        ]) {
+            let record = record.unwrap();
+            assert_eq!(&record[5], level);
+            assert_eq!(&record[7], result);
+        }
+    }
+
     #[test]
     fn process_popup_opens_when_names_are_hidden() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
@@ -708,7 +785,7 @@ mod tests {
             );
         }
         let entries = log.entries();
-        let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+        let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
         assert_eq!(
             group_entries(&filtered)
                 .iter()
@@ -735,7 +812,7 @@ mod tests {
             );
         }
         let entries = log.entries();
-        let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+        let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
         assert_eq!(
             group_entries(&filtered)
                 .iter()
@@ -780,7 +857,8 @@ mod tests {
                     );
                 }
                 let entries = log.entries();
-                let filtered = action_log_filtered_entries(&entries, &RESULTS, &FEATURES);
+                let filtered =
+                    action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
                 let groups = group_entries(&filtered);
                 assert_eq!(groups.len(), 2, "{feature:?} {result:?}");
                 assert_eq!(groups[0].len(), 3);
@@ -817,7 +895,7 @@ mod tests {
         assert_eq!(visible_log_range(52, 1500.0, 900.0).end, 52);
         let mut editor = Editor::default();
         editor.update(Message::Scrolled(3600.0));
-        editor.update(Message::Result(ActionLogResult::Failed, false));
+        editor.update(Message::Level(ActionLogLevel::Error, false));
         assert_eq!(editor.offset.get(), 0.0);
     }
 
@@ -842,39 +920,39 @@ mod tests {
         assert_eq!(
             action_log_filtered_entries(
                 &entries,
-                &[ActionLogResult::Failed],
+                &[ActionLogLevel::Error],
                 &[ActionLogFeature::CpuLimiter]
             )[0]
             .sequence,
             2
         );
         assert_eq!(
-            action_log_filtered_entries(&entries, &RESULTS, &FEATURES)[0].sequence,
+            action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES)[0].sequence,
             2
         );
         let mut editor = Editor::default();
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature).len(),
             2
         );
-        editor.update(Message::AllResults(false));
-        assert!(action_log_filtered_entries(&entries, &editor.result, &editor.feature).is_empty());
-        editor.update(Message::Result(ActionLogResult::Applied, true));
-        editor.update(Message::Result(ActionLogResult::Failed, true));
+        editor.update(Message::AllLevels(false));
+        assert!(action_log_filtered_entries(&entries, &editor.level, &editor.feature).is_empty());
+        editor.update(Message::Level(ActionLogLevel::Information, true));
+        editor.update(Message::Level(ActionLogLevel::Error, true));
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature).len(),
             2
         );
         editor.update(Message::AllFeatures(false));
-        assert!(action_log_filtered_entries(&entries, &editor.result, &editor.feature).is_empty());
+        assert!(action_log_filtered_entries(&entries, &editor.level, &editor.feature).is_empty());
         editor.update(Message::Feature(ActionLogFeature::CpuLimiter, true));
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.result, &editor.feature).len(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature).len(),
             2
         );
-        editor.update(Message::AllResults(true));
+        editor.update(Message::AllLevels(true));
         editor.update(Message::AllFeatures(true));
-        assert_eq!(editor.result.len(), RESULTS.len());
+        assert_eq!(editor.level.len(), ActionLogLevel::ALL.len());
         assert_eq!(editor.feature.len(), FEATURES.len());
         let csv = action_log_entries_to_csv(&entries);
         let records = csv::Reader::from_reader(csv.as_bytes())
@@ -882,6 +960,6 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(&records[0][7], entries[0].reason);
+        assert_eq!(&records[0][8], entries[0].reason);
     }
 }

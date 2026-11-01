@@ -1102,9 +1102,9 @@ impl WinderustApp {
             Message::ActionLog(message) => {
                 let reset = matches!(
                     message,
-                    action_log::Message::Result(..)
+                    action_log::Message::Level(..)
                         | action_log::Message::Feature(..)
-                        | action_log::Message::AllResults(_)
+                        | action_log::Message::AllLevels(_)
                         | action_log::Message::AllFeatures(_)
                 );
                 self.action_log.update(message);

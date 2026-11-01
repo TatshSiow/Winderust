@@ -61,6 +61,35 @@ pub enum ActionLogResult {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionLogLevel {
+    Information,
+    Warning,
+    Error,
+}
+
+impl ActionLogLevel {
+    pub const ALL: [Self; 3] = [Self::Information, Self::Warning, Self::Error];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Information => "INFO",
+            Self::Warning => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+impl ActionLogResult {
+    pub fn level(self) -> ActionLogLevel {
+        match self {
+            Self::Applied | Self::Restored => ActionLogLevel::Information,
+            Self::Skipped => ActionLogLevel::Warning,
+            Self::Failed => ActionLogLevel::Error,
+        }
+    }
+}
+
 pub struct ActionLog {
     entries: VecDeque<ActionLogEntry>,
     next_sequence: u64,
@@ -176,10 +205,11 @@ impl ActionLogMode {
     fn should_record(self, result: ActionLogResult) -> bool {
         match self {
             Self::Full => true,
-            Self::Warning => {
-                matches!(result, ActionLogResult::Failed | ActionLogResult::Skipped)
-            }
-            Self::Error => matches!(result, ActionLogResult::Failed),
+            Self::Warning => matches!(
+                result.level(),
+                ActionLogLevel::Warning | ActionLogLevel::Error
+            ),
+            Self::Error => result.level() == ActionLogLevel::Error,
             Self::Off => false,
         }
     }
@@ -201,6 +231,37 @@ fn timestamp_epoch_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_levels_preserve_capture_thresholds() {
+        for (result, level, recorded) in [
+            (
+                ActionLogResult::Applied,
+                ActionLogLevel::Information,
+                [true, false, false, false],
+            ),
+            (
+                ActionLogResult::Restored,
+                ActionLogLevel::Information,
+                [true, false, false, false],
+            ),
+            (
+                ActionLogResult::Skipped,
+                ActionLogLevel::Warning,
+                [true, true, false, false],
+            ),
+            (
+                ActionLogResult::Failed,
+                ActionLogLevel::Error,
+                [true, true, true, false],
+            ),
+        ] {
+            assert_eq!(result.level(), level);
+            for (mode, expected) in ActionLogMode::ALL.into_iter().zip(recorded) {
+                assert_eq!(mode.should_record(result), expected, "{mode:?} {result:?}");
+            }
+        }
+    }
 
     #[test]
     fn action_log_keeps_bounded_history() {
