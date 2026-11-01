@@ -1620,7 +1620,7 @@ impl ProcessList {
                 .align_y(iced::Center),
             )
             .padding(design::space::LARGE as u16);
-            let mut tabs = row![].spacing(design::space::SMALL);
+            let mut tabs = row![];
             for (tab, key) in [
                 (ProcessTab::Immediate, "process_list.immediate_actions"),
                 (ProcessTab::Rulesets, "process_list.rulesets"),
@@ -1629,7 +1629,6 @@ impl ProcessList {
                     t!(key).to_string(),
                     self.process_tab == tab,
                     Message::ProcessTab(tab),
-                    false,
                 ));
             }
             let mut pane = column![].spacing(super::widgets::CARD_GAP);
@@ -1697,7 +1696,7 @@ impl ProcessList {
                     container(column![
                         header,
                         iced::widget::rule::horizontal(1),
-                        container(tabs)
+                        container(container(tabs).style(super::widgets::tab_bar))
                             .padding([design::space::SMALL as u16, design::space::LARGE as u16]),
                         scrollable(
                             container(super::motion::wrap(

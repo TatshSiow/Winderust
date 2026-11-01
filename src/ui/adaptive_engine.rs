@@ -499,27 +499,18 @@ impl Editor {
             ));
         }
         let tab = self.tuning_tabs[usize::from(preset)];
-        let mut tabs = row![].spacing(design::space::TIGHT);
+        let mut tabs = row![];
         for next in TuningTab::ALL
             .into_iter()
             .filter(|tab| !preset || *tab != TuningTab::CustomRules)
         {
-            tabs = tabs.push(
-                super::widgets::panel_tab(
-                    t!(next.key()).to_string(),
-                    next == tab,
-                    Message::TuningTab(next),
-                    false,
-                )
-                .height(36),
-            );
+            tabs = tabs.push(super::widgets::panel_tab(
+                t!(next.key()).to_string(),
+                next == tab,
+                Message::TuningTab(next),
+            ));
         }
-        body = body.push(
-            iced::widget::container(tabs)
-                .padding(design::space::TIGHT as u16)
-                .width(Fill)
-                .style(super::widgets::surface),
-        );
+        body = body.push(iced::widget::container(tabs).style(super::widgets::tab_bar));
         let header = body;
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
@@ -1967,18 +1958,15 @@ impl Editor {
                 t!("common.status").to_string(),
                 !self.presets_tab,
                 Message::RailTab(false),
-                true,
             ),
             super::widgets::panel_tab(
                 t!("adaptive_engine.presets").to_string(),
                 self.presets_tab,
                 Message::RailTab(true),
-                true,
             )
-        ]
-        .spacing(design::space::SMALL);
+        ];
         let mut panel = column![
-            tabs,
+            iced::widget::container(tabs).style(super::widgets::tab_bar),
             super::motion::wrap(
                 scrollable(rail).width(Fill).height(Fill),
                 true,

@@ -487,18 +487,15 @@ impl Editor {
                 t!("common.status").to_string(),
                 !self.presets_tab,
                 Message::RailTab(false),
-                true,
             ),
             super::widgets::panel_tab(
                 t!("cpu_allocation.presets").to_string(),
                 self.presets_tab,
                 Message::RailTab(true),
-                true,
             )
-        ]
-        .spacing(design::space::SMALL);
+        ];
         let mut panel = column![
-            tabs,
+            iced::widget::container(tabs).style(super::widgets::tab_bar),
             super::motion::wrap(
                 scrollable(rail).width(Fill).height(Fill),
                 true,

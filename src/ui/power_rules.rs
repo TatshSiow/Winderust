@@ -455,7 +455,7 @@ impl Editor {
         let mut controls = column![].spacing(design::space::COMPACT);
         match rule {
             RuleRef::Time(r) => {
-                let mut days = row![].spacing(design::space::SMALL);
+                let mut days = row![];
                 for (day, key) in WeekdaySetting::all().into_iter().zip([
                     "weekday.mon",
                     "weekday.tue",
@@ -469,10 +469,10 @@ impl Editor {
                         t!(key).to_string(),
                         r.days.contains(&day),
                         Message::Day(index, day, !r.days.contains(&day)),
-                        false,
                     ));
                 }
-                controls = controls.push(widgets::settings_card(days)).push(
+                let days = container(days).style(widgets::tab_bar);
+                controls = controls.push(days).push(
                     row![
                         container(widgets::settings_card(
                             column![

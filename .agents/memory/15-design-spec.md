@@ -52,7 +52,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 ## Visual Language
 
 - Reuse `design.rs` tokens and `widgets.rs` styles. Primary buttons use accent color, secondary buttons use an accent tint, tertiary buttons use neutral gray, and destructive actions use danger styling.
-- Navigation selection uses a rounded vertical pill; tabs use an accent underline with a tinted background; power-source selection uses a dot.
+- Navigation selection uses a rounded vertical pill. All page, panel, and dialog tabs use the same compact segmented design: 32px height, widths that fit their centered 14px semibold labels, one neutral outline, no outer inset or gap, and an accent-tinted, outlined selected segment. Weekday selectors share this design and retain multiple selection. Plugged In / On Battery retains its live-source dot independently of the selected editing profile. Respect the current theme and accent without shadows or underlines.
 - Choose toggle knobs and checkmarks for contrast against the accent color.
 
 - The navigation rail and right panel use docked chrome with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Floating navigation uses the shared outlined surface. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.

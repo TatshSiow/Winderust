@@ -29,7 +29,6 @@ pub(super) enum Effect {
         interactive: bool,
     },
     Chevron,
-    Underline,
     Width {
         min: f32,
         max: f32,
@@ -76,7 +75,6 @@ impl<M> Motion<'_, M> {
                 | Effect::Checkbox { .. }
                 | Effect::Switch { .. }
                 | Effect::Chevron
-                | Effect::Underline
         )
     }
     fn hidden(&self) -> bool {
@@ -276,35 +274,15 @@ impl<M> Widget<M, Theme, Renderer> for Motion<'_, M> {
             return;
         }
 
-        if matches!(self.effect, Effect::Underline) {
-            let Some(mut clip) = bounds.intersection(viewport) else {
-                return;
-            };
-            clip.width *= progress;
-            if clip.width > 0.0 && clip.height > 0.0 {
-                renderer.with_layer(clip, |renderer| {
-                    self.content.as_widget().draw(
-                        &tree.children[0],
-                        renderer,
-                        theme,
-                        style,
-                        child,
-                        cursor,
-                        &clip,
-                    )
-                });
-            }
-        } else {
-            self.content.as_widget().draw(
-                &tree.children[0],
-                renderer,
-                theme,
-                style,
-                child,
-                cursor,
-                viewport,
-            );
-        }
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            child,
+            cursor,
+            viewport,
+        );
     }
     fn update(
         &mut self,

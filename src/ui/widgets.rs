@@ -213,53 +213,43 @@ pub(super) fn panel_tab<'a, M: Clone + 'a>(
     label: String,
     selected: bool,
     message: M,
-    sidebar: bool,
 ) -> super::animated_controls::Button<'a, M> {
     button(
-        iced::widget::stack![
-            iced::widget::container(heading(
-                label,
-                if sidebar {
-                    design::typography::SUBTITLE
-                } else {
-                    design::typography::BODY
-                }
-            ))
-            .width(Fill)
-            .align_x(if sidebar {
-                iced::alignment::Horizontal::Left
-            } else {
-                iced::alignment::Horizontal::Center
-            })
+        iced::widget::container(heading(label, design::typography::BODY))
+            .center_x(Fill)
             .center_y(Fill),
-            iced::widget::container(super::motion::wrap(
-                iced::widget::container(iced::widget::Space::new())
-                    .width(Fill)
-                    .height(3)
-                    .style(move |theme: &iced::Theme| iced::widget::container::Style {
-                        background: Some(theme.palette().primary.into()),
-                        border: iced::border::rounded(2),
-                        ..Default::default()
-                    }),
-                selected,
-                super::motion::Effect::Underline
-            ))
-            .align_bottom(Fill),
-        ]
-        .height(Fill),
     )
-    .width(Fill)
-    .height(design::NAVIGATION_ROW_HEIGHT)
-    .padding([
-        0,
-        if sidebar {
-            design::space::MEDIUM
-        } else {
-            design::space::SMALL
-        } as u16,
-    ])
-    .selected(selected, secondary_button)
+    .width(iced::Shrink)
+    .height(32)
+    .padding([0, design::space::MEDIUM as u16])
+    .style(move |theme, status| tab_style(theme, status, selected))
     .on_press(message)
+}
+
+pub(super) fn tab_bar(theme: &iced::Theme) -> iced::widget::container::Style {
+    let mut style = surface(theme);
+    style.background = None;
+    style.border.radius = design::CONTROL_RADIUS.into();
+    style
+}
+
+pub(super) fn tab_style(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+    active: bool,
+) -> iced::widget::button::Style {
+    let mut style = if active {
+        selected(theme, status)
+    } else {
+        quiet(theme, status)
+    };
+    style.border.width = 1.0;
+    style.border.color = if active {
+        theme.palette().primary.scale_alpha(0.6)
+    } else {
+        iced::Color::TRANSPARENT
+    };
+    style
 }
 
 pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Element<'a, M> {
@@ -833,11 +823,8 @@ mod step_tests {
     }
 
     #[test]
-    fn sidebar_tab_and_title_text_share_the_same_position() {
-        use crate::ui::{
-            design,
-            widgets::{panel_heading, panel_tab},
-        };
+    fn tab_text_bounds_stay_stable_when_selected() {
+        use crate::ui::{design, widgets::panel_tab};
         use iced::advanced::{layout, widget::Tree, Layout};
         use iced::Element;
         fn text_bounds(mut view: Element<'_, ()>) -> iced::Rectangle {
@@ -854,11 +841,9 @@ mod step_tests {
             }
             layout.bounds()
         }
-        let title = text_bounds(panel_heading("Status".into()));
-        for selected in [false, true] {
-            let tab = text_bounds(panel_tab("Status".into(), selected, (), true).into());
-            assert_eq!(title, tab);
-        }
+        let inactive = text_bounds(panel_tab("Status".into(), false, ()).into());
+        let active = text_bounds(panel_tab("Status".into(), true, ()).into());
+        assert_eq!(inactive, active);
     }
 
     #[test]

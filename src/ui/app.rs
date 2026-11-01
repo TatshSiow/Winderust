@@ -2118,7 +2118,7 @@ impl WinderustApp {
         let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
         if self.page.supports_power_source_profiles() {
             let plugged_in = crate::backend::power_source::is_plugged_in();
-            let mut tabs = row![].spacing(design::space::TIGHT);
+            let mut tabs = row![];
             for (profile, key, live) in [
                 (
                     PowerSourceProfile::PluggedIn,
@@ -2131,9 +2131,13 @@ impl WinderustApp {
                     plugged_in == Some(false),
                 ),
             ] {
-                let mut label = row![text(t!(key).to_string()).size(design::typography::BODY)]
-                    .spacing(design::space::TIGHT)
-                    .align_y(iced::Center);
+                let selected = self.power_source == profile;
+                let mut label = row![widgets::heading(
+                    t!(key).to_string(),
+                    design::typography::BODY
+                )]
+                .spacing(design::space::TIGHT)
+                .align_y(iced::Center);
                 label = label.push(
                     container(iced::widget::Space::new())
                         .width(6)
@@ -2147,19 +2151,12 @@ impl WinderustApp {
                 tabs = tabs.push(
                     button(container(label).center_y(Fill))
                         .height(32)
+                        .padding([0, design::space::MEDIUM as u16])
                         .on_press(Message::PowerSource(profile))
-                        .style(if self.power_source == profile {
-                            widgets::selected_control
-                        } else {
-                            widgets::quiet
-                        }),
+                        .style(move |theme, status| widgets::tab_style(theme, status, selected)),
                 );
             }
-            profile_controls = Some(
-                container(tabs)
-                    .padding(design::space::TIGHT as u16)
-                    .style(widgets::surface),
-            );
+            profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
         let description = navigation::page_feature_info(self.page);
         if !description.is_empty() {
