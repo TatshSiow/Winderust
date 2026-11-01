@@ -1446,11 +1446,7 @@ impl ProcessList {
                                                             .color
                                                     }
                                                     "process_list.resume_process" => {
-                                                        if theme.extended_palette().is_dark {
-                                                            iced::Color::from_rgb8(0x70, 0xb7, 0xff)
-                                                        } else {
-                                                            iced::Color::from_rgb8(0x00, 0x67, 0xb0)
-                                                        }
+                                                        theme.palette().primary
                                                     }
                                                     "process_list.stop_process"
                                                     | "process_list.stop_process_tree" => {
@@ -1784,21 +1780,19 @@ fn snapshot_target(p: &ProcessInfo) -> Result<ProcessActionTarget, ProcessAction
     })
 }
 fn status_cell(key: &str) -> Element<'static, Message> {
-    let (icon, dark, light) = match key {
-        "process_list.status_suspended" => ("icons/pause.svg", 0xe8b45b, 0x886000),
-        "process_list.status_efficiency_mode" => ("icons/leaf.svg", 0xa4db61, 0x477d23),
-        "process_list.status_active" => ("icons/play.svg", 0x70b7ff, 0x0067b0),
-        "process_list.status_system_protected" => ("icons/shield.svg", 0x9aa0a6, 0x666666),
-        "process_list.status_access_denied" => ("icons/ban.svg", 0x9aa0a6, 0x666666),
-        _ => ("icons/circle-help.svg", 0x9aa0a6, 0x666666),
+    let icon = match key {
+        "process_list.status_suspended" => "icons/pause.svg",
+        "process_list.status_efficiency_mode" => "icons/leaf.svg",
+        "process_list.status_active" => "icons/play.svg",
+        "process_list.status_system_protected" => "icons/shield.svg",
+        "process_list.status_access_denied" => "icons/ban.svg",
+        _ => "icons/circle-help.svg",
     };
-    let color = move |theme: &iced::Theme| {
-        let rgb = if theme.extended_palette().is_dark {
-            dark
-        } else {
-            light
-        };
-        iced::Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+    let color: fn(&iced::Theme) -> iced::Color = match key {
+        "process_list.status_suspended" => |theme| theme.palette().warning,
+        "process_list.status_efficiency_mode" => |theme| theme.palette().success,
+        "process_list.status_active" => |theme| theme.palette().primary,
+        _ => super::widgets::muted_color,
     };
     let label = t!(key);
     let cell = row![

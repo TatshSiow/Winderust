@@ -2907,7 +2907,11 @@ mod tests {
     #[test]
     fn search_panel_partial_repaints_match_full_frames() {
         use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
-        let theme = Theme::custom_with_fn("test", design::palette(false), design::extended_palette);
+        let theme = Theme::custom_with_fn(
+            "test",
+            design::palette(false, None),
+            design::extended_palette,
+        );
         let bounds = iced::Rectangle::with_size(iced::Size::new(800.0, 400.0));
         let viewport =
             iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(800, 400), 1.0);

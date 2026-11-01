@@ -551,7 +551,7 @@ mod tests {
         use iced::advanced::renderer::Renderer as _;
         let theme = Theme::custom_with_fn(
             "test",
-            super::super::design::palette(true),
+            super::super::design::palette(true, None),
             super::super::design::extended_palette,
         );
         let size = Size::new(600.0, 400.0);

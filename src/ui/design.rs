@@ -48,32 +48,48 @@ pub(super) const SIDE_PANEL_WIDTH: f32 = 320.0;
 pub(super) const SIDEBAR_COLLAPSED_WIDTH: f32 = 64.0;
 pub(super) const NAVIGATION_ROW_HEIGHT: u32 = 44;
 
-pub(super) fn palette(light: bool) -> iced::theme::Palette {
+pub(super) fn palette(light: bool, accent: Option<iced::Color>) -> iced::theme::Palette {
     let rgb =
         |color: u32| iced::Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8);
+    let accent = accent.unwrap_or_else(|| rgb(if light { 0x246bfe } else { 0x78a6ff }));
     iced::theme::Palette {
-        background: rgb(if light { 0xf5f7fb } else { 0x11151d }),
-        text: rgb(if light { 0x182039 } else { 0xe9edf6 }),
-        primary: rgb(if light { 0x246bfe } else { 0x78a6ff }),
+        background: tint(
+            if light { 248 } else { 18 },
+            accent,
+            if light { 0.04 } else { 0.012 },
+        ),
+        text: tint(if light { 24 } else { 235 }, accent, 0.015),
+        primary: accent,
         success: rgb(if light { 0x168343 } else { 0x75d59b }),
         warning: rgb(if light { 0x946200 } else { 0xe8b45b }),
         danger: rgb(if light { 0xc43e51 } else { 0xf18b99 }),
     }
 }
 
-/// Neutral surface roles shared by native controls and application components.
+fn tint(gray: u8, accent: iced::Color, amount: f32) -> iced::Color {
+    iced::theme::palette::mix(iced::Color::from_rgb8(gray, gray, gray), accent, amount)
+}
+
+/// Low-chroma surfaces share the selected accent without competing with controls.
 pub(super) fn extended_palette(palette: iced::theme::Palette) -> iced::theme::palette::Extended {
     use iced::theme::palette::{Extended, Pair};
     let mut colors = Extended::generate(palette);
-    let color = |dark, light| {
-        let value = if colors.is_dark { dark } else { light };
-        iced::Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8)
+    let color = |dark, light, dark_tint, light_tint| {
+        tint(
+            if colors.is_dark { dark } else { light },
+            palette.primary,
+            if colors.is_dark {
+                dark_tint
+            } else {
+                light_tint
+            },
+        )
     };
-    colors.background.weaker = Pair::new(color(0x171d28, 0xebf0f7), palette.text); // navigation
-    colors.background.weak = Pair::new(color(0x1b2230, 0xffffff), palette.text); // cards / fields
-    colors.background.neutral = Pair::new(color(0x293345, 0xeef2f8), palette.text); // buttons
-    colors.background.strong = Pair::new(color(0x39465b, 0xdce3ef), palette.text); // borders
-    colors.secondary.base = Pair::new(color(0xa2afc5, 0x626f88), palette.background);
+    colors.background.weaker = Pair::new(color(26, 239, 0.018, 0.06), palette.text); // navigation
+    colors.background.weak = Pair::new(color(30, 255, 0.018, 0.016), palette.text); // cards / fields
+    colors.background.neutral = Pair::new(color(40, 242, 0.026, 0.045), palette.text); // buttons
+    colors.background.strong = Pair::new(color(62, 223, 0.04, 0.065), palette.text); // borders
+    colors.secondary.base = Pair::new(color(176, 94, 0.06, 0.045), palette.background);
     let foreground = accent_foreground(palette.primary, colors.is_dark);
     for pair in [
         &mut colors.primary.base,
@@ -97,6 +113,60 @@ fn accent_foreground(accent: iced::Color, dark: bool) -> iced::Color {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accent_tints_stay_readable_and_preserve_semantic_colors() {
+        use iced::{Color, Theme};
+        for light in [false, true] {
+            let accents = [
+                Color::from_rgb8(215, 60, 80),
+                Color::from_rgb8(40, 130, 225),
+                Color::from_rgb8(45, 165, 90),
+                Color::from_rgb8(145, 75, 200),
+                Color::from_rgb8(255, 235, 20),
+                Color::BLACK,
+                Color::WHITE,
+            ];
+            let themes = accents.map(|accent| {
+                Theme::custom_with_fn(
+                    "accent",
+                    super::palette(light, Some(accent)),
+                    super::extended_palette,
+                )
+            });
+            for (index, theme) in themes.iter().enumerate() {
+                let palette = theme.palette();
+                let colors = theme.extended_palette();
+                assert_eq!(colors.is_dark, !light);
+                assert_eq!(palette.primary, accents[index]);
+                for color in [
+                    palette.background,
+                    colors.background.weaker.color,
+                    colors.background.weak.color,
+                    colors.background.neutral.color,
+                ] {
+                    assert!(
+                        palette.text.relative_contrast(color) >= 4.5,
+                        "body text: {color:?}"
+                    );
+                    assert!(
+                        colors.secondary.base.color.relative_contrast(color) >= 4.5,
+                        "muted text: {color:?}"
+                    );
+                }
+                assert_eq!(palette.success, themes[0].palette().success);
+                assert_eq!(palette.warning, themes[0].palette().warning);
+                assert_eq!(palette.danger, themes[0].palette().danger);
+            }
+            for pair in themes.windows(2) {
+                assert_ne!(pair[0].palette().background, pair[1].palette().background);
+                assert_ne!(
+                    pair[0].extended_palette().background.strong.color,
+                    pair[1].extended_palette().background.strong.color
+                );
+            }
+        }
+    }
+
     #[test]
     fn accent_foreground_matches_original_theme_and_brightness_rules() {
         use iced::Color;

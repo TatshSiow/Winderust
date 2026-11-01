@@ -740,12 +740,12 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
         AppThemeMode::Dark => false,
         AppThemeMode::System => system.as_ref().is_none_or(|appearance| appearance.light),
     };
-    let mut palette = design::palette(light);
-    if s.accent.source == AccentColorSource::Custom {
-        palette.primary = rgb(s.accent.custom_color);
-    } else if let Some(system) = system {
-        palette.primary = rgb(system.accent);
-    }
+    let accent = if s.accent.source == AccentColorSource::Custom {
+        Some(rgb(s.accent.custom_color))
+    } else {
+        system.map(|appearance| rgb(appearance.accent))
+    };
+    let palette = design::palette(light, accent);
     Theme::custom_with_fn("Winderust", palette, design::extended_palette)
 }
 

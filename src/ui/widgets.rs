@@ -289,24 +289,11 @@ pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Ele
 }
 
 pub(super) fn rule_status_chip(theme: &iced::Theme, key: &str) -> iced::widget::container::Style {
-    let dark = theme.extended_palette().is_dark;
     let color = match key {
         "common.applied" => theme.palette().success,
-        "common.waiting" => {
-            if dark {
-                theme.palette().warning
-            } else {
-                iced::Color::from_rgb8(145, 101, 0)
-            }
-        }
+        "common.waiting" => theme.palette().warning,
         "common.error" => theme.palette().danger,
-        "common.unknown" => {
-            if dark {
-                iced::Color::from_rgb8(137, 174, 210)
-            } else {
-                iced::Color::from_rgb8(65, 104, 145)
-            }
-        }
+        "common.unknown" => muted_color(theme),
         _ => return indicator_chip(theme, false),
     };
     iced::widget::container::Style {
@@ -1078,11 +1065,10 @@ mod tests {
     use iced::{widget::button::Status, Theme};
 
     #[test]
-    fn button_hierarchy_tracks_accent_and_keeps_tertiary_neutral() {
+    fn button_hierarchy_tracks_accent_and_keeps_tertiary_subdued() {
         for light in [false, true] {
             let theme = |accent| {
-                let mut palette = design::palette(light);
-                palette.primary = accent;
+                let palette = design::palette(light, Some(accent));
                 Theme::custom_with_fn("buttons", palette, design::extended_palette)
             };
             let red = theme(iced::Color::from_rgb8(220, 70, 70));
@@ -1101,10 +1087,17 @@ mod tests {
                     secondary_button(&red, status).text_color,
                     secondary_button(&blue, status).text_color
                 );
-                assert_eq!(
-                    tertiary_button(&red, status).background,
-                    tertiary_button(&blue, status).background
-                );
+                if matches!(status, Status::Hovered | Status::Pressed) {
+                    assert_ne!(
+                        tertiary_button(&red, status).background,
+                        tertiary_button(&blue, status).background
+                    );
+                } else {
+                    assert_eq!(
+                        tertiary_button(&red, status).background,
+                        tertiary_button(&blue, status).background
+                    );
+                }
             }
             assert_eq!(
                 primary_button(&red, Status::Active).text_color,
@@ -1114,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn neutral_surfaces_and_adaptive_marks_in_both_themes() {
+    fn surface_tints_and_control_marks_follow_accent_in_both_themes() {
         for light in [false, true] {
             let themes = [
                 iced::Color::from_rgb8(240, 80, 100),
@@ -1124,25 +1117,24 @@ mod tests {
                 iced::Color::from_rgb8(255, 235, 20),
             ]
             .map(|accent| {
-                let mut palette = design::palette(light);
-                palette.primary = accent;
+                let palette = design::palette(light, Some(accent));
                 Theme::custom_with_fn("test", palette, design::extended_palette)
             });
-            assert_eq!(
+            assert_ne!(
                 themes[0].palette().background,
                 themes[1].palette().background
             );
             for surface in [navigation_surface, super::surface] {
-                assert_eq!(
+                assert_ne!(
                     surface(&themes[0]).background,
                     surface(&themes[1]).background
                 );
             }
-            assert_eq!(
-                control_button(&themes[0], Status::Active).background,
-                control_button(&themes[1], Status::Active).background
+            assert_ne!(
+                control_button(&themes[0], Status::Hovered).background,
+                control_button(&themes[1], Status::Hovered).background
             );
-            assert_eq!(
+            assert_ne!(
                 select_menu(&themes[0]).background,
                 select_menu(&themes[1]).background
             );

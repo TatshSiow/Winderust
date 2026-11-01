@@ -6,7 +6,7 @@ This file describes the current app design direction. Use it when changing Iced 
 
 Winderust is an operational Windows power and process-control utility. The UI should feel calm, scannable, and repeat-use friendly, with the light dashboard reference supplied on 2026-10-30 guiding all pages and navigation. Do not turn it into a marketing page, hero layout, or decorative dashboard.
 
-Prefer visible state, compact controls, and predictable rows. Use pale blue-gray chrome, white finely outlined panels, and more panel spacing; preserve dense operational tables.
+Prefer visible state, compact controls, and predictable rows. Use restrained accent-derived chrome, light/dark finely outlined panels, and more panel spacing; preserve dense operational tables.
 
 ## App Shell
 
@@ -57,7 +57,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 
 - The navigation rail and right panel use docked chrome with square outer corners, workspace-facing thin dividers, and no gaps between shell surfaces. Floating navigation uses the shared outlined surface. Cards, rules tables, dense table frames, settings groups, and settings dialogs share the surface outline (1px neutral at 75% opacity) and 10px radius. Keep dense table frames outside horizontal scrolling and preserve their borderless tiled interior for partial repaint efficiency.
 - Base surfaces use cool pale neutrals in light mode and slate tones in dark mode; panels have subtle 1px outlines. Accent color marks primary action, active navigation, selection, and important status.
-- Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers.
+- Respect `AppThemeMode`, `AccentColorSource`, and system accent behavior through the Iced theme and `settings_pages.rs` color helpers. Derive workspace, navigation, card/field, button, border, divider, and muted-text colors from the selected accent using restrained grayscale tints in the shared palette. Chart series and informational Process List colors also follow accent roles. Keep body/help text readable, semantic success/warning/danger distinct, and existing contrast rules for accent fills and marks. Accent changes must refresh the complete theme immediately, including cached chart/table surfaces.
 - Do not add purple/blue gradients, decorative blobs, glow backgrounds, or one-note palettes.
 - Status colors should stay semantic: success for active/applied, warning for caution, danger for destructive or failed actions.
 - Text hierarchy is compact: small labels, body rows, muted helper text. Avoid hero-scale text inside panels.

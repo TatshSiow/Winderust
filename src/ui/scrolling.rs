@@ -482,6 +482,15 @@ mod tests {
     #[test]
     fn table_surfaces_cache_geometry_and_track_theme_and_size() {
         use iced::advanced::renderer::{Headless as _, Renderer as _};
+        let accent_theme = |accent| {
+            Theme::custom_with_fn(
+                "accent",
+                super::super::design::palette(false, Some(accent)),
+                super::super::design::extended_palette,
+            )
+        };
+        let blue = accent_theme(iced::Color::from_rgb8(40, 130, 225));
+        let red = accent_theme(iced::Color::from_rgb8(215, 60, 80));
         for outline in [false, true] {
             let mut renderer =
                 Renderer::new(super::super::design::typography::FONT, iced::Pixels(14.0));
@@ -503,6 +512,10 @@ mod tests {
                 (Theme::Dark, Size::new(220.0, 120.0)),
                 (Theme::Dark, Size::new(260.0, 140.0)),
                 (Theme::Dark, Size::new(260.0, 140.0)),
+                (blue.clone(), Size::new(260.0, 140.0)),
+                (blue.clone(), Size::new(260.0, 140.0)),
+                (red.clone(), Size::new(260.0, 140.0)),
+                (red.clone(), Size::new(260.0, 140.0)),
             ]
             .into_iter()
             .enumerate()
@@ -541,6 +554,10 @@ mod tests {
             assert_ne!(screenshots[1], screenshots[2]);
             assert_eq!(screenshots[2], screenshots[3]);
             assert_eq!(screenshots[4], screenshots[5]);
+            assert_ne!(screenshots[5], screenshots[6]);
+            assert_eq!(screenshots[6], screenshots[7]);
+            assert_ne!(screenshots[7], screenshots[8]);
+            assert_eq!(screenshots[8], screenshots[9]);
         }
     }
 

@@ -745,7 +745,10 @@ struct ChartState {
     drawn: std::cell::RefCell<Option<(Chart, Theme, Option<usize>)>>,
 }
 fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
-    [theme.palette().primary, theme.palette().success]
+    [
+        theme.palette().primary,
+        iced::theme::palette::mix(theme.palette().primary, theme.palette().text, 0.5),
+    ]
 }
 
 impl Chart {
@@ -1495,8 +1498,11 @@ mod tests {
             (ChartKind::Io, false, 244.0, 0.55, "disk"),
             (ChartKind::Network, false, 244.0, 0.55, "network"),
         ] {
-            let theme =
-                Theme::custom_with_fn("preview", design::palette(light), design::extended_palette);
+            let theme = Theme::custom_with_fn(
+                "preview",
+                design::palette(light, None),
+                design::extended_palette,
+            );
             let slot = (fraction * (HISTORY_LEN - 1) as f32).round() as usize;
             model.hover_chart(kind, Some(slot));
             let mut view = model.chart_card(kind, model.chart(kind), height);
@@ -1761,6 +1767,15 @@ mod tests {
         use ChartKind::{Cpu, Memory};
         let normal = bounds.size();
         let small = iced::Size::new(300.0, 100.0);
+        let accent_theme = |accent| {
+            Theme::custom_with_fn(
+                "accent",
+                design::palette(true, Some(accent)),
+                design::extended_palette,
+            )
+        };
+        let blue = accent_theme(iced::Color::from_rgb8(40, 130, 225));
+        let red = accent_theme(iced::Color::from_rgb8(215, 60, 80));
         // Repeat unchanged frames, then change each cached drawing input.
         for (index, (value, hovered, theme, maximum, kind, size)) in [
             (75.0, None, Theme::Dark, 100.0, Cpu, normal),
@@ -1772,6 +1787,10 @@ mod tests {
             (74.0, None, Theme::Light, 200.0, Cpu, normal),
             (74.0, None, Theme::Light, 200.0, Memory, normal),
             (74.0, None, Theme::Light, 200.0, Memory, small),
+            (74.0, None, blue.clone(), 200.0, Memory, small),
+            (74.0, None, blue, 200.0, Memory, small),
+            (74.0, None, red.clone(), 200.0, Memory, small),
+            (74.0, None, red, 200.0, Memory, small),
         ]
         .into_iter()
         .enumerate()
@@ -1808,7 +1827,7 @@ mod tests {
                 ),
                 bounds,
             );
-            if matches!(index, 1 | 3) {
+            if matches!(index, 1 | 3 | 10 | 12) {
                 assert!(damage.is_empty(), "unchanged chart damaged {damage:?}");
             } else {
                 assert!(!damage.is_empty(), "changed chart did not repaint");

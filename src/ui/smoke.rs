@@ -76,6 +76,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             } else {
                 crate::config::AppThemeMode::Light
             };
+        app.settings.general.accent.source = crate::config::AccentColorSource::Custom;
+        app.settings.general.accent.custom_color = match extra {
+            Some(0..=12) => 0x9b59d0,
+            Some(13..=25) => 0x16895f,
+            Some(_) => 0xd65a65,
+            None if chinese => 0x9b59d0,
+            None => 0x246bfe,
+        };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
         // Exercise disclosure messages and long/compact navigation without enabling automation.
