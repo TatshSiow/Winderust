@@ -622,6 +622,27 @@ pub(super) fn settings_card<'a, M: 'a>(
         .style(surface)
 }
 
+/// Separate complete settings, keeping each label, description, and control together.
+pub(super) fn settings_rows<'a, M: 'a>(
+    rows: impl IntoIterator<Item = Element<'a, M>>,
+) -> iced::widget::Column<'a, M> {
+    let mut content = iced::widget::Column::new().spacing(design::space::MEDIUM);
+    for (index, row) in rows.into_iter().enumerate() {
+        if index > 0 {
+            content = content.push(settings_divider());
+        }
+        content = content.push(row);
+    }
+    content
+}
+
+pub(super) fn settings_divider<'a>() -> iced::widget::Rule<'a> {
+    iced::widget::rule::horizontal(1).style(|theme: &iced::Theme| iced::widget::rule::Style {
+        color: control_border(theme).scale_alpha(0.5),
+        ..iced::widget::rule::default(theme)
+    })
+}
+
 pub(super) fn setting_group<'a, M: Clone + 'a>(
     label: String,
     expanded: bool,
@@ -650,14 +671,10 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
                 .style(quiet)
                 .on_press(message),
                 super::motion::wrap(
-                    iced::widget::container(content.spacing(2 * CARD_PADDING)).padding(
-                        iced::Padding {
-                            top: CARD_PADDING as f32,
-                            right: CARD_PADDING as f32,
-                            bottom: CARD_PADDING as f32,
-                            left: CARD_PADDING as f32,
-                        }
-                    ),
+                    iced::widget::column![
+                        settings_divider(),
+                        iced::widget::container(content).padding(CARD_PADDING as u16)
+                    ],
                     expanded,
                     super::motion::Effect::Visible
                 )

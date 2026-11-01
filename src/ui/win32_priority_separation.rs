@@ -146,23 +146,22 @@ impl Editor {
                 })
         };
         let mut body = column![
-            super::widgets::settings_card(
-                column![
-                    super::widgets::setting_row(
-                        "settings.win32_priority_separation_current",
-                        display(self.current.map(format_value).unwrap_or_else(|| {
-                            t!("settings.win32_priority_separation_unavailable").to_string()
-                        }))
-                    ),
-                    super::widgets::setting_row(
-                        "settings.win32_priority_separation_backup",
-                        display(self.backup.map(format_value).unwrap_or_else(|| {
-                            t!("settings.win32_priority_separation_no_backup").to_string()
-                        }))
-                    )
-                ]
-                .spacing(design::space::MEDIUM)
-            ),
+            super::widgets::settings_card(super::widgets::settings_rows([
+                super::widgets::setting_row(
+                    "settings.win32_priority_separation_current",
+                    display(self.current.map(format_value).unwrap_or_else(|| {
+                        t!("settings.win32_priority_separation_unavailable").to_string()
+                    }))
+                )
+                .into(),
+                super::widgets::setting_row(
+                    "settings.win32_priority_separation_backup",
+                    display(self.backup.map(format_value).unwrap_or_else(|| {
+                        t!("settings.win32_priority_separation_no_backup").to_string()
+                    }))
+                )
+                .into(),
+            ])),
             super::widgets::heading(
                 t!("settings.win32_priority_separation_scheduler_policy").to_string(),
                 design::typography::SECONDARY

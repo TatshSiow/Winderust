@@ -101,21 +101,22 @@ impl Editor {
             (
                 0,
                 "memory_trim.category_thresholds",
-                column![
+                super::widgets::settings_rows([
                     field(
                         "memory_trim.memory_threshold",
                         "%",
                         settings.system_memory_load_threshold_percent.to_string(),
-                        Message::Load
-                    ),
+                        Message::Load,
+                    )
+                    .into(),
                     field(
                         "memory_trim.working_set_threshold",
                         "MiB",
                         settings.process_working_set_threshold_mb.to_string(),
-                        Message::WorkingSet
+                        Message::WorkingSet,
                     )
-                ]
-                .spacing(design::space::MEDIUM),
+                    .into(),
+                ]),
             ),
             (
                 1,
@@ -165,11 +166,13 @@ impl Editor {
                 )
             })
             .collect();
-        safety = safety.push(super::widgets::process_rules_table(
-            [],
-            cards,
-            t!("memory_trim.no_exclusions").to_string(),
-        ));
+        safety = safety.push(super::widgets::settings_divider()).push(
+            super::widgets::process_rules_table(
+                [],
+                cards,
+                t!("memory_trim.no_exclusions").to_string(),
+            ),
+        );
 
         body = body.push(super::widgets::setting_group(
             "memory_trim.category_safety".to_string(),

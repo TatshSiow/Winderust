@@ -555,7 +555,7 @@ impl Editor {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         for tier in [Tier::Background, Tier::Focus, Tier::VisibleWindow] {
             let detection = kind.detection(settings, tier);
-            let mut group = column![].spacing(design::space::SMALL);
+            let mut group = column![].spacing(design::space::MEDIUM);
             let label = match tier {
                 Tier::Background => format!("{key}.enable"),
                 Tier::Focus => format!("{key}.foreground_detection"),
@@ -586,7 +586,7 @@ impl Editor {
                     Tier::VisibleWindow => t!("common.preserve_visible_window_priority"),
                     Tier::Background => t!("common.preserve_background_priority"),
                 };
-                group = group.push(
+                group = group.push(super::widgets::settings_divider()).push(
                     checkbox(preserve)
                         .label(label.to_string())
                         .on_toggle_maybe(Some(move |value| Message::Preserve(tier, value))),

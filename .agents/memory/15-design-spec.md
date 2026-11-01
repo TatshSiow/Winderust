@@ -107,6 +107,7 @@ Prefer visible state, compact controls, and predictable rows. Use pale blue-gray
 - Processor Power exposes separate editable A/C and Battery boost policy/mode values for Background Pressure and Focus and Launch. Background-dominant pressure selects Background Pressure; app launches and genuinely heavy Focus App demand select Focus and Launch. These values are part of Adaptive Engine presets rather than hidden runtime constants.
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
+- Multi-setting cards use subtle 1px neutral, theme-aware dividers between complete settings, with even inset spacing. Keep labels, descriptions, and associated controls together. Expanded groups separate their header and body with the same divider; single-setting cards have no extra leading/trailing rules. Use shared widgets helpers and preserve dense table styling.
 - Show concise setting descriptions directly beneath their labels in readable 13px secondary text, with controls aligned on the right. Let rows and group headers grow when labels or descriptions wrap; never clip help with a fixed height. Use the shared setting-title layout for live pages and preset dialogs. Keep essential consequences inline and longer page-level reference behind Feature info. Preserve icon-action and truncated-data tooltips, localization, units, and dense process/log table geometry.
 - Settings that affect Windows behavior should show conservative defaults and explicit enable controls.
 

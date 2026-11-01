@@ -212,11 +212,10 @@ impl Editor {
                 )],
             ),
         ] {
-            let controls = iced::widget::Column::with_children(
+            let controls = super::widgets::settings_rows(
                 rows.into_iter()
                     .map(|(field, label, value)| delay_row(field, label, value)),
-            )
-            .spacing(design::space::SMALL);
+            );
             body = body.push(super::widgets::setting_group(
                 key.to_string(),
                 self.expanded[i],

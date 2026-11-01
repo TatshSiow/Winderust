@@ -564,14 +564,18 @@ impl Editor {
                                 )
                             ),
                             widgets::optional_content(
-                                widgets::setting_row(
-                                    "by_running_app.power_plan",
-                                    widgets::plan(
-                                        r.else_power_plan_guid.clone(),
-                                        plans,
-                                        move |v| Message::ElsePlan(index, v)
+                                column![
+                                    widgets::settings_divider(),
+                                    widgets::setting_row(
+                                        "by_running_app.power_plan",
+                                        widgets::plan(
+                                            r.else_power_plan_guid.clone(),
+                                            plans,
+                                            move |v| Message::ElsePlan(index, v)
+                                        )
                                     )
-                                ),
+                                ]
+                                .spacing(design::space::MEDIUM),
                                 r.else_enabled
                             )
                         ]

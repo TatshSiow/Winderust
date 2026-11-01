@@ -447,6 +447,7 @@ pub(super) fn view<'a>(
                     Tier::Background => rule.background_core_mask,
                 };
                 card = card
+                    .push(widgets::settings_divider())
                     .push(text(tier.label()))
                     .push(cpu_allocation::mask_selector(
                         mask,
@@ -481,18 +482,20 @@ pub(super) fn view<'a>(
                     rule.background_allowed_cpu_time_percent,
                 ),
             };
-            card = card.push(row![
+            let mut controls = column![row![
                 text(tier.label()).width(Fill),
                 pick_list(ProcessRuleMode::ALL.map(Mode), Some(Mode(mode)), move |m| {
                     Message::LimiterMode(tier, m.0)
                 })
-            ]);
+            ]]
+            .spacing(widgets::CARD_GAP);
             if mode == ProcessRuleMode::Enabled {
-                card = card.push(row![
+                controls = controls.push(row![
                     slider(1..=100, limit, move |v| Message::LimiterLimit(tier, v)),
                     text(format!("{limit}%"))
                 ]);
             }
+            card = card.push(widgets::settings_divider()).push(controls);
         }
     }
     body = body.push(settings_card(card));

@@ -515,51 +515,57 @@ impl Editor {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
             TuningTab::CpuBehaviour => {
-                let pressure = column![
+                let pressure = super::widgets::settings_rows([
                     number!(
                         "adaptive_engine_process.background_app_cpu_threshold",
                         1,
                         100,
                         adaptive_engine_process.background_app_cpu_threshold_percent
-                    ),
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.maximum_restrained_apps",
                         1,
                         64,
                         adaptive_engine_process.maximum_restrained_apps
-                    ),
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.reaction_time",
                         250,
                         5000,
                         adaptive_engine_process.reaction_time_ms
-                    ),
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.foreground_or_system_cpu_threshold",
                         1,
                         100,
                         adaptive_engine_process.foreground_or_system_cpu_threshold_percent
-                    ),
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.cpu_restraint_time",
                         1,
                         3600,
                         adaptive_engine_process.cpu_restraint_time_seconds
-                    ),
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.cpu_recovery_threshold",
                         1,
                         100,
                         adaptive_engine_process.cpu_recovery_threshold_percent
-                    ),
+                    )
+                    .into(),
                     number!(
                         "adaptive_engine_process.cpu_recovery_time",
                         1,
                         3600,
                         adaptive_engine_process.cpu_recovery_time_seconds
                     )
-                ]
-                .spacing(design::space::MEDIUM);
+                    .into(),
+                ]);
                 body = body
                     .push(text(
                         t!("adaptive_engine_process.shared_detection").to_string(),
@@ -584,7 +590,7 @@ impl Editor {
                     )
                     .style(text::secondary)],
                 ));
-                let mut allocation = column![
+                let mut allocation = super::widgets::settings_rows([
                     choice!(
                         s,
                         "adaptive_engine_process.processor_selection",
@@ -592,7 +598,8 @@ impl Editor {
                         &BackgroundProcessorSelection::ALL,
                         background_processor_selection_label,
                         adaptive_engine_process.background_processor_selection
-                    ),
+                    )
+                    .into(),
                     choice!(
                         s,
                         "adaptive_engine_process.cpu_allocation_method",
@@ -601,18 +608,20 @@ impl Editor {
                         allocation_label,
                         adaptive_engine_process.cpu_allocation_method
                     )
-                ]
-                .spacing(design::space::MEDIUM);
+                    .into(),
+                ]);
                 if s.adaptive_engine_process
                     .background_processor_selection
                     .uses_percentage()
                 {
-                    allocation = allocation.push(number!(
-                        "adaptive_engine_process.processor_limit",
-                        1,
-                        100,
-                        adaptive_engine_process.processor_limit_percent
-                    ));
+                    allocation = allocation
+                        .push(super::widgets::settings_divider())
+                        .push(number!(
+                            "adaptive_engine_process.processor_limit",
+                            1,
+                            100,
+                            adaptive_engine_process.processor_limit_percent
+                        ));
                 }
                 if s.adaptive_engine_process.background_processor_selection
                     == BackgroundProcessorSelection::Custom
@@ -624,22 +633,26 @@ impl Editor {
                         .iter()
                         .filter(|i| **i < 64)
                         .fold(0u64, |m, i| m | (1u64 << i));
-                    allocation = allocation.push(super::cpu_allocation::mask_selector(
-                        mask,
-                        &crate::cpu_allocation::logical_processors(),
-                        &s.cpu_allocation_presets,
-                        Message::Mask,
-                    ));
+                    allocation = allocation.push(super::widgets::settings_divider()).push(
+                        super::cpu_allocation::mask_selector(
+                            mask,
+                            &crate::cpu_allocation::logical_processors(),
+                            &s.cpu_allocation_presets,
+                            Message::Mask,
+                        ),
+                    );
                 }
                 if s.adaptive_engine_process.background_processor_selection
                     == BackgroundProcessorSelection::Custom
                     && !editable
                 {
-                    allocation = allocation.push(text(format!(
-                        "{}: {:?}",
-                        t!("adaptive_engine_process.specific_processors"),
-                        s.adaptive_engine_process.specific_processors
-                    )));
+                    allocation = allocation
+                        .push(super::widgets::settings_divider())
+                        .push(text(format!(
+                            "{}: {:?}",
+                            t!("adaptive_engine_process.specific_processors"),
+                            s.adaptive_engine_process.specific_processors
+                        )));
                 }
                 body = body.push(super::widgets::setting_group(
                     "adaptive_engine_process.limit_background_processors".to_string(),
@@ -661,9 +674,10 @@ impl Editor {
                     allocation,
                 ));
                 let zones = &s.adaptive_engine_process.dynamic_resource_zone_settings;
-                let mut zone_content = column![
+                let mut zone_content = super::widgets::settings_rows([
                     text(t!("adaptive_engine_process.zone_warning").to_string())
-                        .style(text::secondary),
+                        .style(text::secondary)
+                        .into(),
                     choice!(
                         s,
                         "adaptive_engine_process.zone_selection",
@@ -674,34 +688,42 @@ impl Editor {
                             .dynamic_resource_zone_settings
                             .background_processor_selection
                     )
-                ]
-                .spacing(design::space::MEDIUM);
+                    .into(),
+                ]);
                 if zones.background_processor_selection.uses_percentage() {
-                    zone_content = zone_content.push(number!(
-                        "adaptive_engine_process.foreground_zone_share",
-                        1,
-                        99,
-                        adaptive_engine_process
-                            .dynamic_resource_zone_settings
-                            .foreground_share_percent
-                    ));
+                    zone_content =
+                        zone_content
+                            .push(super::widgets::settings_divider())
+                            .push(number!(
+                                "adaptive_engine_process.foreground_zone_share",
+                                1,
+                                99,
+                                adaptive_engine_process
+                                    .dynamic_resource_zone_settings
+                                    .foreground_share_percent
+                            ));
                 }
                 if zones.background_processor_selection == BackgroundProcessorSelection::Custom {
                     if editable {
-                        zone_content = zone_content.push(super::cpu_allocation::mask_selector(
-                            crate::cpu_allocation::logical_processor_indices_mask(
-                                &zones.specific_processors,
+                        zone_content = zone_content.push(super::widgets::settings_divider()).push(
+                            super::cpu_allocation::mask_selector(
+                                crate::cpu_allocation::logical_processor_indices_mask(
+                                    &zones.specific_processors,
+                                ),
+                                &crate::cpu_allocation::logical_processors(),
+                                &s.cpu_allocation_presets,
+                                Message::ZoneMask,
                             ),
-                            &crate::cpu_allocation::logical_processors(),
-                            &s.cpu_allocation_presets,
-                            Message::ZoneMask,
-                        ));
+                        );
                     } else {
-                        zone_content = zone_content.push(text(format!(
-                            "{}: {:?}",
-                            t!("adaptive_engine_process.specific_processors"),
-                            zones.specific_processors
-                        )));
+                        zone_content =
+                            zone_content
+                                .push(super::widgets::settings_divider())
+                                .push(text(format!(
+                                    "{}: {:?}",
+                                    t!("adaptive_engine_process.specific_processors"),
+                                    zones.specific_processors
+                                )));
                     }
                 }
                 body = body.push(super::widgets::setting_group(
@@ -938,6 +960,7 @@ impl Editor {
                                 text("\u{2014}").style(iced::widget::text::secondary).into()
                             ]
                         ),
+                        super::widgets::settings_divider(),
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
@@ -983,7 +1006,7 @@ impl Editor {
                             ]
                         )
                     ]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.background_efficiency".to_string(),
@@ -1119,7 +1142,7 @@ impl Editor {
                             text("\u{2014}").style(iced::widget::text::secondary).into()
                         ]
                     )]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.thread_priority".to_string(),
@@ -1224,6 +1247,7 @@ impl Editor {
                                 text("\u{2014}").style(iced::widget::text::secondary).into()
                             ]
                         ),
+                        super::widgets::settings_divider(),
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
@@ -1275,7 +1299,7 @@ impl Editor {
                             ]
                         )
                     ]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.dynamic_priority_boost".to_string(),
@@ -1367,7 +1391,7 @@ impl Editor {
                             text("\u{2014}").style(iced::widget::text::secondary).into()
                         ]
                     )]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.io_priority".to_string(),
@@ -1467,6 +1491,7 @@ impl Editor {
                                 text("\u{2014}").style(iced::widget::text::secondary).into()
                             ]
                         ),
+                        super::widgets::settings_divider(),
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
@@ -1518,7 +1543,7 @@ impl Editor {
                             ]
                         )
                     ]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.gpu_priority".to_string(),
@@ -1621,6 +1646,7 @@ impl Editor {
                                 text("\u{2014}").style(iced::widget::text::secondary).into()
                             ]
                         ),
+                        super::widgets::settings_divider(),
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
@@ -1672,7 +1698,7 @@ impl Editor {
                             ]
                         )
                     ]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::MEDIUM),
                 ));
                 table = table.push(super::widgets::setting_group(
                     "nav.memory_priority".to_string(),
@@ -1753,6 +1779,7 @@ impl Editor {
                                 text("\u{2014}").style(iced::widget::text::secondary).into()
                             ]
                         ),
+                        super::widgets::settings_divider(),
                         priority_option_row(
                             "adaptive_engine.keep_existing_priority",
                             [
@@ -1798,7 +1825,7 @@ impl Editor {
                             ]
                         )
                     ]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::MEDIUM),
                 ));
                 body = body.push(table.width(Fill));
             }

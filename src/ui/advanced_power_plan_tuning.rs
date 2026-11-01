@@ -376,9 +376,9 @@ impl Editor {
                 let action = pick_list(options, selected, move |p| Message::Load(source, p))
                     .placeholder(t!("common.custom").to_string())
                     .width(280);
-                let mut controls = column![].spacing(design::space::SMALL);
+                let mut controls = Vec::new();
                 for (field, label, value) in fields(values) {
-                    controls = controls.push(
+                    controls.push(
                         row![
                             text(super::widgets::label_with_unit(&t!(label), "%")).width(Fill),
                             slider(0..=100, value, move |v| Message::Value(source, field, v))
@@ -392,10 +392,11 @@ impl Editor {
                         ]
                         .spacing(design::space::SMALL)
                         .height(46)
-                        .align_y(iced::Center),
+                        .align_y(iced::Center)
+                        .into(),
                     );
                 }
-                controls = controls.push(
+                controls.push(
                     row![
                         text(t!("processor_power.boost_mode").to_string()).width(Fill),
                         pick_list(
@@ -405,14 +406,15 @@ impl Editor {
                         )
                         .width(280)
                     ]
-                    .spacing(design::space::SMALL),
+                    .spacing(design::space::SMALL)
+                    .into(),
                 );
                 body = body.push(super::widgets::setting_group(
                     title.to_string(),
                     self.expanded[source as usize],
                     Message::Group(source),
                     action,
-                    controls,
+                    super::widgets::settings_rows(controls),
                 ));
             }
         }

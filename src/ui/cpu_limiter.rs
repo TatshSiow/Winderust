@@ -243,7 +243,6 @@ impl CpuLimiter {
             iced::widget::container(self.limit_control(index, tier, path, value)).width(420)
         ]
         .spacing(design::space::MEDIUM)
-        .height(super::widgets::SETTING_ROW_HEIGHT)
         .align_y(iced::Center)
         .into()
     }
@@ -262,20 +261,20 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        let mut defaults = column![].spacing(design::space::MEDIUM);
+        let mut defaults = Vec::new();
         for (tier, value) in Tier::ALL.into_iter().zip([
             settings.focus_allowed_cpu_time_percent,
             settings.visible_window_allowed_cpu_time_percent,
             settings.background_allowed_cpu_time_percent,
         ]) {
-            defaults = defaults.push(self.limit_row(None, tier, "", value));
+            defaults.push(self.limit_row(None, tier, "", value));
         }
         body = body.push(super::widgets::setting_group(
             "cpu_limiter.enable".to_string(),
             self.expanded,
             Message::Collapse,
             super::widgets::switch(settings.enabled, Some(Message::Enabled)),
-            defaults,
+            super::widgets::settings_rows(defaults),
         ));
         body = body
             .push(super::widgets::setting_title("cpu_limiter.rules"))
@@ -394,7 +393,7 @@ impl CpuLimiter {
                 rule.background_allowed_cpu_time_percent,
             ),
         ]) {
-            let mut card = column![super::widgets::setting_row(
+            let mut card = super::widgets::settings_rows([super::widgets::setting_row(
                 tier.key(),
                 pick_list(
                     ProcessRuleMode::ALL
@@ -405,10 +404,12 @@ impl CpuLimiter {
                     move |m| Message::RuleMode(index, tier, m.0),
                 )
                 .width(design::SELECT_WIDTH),
-            )]
-            .spacing(design::space::MEDIUM);
+            )
+            .into()]);
             if mode == ProcessRuleMode::Enabled {
-                card = card.push(self.limit_row(Some(index), tier, &rule.executable_path, value));
+                card = card
+                    .push(super::widgets::settings_divider())
+                    .push(self.limit_row(Some(index), tier, &rule.executable_path, value));
             }
             details = details.push(super::widgets::settings_card(card));
         }

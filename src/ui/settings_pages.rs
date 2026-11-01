@@ -440,6 +440,7 @@ impl Editor {
                 let custom = column![
                     text(t!("accent.color_palette").to_string()),
                     colors,
+                    widgets::settings_divider(),
                     text(t!("accent.custom_colors").to_string()),
                     row![
                         picker,
@@ -605,46 +606,44 @@ impl Editor {
                     ]
                     .spacing(design::space::LARGE),
                 );
-                let updates = widgets::settings_card(
-                    column![
-                        widgets::setting_row(
-                            "about.update_channel",
-                            row![
-                                pick_list(
-                                    UpdateChannel::ALL
-                                        .into_iter()
-                                        .map(|v| Choice(v, channel_label(v)))
-                                        .collect::<Vec<_>>(),
-                                    Some(Choice(
-                                        s.general.update_channel,
-                                        channel_label(s.general.update_channel)
-                                    )),
-                                    |v| Message::Channel(v.0)
-                                )
-                                .width(design::SELECT_WIDTH),
-                                action_button(t!("about.check_for_updates").to_string())
-                                    .on_press_maybe((!self.checking).then_some(Message::Check))
-                            ]
-                            .spacing(design::space::MEDIUM)
-                        ),
-                        widgets::setting_row(
-                            "about.latest_version",
-                            text(self.latest.as_deref().unwrap_or("-"))
-                        ),
-                        widgets::setting_row(
-                            "about.current_version",
-                            text(env!("CARGO_PKG_VERSION"))
-                        ),
-                        widgets::setting_row(
-                            "about.automatic_check_for_updates_on_startup",
-                            widgets::switch(
-                                s.general.check_for_updates,
-                                Some(|v| Message::Flag(Flag::UpdateCheck, v))
+                let updates = widgets::settings_card(super::widgets::settings_rows([
+                    widgets::setting_row(
+                        "about.update_channel",
+                        row![
+                            pick_list(
+                                UpdateChannel::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, channel_label(v)))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.update_channel,
+                                    channel_label(s.general.update_channel)
+                                )),
+                                |v| Message::Channel(v.0)
                             )
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                );
+                            .width(design::SELECT_WIDTH),
+                            action_button(t!("about.check_for_updates").to_string())
+                                .on_press_maybe((!self.checking).then_some(Message::Check))
+                        ]
+                        .spacing(design::space::MEDIUM),
+                    )
+                    .into(),
+                    widgets::setting_row(
+                        "about.latest_version",
+                        text(self.latest.as_deref().unwrap_or("-")),
+                    )
+                    .into(),
+                    widgets::setting_row("about.current_version", text(env!("CARGO_PKG_VERSION")))
+                        .into(),
+                    widgets::setting_row(
+                        "about.automatic_check_for_updates_on_startup",
+                        widgets::switch(
+                            s.general.check_for_updates,
+                            Some(|v| Message::Flag(Flag::UpdateCheck, v)),
+                        ),
+                    )
+                    .into(),
+                ]));
                 let mut body = column![
                     widgets::heading(t!("nav.about").to_string(), design::typography::BODY),
                     identity,
