@@ -327,10 +327,11 @@ impl Editor {
             Kind::Time => (s.by_time.enabled, "by_time.enable"),
             Kind::CpuLoad => (s.by_cpu_load.enabled, "by_cpu_load.enable"),
         };
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+        let mut body = column![super::widgets::toggle_card(
             label,
-            super::widgets::switch(enabled, Some(Message::Enabled))
-        ))]
+            enabled,
+            Some(Message::Enabled)
+        )]
         .spacing(super::widgets::CARD_GAP);
         let rules = match kind {
             Kind::Time => s

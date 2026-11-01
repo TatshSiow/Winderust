@@ -295,10 +295,7 @@ impl Editor {
             .collect();
         super::scrolling::scrollable(
             column![
-                widgets::settings_card(widgets::setting_row(
-                    "watchdog.enable",
-                    widgets::switch(settings.enabled, Some(Message::Enabled))
-                )),
+                widgets::toggle_card("watchdog.enable", settings.enabled, Some(Message::Enabled)),
                 widgets::heading(t!("watchdog.shared").to_string(), design::typography::BODY),
                 widgets::settings_card(widgets::settings_rows([
                     widgets::setting_row_with_unit(
@@ -353,16 +350,14 @@ impl Editor {
         let valid = draft.validated_rule().is_some();
         let resource = draft.tab;
         let monitor = rule.monitor(resource);
-        let mut details = column![widgets::settings_card(widgets::setting_row(
+        let mut details = column![widgets::toggle_card(
             match resource {
                 WatchdogResource::Cpu => "watchdog.monitor_cpu",
                 WatchdogResource::Memory => "watchdog.monitor_memory",
             },
-            widgets::switch(
-                monitor.enabled,
-                Some(move |enabled| Message::MonitorEnabled(resource, enabled))
-            ),
-        ))]
+            monitor.enabled,
+            Some(move |enabled| Message::MonitorEnabled(resource, enabled)),
+        )]
         .spacing(widgets::CARD_GAP);
         if resource == WatchdogResource::Memory && monitor.enabled {
             details = details

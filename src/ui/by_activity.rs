@@ -131,11 +131,11 @@ pub(super) fn view<'a>(
     };
     scrollable(
         column![
-            widgets::settings_card(flag(
+            widgets::toggle_card(
                 "by_activity.enable",
                 activity.enabled,
-                Message::Enabled
-            )),
+                Some(Message::Enabled)
+            ),
             widgets::heading(
                 rust_i18n::t!("by_activity.power_plans").to_string(),
                 design::typography::BODY

@@ -449,10 +449,6 @@ impl Editor {
         };
         let editable = !preset || !self.read_only;
         let mut body = column![].spacing(super::widgets::CARD_GAP);
-        macro_rules! toggle {($key:expr,$($field:ident).+) => {row![
-            setting_label($key).width(Fill),
-            super::widgets::switch(s.$($field).+, editable.then_some(|v|Message::Toggle(|s,v|s.$($field).+ = v,v)))
-        ].spacing(design::space::SMALL).align_y(iced::Center)};}
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
             let key=stringify!($($field).+);
             let value=self.numbers.get(key).cloned().unwrap_or_else(||s.$($field).+.to_string());
@@ -465,10 +461,11 @@ impl Editor {
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+ $(, $color:expr)?) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0)))$(.option_color($color))?.width(Fill).into()}else{text($label(selected)).into()};control}};}
         macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)};}
         if !preset {
-            body = body.push(super::widgets::settings_card(toggle!(
+            body = body.push(super::widgets::toggle_card(
                 "adaptive_engine.enable",
-                adaptive_engine.enabled
-            )));
+                s.adaptive_engine.enabled,
+                Some(|value| Message::Toggle(|s, v| s.adaptive_engine.enabled = v, value)),
+            ));
             let mut options: Vec<_> = BuiltInAdaptiveEnginePreset::ALL
                 .into_iter()
                 .enumerate()
@@ -742,10 +739,16 @@ impl Editor {
                 ));
             }
             TuningTab::ProcessorPower => {
-                body = body.push(super::widgets::settings_card(toggle!(
+                body = body.push(super::widgets::toggle_card(
                     "adaptive_engine.processor_power_policy",
-                    adaptive_engine.processor_power_policy_enabled
-                )));
+                    s.adaptive_engine.processor_power_policy_enabled,
+                    editable.then_some(|value| {
+                        Message::Toggle(
+                            |s, v| s.adaptive_engine.processor_power_policy_enabled = v,
+                            value,
+                        )
+                    }),
+                ));
                 body = body.push(super::widgets::setting_title(
                     "adaptive_engine.base_processor_policy",
                 ));

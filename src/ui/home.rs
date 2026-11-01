@@ -627,7 +627,7 @@ fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Eleme
         .height(Fill)
         .into()
     };
-    container(
+    container(super::widgets::action_card(
         column![
             super::widgets::heading(
                 t!("home.recent_logs").to_string(),
@@ -653,11 +653,10 @@ fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Eleme
             ],
         ]
         .spacing(design::space::SMALL),
-    )
-    .padding(design::space::LARGE as u16)
+        Some(Message::Navigate(Page::ActionLog)),
+    ))
     .width(Fill)
     .height(height)
-    .style(super::widgets::surface)
     .into()
 }
 fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Element<'_, Message> {

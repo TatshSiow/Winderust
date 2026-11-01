@@ -602,6 +602,38 @@ pub(super) fn settings_card<'a, M: 'a>(
     .width(Fill)
 }
 
+/// Keep native controls above the card's full-surface action.
+pub(super) fn action_card<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    message: Option<M>,
+) -> Element<'a, M> {
+    super::scrolling::repaint_group(
+        iced::widget::Stack::new()
+            .push(
+                iced::widget::container(content)
+                    .padding(CARD_PADDING as u16)
+                    .width(Fill),
+            )
+            .push_under(
+                button(iced::widget::Space::new())
+                    .padding(0)
+                    .width(Fill)
+                    .height(Fill)
+                    .style(card)
+                    .on_press_maybe(message),
+            ),
+    )
+}
+
+pub(super) fn toggle_card<'a, M: Clone + 'a>(
+    key: &str,
+    value: bool,
+    action: Option<impl Fn(bool) -> M + 'a>,
+) -> Element<'a, M> {
+    let message = action.as_ref().map(|action| action(!value));
+    action_card(setting_row(key, switch(value, action)), message)
+}
+
 /// Separate complete settings, keeping each label, description, and control together.
 pub(super) fn settings_rows<'a, M: 'a>(
     rows: impl IntoIterator<Item = Element<'a, M>>,
@@ -631,28 +663,38 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     content: iced::widget::Column<'a, M>,
 ) -> Element<'a, M> {
     super::scrolling::repaint_group(
-        settings_card(
+        iced::widget::container(
             iced::widget::column![
-                button(
-                    row![
-                        iced::widget::container(setting_title(&label)).width(Fill),
-                        action.into(),
-                        super::motion::wrap(
-                            super::navigation::glyph("icons/chevron-right.svg"),
-                            expanded,
-                            super::motion::Effect::Chevron
+                iced::widget::Stack::new()
+                    .push(
+                        iced::widget::container(
+                            row![
+                                iced::widget::container(setting_title(&label)).width(Fill),
+                                action.into(),
+                                super::motion::wrap(
+                                    super::navigation::glyph("icons/chevron-right.svg"),
+                                    expanded,
+                                    super::motion::Effect::Chevron
+                                )
+                            ]
+                            .spacing(design::space::SMALL)
+                            .align_y(iced::Center)
                         )
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                )
-                .width(Fill)
-                .padding(CARD_PADDING as u16)
-                .style(quiet)
-                .on_press(message),
+                        .padding(CARD_PADDING as u16)
+                        .width(Fill)
+                    )
+                    .push_under(
+                        button(iced::widget::Space::new())
+                            .padding(0)
+                            .width(Fill)
+                            .height(Fill)
+                            .style(quiet)
+                            .on_press(message)
+                    ),
                 super::motion::wrap(
                     iced::widget::column![
-                        settings_divider(),
+                        iced::widget::container(settings_divider())
+                            .padding([0, CARD_PADDING as u16]),
                         iced::widget::container(content).padding(CARD_PADDING as u16)
                     ],
                     expanded,
@@ -661,7 +703,8 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
             ]
             .spacing(0),
         )
-        .padding(0),
+        .width(Fill)
+        .style(surface),
     )
 }
 
@@ -812,6 +855,242 @@ fn step_values(
         .map(|v| v.saturating_add(step).min(*range.end()));
     (lower, upper)
 }
+#[cfg(test)]
+mod card_hitbox_tests {
+    use super::*;
+    use iced::advanced::{layout, widget::Tree, Layout, Shell};
+    use iced::{keyboard, mouse, touch, Event, Point, Rectangle, Size};
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Card,
+        Toggle(bool),
+        Header,
+        Body,
+        Input(String),
+    }
+
+    fn interact(
+        mut view: Element<'_, Message>,
+        position: impl FnOnce(&layout::Node) -> Point,
+        touch: bool,
+    ) -> (Vec<Message>, mouse::Interaction) {
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut tree = Tree::new(&view);
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(800.0, 600.0)),
+        );
+        let point = position(&node);
+        let cursor = mouse::Cursor::Available(point);
+        let interaction = view.as_widget().mouse_interaction(
+            &tree,
+            Layout::new(&node),
+            cursor,
+            &node.bounds(),
+            &renderer,
+        );
+        let events = if touch {
+            vec![
+                Event::Touch(touch::Event::FingerPressed {
+                    id: touch::Finger(0),
+                    position: point,
+                }),
+                Event::Touch(touch::Event::FingerLifted {
+                    id: touch::Finger(0),
+                    position: point,
+                }),
+            ]
+        } else {
+            vec![
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ]
+        };
+        let mut messages = Vec::new();
+        for event in events
+            .into_iter()
+            .chain([Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character("x".into()),
+                modified_key: keyboard::Key::Character("x".into()),
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: Some("x".into()),
+                repeat: false,
+            })])
+        {
+            view.as_widget_mut().update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                cursor,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &node.bounds(),
+            );
+        }
+        (messages, interaction)
+    }
+
+    fn control_bounds(layout: Layout<'_>, width: f32) -> Option<Rectangle> {
+        layout
+            .children()
+            .find_map(|child| control_bounds(child, width))
+            .or_else(|| (layout.bounds().width == width).then_some(layout.bounds()))
+    }
+
+    fn group(expanded: bool) -> Element<'static, Message> {
+        setting_group(
+            "watchdog.enable".into(),
+            expanded,
+            Message::Card,
+            action_button("Header").width(120).on_press(Message::Header),
+            iced::widget::column![
+                action_button("Body").width(140).on_press(Message::Body),
+                text_input("", "").width(160).on_input(Message::Input),
+            ]
+            .spacing(12),
+        )
+    }
+
+    fn header_layout(node: &layout::Node) -> Layout<'_> {
+        Layout::new(node)
+            .children()
+            .next()
+            .unwrap()
+            .children()
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn expandable_card_labels_and_body_share_the_standard_inset() {
+        fn first_leaf(layout: Layout<'_>) -> Rectangle {
+            layout
+                .children()
+                .next()
+                .map(first_leaf)
+                .unwrap_or_else(|| layout.bounds())
+        }
+        for expanded in [false, true] {
+            interact(
+                group(expanded),
+                |node| {
+                    let layout = Layout::new(node);
+                    let foreground = header_layout(node).children().last().unwrap();
+                    let label = first_leaf(foreground);
+                    assert_eq!(label.x, CARD_PADDING as f32);
+                    assert_eq!(label.y, CARD_PADDING as f32);
+                    if expanded {
+                        let body = control_bounds(layout, 140.0).unwrap();
+                        assert_eq!(body.x, label.x);
+                    }
+                    Point::new(1.0, 1.0)
+                },
+                false,
+            );
+        }
+    }
+
+    #[test]
+    fn full_header_padding_and_blank_space_accept_mouse_and_touch() {
+        for expanded in [false, true] {
+            for touch in [false, true] {
+                for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5)] {
+                    let (messages, interaction) = interact(
+                        group(expanded),
+                        |node| {
+                            let bounds = header_layout(node).bounds();
+                            Point::new(
+                                1.0 + (bounds.width - 2.0) * x,
+                                1.0 + (bounds.height - 2.0) * y,
+                            )
+                        },
+                        touch,
+                    );
+                    assert_eq!(
+                        messages,
+                        [Message::Card],
+                        "expanded={expanded}, touch={touch}, point=({x},{y})"
+                    );
+                    assert_eq!(interaction, mouse::Interaction::Pointer);
+                }
+            }
+        }
+        assert!(interact(group(true), |_| Point::new(-1.0, -1.0), false)
+            .0
+            .is_empty());
+    }
+
+    #[test]
+    fn expanded_body_padding_and_blank_space_do_not_collapse_the_card() {
+        for touch in [false, true] {
+            for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5)] {
+                let (messages, interaction) = interact(
+                    group(true),
+                    |node| {
+                        let header = header_layout(node).bounds();
+                        let top = header.y + header.height;
+                        let bounds = node.bounds();
+                        Point::new(
+                            1.0 + (bounds.width - 2.0) * x,
+                            top + 1.0 + (bounds.height - top - 2.0) * y,
+                        )
+                    },
+                    touch,
+                );
+                assert!(messages.is_empty(), "touch={touch}, point=({x},{y})");
+                assert_eq!(interaction, mouse::Interaction::None);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_controls_keep_their_actions_cursor_and_keyboard_input() {
+        for touch in [false, true] {
+            for (width, expected) in [
+                (120.0, Message::Header),
+                (140.0, Message::Body),
+                (160.0, Message::Input("x".into())),
+            ] {
+                let (messages, interaction) = interact(
+                    group(true),
+                    |node| control_bounds(Layout::new(node), width).unwrap().center(),
+                    touch,
+                );
+                assert_eq!(messages, [expected], "touch={touch}, width={width}");
+                if width == 160.0 {
+                    assert_eq!(interaction, mouse::Interaction::Text);
+                }
+            }
+        }
+        for enabled in [false, true] {
+            for point in [
+                Point::new(1.0, 1.0),
+                Point::new(799.0, 1.0),
+                Point::new(760.0, 30.0),
+            ] {
+                let card =
+                    toggle_card("watchdog.enable", false, enabled.then_some(Message::Toggle));
+                let (messages, _) = interact(card, |_| point, false);
+                assert_eq!(
+                    messages,
+                    if enabled {
+                        vec![Message::Toggle(true)]
+                    } else {
+                        Vec::new()
+                    }
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod step_tests {
     #[test]

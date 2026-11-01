@@ -1647,18 +1647,22 @@ impl ProcessList {
                 }
                 ProcessTab::Immediate => {
                     let efficiency: Element<'_, Message> = match self.efficiency {
-                        Some(enabled) => super::widgets::switch(
+                        Some(enabled) => super::widgets::toggle_card(
+                            "process_list.efficiency_mode",
                             enabled,
                             eligible.then_some(|value| Message::Action(Action::Efficiency(value))),
                         ),
-                        None => text(t!("common.unknown").to_string()).into(),
+                        None => super::widgets::settings_card(super::widgets::setting_row(
+                            "process_list.efficiency_mode",
+                            text(t!("common.unknown").to_string()),
+                        ))
+                        .into(),
                     };
                     pane = pane
-                        .push(super::widgets::settings_card(super::widgets::setting_row(
-                            "process_list.efficiency_mode",
+                        .push(
                             mouse_area(efficiency)
                                 .on_enter(Message::MenuBranch(MenuBranch::Closed)),
-                        )))
+                        )
                         .push(super::widgets::heading(
                             t!("nav.priority_control").to_string(),
                             design::typography::BODY,

@@ -299,7 +299,9 @@ impl Editor {
                 widgets::switch(value, Some(move |value| Message::Flag(flag, value))),
             )
         };
-        let flag = |key: &str, value, flag| widgets::settings_card(flag_row(key, value, flag));
+        let flag = |key: &str, value, flag| {
+            widgets::toggle_card(key, value, Some(move |value| Message::Flag(flag, value)))
+        };
         let body = match page {
             Page::WinderustBehaviour => column![
                 widgets::heading(

@@ -45,6 +45,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   the shared `setting_group` for collapsible groups. Use Iced buttons,
   checkboxes, pick lists, text inputs, and sliders for their natural control types.
 - Main feature switches use toggle cards. Checkboxes are for rule activation and multi-selection.
+- Action and toggle cards use their full surface, including padding and blank space, as the hit target. Expandable cards toggle only from the full header, including its padding; expanded content never toggles the group. Keep one 16px inset for headers and bodies. Nested controls retain their own actions, cursor, and input handling, and disabled controls stay inactive.
 - Collapse expandable cards by default. Keep configuration editable when its main switch is off; read-only presets and invalid operations remain disabled.
 - Sliders always reflect their input values, including when disabled. Put units in labels and use plus/minus icons.
 - Use sliders, steppers, or numeric inputs for numeric settings.

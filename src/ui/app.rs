@@ -2648,10 +2648,7 @@ impl WinderustApp {
     fn page_view(&self) -> Element<'_, Message> {
         let general = &self.settings.global().general;
         let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
-            widgets::settings_card(widgets::setting_row(
-                label,
-                widgets::switch(value, Some(action)),
-            ))
+            widgets::toggle_card(label, value, Some(action))
         };
         match self.page {
             Page::AppSuspension => self

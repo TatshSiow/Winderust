@@ -217,13 +217,14 @@ impl Editor {
         let processors = cpu_allocation::logical_processors();
         let feature = settings(s, k);
         let mut body = column![
-            super::widgets::settings_card(super::widgets::setting_row(
+            super::widgets::toggle_card(
                 match k {
                     Kind::Soft => "cpu_sets_soft.enable",
                     Kind::Hard => "processor_affinity_hard.enable",
                 },
-                super::widgets::switch(feature.enabled, Some(Message::Enabled)),
-            )),
+                feature.enabled,
+                Some(Message::Enabled),
+            ),
             super::widgets::setting_title_with_help(
                 "cpu_allocation.custom_rules",
                 "",

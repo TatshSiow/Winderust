@@ -83,10 +83,11 @@ impl Editor {
         settings: &'a MemoryTrimSettings,
         candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+        let mut body = column![super::widgets::toggle_card(
             "memory_trim.enable",
-            super::widgets::switch(settings.enabled, Some(Message::Enabled))
-        )),]
+            settings.enabled,
+            Some(Message::Enabled)
+        ),]
         .spacing(super::widgets::CARD_GAP);
         let field = |label: &str, unit: &str, value: String, change: fn(String) -> Message| {
             super::widgets::setting_row_with_unit(
