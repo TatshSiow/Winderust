@@ -34,12 +34,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(44) {
+    if extra == Some(47) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42)
+            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45)
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -66,6 +66,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(39) => Page::ProcessList,
             Some(40) => Page::LanguageAndAppearance,
             Some(41) => Page::AdaptiveEngine,
+            Some(44) => Page::CpuSetsSoft,
+            Some(45) => Page::ProcessorAffinityHard,
+            Some(46) => Page::AdvancedPowerPlanTuning,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -98,10 +101,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
         let navigate = app.update(Message::Page(page));
-        assert!(!app.feature_info_expanded);
-        if matches!(extra, Some(0 | 1)) {
-            let _ = app.update(Message::ToggleFeatureInfo);
-            assert!(app.feature_info_expanded);
+        assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
+        if !navigation::page_feature_info(page).is_empty() {
+            assert!(app.side_panel(page).is_some());
         }
         if extra == Some(0) {
             let section = Page::SettingsHome;
@@ -336,8 +338,35 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else {
             Task::none()
         };
+        if matches!(extra, Some(0 | 1 | 41)) {
+            for &tab in SidePanelTab::for_page(page) {
+                let _ = app.update(Message::SidePanelTab(tab));
+                assert_eq!(app.side_panel_tab, tab);
+                assert!(app.side_panel(page).is_some());
+            }
+            let _ = app.update(Message::Page(page));
+            assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
+            let _ = app.update(Message::SidePanelTab(SidePanelTab::Info));
+            assert_eq!(app.side_panel_tab, SidePanelTab::Info);
+            if app.status_collapsed {
+                let _ = app.update(Message::ToggleStatus);
+            }
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if matches!(extra, Some(44..=46)) {
+            let tab = if extra == Some(46) {
+                SidePanelTab::Info
+            } else {
+                SidePanelTab::Presets
+            };
+            let _ = app.update(Message::SidePanelTab(tab));
+            assert_eq!(app.side_panel_tab, tab);
+            assert!(app.side_panel(page).is_some());
+            app.status_collapsed = false;
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=46) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -422,6 +451,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        112
+        115
     );
 }

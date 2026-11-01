@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use widgets::{action_button, button, icon_button, text_input};
+use widgets::{action_button, button, text_input};
 
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill, Subscription, Task, Theme};
@@ -38,6 +38,83 @@ fn shell_widths(width: f32) -> (f32, f32, u16) {
             design::space::WIDE
         } as u16,
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidePanelTab {
+    Status,
+    Presets,
+    Info,
+}
+impl SidePanelTab {
+    fn for_page(feature_page: Page) -> &'static [Self] {
+        match feature_page {
+            Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard => {
+                &[Self::Status, Self::Presets, Self::Info]
+            }
+            Page::AdvancedPowerPlanTuning => &[Self::Presets, Self::Info],
+            _ => &[Self::Status, Self::Info],
+        }
+    }
+    fn label(self) -> String {
+        t!(match self {
+            Self::Status => "common.status",
+            Self::Presets => "common.presets",
+            Self::Info => "common.info",
+        })
+        .to_string()
+    }
+}
+
+fn feature_info_sidebar<'a>(
+    panel: Option<Element<'a, Message>>,
+    feature_page: Page,
+    selected: SidePanelTab,
+) -> Option<Element<'a, Message>> {
+    let description = navigation::page_feature_info(feature_page);
+    if description.is_empty() {
+        return panel;
+    }
+    let info: Element<'a, Message> = scrollable(
+        container(
+            text(description)
+                .size(design::typography::SECONDARY)
+                .width(Fill),
+        )
+        .width(Fill)
+        .padding([0, design::space::MEDIUM as u16]),
+    )
+    .width(Fill)
+    .height(Fill)
+    .into();
+    Some(if let Some(panel) = panel {
+        let tabs = row(SidePanelTab::for_page(feature_page).iter().map(|&tab| {
+            widgets::panel_tab(tab.label(), tab == selected, Message::SidePanelTab(tab)).into()
+        }));
+        column![
+            container(tabs).style(widgets::tab_bar),
+            super::motion::wrap(
+                if selected == SidePanelTab::Info {
+                    info
+                } else {
+                    panel
+                },
+                true,
+                super::motion::Effect::Content(selected as u64),
+            ),
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill)
+        .into()
+    } else {
+        column![
+            widgets::panel_heading(t!("common.feature_info").to_string()),
+            info,
+        ]
+        .spacing(design::space::MEDIUM)
+        .height(Fill)
+        .into()
+    })
 }
 
 #[cfg(feature = "render-smoke")]
@@ -80,7 +157,7 @@ pub(crate) fn run(
                     navigation_search_selected: 0,
                     navigation: navigation::Flyout::default(),
                     status_collapsed: false,
-                    feature_info_expanded: false,
+                    side_panel_tab: SidePanelTab::Status,
                     preferences: settings_pages::Editor::default(),
                     home: home::Model::default(),
                     action_log: action_log::Editor::default(),
@@ -309,7 +386,7 @@ struct WinderustApp {
     navigation_search_selected: usize,
     navigation: navigation::Flyout,
     status_collapsed: bool,
-    feature_info_expanded: bool,
+    side_panel_tab: SidePanelTab,
     preferences: settings_pages::Editor,
     home: home::Model,
     action_log: action_log::Editor,
@@ -383,7 +460,7 @@ enum Message {
     DismissError,
     NavigateHistory(bool),
     Navigation(navigation::Event),
-    ToggleFeatureInfo,
+    SidePanelTab(SidePanelTab),
     ToggleStatus,
     Preferences(settings_pages::Message),
     ColorChosen(Option<u32>, Result<Option<u32>, String>),
@@ -781,7 +858,7 @@ impl WinderustApp {
                 self.navigation_search.clear();
             }
             Message::Navigation(event) => return self.update_navigation(event),
-            Message::ToggleFeatureInfo => self.feature_info_expanded = !self.feature_info_expanded,
+            Message::SidePanelTab(tab) => self.side_panel_tab = tab,
             Message::ToggleStatus => self.status_collapsed = !self.status_collapsed,
             Message::Status(status_rail::Message::RelaunchAdmin) => {
                 if crate::privilege::relaunch_as_admin() {
@@ -1052,9 +1129,6 @@ impl WinderustApp {
                 return self.browse(Page::BackgroundEfficiency)
             }
             Message::Efficiency(message) => self.efficiency.update(&mut self.settings, message),
-            Message::Allocation(_, cpu_allocation::Message::Status(message)) => {
-                return self.update(Message::Status(message))
-            }
             Message::Allocation(kind, cpu_allocation::Message::Browse) => {
                 return self.browse(match kind {
                     cpu_allocation::Kind::Soft => Page::CpuSetsSoft,
@@ -1062,6 +1136,12 @@ impl WinderustApp {
                 })
             }
             Message::Allocation(kind, message) => {
+                if matches!(
+                    message,
+                    cpu_allocation::Message::NewPreset | cpu_allocation::Message::EditPreset(_)
+                ) {
+                    self.side_panel_tab = SidePanelTab::Presets;
+                }
                 self.settings.edit_with_presets(|settings| match kind {
                     cpu_allocation::Kind::Soft => {
                         self.soft_allocation.update(settings, kind, message)
@@ -1071,15 +1151,21 @@ impl WinderustApp {
                     }
                 })
             }
-            Message::Adaptive(adaptive_engine::Message::Status(message)) => {
-                return self.update(Message::Status(message))
-            }
             Message::Adaptive(adaptive_engine::Message::Browse) => {
                 return self.browse(Page::AdaptiveEngine)
             }
-            Message::Adaptive(message) => self
-                .settings
-                .edit_with_presets(|settings| self.adaptive.update(settings, message)),
+            Message::Adaptive(message) => {
+                if matches!(
+                    message,
+                    adaptive_engine::Message::ViewBuiltIn(_)
+                        | adaptive_engine::Message::Edit(_)
+                        | adaptive_engine::Message::New
+                ) {
+                    self.side_panel_tab = SidePanelTab::Presets;
+                }
+                self.settings
+                    .edit_with_presets(|settings| self.adaptive.update(settings, message));
+            }
             Message::Catalog(result) => {
                 self.catalog_loading = false;
                 match result {
@@ -1261,7 +1347,7 @@ impl WinderustApp {
             Message::Page(page) => {
                 self.preferences.hotkey_capture = None;
                 self.navigation_history.visit(page);
-                self.feature_info_expanded = false;
+                self.side_panel_tab = SidePanelTab::for_page(page)[0];
                 let path = navigation::breadcrumb_path(page);
                 self.breadcrumb = path;
                 self.page = page;
@@ -1882,7 +1968,7 @@ impl WinderustApp {
     }
 
     fn side_panel(&self, page: Page) -> Option<Element<'_, Message>> {
-        if page == Page::ProcessList {
+        let panel = if page == Page::ProcessList {
             Some(self.processes.side_panel().map(Message::Processes))
         } else if page == Page::ActionLog {
             Some(
@@ -1894,28 +1980,30 @@ impl WinderustApp {
                     )
                     .map(Message::ActionLog),
             )
-        } else if page == Page::AdaptiveEngine {
+        } else if page == Page::AdaptiveEngine && self.side_panel_tab == SidePanelTab::Presets {
             Some(
                 self.adaptive
-                    .side_panel(&self.settings, &self.status)
+                    .presets_panel(&self.settings)
                     .map(Message::Adaptive),
             )
         } else if page == Page::AdvancedPowerPlanTuning {
             Some(
                 self.power_tuning
-                    .side_panel(&self.settings.advanced_power_plan_tuning_presets)
+                    .presets_panel(&self.settings.advanced_power_plan_tuning_presets)
                     .map(Message::PowerTuning),
             )
-        } else if page == Page::CpuSetsSoft {
+        } else if page == Page::CpuSetsSoft && self.side_panel_tab == SidePanelTab::Presets {
             Some(
                 self.soft_allocation
-                    .side_panel(&self.settings, cpu_allocation::Kind::Soft, &self.status)
+                    .presets_panel(&self.settings)
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
             )
-        } else if page == Page::ProcessorAffinityHard {
+        } else if page == Page::ProcessorAffinityHard
+            && self.side_panel_tab == SidePanelTab::Presets
+        {
             Some(
                 self.hard_allocation
-                    .side_panel(&self.settings, cpu_allocation::Kind::Hard, &self.status)
+                    .presets_panel(&self.settings)
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
@@ -1968,7 +2056,8 @@ impl WinderustApp {
                     panel
                 }
             })
-        }
+        };
+        feature_info_sidebar(panel, page, self.side_panel_tab)
     }
 
     fn view_content(&self) -> Element<'_, Message> {
@@ -2095,24 +2184,9 @@ impl WinderustApp {
             };
             header = header.push(item);
         }
-        let breadcrumb_width: f32 = self
-            .breadcrumb
-            .iter()
-            .enumerate()
-            .map(|(index, page)| {
-                widgets::text_width(&page.label(), BREADCRUMB_TEXT_SIZE)
-                    + if index > 0 {
-                        design::ICON_SIZE as f32 + 2.0 * design::space::COMPACT as f32
-                    } else {
-                        0.0
-                    }
-            })
-            .sum();
         let breadcrumb =
             container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill);
-        let mut actions_width = 0.0;
         let mut profile_controls = None;
-        let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
         if self.page.supports_power_source_profiles() {
             let plugged_in = crate::backend::power_source::is_plugged_in();
             let mut tabs = row![];
@@ -2155,94 +2229,15 @@ impl WinderustApp {
             }
             profile_controls = Some(container(tabs).style(widgets::tab_bar));
         }
-        let description = navigation::page_feature_info(self.page);
-        if !description.is_empty() {
-            actions_width +=
-                widgets::text_width(&t!("common.feature_info"), design::typography::SECONDARY)
-                    + design::ICON_SIZE as f32
-                    + 36.0;
-            header = header.push(
-                button(
-                    row![
-                        navigation::glyph("icons/info.svg"),
-                        text(t!("common.feature_info").to_string())
-                            .size(design::typography::SECONDARY)
-                    ]
-                    .spacing(design::space::CONTROL)
-                    .align_y(iced::Center),
-                )
-                .style(if self.feature_info_expanded {
-                    widgets::selected
-                } else {
-                    widgets::quiet
-                })
-                .on_press(Message::ToggleFeatureInfo),
-            );
-        }
-        let main_width = width
-            - navigation_width
-            - if side_panel.is_none() {
-                0.0
-            } else if self.status_collapsed {
-                design::SIDEBAR_COLLAPSED_WIDTH
-            } else {
-                side_panel_width
-            }
-            - 2.0 * page_padding as f32
-            - if side_panel.is_some() { 1.0 } else { 0.0 };
-        let main_width = main_width.min(design::CONTENT_WIDTH as f32);
-        let actions = header
-            .wrap()
-            .vertical_spacing(design::space::SMALL)
-            .align_x(iced::Right);
         let header: Element<'_, Message> = if let Some(profiles) = profile_controls {
-            column![
-                breadcrumb,
-                row![profiles, iced::widget::Space::new().width(Fill), actions]
-                    .spacing(design::space::COMPACT)
-                    .align_y(iced::Center)
-                    .width(Fill)
-            ]
-            .spacing(design::space::SMALL)
-            .into()
-        } else if breadcrumb_width + actions_width + design::space::COMPACT as f32 > main_width {
-            column![breadcrumb, container(actions).align_right(Fill)]
+            column![breadcrumb, profiles]
                 .spacing(design::space::SMALL)
                 .into()
         } else {
-            row![breadcrumb, actions]
-                .spacing(design::space::COMPACT)
-                .align_y(iced::Center)
-                .into()
+            breadcrumb.into()
         };
-        let mut heading = column![container(header)
+        let heading = container(header)
             .padding([design::space::SMALL as u16, 0])
-            .width(Fill)]
-        .spacing(0);
-        if !description.is_empty() {
-            heading = heading.push(widgets::optional_content(
-                container(
-                    row![
-                        navigation::glyph("icons/info.svg"),
-                        scrollable(text(description).width(Fill))
-                            .height(iced::Length::Shrink)
-                            .width(Fill),
-                        iced::widget::tooltip(
-                            icon_button("icons/x.svg").on_press(Message::ToggleFeatureInfo),
-                            text(t!("common.close").to_string()),
-                            iced::widget::tooltip::Position::Left,
-                        ),
-                    ]
-                    .spacing(design::space::MEDIUM),
-                )
-                .max_height(160)
-                .padding(design::space::MEDIUM as u16)
-                .width(Fill)
-                .style(widgets::surface),
-                self.feature_info_expanded,
-            ));
-        }
-        let heading = container(heading)
             .max_width(design::CONTENT_WIDTH)
             .width(Fill);
         let mut body = column![container(heading).center_x(Fill)]
@@ -2890,6 +2885,52 @@ fn ui_tick_interval(hidden: bool, retry_pending: bool) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn feature_info_fits_the_sidebar_without_changing_its_bounds() {
+        use super::*;
+        use iced::advanced::{layout, widget::Tree};
+
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        assert!(feature_info_sidebar(None, Page::Home, SidePanelTab::Info).is_none());
+        for width in [216.0, 296.0] {
+            for height in [500.0, 1000.0] {
+                let size = iced::Size::new(width, height);
+                for feature_page in [
+                    Page::CpuLimiter,
+                    Page::AdaptiveEngine,
+                    Page::AdvancedPowerPlanTuning,
+                ] {
+                    for &selected in SidePanelTab::for_page(feature_page) {
+                        let panel = iced::widget::Space::new().width(Fill).height(Fill).into();
+                        let mut view = feature_info_sidebar(Some(panel), feature_page, selected)
+                            .expect("feature page has information");
+                        let mut tree = Tree::new(&view);
+                        let node = view.as_widget_mut().layout(
+                            &mut tree,
+                            &renderer,
+                            &layout::Limits::new(iced::Size::ZERO, size),
+                        );
+                        assert_eq!(node.size(), size);
+                        let tabs = &node.children()[0];
+                        assert!(tabs.children()[0].size().width <= width);
+                        let body = &node.children()[1];
+                        assert!(body.size().height >= height - 60.0);
+                    }
+                }
+                let mut view =
+                    feature_info_sidebar(None, Page::WinderustBehaviour, SidePanelTab::Status)
+                        .expect("Winderust Behaviour shows information without a runtime panel");
+                let mut tree = Tree::new(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(iced::Size::ZERO, size),
+                );
+                assert_eq!(node.size(), size);
+            }
+        }
+    }
+
     #[test]
     fn search_navigation_stays_bounded_and_tracks_selected_result() {
         assert_eq!(search_selection(0, 0, true), 0);

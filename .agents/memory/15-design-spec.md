@@ -101,7 +101,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Adaptive Engine is the parent of Adaptive Engine. Adaptive Engine has no separate master switch;
   CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
   configuration while Adaptive Engine is off.
-- Adaptive Engine uses the right-rail Status / Presets tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
+- Adaptive Engine uses the right-rail Status / Presets / Info tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
 - Adaptive Engine and preset details share CPU Behaviour, Processor Power, and Priority Control tabs; the live page also exposes Custom Rules. Preset modal state is independent of the live page.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in `25-runtime-contracts.md`.
 - Processor Power uses separate setting cards. CPU Pressure Restraint and Limit Background Processors have independent switches; configuration remains editable while off.
@@ -109,7 +109,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
 - Multi-setting cards use subtle 1px neutral, theme-aware dividers between complete settings, with even inset spacing. Keep labels, descriptions, and associated controls together. Expanded groups separate their header and body with the same divider; single-setting cards have no extra leading/trailing rules. Use shared widgets helpers and preserve dense table styling.
-- Show concise setting descriptions directly beneath their labels in readable 13px secondary text, with controls aligned on the right. Let rows and group headers grow when labels or descriptions wrap; never clip help with a fixed height. Use the shared setting-title layout for live pages and preset dialogs. Keep essential consequences inline and longer page-level reference behind Feature info. Preserve icon-action and truncated-data tooltips, localization, units, and dense process/log table geometry.
+- Show concise setting descriptions directly beneath their labels in readable 13px secondary text, with controls aligned on the right. Let rows and group headers grow when labels or descriptions wrap; never clip help with a fixed height. Use the shared setting-title layout for live pages and preset dialogs. Keep essential consequences inline and longer page-level reference in the right sidebar's Feature info section. Preserve icon-action and truncated-data tooltips, localization, units, and dense process/log table geometry.
 - Settings that affect Windows behavior should show conservative defaults and explicit enable controls.
 
 ### CPU Allocation
@@ -174,10 +174,11 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 ## Panels, rules, and dialogs
 
 - Side panels follow tabs (when present), main title, subtitle, then content. Subtitles stay outside cards. Put primary panel actions in the bottom footer.
+- Feature info belongs in a full-height scrollable Info tab in the right sidebar. Use shared Status / Info tabs, with Presets between them on Adaptive Engine, CPU Sets (Soft), and Processor Affinity (Hard). Advanced Power Plan Tuning uses Presets / Info. Reset to the first tab on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
 - Use shared rule tables and icon edit/delete actions. Reuse existing modal layouts: name first, related settings together, actions at the bottom.
-- Keep breadcrumbs anchored at the top left. Power-source selectors and How it works align right on the same row.
+- Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb; page-level reference stays in the right sidebar.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.
-- Avoid duplicated help text between inline descriptions, info popovers, and How it works.
+- Avoid duplicated help text between inline descriptions, info popovers, and sidebar Feature info.
 
 - Adaptive Engine CPU Behaviour presents shared detection/timing once, followed by three sibling policy groups. Zoning has its own live/preset expansion state and 1-99 foreground share. Limiter percentage always means background capacity; its allocation method stays visible when zones are enabled. Show zoning's throughput warning and verified status/counts, not configured enablement as proof of application.
 

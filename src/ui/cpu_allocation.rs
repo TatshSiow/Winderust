@@ -66,13 +66,10 @@ pub(super) struct Editor {
     editing_preset: Option<usize>,
     preset_open: bool,
     preset_read_only: bool,
-    presets_tab: bool,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    RailTab(bool),
-    Status(super::status_rail::Message),
     Path(String),
     Browse,
     Add,
@@ -94,8 +91,6 @@ impl Editor {
         let available =
             cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
         match m {
-            Message::RailTab(value) => self.presets_tab = value,
-            Message::Status(_) => {}
             Message::Enabled(v) => settings_mut(s, k).enabled = v,
             Message::Path(v) => self.path = v,
             Message::Browse => {}
@@ -141,7 +136,6 @@ impl Editor {
             Message::NewPreset => {
                 self.preset_read_only = false;
                 self.preset_open = true;
-                self.presets_tab = true;
                 self.editing_preset = None;
                 self.preset_name.clear();
                 self.preset_mask = available;
@@ -150,7 +144,6 @@ impl Editor {
                 self.preset_read_only = false;
                 if let Some(p) = s.cpu_allocation_presets.get(i) {
                     self.preset_open = true;
-                    self.presets_tab = true;
                     self.editing_preset = Some(i);
                     self.preset_name = p.name.clone();
                     self.preset_mask = p.core_mask & available;
@@ -414,11 +407,9 @@ impl Editor {
             (950, 760),
         ))
     }
-    pub(super) fn side_panel<'a>(
+    pub(super) fn presets_panel<'a>(
         &'a self,
         s: &'a crate::application::SettingsEditor,
-        k: Kind,
-        status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
         let mut rail = column![super::widgets::heading(
@@ -471,45 +462,16 @@ impl Editor {
                 .spacing(design::space::TIGHT),
             );
         }
-        if !self.presets_tab {
-            let page = match k {
-                Kind::Soft => crate::ui::Page::CpuSetsSoft,
-                Kind::Hard => crate::ui::Page::ProcessorAffinityHard,
-            };
-            rail = column![];
-            if let Some(status) = super::status_rail::view(page, s, status, &[]) {
-                rail = rail.push(status.map(Message::Status));
-            }
-        }
-        let tabs = row![
-            super::widgets::panel_tab(
-                t!("common.status").to_string(),
-                !self.presets_tab,
-                Message::RailTab(false),
+        column![
+            scrollable(rail).width(Fill).height(Fill),
+            super::widgets::preset_footer(
+                t!("cpu_allocation.add_preset").to_string(),
+                Message::NewPreset
             ),
-            super::widgets::panel_tab(
-                t!("cpu_allocation.presets").to_string(),
-                self.presets_tab,
-                Message::RailTab(true),
-            )
-        ];
-        let mut panel = column![
-            iced::widget::container(tabs).style(super::widgets::tab_bar),
-            super::motion::wrap(
-                scrollable(rail).width(Fill).height(Fill),
-                true,
-                super::motion::Effect::Content(u64::from(self.presets_tab))
-            )
         ]
         .spacing(design::space::MEDIUM)
-        .height(Fill);
-        if self.presets_tab {
-            panel = panel.push(super::widgets::preset_footer(
-                t!("cpu_allocation.add_preset").to_string(),
-                Message::NewPreset,
-            ));
-        }
-        panel.into()
+        .height(Fill)
+        .into()
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {

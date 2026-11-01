@@ -5,7 +5,6 @@ use super::priority_control::{
     process_priority_setting_label, process_thread_priority_setting_label,
 };
 use super::widgets::{action_button, button, checkbox, icon_button, pick_list, text_input};
-use crate::automation::RuntimeStatusSnapshot;
 use crate::config::*;
 use crate::power::ProcessorBoostMode;
 use crate::ui::scrolling::scrollable;
@@ -51,7 +50,6 @@ pub(super) struct Editor {
     draft: Option<Settings>,
     editing: Option<usize>,
     read_only: bool,
-    presets_tab: bool,
     tuning_tabs: [TuningTab; 2],
     expanded: [[bool; 3]; 2],
     priority_expanded: [[bool; 7]; 2],
@@ -63,11 +61,9 @@ pub(super) struct Editor {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Toggle(fn(&mut Settings, bool), bool),
-    RailTab(bool),
     TuningTab(TuningTab),
     Collapse(usize),
     TogglePriority(usize),
-    Status(super::status_rail::Message),
     Number(
         fn(&mut Settings, u64),
         String,
@@ -131,8 +127,6 @@ impl Editor {
                     *value = !*value;
                 }
             }
-            Message::RailTab(value) => self.presets_tab = value,
-            Message::Status(_) => {}
             Message::BuiltIn(p) => {
                 self.selected_preset = BuiltInAdaptiveEnginePreset::ALL
                     .iter()
@@ -147,7 +141,6 @@ impl Editor {
                 let mut draft = s.clone();
                 apply_built_in_adaptive_engine_preset(&mut draft, p);
                 self.draft = Some(draft);
-                self.presets_tab = true;
                 self.read_only = true;
                 self.name = built_in_adaptive_engine_preset_label(p);
             }
@@ -165,12 +158,10 @@ impl Editor {
                     self.editing = Some(i);
                     self.read_only = false;
                     self.draft = Some(draft);
-                    self.presets_tab = true;
                 }
             }
             Message::New => {
                 self.draft = Some(s.clone());
-                self.presets_tab = true;
                 self.name.clear();
                 self.editing = None;
                 self.read_only = false;
@@ -1910,10 +1901,9 @@ impl Editor {
         .height(Fill)
         .into()
     }
-    pub(super) fn side_panel<'a>(
+    pub(super) fn presets_panel<'a>(
         &'a self,
         live: &'a crate::application::SettingsEditor,
-        status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let mut rail = column![super::widgets::heading(
             t!("adaptive_engine.built_in_presets").to_string(),
@@ -1964,43 +1954,16 @@ impl Editor {
                 .align_y(iced::Center),
             );
         }
-        if !self.presets_tab {
-            rail = column![];
-            if let Some(status) =
-                super::status_rail::view(crate::ui::Page::AdaptiveEngine, live, status, &[])
-            {
-                rail = rail.push(status.map(Message::Status));
-            }
-        }
-        let tabs = row![
-            super::widgets::panel_tab(
-                t!("common.status").to_string(),
-                !self.presets_tab,
-                Message::RailTab(false),
+        column![
+            scrollable(rail).width(Fill).height(Fill),
+            super::widgets::preset_footer(
+                t!("adaptive_engine.add_preset").to_string(),
+                Message::New
             ),
-            super::widgets::panel_tab(
-                t!("adaptive_engine.presets").to_string(),
-                self.presets_tab,
-                Message::RailTab(true),
-            )
-        ];
-        let mut panel = column![
-            iced::widget::container(tabs).style(super::widgets::tab_bar),
-            super::motion::wrap(
-                scrollable(rail).width(Fill).height(Fill),
-                true,
-                super::motion::Effect::Content(u64::from(self.presets_tab))
-            )
         ]
         .spacing(design::space::MEDIUM)
-        .height(Fill);
-        if self.presets_tab {
-            panel = panel.push(super::widgets::preset_footer(
-                t!("adaptive_engine.add_preset").to_string(),
-                Message::New,
-            ));
-        }
-        panel.into()
+        .height(Fill)
+        .into()
     }
 }
 fn priority_option_row<'a>(key: &str, cells: [Element<'a, Message>; 3]) -> Element<'a, Message> {

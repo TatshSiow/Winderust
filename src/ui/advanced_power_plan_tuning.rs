@@ -518,7 +518,7 @@ impl Editor {
             (800, 680),
         ))
     }
-    pub(super) fn side_panel<'a>(
+    pub(super) fn presets_panel<'a>(
         &'a self,
         presets: &'a [AdvancedPowerPlanTuningPreset],
     ) -> Element<'a, Message> {
@@ -569,7 +569,6 @@ impl Editor {
             );
         }
         column![
-            super::widgets::panel_heading(t!("processor_power.presets").to_string()),
             scrollable(rail).height(Fill).width(Fill),
             super::widgets::preset_footer(
                 t!("processor_power.add_preset").to_string(),

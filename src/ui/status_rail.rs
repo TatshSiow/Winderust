@@ -293,22 +293,7 @@ pub(super) fn view<'a>(
     .width(Fill)
     .height(Fill)
     .into();
-    Some(
-        if matches!(
-            page,
-            Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard
-        ) {
-            content
-        } else {
-            column![
-                super::widgets::panel_heading(t!("common.status").to_string()),
-                content
-            ]
-            .spacing(design::space::MEDIUM)
-            .height(Fill)
-            .into()
-        },
-    )
+    Some(content)
 }
 fn saved_runtime_settings(
     editor: &crate::application::SettingsEditor,
