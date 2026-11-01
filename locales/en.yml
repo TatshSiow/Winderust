@@ -8,6 +8,11 @@ tray:
   show_winderust: "Show Winderust"
   exit: "Exit"
 
+window:
+  minimize: "Minimize"
+  maximize: "Maximize"
+  restore: "Restore"
+
 nav:
   watchdog: Watchdog
   side_panel: "Side panel"

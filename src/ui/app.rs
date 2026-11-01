@@ -2,7 +2,7 @@ use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
     by_activity, cpu_allocation, cpu_limiter, design, home, memory_trim, navigation, power_rules,
     priority_control, process_list, process_power_plans, settings_pages, status_rail, tasks,
-    timer_resolution, watchdog, widgets, win32_priority_separation,
+    timer_resolution, watchdog, widgets, win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -277,6 +277,7 @@ pub(crate) fn run(
                     breadcrumb: vec![Page::Home],
                     restore_event,
                     window: None,
+                    maximized: false,
                     auto_exclusion_generation: 0,
                     auto_exclusion_retry: false,
                     closing: false,
@@ -310,7 +311,7 @@ pub(crate) fn run(
     .window(iced::window::Settings {
         size: iced::Size::new(1120.0, 760.0),
         min_size: Some(iced::Size::new(900.0, 620.0)),
-        decorations: true,
+        decorations: false,
         exit_on_close_request: false,
         ..Default::default()
     })
@@ -341,6 +342,12 @@ pub(crate) fn run(
                 })
                 .unwrap_or_else(Subscription::none),
             iced::window::close_requests().map(|_| Message::WindowClose),
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Window(iced::window::Event::Resized(_)) => {
+                    Some(Message::WindowResized)
+                }
+                _ => None,
+            }),
             iced::event::listen_with(|event, status, _| {
                 if status != iced::event::Status::Ignored {
                     return None;
@@ -505,6 +512,7 @@ struct WinderustApp {
     breadcrumb: Vec<Page>,
     restore_event: Option<SingleInstanceRestoreEvent>,
     window: Option<iced::window::Id>,
+    maximized: bool,
     auto_exclusion_generation: u64,
     auto_exclusion_retry: bool,
     closing: bool,
@@ -573,6 +581,9 @@ enum Message {
     Page(Page),
     Tick,
     Window(Option<iced::window::Id>),
+    WindowAction(window_frame::Event),
+    WindowResized,
+    WindowMaximized(bool),
     NativeWindow(Option<usize>),
     WindowClose,
     Close,
@@ -597,6 +608,14 @@ impl Message {
         matches!(
             self,
             Self::ShutdownFinished(_)
+                | Self::WindowAction(
+                    window_frame::Event::Drag
+                        | window_frame::Event::Minimize
+                        | window_frame::Event::ToggleMaximize
+                        | window_frame::Event::Resize(_)
+                )
+                | Self::WindowResized
+                | Self::WindowMaximized(_)
                 | Self::Sample(_)
                 | Self::Catalog(_)
                 | Self::PowerPlans(_)
@@ -1410,6 +1429,32 @@ impl WinderustApp {
                 self.settings.select_power_source(source);
                 self.reset_editors();
             }
+            Message::WindowAction(window_frame::Event::Close) => {
+                return self.update(Message::WindowClose)
+            }
+            Message::WindowAction(action) => {
+                if let Some(window) = self.window {
+                    return match action {
+                        window_frame::Event::Drag => iced::window::drag(window),
+                        window_frame::Event::Minimize => iced::window::minimize(window, true),
+                        window_frame::Event::ToggleMaximize => {
+                            iced::window::toggle_maximize(window)
+                        }
+                        window_frame::Event::Resize(direction) => {
+                            iced::window::drag_resize(window, direction)
+                        }
+                        window_frame::Event::Close => {
+                            unreachable!("Close is routed through WindowClose")
+                        }
+                    };
+                }
+            }
+            Message::WindowResized => {
+                if let Some(window) = self.window {
+                    return iced::window::is_maximized(window).map(Message::WindowMaximized);
+                }
+            }
+            Message::WindowMaximized(value) => self.maximized = value,
             Message::Window(window) => {
                 self.window = window;
                 if let Some(window) = window {
@@ -2003,6 +2048,10 @@ impl WinderustApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        window_frame::view(self.view_workspace(), self.maximized, Message::WindowAction)
+    }
+
+    fn view_workspace(&self) -> Element<'_, Message> {
         let content = self.view_content();
         if self.closing || !self.error_message.is_empty() {
             let mut actions =

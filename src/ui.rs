@@ -31,6 +31,7 @@ mod timer_resolution;
 mod watchdog;
 mod widgets;
 mod win32_priority_separation;
+mod window_frame;
 use rust_i18n::t;
 
 pub(crate) mod app;

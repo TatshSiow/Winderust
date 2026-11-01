@@ -626,7 +626,9 @@ impl Editor {
                 let identity = widgets::settings_card(
                     column![
                         row![
-                            iced::widget::image(logo()).width(52).height(52),
+                            iced::widget::image(super::assets::logo())
+                                .width(52)
+                                .height(52),
                             column![
                                 widgets::heading(
                                     t!("app.name").to_string(),
@@ -1005,15 +1007,6 @@ fn parse_color(value: &str) -> Option<u32> {
     (value.len() == 6)
         .then(|| u32::from_str_radix(value, 16).ok())
         .flatten()
-}
-fn logo() -> iced::widget::image::Handle {
-    static HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
-        std::sync::LazyLock::new(|| {
-            iced::widget::image::Handle::from_bytes(
-                include_bytes!("../../image/icon-design.png").as_slice(),
-            )
-        });
-    HANDLE.clone()
 }
 #[cfg(test)]
 mod tests {

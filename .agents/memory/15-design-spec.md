@@ -10,8 +10,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## App Shell
 
-- Use the native Windows title bar and resize borders through Iced window decorations, with left navigation and a right work area.
-- Windows owns the title bar and window buttons. Keep native close requests routed through the existing tray, unsaved-change, and shutdown handling.
+- Use a compact themed title bar with the app icon/name and minimize, maximize/restore, and close controls. Follow the active Light, Dark, AMOLED, and accent palette; disable native title-bar decorations. Keep the left navigation and right work area beneath the title bar.
+- Iced owns native dragging, resizing, minimizing, and maximizing. The caption supports drag and double-click maximize/restore; restored windows expose edge/corner resize targets. Both custom and native close requests use the existing tray, unsaved-change, and shutdown handling. Keep window controls available above dialogs.
 - Use a permanent 88px icon-and-label rail. Main entries are 64px high; center each icon and its actual one- or two-line label together vertically with equal top and bottom insets.
   Group chevrons overlay the icon row's right edge. Keep the thin primary scrollbar within the outer padding. Log, Settings, and About stay below the scrollable primary list.
 - Secondary navigation always floats in a 252px overlay adjacent to its parent, using the existing surface, border, and radius. Clamp it inside the window and scroll long lists. Opening or dismissing it never changes main-content geometry.
