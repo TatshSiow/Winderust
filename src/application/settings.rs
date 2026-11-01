@@ -1357,7 +1357,7 @@ mod tests {
                 settings.advanced_power_plan_tuning_presets.push(
                     crate::config::AdvancedPowerPlanTuningPreset {
                         name: "Saved".into(),
-                        values: settings.adaptive_engine.base_processor_policy,
+                        values: settings.adaptive_engine.base_processor_policy.into(),
                     },
                 );
             });

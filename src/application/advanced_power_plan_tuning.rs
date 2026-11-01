@@ -1,6 +1,6 @@
 use crate::power::{
     apply_processor_power_values_staged, read_plan_personality, read_processor_power_values,
-    PowerPlanPersonality, ProcessorPowerApplyError, ProcessorPowerSourceValues,
+    AdvancedPowerPlanTuningSourceValues, PowerPlanPersonality, ProcessorPowerApplyError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +55,7 @@ impl std::error::Error for AdvancedPowerPlanTuningApplyError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdvancedPowerPlanTuningApplyOutcome {
     pub applied: bool,
-    pub actual_values: Option<ProcessorPowerSourceValues>,
+    pub actual_values: Option<AdvancedPowerPlanTuningSourceValues>,
     pub error: Option<AdvancedPowerPlanTuningApplyError>,
 }
 
@@ -63,7 +63,7 @@ trait AdvancedPowerPlanTuningStore: Send + Sync {
     fn read_values(
         &self,
         guid: &str,
-    ) -> Result<ProcessorPowerSourceValues, AdvancedPowerPlanTuningError>;
+    ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError>;
     fn read_personality(
         &self,
         guid: &str,
@@ -71,7 +71,7 @@ trait AdvancedPowerPlanTuningStore: Send + Sync {
     fn apply_values(
         &self,
         guid: &str,
-        values: ProcessorPowerSourceValues,
+        values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<(), ProcessorPowerApplyError>;
 }
 
@@ -82,7 +82,7 @@ impl AdvancedPowerPlanTuningStore for WindowsAdvancedPowerPlanTuningStore {
     fn read_values(
         &self,
         guid: &str,
-    ) -> Result<ProcessorPowerSourceValues, AdvancedPowerPlanTuningError> {
+    ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError> {
         read_processor_power_values(guid).map_err(AdvancedPowerPlanTuningError::ReadValues)
     }
 
@@ -96,7 +96,7 @@ impl AdvancedPowerPlanTuningStore for WindowsAdvancedPowerPlanTuningStore {
     fn apply_values(
         &self,
         guid: &str,
-        values: ProcessorPowerSourceValues,
+        values: AdvancedPowerPlanTuningSourceValues,
     ) -> Result<(), ProcessorPowerApplyError> {
         apply_processor_power_values_staged(guid, values)
     }
@@ -123,10 +123,10 @@ impl AdvancedPowerPlanTuningService {
     pub(crate) fn read_values(
         &self,
         guid: &str,
-    ) -> Result<ProcessorPowerSourceValues, AdvancedPowerPlanTuningError> {
+    ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError> {
         self.store
             .read_values(guid)
-            .map(ProcessorPowerSourceValues::normalized)
+            .map(AdvancedPowerPlanTuningSourceValues::normalized)
     }
 
     pub(crate) fn read_personality(
@@ -139,7 +139,7 @@ impl AdvancedPowerPlanTuningService {
     pub(crate) fn apply_values(
         &self,
         guid: &str,
-        values: ProcessorPowerSourceValues,
+        values: AdvancedPowerPlanTuningSourceValues,
     ) -> AdvancedPowerPlanTuningApplyOutcome {
         let apply_error = self.store.apply_values(guid, values.normalized()).err();
         let readback = self.read_values(guid);
@@ -188,14 +188,14 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct FakeStoreState {
-        values: Result<ProcessorPowerSourceValues, AdvancedPowerPlanTuningError>,
+        values: Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError>,
         personality: Result<PowerPlanPersonality, AdvancedPowerPlanTuningError>,
         apply_error: Option<ProcessorPowerApplyError>,
         calls: Vec<&'static str>,
     }
 
     impl FakeStore {
-        fn new(values: ProcessorPowerSourceValues) -> Self {
+        fn new(values: AdvancedPowerPlanTuningSourceValues) -> Self {
             Self {
                 state: Arc::new(Mutex::new(FakeStoreState {
                     values: Ok(values),
@@ -215,7 +215,7 @@ mod tests {
         fn read_values(
             &self,
             _guid: &str,
-        ) -> Result<ProcessorPowerSourceValues, AdvancedPowerPlanTuningError> {
+        ) -> Result<AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningError> {
             let mut state = self.state.lock().expect("power tuning lock");
             state.calls.push("read");
             state.values.clone()
@@ -233,7 +233,7 @@ mod tests {
         fn apply_values(
             &self,
             _guid: &str,
-            _values: ProcessorPowerSourceValues,
+            _values: AdvancedPowerPlanTuningSourceValues,
         ) -> Result<(), ProcessorPowerApplyError> {
             let mut state = self.state.lock().expect("power tuning lock");
             state.calls.push("apply");
@@ -244,14 +244,17 @@ mod tests {
         }
     }
 
-    fn values(percent: u32) -> ProcessorPowerSourceValues {
-        ProcessorPowerSourceValues::same(ProcessorPowerValues::new_with_boost_mode(
-            percent,
-            percent,
-            percent,
-            percent,
-            ProcessorBoostMode::EfficientEnabled,
-        ))
+    fn values(percent: u32) -> AdvancedPowerPlanTuningSourceValues {
+        AdvancedPowerPlanTuningSourceValues::same(
+            ProcessorPowerValues::new_with_boost_mode(
+                percent,
+                percent,
+                percent,
+                percent,
+                ProcessorBoostMode::EfficientEnabled,
+            )
+            .into(),
+        )
     }
 
     #[test]
@@ -270,25 +273,30 @@ mod tests {
 
     #[test]
     fn partial_apply_failure_still_returns_actual_values_and_stage() {
-        let actual = values(30);
-        let store = FakeStore::new(actual);
-        store.state.lock().expect("power tuning lock").apply_error =
-            Some(ProcessorPowerApplyError::at(
-                ProcessorPowerApplyStage::BatteryPerformanceMaximum,
-                "write failed".to_owned(),
-            ));
-        let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
-
-        let outcome = service.apply_values("plan", values(80));
-
-        assert!(!outcome.applied);
-        assert_eq!(outcome.actual_values, Some(actual));
-        assert!(matches!(
-            outcome.error,
-            Some(AdvancedPowerPlanTuningApplyError::Apply(ref error))
-                if error.stage() == ProcessorPowerApplyStage::BatteryPerformanceMaximum
-        ));
-        assert_eq!(store.calls(), vec!["apply", "read"]);
+        use crate::power::ProcessorSchedulingPolicy;
+        for stage in [
+            ProcessorPowerApplyStage::BatteryPerformanceMaximum,
+            ProcessorPowerApplyStage::AcSchedulingPolicy,
+            ProcessorPowerApplyStage::BatterySchedulingPolicy,
+            ProcessorPowerApplyStage::AcShortSchedulingPolicy,
+            ProcessorPowerApplyStage::BatteryShortSchedulingPolicy,
+        ] {
+            let mut actual = values(30);
+            actual.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
+            actual.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+            let store = FakeStore::new(actual);
+            store.state.lock().expect("power tuning lock").apply_error = Some(
+                ProcessorPowerApplyError::at(stage, "write failed".to_owned()),
+            );
+            let service = AdvancedPowerPlanTuningService::with_store(Box::new(store.clone()));
+            let outcome = service.apply_values("plan", values(80));
+            assert!(!outcome.applied);
+            assert_eq!(outcome.actual_values, Some(actual));
+            assert!(
+                matches!(outcome.error, Some(AdvancedPowerPlanTuningApplyError::Apply(ref error)) if error.stage() == stage)
+            );
+            assert_eq!(store.calls(), vec!["apply", "read"]);
+        }
     }
 
     #[test]

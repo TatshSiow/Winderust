@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::foreground::same_executable_path;
-use crate::power::plan::{AdaptivePowerBoostValues, ProcessorBoostMode, ProcessorPowerValues};
+use crate::power::plan::{
+    AdaptivePowerBoostValues, AdvancedPowerPlanTuningValues, ProcessorBoostMode,
+    ProcessorPowerValues,
+};
 use crate::rules::{
     normalize_execution_failure_suppression_threshold,
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
@@ -589,7 +592,7 @@ pub struct CpuAllocationPreset {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvancedPowerPlanTuningPreset {
     pub name: String,
-    pub values: ProcessorPowerValues,
+    pub values: AdvancedPowerPlanTuningValues,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

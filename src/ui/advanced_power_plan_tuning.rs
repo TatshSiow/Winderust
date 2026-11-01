@@ -3,8 +3,9 @@ use super::widgets::{action_button, button, icon_button, pick_list, slider, text
 use crate::application::AdvancedPowerPlanTuningService;
 use crate::config::AdvancedPowerPlanTuningPreset;
 use crate::power::{
-    EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerPreset,
-    ProcessorPowerSourceValues, ProcessorPowerValues,
+    AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues, EffectivePowerMode,
+    PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerPreset,
+    ProcessorSchedulingPolicy,
 };
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -15,7 +16,7 @@ use rust_i18n::t;
 pub(super) struct Editor {
     service: AdvancedPowerPlanTuningService,
     target: Option<String>,
-    values: Option<ProcessorPowerSourceValues>,
+    values: Option<AdvancedPowerPlanTuningSourceValues>,
     personality: Option<PowerPlanPersonality>,
     pub(super) dirty: bool,
     pub(super) status: String,
@@ -36,6 +37,11 @@ pub(super) enum Field {
     Boost,
 }
 #[derive(Debug, Clone, Copy)]
+pub(super) enum SchedulingField {
+    LongRunning,
+    ShortRunning,
+}
+#[derive(Debug, Clone, Copy)]
 pub(super) enum PresetTarget {
     BuiltIn(ProcessorPowerPreset),
     Custom(Option<usize>),
@@ -43,7 +49,7 @@ pub(super) enum PresetTarget {
 struct PresetEditor {
     target: PresetTarget,
     name: String,
-    values: ProcessorPowerValues,
+    values: AdvancedPowerPlanTuningValues,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -54,12 +60,14 @@ pub(super) enum Message {
     Value(Source, Field, u32),
     ValueText(Source, Field, String),
     Boost(Source, ProcessorBoostMode),
+    Scheduling(Source, SchedulingField, ProcessorSchedulingPolicy),
     Load(Source, PresetChoice),
     OpenPreset(PresetTarget),
     PresetName(String),
     PresetValue(Field, u32),
     PresetValueText(Field, String),
     PresetBoost(ProcessorBoostMode),
+    PresetScheduling(SchedulingField, Option<ProcessorSchedulingPolicy>),
     SavePreset,
     ClosePreset,
     Remove(usize),
@@ -68,17 +76,17 @@ impl Editor {
     fn selected_preset(
         &self,
         source: Source,
-        values: ProcessorPowerValues,
+        values: AdvancedPowerPlanTuningValues,
         options: &[PresetChoice],
     ) -> Option<PresetChoice> {
         self.selected_presets[source as usize]
             .as_ref()
-            .filter(|choice| choice.1 == values.normalized() && options.contains(choice))
+            .filter(|choice| preset_matches(choice.1, values) && options.contains(choice))
             .or_else(|| {
                 options
                     .iter()
                     .rev()
-                    .find(|choice| choice.1 == values.normalized())
+                    .find(|choice| preset_matches(choice.1, values))
             })
             .cloned()
     }
@@ -135,6 +143,8 @@ impl Editor {
                 self.status = t!("processor_power.loaded_values", plan = guid).to_string();
             }
             Err(error) => {
+                self.values = None;
+                self.dirty = false;
                 self.status = error.to_string();
             }
         }
@@ -145,10 +155,8 @@ impl Editor {
             return false;
         };
         let outcome = self.service.apply_values(guid, values);
-        if let Some(actual) = outcome.actual_values {
-            self.values = Some(actual);
-            self.dirty = !outcome.applied;
-        }
+        self.values = outcome.actual_values;
+        self.dirty = self.values.is_some() && !outcome.applied;
         match outcome.error {
             Some(error) => {
                 self.status = error.to_string();
@@ -200,22 +208,41 @@ impl Editor {
             }
             Message::Boost(source, value) => {
                 if let Some(values) = self.values.as_mut() {
-                    source_values(values, source).boost_mode = value;
+                    source_values(values, source).processor.boost_mode = value;
                     self.dirty = true;
                 }
             }
             Message::Load(source, choice) => {
                 if let Some(values) = self.values.as_mut() {
-                    *source_values(values, source) = choice.1.normalized();
+                    let current = source_values(values, source);
+                    let mut preset = choice.1.normalized();
+                    preset.scheduling_policy = current
+                        .scheduling_policy
+                        .map(|value| preset.scheduling_policy.unwrap_or(value));
+                    preset.short_scheduling_policy = current
+                        .short_scheduling_policy
+                        .map(|value| preset.short_scheduling_policy.unwrap_or(value));
+                    *current = preset;
                     self.selected_presets[source as usize] = Some(choice);
                     self.dirty = true;
                 }
             }
+            Message::Scheduling(source, field, value) => {
+                if let Some(values) = self.values.as_mut() {
+                    if let Some(current) =
+                        scheduling_field(source_values(values, source), field).as_mut()
+                    {
+                        *current = value;
+                        self.dirty = true;
+                    }
+                }
+            }
             Message::OpenPreset(target) => {
                 let (name, values) = match target {
-                    PresetTarget::BuiltIn(p) => {
-                        (preset_label(p), ProcessorPowerValues::for_preset(p))
-                    }
+                    PresetTarget::BuiltIn(p) => (
+                        preset_label(p),
+                        AdvancedPowerPlanTuningValues::for_preset(p),
+                    ),
                     PresetTarget::Custom(Some(i)) => {
                         let Some(p) = presets.get(i) else {
                             return;
@@ -225,7 +252,9 @@ impl Editor {
                     PresetTarget::Custom(None) => (
                         String::new(),
                         self.values.map(|v| v.ac).unwrap_or_else(|| {
-                            ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced)
+                            AdvancedPowerPlanTuningValues::for_preset(
+                                ProcessorPowerPreset::Balanced,
+                            )
                         }),
                     ),
                 };
@@ -266,7 +295,16 @@ impl Editor {
                     .as_mut()
                     .filter(|p| matches!(p.target, PresetTarget::Custom(_)))
                 {
-                    p.values.boost_mode = v;
+                    p.values.processor.boost_mode = v;
+                }
+            }
+            Message::PresetScheduling(field, value) => {
+                if let Some(preset) = self
+                    .preset
+                    .as_mut()
+                    .filter(|p| matches!(p.target, PresetTarget::Custom(_)))
+                {
+                    *scheduling_field(&mut preset.values, field) = value;
                 }
             }
             Message::SavePreset => {
@@ -365,7 +403,12 @@ impl Editor {
             ] {
                 let mut options = BUILT_INS
                     .into_iter()
-                    .map(|p| PresetChoice(preset_label(p), ProcessorPowerValues::for_preset(p)))
+                    .map(|p| {
+                        PresetChoice(
+                            preset_label(p),
+                            AdvancedPowerPlanTuningValues::for_preset(p),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 options.extend(
                     presets
@@ -401,7 +444,7 @@ impl Editor {
                         text(t!("processor_power.boost_mode").to_string()).width(Fill),
                         pick_list(
                             ProcessorBoostMode::ALL.map(BoostChoice),
-                            Some(BoostChoice(values.boost_mode)),
+                            Some(BoostChoice(values.processor.boost_mode)),
                             move |v| Message::Boost(source, v.0)
                         )
                         .width(280)
@@ -409,6 +452,28 @@ impl Editor {
                     .spacing(design::space::SMALL)
                     .into(),
                 );
+                for (field, label, policy) in scheduling_fields(values) {
+                    let control: Element<'_, Message> = if let Some(policy) = policy {
+                        pick_list(
+                            ProcessorSchedulingPolicy::ALL.map(|v| SchedulingChoice(Some(v))),
+                            Some(SchedulingChoice(Some(policy))),
+                            move |v| {
+                                Message::Scheduling(
+                                    source,
+                                    field,
+                                    v.0.expect("available scheduling choices contain a policy"),
+                                )
+                            },
+                        )
+                        .width(280)
+                        .into()
+                    } else {
+                        text(t!("common.unavailable").to_string())
+                            .style(text::secondary)
+                            .into()
+                    };
+                    controls.push(super::widgets::setting_row(label, control).into());
+                }
                 body = body.push(super::widgets::setting_group(
                     title.to_string(),
                     self.expanded[source as usize],
@@ -487,15 +552,30 @@ impl Editor {
         let boost: Element<'_, Message> = if editable {
             pick_list(
                 ProcessorBoostMode::ALL.map(BoostChoice),
-                Some(BoostChoice(p.values.boost_mode)),
+                Some(BoostChoice(p.values.processor.boost_mode)),
                 |v| Message::PresetBoost(v.0),
             )
             .width(design::SELECT_WIDTH)
             .into()
         } else {
-            text(BoostChoice(p.values.boost_mode).to_string()).into()
+            text(BoostChoice(p.values.processor.boost_mode).to_string()).into()
         };
         values.push(widgets::setting_row("processor_power.boost_mode", boost).into());
+        for (field, label, policy) in scheduling_fields(p.values) {
+            let control: Element<'_, Message> = if editable {
+                let options = std::iter::once(SchedulingChoice(None))
+                    .chain(ProcessorSchedulingPolicy::ALL.map(|v| SchedulingChoice(Some(v))))
+                    .collect::<Vec<_>>();
+                pick_list(options, Some(SchedulingChoice(policy)), move |v| {
+                    Message::PresetScheduling(field, v.0)
+                })
+                .width(design::SELECT_WIDTH)
+                .into()
+            } else {
+                text(SchedulingChoice(policy).to_string()).into()
+            };
+            values.push(widgets::setting_row(label, control).into());
+        }
         form = form
             .push(widgets::heading(
                 t!("processor_power.processor_settings").to_string(),
@@ -599,15 +679,81 @@ const BUILT_INS: [ProcessorPowerPreset; 3] = [
     ProcessorPowerPreset::Saver,
 ];
 fn source_values(
-    values: &mut ProcessorPowerSourceValues,
+    values: &mut AdvancedPowerPlanTuningSourceValues,
     source: Source,
-) -> &mut ProcessorPowerValues {
+) -> &mut AdvancedPowerPlanTuningValues {
     match source {
         Source::Ac => &mut values.ac,
         Source::Battery => &mut values.battery,
     }
 }
-fn fields(v: ProcessorPowerValues) -> [(Field, &'static str, u32); 4] {
+fn preset_matches(
+    preset: AdvancedPowerPlanTuningValues,
+    actual: AdvancedPowerPlanTuningValues,
+) -> bool {
+    let preset = preset.normalized();
+    preset.processor == actual.normalized().processor
+        && preset
+            .scheduling_policy
+            .is_none_or(|policy| Some(policy) == actual.scheduling_policy)
+        && preset
+            .short_scheduling_policy
+            .is_none_or(|policy| Some(policy) == actual.short_scheduling_policy)
+}
+
+fn scheduling_fields(
+    values: AdvancedPowerPlanTuningValues,
+) -> [(
+    SchedulingField,
+    &'static str,
+    Option<ProcessorSchedulingPolicy>,
+); 2] {
+    [
+        (
+            SchedulingField::LongRunning,
+            "processor_power.scheduling_policy",
+            values.scheduling_policy,
+        ),
+        (
+            SchedulingField::ShortRunning,
+            "processor_power.short_scheduling_policy",
+            values.short_scheduling_policy,
+        ),
+    ]
+}
+
+fn scheduling_field(
+    values: &mut AdvancedPowerPlanTuningValues,
+    field: SchedulingField,
+) -> &mut Option<ProcessorSchedulingPolicy> {
+    match field {
+        SchedulingField::LongRunning => &mut values.scheduling_policy,
+        SchedulingField::ShortRunning => &mut values.short_scheduling_policy,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SchedulingChoice(Option<ProcessorSchedulingPolicy>);
+impl std::fmt::Display for SchedulingChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(match self.0 {
+            None => "processor_power.keep_scheduling_policy",
+            Some(ProcessorSchedulingPolicy::AllProcessors) => "processor_power.schedule_all",
+            Some(ProcessorSchedulingPolicy::PerformanceProcessors) =>
+                "processor_power.schedule_performance",
+            Some(ProcessorSchedulingPolicy::PreferPerformanceProcessors) =>
+                "processor_power.schedule_prefer_performance",
+            Some(ProcessorSchedulingPolicy::EfficiencyProcessors) =>
+                "processor_power.schedule_efficiency",
+            Some(ProcessorSchedulingPolicy::PreferEfficiencyProcessors) =>
+                "processor_power.schedule_prefer_efficiency",
+            Some(ProcessorSchedulingPolicy::Automatic) => "processor_power.schedule_automatic",
+        }))
+    }
+}
+
+fn fields(v: AdvancedPowerPlanTuningValues) -> [(Field, &'static str, u32); 4] {
+    let v = v.processor;
     [
         (
             Field::Parking,
@@ -627,7 +773,8 @@ fn fields(v: ProcessorPowerValues) -> [(Field, &'static str, u32); 4] {
         (Field::Boost, "processor_power.boost_policy", v.boost_policy),
     ]
 }
-fn set_field(values: &mut ProcessorPowerValues, field: Field, value: u32) {
+fn set_field(values: &mut AdvancedPowerPlanTuningValues, field: Field, value: u32) {
+    let values = &mut values.processor;
     *match field {
         Field::Parking => &mut values.core_parking_min,
         Field::Minimum => &mut values.performance_min,
@@ -650,7 +797,7 @@ impl std::fmt::Display for PlanChoice {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PresetChoice(String, ProcessorPowerValues);
+pub(super) struct PresetChoice(String, AdvancedPowerPlanTuningValues);
 impl std::fmt::Display for PresetChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -706,8 +853,113 @@ fn mode_label(mode: EffectivePowerMode) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn scheduling_edits_and_presets_preserve_power_source_and_availability() {
+        let mut values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        values.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+        values.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
+        let mut editor = Editor {
+            values: Some(AdvancedPowerPlanTuningSourceValues::same(values)),
+            ..Default::default()
+        };
+        editor.update(
+            &mut vec![],
+            &[],
+            Message::Scheduling(
+                Source::Ac,
+                SchedulingField::LongRunning,
+                ProcessorSchedulingPolicy::PerformanceProcessors,
+            ),
+        );
+        assert_eq!(editor.values.unwrap().battery, values);
+        assert_eq!(
+            editor.values.unwrap().ac.scheduling_policy,
+            Some(ProcessorSchedulingPolicy::PerformanceProcessors)
+        );
+        editor.update(
+            &mut vec![],
+            &[],
+            Message::Load(
+                Source::Ac,
+                PresetChoice(
+                    "Saver".into(),
+                    AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Saver),
+                ),
+            ),
+        );
+        assert_eq!(
+            editor.values.unwrap().ac.scheduling_policy,
+            Some(ProcessorSchedulingPolicy::PerformanceProcessors)
+        );
+        assert_eq!(
+            editor.values.unwrap().ac.short_scheduling_policy,
+            values.short_scheduling_policy
+        );
+        let mut presets = vec![];
+        editor.update(
+            &mut presets,
+            &[],
+            Message::OpenPreset(PresetTarget::Custom(None)),
+        );
+        editor.update(&mut presets, &[], Message::PresetName("Scheduling".into()));
+        editor.update(
+            &mut presets,
+            &[],
+            Message::PresetScheduling(
+                SchedulingField::ShortRunning,
+                Some(ProcessorSchedulingPolicy::PreferEfficiencyProcessors),
+            ),
+        );
+        editor.update(&mut presets, &[], Message::SavePreset);
+        assert_eq!(
+            presets[0].values.short_scheduling_policy,
+            Some(ProcessorSchedulingPolicy::PreferEfficiencyProcessors)
+        );
+        let choice = PresetChoice("Scheduling".into(), presets[0].values);
+        editor.update(
+            &mut presets,
+            &[],
+            Message::Load(Source::Battery, choice.clone()),
+        );
+        assert_eq!(
+            editor.values.unwrap().battery.short_scheduling_policy,
+            presets[0].values.short_scheduling_policy
+        );
+        editor.values.as_mut().unwrap().battery.scheduling_policy = None;
+        editor.dirty = false;
+        editor.update(
+            &mut presets,
+            &[],
+            Message::Scheduling(
+                Source::Battery,
+                SchedulingField::LongRunning,
+                ProcessorSchedulingPolicy::Automatic,
+            ),
+        );
+        assert!(!editor.dirty);
+        editor.update(&mut presets, &[], Message::Load(Source::Battery, choice));
+        assert_eq!(editor.values.unwrap().battery.scheduling_policy, None);
+        editor.update(
+            &mut presets,
+            &[],
+            Message::OpenPreset(PresetTarget::BuiltIn(ProcessorPowerPreset::Balanced)),
+        );
+        editor.update(
+            &mut presets,
+            &[],
+            Message::PresetScheduling(
+                SchedulingField::LongRunning,
+                Some(ProcessorSchedulingPolicy::EfficiencyProcessors),
+            ),
+        );
+        assert_eq!(
+            editor.preset.as_ref().unwrap().values.scheduling_policy,
+            None
+        );
+    }
+
+    #[test]
     fn retarget_read_failure_cannot_reuse_previous_plan_values() {
-        let values = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Performance);
+        let values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Performance);
         let replacement = PowerPlan {
             guid: "invalid-replacement-guid".into(),
             name: "Replacement".into(),
@@ -716,7 +968,7 @@ mod tests {
         for automatic in [true, false] {
             let mut editor = Editor {
                 target: Some("previous-plan".into()),
-                values: Some(ProcessorPowerSourceValues::same(values)),
+                values: Some(AdvancedPowerPlanTuningSourceValues::same(values)),
                 personality: Some(PowerPlanPersonality::HighPerformance),
                 selected_presets: [Some(PresetChoice("Old selection".into(), values)), None],
                 ..Default::default()
@@ -744,8 +996,8 @@ mod tests {
     #[test]
     fn identical_presets_keep_explicit_selection_for_each_source() {
         let mut editor = Editor::default();
-        let values = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced);
-        editor.values = Some(ProcessorPowerSourceValues::same(values));
+        let values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        editor.values = Some(AdvancedPowerPlanTuningSourceValues::same(values));
         let options = vec![
             PresetChoice("Balanced".into(), values),
             PresetChoice("Mine".into(), values),
@@ -782,7 +1034,7 @@ mod tests {
             editor.selected_preset(Source::Ac, values, &options[..1]),
             Some(options[0].clone())
         );
-        let changed = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
+        let changed = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Saver);
         assert_eq!(editor.selected_preset(Source::Ac, changed, &options), None);
     }
 
@@ -790,8 +1042,8 @@ mod tests {
     fn presets_are_unique_readonly_and_change_only_requested_source() {
         let mut e = Editor::default();
         let mut presets = vec![];
-        let balanced = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced);
-        e.values = Some(ProcessorPowerSourceValues::same(balanced));
+        let balanced = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        e.values = Some(AdvancedPowerPlanTuningSourceValues::same(balanced));
         e.update(
             &mut presets,
             &[],
@@ -799,7 +1051,7 @@ mod tests {
                 Source::Ac,
                 PresetChoice(
                     "Saver".into(),
-                    ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver),
+                    AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Saver),
                 ),
             ),
         );

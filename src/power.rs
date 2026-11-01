@@ -3,8 +3,9 @@ pub(crate) mod powercfg;
 
 pub(crate) use plan::{
     adaptive_power_profile_transition, AdaptivePowerBoostValues, AdaptivePowerDemand,
-    AdaptivePowerProfile, EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
-    ProcessorPowerPreset, ProcessorPowerSourceValues, ProcessorPowerValues,
+    AdaptivePowerProfile, AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues,
+    EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerPreset,
+    ProcessorPowerSourceValues, ProcessorPowerValues, ProcessorSchedulingPolicy,
 };
 #[cfg(test)]
 pub(crate) use powercfg::ProcessorPowerApplyStage;

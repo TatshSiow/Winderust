@@ -605,7 +605,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("processor_power.performance_help").to_string(),
             t!("processor_power.balanced_help").to_string(),
             t!("processor_power.saver_help").to_string(),
-            "core parking processor power boost min max ac dc battery plugged performance saver balanced".to_string(),
+            "core parking processor power boost min max ac dc battery plugged performance saver balanced scheduling hybrid long short thread policy schedpolicy shortschedpolicy".to_string(),
         ],
         Page::CpuLimiter => vec![
             t!("cpu_limiter.intro_1").to_string(),

@@ -209,6 +209,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let _ = app.update(Message::ToggleSidePanel);
             assert_eq!(app.side_panel_open, !before);
         }
+        if extra == Some(20) {
+            for source in [
+                advanced_power_plan_tuning::Source::Ac,
+                advanced_power_plan_tuning::Source::Battery,
+            ] {
+                let _ = app.update(Message::PowerTuning(
+                    advanced_power_plan_tuning::Message::Group(source),
+                ));
+            }
+        }
         if extra == Some(18) {
             app.settings.background_efficiency.enabled = true;
         }

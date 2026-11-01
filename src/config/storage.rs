@@ -633,7 +633,8 @@ mod tests {
                     100,
                     100,
                     crate::power::plan::ProcessorBoostMode::Aggressive,
-                ),
+                )
+                .into(),
             }],
             cpu_limiter: CpuLimiterSettings {
                 enabled: true,

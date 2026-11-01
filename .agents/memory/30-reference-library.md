@@ -321,7 +321,7 @@ Winderust does not enable debug privilege. Elevated process access continues to 
 
 ## Advanced Power Plan Tuning
 
-Winderust can apply separate AC and battery processor-power percentages and processor boost modes to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process CPU allocation.
+Winderust can apply separate AC and battery processor-power percentages, processor boost modes, and long/short-running thread scheduling policies to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process CPU allocation.
 
 Implementation paths:
 
@@ -334,8 +334,7 @@ Implementation paths:
 - `src/platform/windows/power_plan.rs`: raw processor-setting reads/writes, scheme activation, GUID
   conversion, and native power-policy boundary.
 
-The explicit tuning service applies ten ordered A/C and battery settings and
-retains the exact failing stage. It re-reads the selected plan after every
+The explicit tuning service applies ten ordered A/C and battery processor settings, then up to four selected scheduling-policy values, and retains the exact failing stage. It re-reads the selected plan after every
 attempt, including a partial failure, so the UI reflects the values Windows now
 holds rather than the pre-apply draft. This persistent user command does not use
 the automatic power-plan recovery journal or claim ledger.
@@ -348,6 +347,15 @@ the automatic power-plan recovery journal or claim ledger.
 | Core parking minimum cores | Sets the percentage of logical processors that must remain unparked. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-core-parking-cpmincores |
 | Processor performance min/max | Sets minimum and maximum processor performance percentages. | [Minimum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-minperformance) / [Maximum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-maxperformance) |
 | Processor performance boost mode | Controls Windows processor boost policy values such as disabled, enabled, aggressive, and efficient modes. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfboostmode |
+
+Scheduling-policy details:
+
+- `src/power/plan.rs`: `ProcessorSchedulingPolicy` maps documented indices 0-5 exactly; unknown values fail instead of becoming Automatic. Explicit tuning/preset values compose the existing processor values and optional scheduling overrides. Adaptive processor profiles convert with no scheduling overrides.
+- `src/platform/windows/power_plan.rs`: SDK `GUID_PROCESSOR_THREAD_SCHEDULING_POLICY` (`93b8b6dc-0698-4d1c-9ee4-0644e900c85d`) and `GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY` (`bae08b81-2d5e-4688-ad6a-13243356654b`) use the processor subgroup. `ERROR_FILE_NOT_FOUND` on an optional read means unavailable; all other read errors remain failures. Existing required processor settings still fail if missing.
+- `src/ui/advanced_power_plan_tuning.rs`: loaded values preserve each plan/source; unsupported settings cannot be enabled by a preset. Built-in presets leave scheduling untouched; custom presets serialize optional overrides. Apply remains an explicit persistent operation with stage-specific errors and post-attempt readback; it never adds a runtime recovery claim.
+- [SchedulingPolicy](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-hetero-power-scheduling-schedulingpolicy): long-running threads, alias `SCHEDPOLICY`, indices 0 All / 1 Performance / 2 Prefer performance / 3 Efficiency / 4 Prefer efficiency / 5 Automatic.
+- [ShortSchedulingPolicy](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-hetero-power-scheduling-shortschedulingpolicy): short-running threads, alias `SHORTSCHEDPOLICY`, same six values. Windows determines the short/long threshold; Winderust does not change that threshold.
+- [Microsoft SDK declarations](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/winnt.h): direct source for the two scheduling GUIDs.
 
 ## Priority Control
 

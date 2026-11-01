@@ -21,6 +21,9 @@ use windows_sys::{
             PowerWriteACValueIndex, PowerWriteDCValueIndex, PowerWriteDescription,
             PowerWriteFriendlyName, ACCESS_SCHEME, EFFECTIVE_POWER_MODE, EFFECTIVE_POWER_MODE_V2,
         },
+        System::SystemServices::{
+            GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY, GUID_PROCESSOR_THREAD_SCHEDULING_POLICY,
+        },
     },
 };
 
@@ -34,6 +37,8 @@ pub(crate) enum PowerSetting {
     PerformanceMaximum,
     BoostPolicy,
     BoostMode,
+    SchedulingPolicy,
+    ShortSchedulingPolicy,
     IdleDisable,
 }
 
@@ -238,34 +243,38 @@ pub(crate) fn write_scheme_description(guid: &str, description: &str) -> Result<
 }
 
 pub(crate) fn read_ac_value(guid: &str, setting: PowerSetting) -> Result<u32, String> {
-    let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-    let (subgroup, setting) = setting_guids(setting);
-    let mut value = 0;
-    // SAFETY: GUID references remain live and value is writable for the synchronous call.
-    let result =
-        unsafe { PowerReadACValueIndex(null_mut(), &scheme, &subgroup, &setting, &mut value) };
-    if result == ERROR_SUCCESS {
-        Ok(value)
-    } else {
-        Err(format!(
-            "PowerReadACValueIndex({}) failed with error code {result}.",
-            format_guid(&setting)
-        ))
-    }
+    read_optional_value(guid, setting, false)?
+        .ok_or_else(|| "A/C power setting is unavailable.".to_owned())
 }
 
 pub(crate) fn read_dc_value(guid: &str, setting: PowerSetting) -> Result<u32, String> {
+    read_optional_value(guid, setting, true)?
+        .ok_or_else(|| "Battery power setting is unavailable.".to_owned())
+}
+
+pub(crate) fn read_optional_value(
+    guid: &str,
+    setting: PowerSetting,
+    battery: bool,
+) -> Result<Option<u32>, String> {
     let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
     let (subgroup, setting) = setting_guids(setting);
     let mut value = 0;
-    // SAFETY: GUID references remain live and value is writable for the synchronous call.
-    let result =
-        unsafe { PowerReadDCValueIndex(null_mut(), &scheme, &subgroup, &setting, &mut value) };
+    let result = if battery {
+        // SAFETY: GUID references remain live and value is writable for the synchronous call.
+        unsafe { PowerReadDCValueIndex(null_mut(), &scheme, &subgroup, &setting, &mut value) }
+    } else {
+        // SAFETY: GUID references remain live and value is writable for the synchronous call.
+        unsafe { PowerReadACValueIndex(null_mut(), &scheme, &subgroup, &setting, &mut value) }
+    };
     if result == ERROR_SUCCESS {
-        Ok(value)
+        Ok(Some(value))
+    } else if result == ERROR_FILE_NOT_FOUND {
+        Ok(None)
     } else {
         Err(format!(
-            "PowerReadDCValueIndex({}) failed with error code {result}.",
+            "PowerRead{}ValueIndex({}) failed with error code {result}.",
+            if battery { "DC" } else { "AC" },
             format_guid(&setting)
         ))
     }
@@ -468,6 +477,14 @@ fn setting_guids(setting: PowerSetting) -> (GUID, GUID) {
         PowerSetting::BoostMode => (
             GUID_PROCESSOR_SETTINGS_SUBGROUP,
             GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+        ),
+        PowerSetting::SchedulingPolicy => (
+            GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            GUID_PROCESSOR_THREAD_SCHEDULING_POLICY,
+        ),
+        PowerSetting::ShortSchedulingPolicy => (
+            GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY,
         ),
     }
 }

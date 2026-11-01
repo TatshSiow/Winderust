@@ -61,7 +61,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   `src/power/powercfg.rs` owns typed plan/domain semantics, while raw GUID, power-scheme,
   processor-setting, and effective-power-mode APIs live only in
   `src/platform/windows/power_plan.rs`. Persistent Advanced Power Plan Tuning remains a separate
-  explicit application service and never enters the automatic recovery journal.
+  explicit application service and never enters the automatic recovery journal. Its optional
+  long/short-running thread scheduling policies stay outside Adaptive Engine processor profiles;
+  built-in presets preserve current policies, and custom presets can select optional overrides.
 - `src/backend/self_power.rs` owns Winderust's composed hidden/Adaptive priority and Power
   Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
   clean shutdown. Raw current-process query/set calls live only in
