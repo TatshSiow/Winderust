@@ -640,8 +640,10 @@ mod tests {
             // Compare the interiors to catch stale content without masking that known edge rounding.
             for (index, (actual, expected)) in pixels
                 .data()
-                .chunks_exact(4)
-                .zip(expected.data().chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(expected.data().as_chunks::<4>().0)
                 .enumerate()
             {
                 if actual

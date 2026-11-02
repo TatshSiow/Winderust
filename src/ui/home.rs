@@ -1592,7 +1592,7 @@ mod tests {
                 theme.palette().background,
             );
             // The software renderer writes BGRA pixels for the window surface.
-            for pixel in pixels.data_mut().chunks_exact_mut(4) {
+            for pixel in pixels.data_mut().as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
             image::save_buffer(
