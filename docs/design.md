@@ -26,7 +26,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Use a compact themed title bar with the app icon/name and minimize, maximize/restore, and close controls. Follow the active Light, Dark, AMOLED, and accent palette; disable native title-bar decorations. Keep the left navigation and right work area beneath the title bar.
 - Iced owns native dragging, resizing, minimizing, and maximizing. The caption supports drag and double-click maximize/restore; restored windows expose edge/corner resize targets. Both custom and native close requests use the existing tray, unsaved-change, and shutdown handling. Keep window controls available above dialogs.
 - Use a permanent 88px icon-and-label rail. Main entries are 64px high; center each icon and its actual one- or two-line label together vertically with equal top and bottom insets.
-  Group chevrons overlay the icon row's right edge. Keep the thin primary scrollbar within the outer padding. Log, Settings, and About stay below the scrollable primary list.
+  Group chevrons overlay the icon row's right edge. Search, primary items, and bottom shortcuts share the same 76px item width and centerline. Keep the thin primary scrollbar within the existing 6px outer padding; do not apply the wider page gutter to the navigation rail. Log, Settings, and About stay below the scrollable primary list.
 - Secondary navigation always floats in a 252px overlay adjacent to its parent, using the existing surface, border, and radius. Clamp it inside the window and scroll long lists. Opening or dismissing it never changes main-content geometry.
   Hover a parent for 250ms to open or switch its child menu. Clicking a rail item navigates directly to its page and dismisses pending or open flyouts. Keep it open over either area, allow 300ms to cross between them, and cancel outdated timers. Wake only for a pending delay; do not poll while idle.
   Choosing a page closes the flyout. Outside clicks, Escape, and window focus loss dismiss it without changing the current page or active rail highlight.
@@ -51,6 +51,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
 - Use shared 10px surface and 6px control corner radii consistently. Do not introduce large rounded marketing panels.
+- Use the shared scroll helpers and scrollbar settings for both axes. Keep a permanent gutter on each scrolling axis, including when the thumb is hidden, so page/tab changes cannot shift content; never paint tracks over cards, controls, or table cells. Use a transparent track and a slim rounded neutral thumb, with stronger hover/drag contrast and no accent-colored strip.
 
 ## Components
 

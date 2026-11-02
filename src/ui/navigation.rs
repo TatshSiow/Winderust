@@ -257,6 +257,32 @@ pub(super) fn has_children(page: Page) -> bool {
     })
 }
 
+pub(super) fn rail<'a, Message: 'a>(
+    search: Element<'a, Message>,
+    primary: Element<'a, Message>,
+    utilities: Element<'a, Message>,
+) -> Element<'a, Message> {
+    use iced::widget::{column, container, rule};
+    let inset = design::space::CONTROL as u16;
+    container(
+        column![
+            container(search).padding([0, inset]),
+            super::scrolling::navigation_scrollable(primary)
+                .id("primary-navigation")
+                .height(iced::Fill),
+            container(rule::horizontal(1)).padding([0, inset]),
+            container(utilities).padding([0, inset]),
+        ]
+        .spacing(design::space::TIGHT)
+        .height(iced::Fill),
+    )
+    .padding([inset, 0])
+    .width(design::NAVIGATION_RAIL_WIDTH)
+    .height(iced::Fill)
+    .style(super::widgets::navigation_surface)
+    .into()
+}
+
 pub(super) fn rail_item<'a, Message: Clone + 'a>(
     page: Page,
     selected: bool,
@@ -815,6 +841,147 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn rail_keeps_search_primary_and_utilities_aligned_at_both_heights() {
+        use iced::advanced::{
+            layout,
+            renderer::{Headless as _, Renderer as _},
+            widget::Tree,
+            Layout,
+        };
+        use iced::widget::{column, container, text};
+        use iced::{Fill, Rectangle, Size};
+        for (name, theme) in [
+            (
+                "light",
+                Theme::custom_with_fn(
+                    "preview",
+                    design::palette(true, None),
+                    design::extended_palette,
+                ),
+            ),
+            (
+                "dark",
+                Theme::custom_with_fn(
+                    "preview",
+                    design::palette(false, None),
+                    design::extended_palette,
+                ),
+            ),
+            ("amoled", design::amoled_theme(None)),
+        ] {
+            for height in [480.0, 1080.0] {
+                let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
+                let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
+                for page in rail_pages(true) {
+                    let item = rail_item(page, page == Page::WinderustFeatures, ());
+                    if is_utility(page) {
+                        utilities = utilities.push(item);
+                    } else {
+                        primary = primary.push(item);
+                    }
+                }
+                let search = super::super::widgets::button(
+                    container(
+                        column![
+                            glyph("icons/search.svg"),
+                            text(t!("home.search").to_string()).size(design::typography::BADGE),
+                        ]
+                        .spacing(design::space::TIGHT)
+                        .align_x(iced::Center),
+                    )
+                    .center_x(Fill)
+                    .center_y(Fill),
+                )
+                .width(Fill)
+                .height(design::NAVIGATION_ITEM_HEIGHT)
+                .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
+                .style(super::super::widgets::quiet)
+                .on_press(());
+                let mut view = rail(search.into(), primary.into(), utilities.into());
+                let mut renderer = iced::Renderer::new(
+                    iced::Font {
+                        weight: iced::font::Weight::Normal,
+                        ..design::typography::FONT
+                    },
+                    iced::Pixels(14.0),
+                );
+                let mut tree = Tree::new(&view);
+                let bounds = Rectangle::with_size(Size::new(design::NAVIGATION_RAIL_WIDTH, height));
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, bounds.size()),
+                );
+                let column = Layout::new(&node).children().next().unwrap();
+                let children: Vec<_> = column.children().collect();
+                let check_item = |item: Layout<'_>| {
+                    assert_eq!(item.bounds().width, design::NAVIGATION_RAIL_WIDTH - 12.0);
+                    assert_eq!(
+                        item.bounds().center_x(),
+                        design::NAVIGATION_RAIL_WIDTH / 2.0
+                    );
+                    assert_eq!(item.bounds().height, design::NAVIGATION_ITEM_HEIGHT as f32);
+                };
+                check_item(children[0].children().next().unwrap());
+                let primary = children[1]
+                    .children()
+                    .next()
+                    .unwrap()
+                    .children()
+                    .next()
+                    .unwrap();
+                assert_eq!(
+                    primary.bounds().height > children[1].bounds().height,
+                    height == 480.0
+                );
+                for item in primary.children() {
+                    check_item(item);
+                }
+                for item in children[3].children().next().unwrap().children() {
+                    check_item(item);
+                }
+                let mut messages = Vec::new();
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
+                    Layout::new(&node),
+                    iced::mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut iced::advanced::Shell::new(&mut messages),
+                    &bounds,
+                );
+                renderer.reset(bounds);
+                view.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &theme,
+                    &iced::advanced::renderer::Style {
+                        text_color: theme.palette().text,
+                    },
+                    Layout::new(&node),
+                    iced::mouse::Cursor::Unavailable,
+                    &bounds,
+                );
+                let pixels = renderer.screenshot(
+                    Size::new(88, height as u32),
+                    1.0,
+                    theme.palette().background,
+                );
+                std::fs::create_dir_all("target/ui-preview").unwrap();
+                image::save_buffer(
+                    format!("target/ui-preview/navigation-rail-{name}-{height}.png"),
+                    &pixels,
+                    88,
+                    height as u32,
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn rail_items_fit_their_width_and_keep_geometry_when_selected() {
         fn leaves(

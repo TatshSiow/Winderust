@@ -1279,13 +1279,10 @@ impl ProcessList {
                 .sum::<f32>()
                 - design::space::SMALL as f32
                 + 32.0;
-            scrollable(scrolling::table_surface(
+            scrolling::horizontal_scrollable(scrolling::table_surface(
                 container(column![container(header).height(32), table,].height(Fill))
                     .width(size.width.max(table_width))
                     .height(Fill),
-            ))
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::default(),
             ))
             .width(Fill)
             .height(Fill)

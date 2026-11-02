@@ -201,21 +201,153 @@ enum Behavior<'a, Message> {
     Buffer(Buffer<'a, Message>),
 }
 
+pub(super) const SCROLLBAR_GUTTER: f32 =
+    (super::design::space::SMALL + super::design::space::CONTROL) as f32;
+
+/// Keep content geometry stable even while the scrollbar is hidden.
+pub(super) fn vertical_gutter<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Container<'a, Message> {
+    iced::widget::container(content).padding(iced::Padding {
+        right: SCROLLBAR_GUTTER,
+        ..Default::default()
+    })
+}
+
+/// The reserved content padding owns the gutter, independently of overflow.
+pub(super) fn scrollbar() -> iced::widget::scrollable::Scrollbar {
+    iced::widget::scrollable::Scrollbar::new()
+        .width(super::design::space::SMALL as f32)
+        .scroller_width(super::design::space::TIGHT as f32)
+}
+
+fn scroll_style(
+    theme: &Theme,
+    status: iced::widget::scrollable::Status,
+) -> iced::widget::scrollable::Style {
+    use iced::widget::scrollable::{Rail, Scroller, Status};
+    let (horizontal, vertical) = match status {
+        Status::Active {
+            is_horizontal_scrollbar_disabled,
+            is_vertical_scrollbar_disabled,
+        } => (
+            (is_horizontal_scrollbar_disabled, false, false),
+            (is_vertical_scrollbar_disabled, false, false),
+        ),
+        Status::Hovered {
+            is_horizontal_scrollbar_disabled,
+            is_vertical_scrollbar_disabled,
+            is_horizontal_scrollbar_hovered,
+            is_vertical_scrollbar_hovered,
+        } => (
+            (
+                is_horizontal_scrollbar_disabled,
+                is_horizontal_scrollbar_hovered,
+                false,
+            ),
+            (
+                is_vertical_scrollbar_disabled,
+                is_vertical_scrollbar_hovered,
+                false,
+            ),
+        ),
+        Status::Dragged {
+            is_horizontal_scrollbar_disabled,
+            is_vertical_scrollbar_disabled,
+            is_horizontal_scrollbar_dragged,
+            is_vertical_scrollbar_dragged,
+        } => (
+            (
+                is_horizontal_scrollbar_disabled,
+                false,
+                is_horizontal_scrollbar_dragged,
+            ),
+            (
+                is_vertical_scrollbar_disabled,
+                false,
+                is_vertical_scrollbar_dragged,
+            ),
+        ),
+    };
+    let rail = |(disabled, hovered, dragged)| Rail {
+        background: None,
+        border: iced::Border::default(),
+        scroller: Scroller {
+            background: theme
+                .palette()
+                .text
+                .scale_alpha(if disabled {
+                    0.0
+                } else if dragged {
+                    0.8
+                } else if hovered {
+                    0.6
+                } else {
+                    0.4
+                })
+                .into(),
+            border: iced::border::rounded(super::design::space::TINY),
+        },
+    };
+    iced::widget::scrollable::Style {
+        horizontal_rail: rail(horizontal),
+        vertical_rail: rail(vertical),
+        gap: None,
+        ..iced::widget::scrollable::default(theme, status)
+    }
+}
+
 /// Retain native input, scrollbars, IDs and overlays; share the repaint policy.
 pub(super) fn scrollable<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> iced::widget::Scrollable<'a, Message> {
     iced::widget::scrollable(Element::new(ScrollContent {
-        content: content.into(),
+        content: vertical_gutter(content).into(),
         behavior: Behavior::Scroll,
     }))
+    .direction(iced::widget::scrollable::Direction::Vertical(scrollbar()))
+    .style(scroll_style)
+}
+
+/// The compact navigation rail keeps its scrollbar inside the outer inset.
+pub(super) fn navigation_scrollable<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Scrollable<'a, Message> {
+    iced::widget::scrollable(Element::new(ScrollContent {
+        content: iced::widget::container(content)
+            .padding([0, super::design::space::CONTROL as u16])
+            .into(),
+        behavior: Behavior::Scroll,
+    }))
+    .direction(iced::widget::scrollable::Direction::Vertical(
+        scrollbar().width(3).scroller_width(3).margin(1),
+    ))
+    .style(scroll_style)
 }
 
 /// Keep short tab panes in one clipping layer as their content changes height.
 pub(super) fn scrollable_pane<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> iced::widget::Scrollable<'a, Message> {
-    iced::widget::scrollable(repaint_group(content))
+    iced::widget::scrollable(vertical_gutter(repaint_group(content)))
+        .direction(iced::widget::scrollable::Direction::Vertical(scrollbar()))
+        .style(scroll_style)
+}
+
+pub(super) fn horizontal_scrollable<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Scrollable<'a, Message> {
+    iced::widget::scrollable(Element::new(ScrollContent {
+        content: iced::widget::container(content)
+            .padding(iced::Padding {
+                bottom: SCROLLBAR_GUTTER,
+                ..Default::default()
+            })
+            .into(),
+        behavior: Behavior::Scroll,
+    }))
+    .direction(iced::widget::scrollable::Direction::Horizontal(scrollbar()))
+    .style(scroll_style)
 }
 
 /// Keep dense columns readable when the dock reduces the editing area.
@@ -224,12 +356,16 @@ pub(super) fn horizontal_table<'a, Message: 'a>(
     min_width: f32,
 ) -> Element<'a, Message> {
     let table = iced::widget::scrollable(Element::new(ScrollContent {
-        content: content.into(),
+        content: iced::widget::container(content)
+            .padding(iced::Padding {
+                bottom: SCROLLBAR_GUTTER,
+                ..Default::default()
+            })
+            .into(),
         behavior: Behavior::Table(min_width),
     }))
-    .direction(iced::widget::scrollable::Direction::Horizontal(
-        iced::widget::scrollable::Scrollbar::new(),
-    ))
+    .direction(iced::widget::scrollable::Direction::Horizontal(scrollbar()))
+    .style(scroll_style)
     .width(Length::Fill);
     Element::new(ScrollContent {
         content: table.into(),
@@ -535,6 +671,57 @@ fn check_scroll_damage_with_delta<M>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrollbar_visibility_does_not_change_content_geometry() {
+        use iced::advanced::{layout, widget::Tree};
+        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let size = Size::new(240.0, 120.0);
+        for horizontal in [false, true] {
+            let mut tree = Tree::empty();
+            for overflowing in [false, true, false, true] {
+                let length = if overflowing { 480.0 } else { 80.0 };
+                let (content, direction) = if horizontal {
+                    (
+                        iced::widget::Space::new()
+                            .width(length)
+                            .height(Length::Fill),
+                        iced::widget::scrollable::Direction::Horizontal(scrollbar()),
+                    )
+                } else {
+                    (
+                        iced::widget::Space::new()
+                            .width(Length::Fill)
+                            .height(length),
+                        iced::widget::scrollable::Direction::Vertical(scrollbar()),
+                    )
+                };
+                let mut view: Element<'_, ()> = if horizontal {
+                    horizontal_scrollable(content)
+                } else {
+                    scrollable(content)
+                }
+                .direction(direction)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+                tree.diff(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, size),
+                );
+                let content = node.children()[0].children()[0].bounds();
+                let gutter = SCROLLBAR_GUTTER;
+                assert_eq!(node.size(), size);
+                if horizontal {
+                    assert_eq!(content.height, size.height - gutter);
+                } else {
+                    assert_eq!(content.width, size.width - gutter);
+                }
+            }
+        }
+    }
     #[test]
     fn table_surfaces_cache_geometry_and_track_theme_and_size() {
         use iced::advanced::renderer::{Headless as _, Renderer as _};
@@ -742,14 +929,16 @@ mod tests {
     #[test]
     fn shared_scroll_preserves_native_pixels_after_scrolling() {
         use iced::advanced::renderer::{Headless as _, Renderer as _};
-        let render = |shared, scale| {
+        let render = |shared, scale, theme: &Theme| {
             let mut renderer =
                 Renderer::new(super::super::design::typography::FONT, iced::Pixels(14.0));
             let items = iced::widget::column((0..30).map(|index| {
                 super::super::widgets::settings_card(
                     iced::widget::row![
                         super::super::navigation::glyph("icons/info.svg"),
-                        iced::widget::text(format!("Setting {index}: configured value"))
+                        iced::widget::text(format!("Setting {index}: configured value")),
+                        iced::widget::Space::new().width(Length::Fill),
+                        super::super::widgets::action_button("Edit").on_press(())
                     ]
                     .spacing(12),
                 )
@@ -759,7 +948,9 @@ mod tests {
             let mut view: Element<'_, ()> = if shared {
                 scrollable(items)
             } else {
-                iced::widget::scrollable(items)
+                iced::widget::scrollable(vertical_gutter(items))
+                    .direction(iced::widget::scrollable::Direction::Vertical(scrollbar()))
+                    .style(scroll_style)
             }
             .width(Length::Fill)
             .height(Length::Fill)
@@ -790,8 +981,10 @@ mod tests {
             view.as_widget().draw(
                 &tree,
                 &mut renderer,
-                &Theme::Dark,
-                &renderer::Style::default(),
+                theme,
+                &renderer::Style {
+                    text_color: theme.palette().text,
+                },
                 Layout::new(&node),
                 mouse::Cursor::Unavailable,
                 &bounds,
@@ -799,20 +992,51 @@ mod tests {
             renderer.screenshot(
                 Size::new((640.0 * scale) as u32, (360.0 * scale) as u32),
                 scale,
-                Theme::Dark.palette().background,
+                theme.palette().background,
             )
         };
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            let expected = render(false, scale);
-            let actual = render(true, scale);
-            // Masked and unmasked raster paths can round coverage by one byte.
-            assert!(
-                actual
-                    .iter()
-                    .zip(&expected)
-                    .all(|(a, b)| a.abs_diff(*b) <= 1),
-                "scroll clipping changed pixels at scale {scale}"
-            );
+        for (name, theme) in [
+            (
+                "light",
+                Theme::custom_with_fn(
+                    "preview",
+                    super::super::design::palette(true, None),
+                    super::super::design::extended_palette,
+                ),
+            ),
+            (
+                "dark",
+                Theme::custom_with_fn(
+                    "preview",
+                    super::super::design::palette(false, None),
+                    super::super::design::extended_palette,
+                ),
+            ),
+            ("amoled", super::super::design::amoled_theme(None)),
+        ] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let expected = render(false, scale, &theme);
+                let actual = render(true, scale, &theme);
+                // Masked and unmasked raster paths can round coverage by one byte.
+                assert!(
+                    actual
+                        .iter()
+                        .zip(&expected)
+                        .all(|(a, b)| a.abs_diff(*b) <= 1),
+                    "scroll clipping changed pixels for {name} at scale {scale}"
+                );
+                if scale == 1.0 {
+                    std::fs::create_dir_all("target/ui-preview").unwrap();
+                    image::save_buffer(
+                        format!("target/ui-preview/scrollbar-{name}.png"),
+                        &actual,
+                        640,
+                        360,
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
+                }
+            }
         }
     }
 
@@ -840,10 +1064,7 @@ mod tests {
                 .into()
         }))
         .spacing(8);
-        let view: Element<'_, ()> = scrollable(items)
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                Default::default(),
-            ))
+        let view: Element<'_, ()> = horizontal_scrollable(items)
             .width(Length::Fill)
             .height(Length::Fill)
             .into();

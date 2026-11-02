@@ -229,7 +229,10 @@ impl Model {
         logs: &'a [crate::action_log::ActionLogEntry],
     ) -> Element<'a, Message> {
         responsive(move |size| {
-            let layout = DashboardLayout::for_size(size);
+            let layout = DashboardLayout::for_size(iced::Size::new(
+                (size.width - super::scrolling::SCROLLBAR_GUTTER).max(0.0),
+                size.height,
+            ));
             let mut body = column![].spacing(super::widgets::CARD_GAP);
             for kinds in [
                 ChartKind::Cpu,
@@ -323,13 +326,10 @@ impl Model {
                 .center_y(Fill)
                 .into()
             } else {
-                scrollable(features.padding(iced::Padding {
-                    right: 12.0,
-                    ..Default::default()
-                }))
-                .id("home-enabled-features")
-                .height(Fill)
-                .into()
+                scrollable(features)
+                    .id("home-enabled-features")
+                    .height(Fill)
+                    .into()
             };
             let enabled = container(
                 column![header, iced::widget::rule::horizontal(1), feature_content,]
@@ -346,7 +346,10 @@ impl Model {
                 body = body.push(enabled).push(recent);
             }
             if layout.fits {
-                container(body).width(Fill).height(Fill).into()
+                super::scrolling::vertical_gutter(body)
+                    .width(Fill)
+                    .height(Fill)
+                    .into()
             } else {
                 scrollable(body).height(Fill).into()
             }
@@ -620,13 +623,7 @@ fn recent_logs(logs: &[crate::action_log::ActionLogEntry], height: f32) -> Eleme
         .center_y(Fill)
         .into()
     } else {
-        scrollable(rows.padding(iced::Padding {
-            right: 12.0,
-            ..Default::default()
-        }))
-        .id("home-recent-logs")
-        .height(Fill)
-        .into()
+        scrollable(rows).id("home-recent-logs").height(Fill).into()
     };
     container(super::widgets::action_card(
         column![

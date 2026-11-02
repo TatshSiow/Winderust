@@ -327,11 +327,8 @@ impl Editor {
             ),
         ]
         .height(Fill);
-        let table = scrollable(super::scrolling::table_surface(
+        let table = super::scrolling::horizontal_scrollable(super::scrolling::table_surface(
             container(table).width(size.width.max(1024.0)).height(Fill),
-        ))
-        .direction(iced::widget::scrollable::Direction::Horizontal(
-            iced::widget::scrollable::Scrollbar::default(),
         ))
         .width(Fill)
         .height(Fill);

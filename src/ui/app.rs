@@ -2302,57 +2302,37 @@ impl WinderustApp {
                 primary = primary.push(item);
             }
         }
-        let rail = container(
-            column![
-                super::navigation_flyout::search(
-                    button(
-                        container(
-                            column![
-                                navigation::glyph("icons/search.svg"),
-                                text(t!("home.search").to_string())
-                                    .size(design::typography::BADGE)
-                                    .width(Fill)
-                                    .align_x(iced::Center),
-                            ]
-                            .spacing(design::space::TIGHT)
-                            .align_x(iced::Center)
-                        )
-                        .center_x(Fill)
-                        .center_y(Fill)
-                    )
-                    .width(Fill)
-                    .height(design::NAVIGATION_ITEM_HEIGHT)
-                    .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-                    .selected(self.navigation_search_open, |theme, status| {
-                        let mut style = widgets::quiet(theme, status);
-                        if status == iced::widget::button::Status::Active {
-                            style.background =
-                                Some(theme.palette().primary.scale_alpha(0.05).into());
-                        }
-                        style
-                    })
-                    .on_press(navigation::Event::Search)
-                    .into()
+        let search = super::navigation_flyout::search(
+            button(
+                container(
+                    column![
+                        navigation::glyph("icons/search.svg"),
+                        text(t!("home.search").to_string())
+                            .size(design::typography::BADGE)
+                            .width(Fill)
+                            .align_x(iced::Center),
+                    ]
+                    .spacing(design::space::TIGHT)
+                    .align_x(iced::Center),
                 )
-                .map(Message::Navigation),
-                scrollable(primary)
-                    .id("primary-navigation")
-                    .direction(iced::widget::scrollable::Direction::Vertical(
-                        iced::widget::scrollable::Scrollbar::new()
-                            .width(3)
-                            .scroller_width(3),
-                    ))
-                    .height(Fill),
-                iced::widget::rule::horizontal(1),
-                utilities,
-            ]
-            .spacing(design::space::TIGHT)
-            .height(Fill),
+                .center_x(Fill)
+                .center_y(Fill),
+            )
+            .width(Fill)
+            .height(design::NAVIGATION_ITEM_HEIGHT)
+            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
+            .selected(self.navigation_search_open, |theme, status| {
+                let mut style = widgets::quiet(theme, status);
+                if status == iced::widget::button::Status::Active {
+                    style.background = Some(theme.palette().primary.scale_alpha(0.05).into());
+                }
+                style
+            })
+            .on_press(navigation::Event::Search)
+            .into(),
         )
-        .padding(design::space::CONTROL as u16)
-        .width(design::NAVIGATION_RAIL_WIDTH)
-        .height(Fill)
-        .style(widgets::navigation_surface);
+        .map(Message::Navigation);
+        let rail = navigation::rail(search, primary.into(), utilities.into());
         let navigation = row![rail, iced::widget::rule::vertical(1)];
         let navigation = container(navigation)
             .width(navigation_width)
