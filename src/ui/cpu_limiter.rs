@@ -327,7 +327,7 @@ impl CpuLimiter {
                 Some(chip.into()),
                 cells,
                 row![
-                    iced::widget::tooltip(
+                    super::widgets::tooltip(
                         icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top

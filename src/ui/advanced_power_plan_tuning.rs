@@ -649,7 +649,7 @@ impl Editor {
                         .width(Fill)
                         .style(super::widgets::quiet)
                         .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
-                    iced::widget::tooltip(
+                    super::widgets::tooltip(
                         icon_button("icons/pencil.svg")
                             .on_press(Message::OpenPreset(PresetTarget::Custom(Some(i)))),
                         text(t!("common.edit").to_string()),

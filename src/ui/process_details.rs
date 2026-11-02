@@ -413,7 +413,7 @@ pub(super) fn view<'a>(
                 .width(Fill),
             );
         }
-        controls = controls.push(iced::widget::tooltip(
+        controls = controls.push(widgets::tooltip(
             icon_button("icons/rotate-ccw.svg").on_press(Message::ResetPriority(kind)),
             text(t!("common.default").to_string()),
             iced::widget::tooltip::Position::Top,

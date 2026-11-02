@@ -3,6 +3,26 @@ use crate::power::PowerPlan;
 use iced::widget::{row, text};
 use iced::{Element, Fill};
 
+pub(super) fn tooltip<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    tip: iced::widget::Text<'a>,
+    position: iced::widget::tooltip::Position,
+) -> iced::widget::Tooltip<'a, M> {
+    iced::widget::tooltip(content, tip.size(design::typography::SECONDARY), position)
+        .padding(design::space::SMALL as f32)
+        .style(tooltip_surface)
+}
+
+pub(super) fn tooltip_surface(theme: &iced::Theme) -> iced::widget::container::Style {
+    let menu = select_menu(theme);
+    iced::widget::container::Style {
+        background: Some(menu.background),
+        text_color: Some(menu.text_color),
+        border: menu.border,
+        ..Default::default()
+    }
+}
+
 pub(super) const CARD_GAP: u32 = design::space::MEDIUM;
 pub(super) const CARD_PADDING: u32 = design::space::LARGE;
 pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
@@ -127,7 +147,7 @@ pub(super) fn rule_delete_button<'a, M: Clone + 'a>(remove: Option<M>) -> Elemen
     })
     .on_press_maybe(remove);
 
-    container(iced::widget::tooltip(
+    container(tooltip(
         delete,
         text(rust_i18n::t!("common.remove").to_string()),
         iced::widget::tooltip::Position::Top,
@@ -438,7 +458,7 @@ pub(super) fn search_field<'a, M: Clone + 'a>(
     let mut field = iced::widget::stack![input.into()];
     if let Some(clear) = clear {
         field = field.push(
-            iced::widget::container(iced::widget::tooltip(
+            iced::widget::container(tooltip(
                 button(super::navigation::glyph("icons/x.svg"))
                     .padding(3)
                     .style(quiet)

@@ -1979,7 +1979,7 @@ impl Editor {
                         .width(Fill)
                         .style(super::widgets::quiet)
                         .on_press(Message::Apply(i)),
-                    iced::widget::tooltip(
+                    super::widgets::tooltip(
                         icon_button("icons/pencil.svg").on_press(Message::Edit(i)),
                         text(t!("adaptive_engine.edit_preset").to_string()),
                         iced::widget::tooltip::Position::Top,

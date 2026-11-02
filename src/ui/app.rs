@@ -112,12 +112,11 @@ fn side_panel_dock<'a>(
     width: f32,
 ) -> Element<'a, Message> {
     let dock: Element<'a, Message> = if let Some(panel) = panel {
-        let close = iced::widget::tooltip(
+        let close = super::widgets::tooltip(
             widgets::icon_button("icons/x.svg").on_press(Message::CloseSidePanel),
             text(t!("common.close").to_string()),
             iced::widget::tooltip::Position::Left,
-        )
-        .style(widgets::surface);
+        );
         let panel_surface = container(
             column![
                 row![

@@ -276,7 +276,7 @@ impl Editor {
                                 })
                                 .collect(),
                             row![
-                                iced::widget::tooltip(
+                                super::widgets::tooltip(
                                     widgets::icon_button("icons/pencil.svg")
                                         .on_press(Message::Edit(index)),
                                     text(t!("common.edit").to_string()),

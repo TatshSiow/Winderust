@@ -423,6 +423,7 @@ impl Model {
         let tip = chart
             .tooltip_content(self.hovered[kind as usize])
             .unwrap_or_else(|| iced::widget::Space::new().into());
+        // Chart tooltip content owns its inset background and cursor spacing.
         let plot = iced::widget::tooltip(
             canvas(chart).width(Fill).height((height - 136.0).max(64.0)),
             tip,
@@ -705,9 +706,7 @@ fn recent_log_row(entry: &crate::action_log::ActionLogEntry, width: f32) -> Elem
         - 2.0 * design::space::SMALL as f32)
         .max(0.0);
     if super::widgets::text_width(&description, design::typography::CAPTION) > available {
-        iced::widget::tooltip(row, text(description), iced::widget::tooltip::Position::Top)
-            .style(super::widgets::surface)
-            .into()
+        super::widgets::tooltip(row, text(description), iced::widget::tooltip::Position::Top).into()
     } else {
         row.into()
     }
@@ -805,10 +804,7 @@ impl Chart {
                 container(content)
                     .padding(design::space::MEDIUM as u16)
                     .max_width(280)
-                    .style(|theme: &Theme| container::Style {
-                        background: Some(theme.extended_palette().background.neutral.color.into()),
-                        ..super::widgets::surface(theme)
-                    }),
+                    .style(super::widgets::tooltip_surface),
             ]
             .into(),
         )

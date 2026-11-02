@@ -107,7 +107,7 @@ pub(super) fn view<'a, M: Clone + 'a>(
 }
 
 fn control(icon: &'static str, label: &str, event: Event) -> Element<'static, Event> {
-    tooltip(
+    widgets::tooltip(
         widgets::button(
             container(navigation::glyph(icon))
                 .center_x(Fill)
@@ -118,9 +118,7 @@ fn control(icon: &'static str, label: &str, event: Event) -> Element<'static, Ev
         .padding(0)
         .style(move |theme, status| control_style(theme, status, matches!(event, Event::Close)))
         .on_press(event),
-        container(text(t!(label).to_string()))
-            .padding(design::space::SMALL as u16)
-            .style(widgets::surface),
+        text(t!(label).to_string()),
         tooltip::Position::Bottom,
     )
     .into()

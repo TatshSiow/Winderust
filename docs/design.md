@@ -10,7 +10,10 @@ and efficiency on desktops and laptops, in standard or administrator sessions.
 Use calm, direct language that states scope, consequence, and actual applied state.
 Present CPU Sets (Soft) as recommended and Processor Affinity (Hard) as strict.
 Preserve keyboard reachability, focus, contrast, semantic labels, icon tooltips,
-and reduced-motion behavior.
+and reduced-motion behavior. Use the shared `widgets::tooltip` helper for opaque
+tooltips matching dropdown menus: themed fill/text/border, 6px control corners,
+8px padding, and 13px secondary text. Chart tooltips use the same surface while
+retaining their inset layout and timestamp/series text hierarchy.
 
 ## Product Feel
 

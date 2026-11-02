@@ -271,7 +271,7 @@ impl Editor {
                                 .clip(true)
                                 .into();
                                 if truncated {
-                                    iced::widget::tooltip(
+                                    super::widgets::tooltip(
                                         content,
                                         text(entry.reason.clone()),
                                         iced::widget::tooltip::Position::Top,

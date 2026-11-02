@@ -456,7 +456,7 @@ impl Editor {
                         .width(Fill)
                         .style(super::widgets::quiet)
                         .on_press(Message::EditPreset(i)),
-                    iced::widget::tooltip(
+                    super::widgets::tooltip(
                         icon_button("icons/pencil.svg").on_press(Message::EditPreset(i)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top

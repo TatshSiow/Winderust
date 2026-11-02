@@ -390,7 +390,7 @@ impl Editor {
             .align_y(iced::Center);
             let header = header.push(
                 row![
-                    iced::widget::tooltip(
+                    super::widgets::tooltip(
                         icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top
