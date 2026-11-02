@@ -29,10 +29,6 @@ struct SettingsDraft {
 }
 
 impl SettingsDraft {
-    fn base_revision(&self) -> SettingsRevision {
-        self.base_revision
-    }
-
     fn mark_changed(&mut self) {
         self.edit_revision = self.edit_revision.wrapping_add(1);
     }
@@ -88,12 +84,6 @@ impl Default for AutoExclusionPatch {
             memory_trim: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NavigationCollapsedPatch {
-    pub base_revision: SettingsRevision,
-    pub navigation_collapsed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,9 +190,10 @@ impl SettingsCoordinator {
     }
 
     fn from_loaded_settings(
-        settings: Settings,
+        mut settings: Settings,
         storage: Box<dyn SettingsStorage>,
     ) -> (Self, SettingsDraft) {
+        settings.sync_shared_settings_to_battery();
         let revision = SettingsRevision::initial().next();
         let runtime_snapshot = RuntimeSettingsSnapshot {
             runtime_revision: SettingsRevision::initial(),
@@ -247,19 +238,6 @@ impl SettingsCoordinator {
         }
         self.runtime_snapshot.persisted_revision = self.persisted_revision;
         self.runtime_snapshot.clone()
-    }
-
-    fn apply_navigation_collapsed_patch(
-        &mut self,
-        draft: &mut SettingsDraft,
-        patch: NavigationCollapsedPatch,
-    ) -> SettingsResult<bool> {
-        self.apply_runtime_patch(draft, patch.base_revision, |settings| {
-            set_enabled_value(
-                &mut settings.general.navigation_collapsed,
-                patch.navigation_collapsed,
-            )
-        })
     }
 
     fn apply_auto_exclusion_patch(
@@ -312,7 +290,8 @@ impl SettingsCoordinator {
         ensure_draft_revision(self.persisted_revision, draft.base_revision)?;
         let mut candidate = draft.value.clone();
         candidate
-            .validate_dynamic_resource_zones()
+            .validate_watchdog()
+            .and_then(|()| candidate.validate_dynamic_resource_zones())
             .map_err(SettingsCoordinatorError::Save)?;
         candidate.sync_shared_settings_to_battery();
         self.storage
@@ -431,10 +410,6 @@ impl SettingsEditor {
         self.coordinator.load_error.as_deref()
     }
 
-    pub(crate) fn base_revision(&self) -> SettingsRevision {
-        self.draft.base_revision()
-    }
-
     pub(crate) fn select_power_source(&mut self, profile: PowerSourceProfile) {
         self.selected_power_source = profile;
     }
@@ -492,6 +467,18 @@ impl SettingsEditor {
         )
     }
 
+    pub(crate) fn set_watchdog_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let changed = set_enabled_value(&mut settings.watchdog.enabled, enabled);
+                settings.sync_shared_settings_to_battery();
+                changed
+            },
+        )
+    }
+
     pub(crate) fn set_master_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
         self.coordinator.apply_runtime_patch(
             &mut self.draft,
@@ -504,14 +491,6 @@ impl SettingsEditor {
                 changed
             },
         )
-    }
-
-    pub(crate) fn apply_navigation_collapsed_patch(
-        &mut self,
-        patch: NavigationCollapsedPatch,
-    ) -> SettingsResult<bool> {
-        self.coordinator
-            .apply_navigation_collapsed_patch(&mut self.draft, patch)
     }
 
     pub(crate) fn apply_auto_exclusion_patch(
@@ -932,6 +911,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn watchdog_is_global_when_editing_or_toggling_from_battery() {
+        let mut settings = Settings::default();
+        settings.battery_profile_mut();
+        let storage = FakeStorage::new(settings, Ok(Settings::default()), Ok(()), Ok(()));
+        let (mut editor, _, _) =
+            editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+        editor.select_power_source(PowerSourceProfile::OnBattery);
+        editor.edit_global(|settings| {
+            let mut rule = crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into());
+            rule.memory.enabled = true;
+            settings.watchdog.rules.push(rule);
+        });
+        assert_eq!(editor.global().watchdog, editor.watchdog);
+        assert!(editor.global().watchdog.rules[0].memory.enabled);
+        editor.save().unwrap();
+        editor.set_watchdog_enabled(true).unwrap();
+        let runtime = editor.runtime_settings_snapshot();
+        assert!(runtime.value.watchdog.enabled);
+        assert_eq!(
+            runtime.value.watchdog,
+            runtime.value.battery_profile().watchdog
+        );
+        editor.select_power_source(PowerSourceProfile::PluggedIn);
+        assert_eq!(editor.global().watchdog, editor.watchdog);
+        editor.set_watchdog_enabled(false).unwrap();
+        assert!(
+            !editor
+                .runtime_settings_snapshot()
+                .value
+                .battery_profile()
+                .watchdog
+                .enabled
+        );
+    }
+
     fn load_ok_with_fixtures() -> (SettingsCoordinator, SettingsDraft, FakeStorage) {
         let storage =
             FakeStorage::new(Settings::default(), Ok(Settings::default()), Ok(()), Ok(()));
@@ -1007,14 +1022,6 @@ mod tests {
                 );
                 assert!(editor.load_error().is_some());
                 assert!(startup_probe.applied_values().is_empty());
-                let patch = NavigationCollapsedPatch {
-                    base_revision: editor.base_revision(),
-                    navigation_collapsed: !editor.global().general.navigation_collapsed,
-                };
-                assert_eq!(
-                    editor.apply_navigation_collapsed_patch(patch),
-                    Err(SettingsCoordinatorError::RecoveryRequired)
-                );
                 assert_eq!(
                     editor.set_master_enabled(!editor.global().general.enabled),
                     Err(SettingsCoordinatorError::RecoveryRequired)
@@ -1028,7 +1035,7 @@ mod tests {
                     Err(SettingsCoordinatorError::RecoveryRequired)
                 );
                 let mut exclusions = AutoExclusionPatch {
-                    base_revision: editor.base_revision(),
+                    base_revision: editor.draft.base_revision,
                     ..Default::default()
                 };
                 exclusions.cpu_limiter.push(r"C:\Apps\test.exe".into());
@@ -1066,17 +1073,14 @@ mod tests {
                         .check_interval_ms,
                     1234
                 );
-                let patch = NavigationCollapsedPatch {
-                    base_revision: editor.base_revision(),
-                    ..patch
-                };
-                assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
+                let enabled = !editor.global().general.enabled;
+                assert!(editor.set_master_enabled(enabled).unwrap());
                 assert_eq!(
                     config::storage::load_from_path(&path)
                         .unwrap()
                         .general
-                        .navigation_collapsed,
-                    patch.navigation_collapsed
+                        .enabled,
+                    enabled
                 );
                 std::fs::remove_file(path).unwrap();
                 std::fs::remove_file(import_path).unwrap();
@@ -1098,16 +1102,14 @@ mod tests {
             Box::new(FakeStartupRegistration::new(Ok(()))),
         );
         assert!(editor.load_error().is_none());
-        let patch = NavigationCollapsedPatch {
-            base_revision: editor.base_revision(),
-            navigation_collapsed: true,
-        };
-        assert!(editor.apply_navigation_collapsed_patch(patch).unwrap());
-        assert!(
+        let enabled = !editor.global().general.enabled;
+        assert!(editor.set_master_enabled(enabled).unwrap());
+        assert_eq!(
             config::storage::load_from_path(&path)
                 .unwrap()
                 .general
-                .navigation_collapsed
+                .enabled,
+            enabled
         );
         std::fs::remove_file(path).unwrap();
     }
@@ -1238,12 +1240,11 @@ mod tests {
         let (mut coordinator, mut draft, _storage) = load_ok_with_fixtures();
         draft.general.check_interval_ms = 1_337;
         let stale = coordinator.persisted_revision().next();
-        let patch = NavigationCollapsedPatch {
+        let patch = AutoExclusionPatch {
             base_revision: stale,
-            navigation_collapsed: true,
+            ..Default::default()
         };
-
-        let result = coordinator.apply_navigation_collapsed_patch(&mut draft, patch);
+        let result = coordinator.apply_auto_exclusion_patch(&mut draft, &patch);
         assert!(matches!(
             result,
             Err(SettingsCoordinatorError::StalePatch { .. })
@@ -1296,30 +1297,6 @@ mod tests {
             .iter()
             .any(|rule| rule.executable_path == expected_path));
         assert_eq!(draft.base_revision, coordinator.persisted_revision());
-    }
-
-    #[test]
-    fn navigation_patch_persists_only_navigation_and_preserves_other_draft_edits() {
-        let (mut coordinator, mut draft, storage) = load_ok_with_fixtures();
-        draft.general.check_interval_ms = 1_337;
-        let patch = NavigationCollapsedPatch {
-            base_revision: draft.base_revision,
-            navigation_collapsed: true,
-        };
-
-        assert!(coordinator
-            .apply_navigation_collapsed_patch(&mut draft, patch)
-            .expect("apply navigation patch"));
-
-        let saved = storage.saved_payloads();
-        assert_eq!(saved.len(), 1);
-        assert!(saved[0].general.navigation_collapsed);
-        assert_eq!(
-            saved[0].general.check_interval_ms,
-            Settings::default().general.check_interval_ms
-        );
-        assert_eq!(draft.general.check_interval_ms, 1_337);
-        assert!(draft.general.navigation_collapsed);
     }
 
     #[test]
@@ -1430,7 +1407,7 @@ mod tests {
                 settings.advanced_power_plan_tuning_presets.push(
                     crate::config::AdvancedPowerPlanTuningPreset {
                         name: "Saved".into(),
-                        values: settings.adaptive_engine.base_processor_policy,
+                        values: settings.adaptive_engine.base_processor_policy.into(),
                     },
                 );
             });

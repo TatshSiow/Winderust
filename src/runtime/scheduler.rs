@@ -22,12 +22,13 @@ pub(crate) enum RefreshDomain {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
+    Watchdog,
     TimerResolution,
     ProcessAppearance,
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 22] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 23] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -47,6 +48,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 22] = [
     RefreshDomain::GpuPriority,
     RefreshDomain::MemoryPriority,
     RefreshDomain::MemoryTrim,
+    RefreshDomain::Watchdog,
     RefreshDomain::TimerResolution,
     RefreshDomain::ProcessAppearance,
     RefreshDomain::ControllerActivity,

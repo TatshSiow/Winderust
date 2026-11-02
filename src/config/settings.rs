@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::foreground::same_executable_path;
-use crate::power::plan::{AdaptivePowerBoostValues, ProcessorBoostMode, ProcessorPowerValues};
+use crate::power::plan::{
+    AdaptivePowerBoostValues, AdvancedPowerPlanTuningValues, ProcessorBoostMode,
+    ProcessorPowerValues,
+};
 use crate::rules::{
     normalize_execution_failure_suppression_threshold,
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
@@ -58,6 +61,8 @@ pub struct Settings {
     #[serde(default)]
     pub memory_trim: MemoryTrimSettings,
     #[serde(default)]
+    pub watchdog: super::WatchdogSettings,
+    #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_battery: Option<Box<Settings>>,
@@ -71,6 +76,14 @@ pub enum PowerSourceProfile {
 }
 
 impl Settings {
+    pub fn validate_watchdog(&self) -> Result<(), String> {
+        self.watchdog.validate()?;
+        if let Some(battery) = &self.on_battery {
+            battery.validate_watchdog()?;
+        }
+        Ok(())
+    }
+
     pub fn validate_dynamic_resource_zones(&self) -> Result<(), String> {
         let process = &self.adaptive_engine_process;
         process
@@ -113,6 +126,7 @@ impl Settings {
         };
         battery.general = self.general.clone();
         battery.advanced = self.advanced.clone();
+        battery.watchdog = self.watchdog.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
         battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
         battery.advanced_power_plan_tuning_presets =
@@ -175,8 +189,6 @@ pub struct GeneralSettings {
     pub accent: AccentSettings,
     #[serde(default)]
     pub language: AppLanguage,
-    #[serde(default)]
-    pub navigation_collapsed: bool,
     #[serde(default = "default_true")]
     pub show_enabled_feature_counts_in_sidebar: bool,
     #[serde(default = "default_true")]
@@ -185,6 +197,8 @@ pub struct GeneralSettings {
     pub animation_mode: AnimationMode,
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
+    #[serde(default)]
+    pub search_hotkeys: super::SearchHotkeys,
     pub check_interval_ms: u64,
 }
 
@@ -207,10 +221,11 @@ pub enum AppThemeMode {
     System,
     Light,
     Dark,
+    Amoled,
 }
 
 impl AppThemeMode {
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+    pub const ALL: [Self; 4] = [Self::System, Self::Light, Self::Dark, Self::Amoled];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,7 +603,7 @@ pub struct CpuAllocationPreset {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvancedPowerPlanTuningPreset {
     pub name: String,
-    pub values: ProcessorPowerValues,
+    pub values: AdvancedPowerPlanTuningValues,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1757,11 +1772,11 @@ impl Default for Settings {
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
-                navigation_collapsed: false,
                 show_enabled_feature_counts_in_sidebar: true,
                 show_feature_status_on_cards: true,
                 animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
+                search_hotkeys: super::SearchHotkeys::default(),
                 check_interval_ms: 1000,
             },
             advanced: AdvancedSettings::default(),
@@ -1803,6 +1818,7 @@ impl Default for Settings {
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
             memory_trim: MemoryTrimSettings::default(),
+            watchdog: super::WatchdogSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
             on_battery: None,
         }
@@ -2761,6 +2777,7 @@ mod tests {
             settings.gpu_priority.enabled,
             settings.memory_priority.enabled,
             settings.memory_trim.enabled,
+            settings.watchdog.enabled,
             settings.timer_resolution.enabled,
         ]
         .into_iter()

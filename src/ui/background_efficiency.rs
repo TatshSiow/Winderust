@@ -112,7 +112,7 @@ impl Editor {
                 settings.visible_window_efficiency_mode,
             ),
         ] {
-            let mut group = column![];
+            let mut group = column![].spacing(design::space::MEDIUM);
             let label = match tier {
                 Tier::Background => "background_efficiency.enable",
                 Tier::Focus => "background_efficiency.foreground_detection",
@@ -146,10 +146,12 @@ impl Editor {
                     move |value| Message::Aggressiveness(value.0),
                 )
                 .width(design::SELECT_WIDTH);
-                group = group.push(super::widgets::setting_row(
-                    "background_efficiency.aggressiveness",
-                    aggressiveness,
-                ));
+                group = group.push(super::widgets::settings_divider()).push(
+                    super::widgets::setting_row(
+                        "background_efficiency.aggressiveness",
+                        aggressiveness,
+                    ),
+                );
             }
             body = body.push(super::widgets::setting_group(
                 label,

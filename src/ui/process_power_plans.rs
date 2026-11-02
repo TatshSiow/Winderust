@@ -112,10 +112,11 @@ impl Editor {
         macro_rules! render_rules {
             ($field:ident, $can_add:ident, $enable:literal) => {{
                 let settings = &settings.$field;
-                let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+                let mut body = column![super::widgets::toggle_card(
                     $enable,
-                    super::widgets::switch(settings.enabled, Some(Message::Enabled))
-                )),]
+                    settings.enabled,
+                    Some(Message::Enabled)
+                ),]
                 .spacing(super::widgets::CARD_GAP);
                 let mut rules_body = column![super::app_picker::view(
                     &self.path,
@@ -182,7 +183,7 @@ impl Editor {
                                 .center_x(80)
                                 .into(),
                             ),
-                            iced::widget::rule::horizontal(1)
+                            widgets::settings_divider()
                         ]
                         .into(),
                     ));

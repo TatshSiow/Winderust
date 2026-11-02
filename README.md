@@ -11,6 +11,11 @@ Windows Performance & Power Manager. A system engine to improve your Windows exp
 The Windows desktop UI uses Iced with software rendering. Settings remain portable
 beside the executable, with English and Traditional Chinese locales.
 
+Click a navigation category to open its page. Hover for 250ms to show a floating
+menu of its child pages; choosing a child navigates and closes the menu.
+Escape or clicking outside dismisses it. Tab focuses the rail, Up/Down move focus,
+Enter opens the focused page, and Right Arrow opens its child menu.
+
 ![Winderust Home dashboard](screenshots/Home.png)
 
 ## Download
@@ -23,6 +28,7 @@ beside the executable, with English and Traditional Chinese locales.
 - Automatic power plan switching modules
 - CPU/GPU/Memory/IO etc. Priority Control
 - Smart memory trimming for background process
+- Global Watchdog with combined app CPU and memory thresholds across matching executable processes, shared sustained usage and Windows warning/critical notifications, and optional automatic termination or restart
 - iOS inspired background app suspension
 - etc. 
 
