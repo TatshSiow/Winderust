@@ -46,7 +46,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 - Use Iced rows and columns with explicit `Fill`, `Shrink`, and constrained widths for flexible children.
 - Rows and table headers should have stable heights across state changes.
-- Use fixed or computed widths for tables and policy columns. Dense rule tables scroll horizontally when the dock leaves too little room; slider labels sit above their controls. Do not let dynamic labels resize the process list.
+- Rules tables fill the same canvas width as settings cards. Use fixed or computed minimum widths for dense tables and policy columns, with horizontal scrolling when the dock leaves too little room; slider labels sit above their controls. Do not let dynamic labels resize the process list.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.

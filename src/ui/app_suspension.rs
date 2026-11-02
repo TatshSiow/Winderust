@@ -335,27 +335,19 @@ impl Editor {
                 .into(),
             ));
         }
-        body = body.push(
-            scrollable(
-                iced::widget::container(super::widgets::process_rules_table_with_actions(
-                    [
-                        "app_suspension.audio",
-                        "app_suspension.network",
-                        "app_suspension.download",
-                        "app_suspension.upload",
-                    ]
-                    .map(|key| t!(key).to_string()),
-                    cards,
-                    t!("app_suspension.no_suspendable").to_string(),
-                    80,
-                    true,
-                ))
-                .width(1240),
-            )
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::new(),
-            )),
-        );
+        body = body.push(super::widgets::process_rules_table_with_actions(
+            [
+                "app_suspension.audio",
+                "app_suspension.network",
+                "app_suspension.download",
+                "app_suspension.upload",
+            ]
+            .map(|key| t!(key).to_string()),
+            cards,
+            t!("app_suspension.no_suspendable").to_string(),
+            80,
+            true,
+        ));
 
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
