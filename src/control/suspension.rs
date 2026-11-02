@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fmt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -40,13 +39,19 @@ const APP_SUSPENSION_ONLY_BUILT_IN_EXCLUSIONS: &[&str] = &[
     "wmiprvse.exe",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum SuspensionError {
+    #[error("Access denied.")]
     AccessDenied,
+    #[error("Process exited.")]
     ProcessExited,
+    #[error("Operation not supported for this process.")]
     NotSupported,
+    #[error("Windows Job Object freeze is unsupported.")]
     Unsupported,
+    #[error("{0}")]
     RetryPending(String),
+    #[error("{0}")]
     Failed(String),
 }
 
@@ -55,20 +60,6 @@ impl SuspensionError {
         !matches!(self, Self::RetryPending(_))
     }
 }
-
-impl fmt::Display for SuspensionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AccessDenied => formatter.write_str("Access denied."),
-            Self::ProcessExited => formatter.write_str("Process exited."),
-            Self::NotSupported => formatter.write_str("Operation not supported for this process."),
-            Self::Unsupported => formatter.write_str("Windows Job Object freeze is unsupported."),
-            Self::RetryPending(message) | Self::Failed(message) => formatter.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for SuspensionError {}
 
 pub(crate) fn suspension_error_message(error: &SuspensionError) -> String {
     error.to_string()

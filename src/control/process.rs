@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, fmt, path::PathBuf};
+use std::{cmp::Ordering, path::PathBuf};
 
 use crate::{
     foreground::{
@@ -161,11 +161,15 @@ impl ProcessIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ProcessControlError {
+    #[error("{0}")]
     AccessDenied(String),
+    #[error("Process exited.")]
     ProcessExited,
+    #[error("{0}")]
     Unavailable(String),
+    #[error("{0}")]
     Failed(String),
 }
 
@@ -188,19 +192,6 @@ pub(super) fn transition_failure_error(
     }
     ProcessControlError::Failed(message)
 }
-
-impl fmt::Display for ProcessControlError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AccessDenied(message) | Self::Unavailable(message) | Self::Failed(message) => {
-                formatter.write_str(message)
-            }
-            Self::ProcessExited => formatter.write_str("Process exited."),
-        }
-    }
-}
-
-impl std::error::Error for ProcessControlError {}
 
 impl From<ProcessOperationError> for ProcessControlError {
     fn from(error: ProcessOperationError) -> Self {

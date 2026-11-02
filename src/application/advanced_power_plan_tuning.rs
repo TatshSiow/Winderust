@@ -3,54 +3,26 @@ use crate::power::{
     AdvancedPowerPlanTuningSourceValues, PowerPlanPersonality, ProcessorPowerApplyError,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum AdvancedPowerPlanTuningError {
+    #[error("Failed to read processor power values: {0}")]
     ReadValues(String),
+    #[error("Failed to read power plan personality: {0}")]
     ReadPersonality(String),
 }
 
-impl std::fmt::Display for AdvancedPowerPlanTuningError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReadValues(error) => {
-                write!(formatter, "Failed to read processor power values: {error}")
-            }
-            Self::ReadPersonality(error) => {
-                write!(formatter, "Failed to read power plan personality: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for AdvancedPowerPlanTuningError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum AdvancedPowerPlanTuningApplyError {
+    #[error("{0}")]
     Apply(ProcessorPowerApplyError),
+    #[error("Processor power values were written, but readback failed: {0}")]
     Readback(AdvancedPowerPlanTuningError),
+    #[error("{apply} Reading the actual values after the partial apply also failed: {readback}")]
     ApplyAndReadback {
         apply: ProcessorPowerApplyError,
         readback: AdvancedPowerPlanTuningError,
     },
 }
-
-impl std::fmt::Display for AdvancedPowerPlanTuningApplyError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Apply(error) => error.fmt(formatter),
-            Self::Readback(error) => write!(
-                formatter,
-                "Processor power values were written, but readback failed: {error}"
-            ),
-            Self::ApplyAndReadback { apply, readback } => write!(
-                formatter,
-                "{apply} Reading the actual values after the partial apply also failed: {readback}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for AdvancedPowerPlanTuningApplyError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdvancedPowerPlanTuningApplyOutcome {
@@ -318,6 +290,10 @@ mod tests {
 
         assert!(!outcome.applied);
         assert!(outcome.actual_values.is_none());
+        assert_eq!(
+            outcome.error.as_ref().map(ToString::to_string).as_deref(),
+            Some("Failed to write A/C boost mode: write failed Reading the actual values after the partial apply also failed: Failed to read processor power values: read failed")
+        );
         assert!(matches!(
             outcome.error,
             Some(AdvancedPowerPlanTuningApplyError::ApplyAndReadback { .. })

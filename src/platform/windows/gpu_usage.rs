@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, mem::size_of, ptr};
+use std::{collections::HashMap, mem::size_of, ptr};
 
 use windows_sys::Win32::System::Performance::{
     PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
@@ -11,18 +11,9 @@ const GPU_ENGINE_COUNTER: &[u16] = &[
     97, 116, 105, 111, 110, 32, 80, 101, 114, 99, 101, 110, 116, 97, 103, 101, 0,
 ];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("PDH GPU Engine query failed with status 0x{0:08X}.")]
 pub(crate) struct GpuUsageError(u32);
-
-impl fmt::Display for GpuUsageError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "PDH GPU Engine query failed with status 0x{:08X}.",
-            self.0
-        )
-    }
-}
 
 pub(crate) struct GpuUsageQuery {
     query: PDH_HQUERY,

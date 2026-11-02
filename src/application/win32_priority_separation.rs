@@ -11,50 +11,21 @@ const WINDERUST_REGISTRY_SUB_KEY: &str = "Software\\Winderust";
 const PRIORITY_SEPARATION_BACKUP_VALUE: &str = "Win32PrioritySeparationBackup";
 const PRIORITY_SEPARATION_MAX: u32 = 0x3f;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum Win32PrioritySeparationError {
+    #[error("Failed to read Win32 Priority Separation: {0}")]
     ReadCurrent(RegistryError),
+    #[error("Failed to read the Win32 Priority Separation backup: {0}")]
     ReadBackup(RegistryError),
+    #[error("Win32 Priority Separation is unavailable.")]
     CurrentUnavailable,
+    #[error("No Win32 Priority Separation backup is available.")]
     BackupUnavailable,
+    #[error("Failed to write the Win32 Priority Separation backup: {0}")]
     WriteBackup(RegistryError),
+    #[error("Failed to write Win32 Priority Separation: {0}")]
     WriteCurrent(RegistryError),
 }
-
-impl std::fmt::Display for Win32PrioritySeparationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReadCurrent(error) => {
-                write!(
-                    formatter,
-                    "Failed to read Win32 Priority Separation: {error}"
-                )
-            }
-            Self::ReadBackup(error) => write!(
-                formatter,
-                "Failed to read the Win32 Priority Separation backup: {error}"
-            ),
-            Self::CurrentUnavailable => {
-                formatter.write_str("Win32 Priority Separation is unavailable.")
-            }
-            Self::BackupUnavailable => {
-                formatter.write_str("No Win32 Priority Separation backup is available.")
-            }
-            Self::WriteBackup(error) => write!(
-                formatter,
-                "Failed to write the Win32 Priority Separation backup: {error}"
-            ),
-            Self::WriteCurrent(error) => {
-                write!(
-                    formatter,
-                    "Failed to write Win32 Priority Separation: {error}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for Win32PrioritySeparationError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Win32PrioritySeparationSnapshot {

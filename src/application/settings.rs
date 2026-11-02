@@ -133,50 +133,27 @@ pub(crate) struct SettingsEditor {
     startup_registration: Box<dyn StartupRegistration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum SettingsCoordinatorError {
+    #[error("Settings changed after this draft was created (draft revision {draft_revision:?}, persisted revision {persisted_revision:?}).")]
     StaleDraft {
         draft_revision: SettingsRevision,
         persisted_revision: SettingsRevision,
     },
+    #[error("Settings changed before a runtime patch could be applied (patch revision {patch_revision:?}, persisted revision {persisted_revision:?}).")]
     StalePatch {
         patch_revision: SettingsRevision,
         persisted_revision: SettingsRevision,
     },
+    #[error("Automatic saving is disabled because settings could not be loaded. Repair settings.toml and restart, or explicitly Save or Import settings to replace it.")]
     RecoveryRequired,
+    #[error("{0}")]
     Save(String),
+    #[error("{0}")]
     Export(String),
+    #[error("{0}")]
     Import(String),
 }
-
-impl std::fmt::Display for SettingsCoordinatorError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::StaleDraft {
-                draft_revision,
-                persisted_revision,
-            } => write!(
-                formatter,
-                "Settings changed after this draft was created (draft revision {draft_revision:?}, persisted revision {persisted_revision:?})."
-            ),
-            Self::StalePatch {
-                patch_revision,
-                persisted_revision,
-            } => write!(
-                formatter,
-                "Settings changed before a runtime patch could be applied (patch revision {patch_revision:?}, persisted revision {persisted_revision:?})."
-            ),
-            Self::RecoveryRequired => formatter.write_str(
-                "Automatic saving is disabled because settings could not be loaded. Repair settings.toml and restart, or explicitly Save or Import settings to replace it.",
-            ),
-            Self::Save(error) | Self::Export(error) | Self::Import(error) => {
-                formatter.write_str(error)
-            }
-        }
-    }
-}
-
-impl std::error::Error for SettingsCoordinatorError {}
 
 impl SettingsCoordinator {
     fn load_from(storage: Box<dyn SettingsStorage>) -> (Self, SettingsDraft) {

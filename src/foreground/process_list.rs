@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
-    fmt,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     process::Command,
@@ -242,49 +241,25 @@ impl ProcessActionAccess {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProcessActionTargetError {
+    #[error("Winderust cannot modify this process.")]
     ProtectedProcess,
     #[cfg(test)]
+    #[error("Could not determine the current Windows session.")]
     CurrentSessionUnavailable,
     #[cfg(test)]
+    #[error("Processes in another Windows session cannot be modified.")]
     DifferentSession,
     #[cfg(test)]
+    #[error("The selected process instance has changed.")]
     ProcessChanged,
     #[cfg(test)]
+    #[error("The selected process is no longer available (Win32 error {0}).")]
     ProcessUnavailable(u32),
+    #[error("Could not identify the selected process instance.")]
     IdentityUnavailable,
 }
-
-impl fmt::Display for ProcessActionTargetError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ProtectedProcess => formatter.write_str("Winderust cannot modify this process."),
-            #[cfg(test)]
-            Self::CurrentSessionUnavailable => {
-                formatter.write_str("Could not determine the current Windows session.")
-            }
-            #[cfg(test)]
-            Self::DifferentSession => {
-                formatter.write_str("Processes in another Windows session cannot be modified.")
-            }
-            #[cfg(test)]
-            Self::ProcessChanged => {
-                formatter.write_str("The selected process instance has changed.")
-            }
-            #[cfg(test)]
-            Self::ProcessUnavailable(error) => write!(
-                formatter,
-                "The selected process is no longer available (Win32 error {error})."
-            ),
-            Self::IdentityUnavailable => {
-                formatter.write_str("Could not identify the selected process instance.")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ProcessActionTargetError {}
 
 #[cfg(test)]
 pub fn capture_process_action_target(

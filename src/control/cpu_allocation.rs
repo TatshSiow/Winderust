@@ -17,23 +17,17 @@ use super::process::{
     ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CpuAllocationApplyError {
+    #[error("{0}")]
     Discovery(ProcessControlError),
+    #[error("{0}")]
     Target(ProcessControlError),
 }
 
 impl From<ProcessControlError> for CpuAllocationApplyError {
     fn from(error: ProcessControlError) -> Self {
         Self::Target(error)
-    }
-}
-
-impl std::fmt::Display for CpuAllocationApplyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Discovery(error) | Self::Target(error) => error.fmt(f),
-        }
     }
 }
 

@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeSet, VecDeque},
-    fmt,
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -137,33 +136,19 @@ pub struct RuntimeHandle {
     tray_visibility_watcher: Mutex<Option<TrayVisibilityWatcher>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum RuntimeCommandError {
+    #[error("The automation runtime has stopped.")]
     RuntimeStopped,
+    #[error("The automation worker exited before processing the request.")]
     WorkerExited,
+    #[error("Too many process control requests are already waiting. Try again shortly.")]
     QueueFull,
+    #[error("{0}")]
     InvalidRequest(String),
+    #[error("{0}")]
     CommandFailed(String),
 }
-
-impl fmt::Display for RuntimeCommandError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RuntimeStopped => formatter.write_str("The automation runtime has stopped."),
-            Self::WorkerExited => {
-                formatter.write_str("The automation worker exited before processing the request.")
-            }
-            Self::QueueFull => formatter.write_str(
-                "Too many process control requests are already waiting. Try again shortly.",
-            ),
-            Self::InvalidRequest(message) | Self::CommandFailed(message) => {
-                formatter.write_str(message)
-            }
-        }
-    }
-}
-
-impl std::error::Error for RuntimeCommandError {}
 
 #[derive(Debug)]
 pub(crate) struct ProcessControlBatchResult {

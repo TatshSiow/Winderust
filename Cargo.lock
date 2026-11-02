@@ -3361,6 +3361,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tiny-skia",
  "toml 0.8.23",
  "windows",

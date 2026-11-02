@@ -12,6 +12,8 @@ This is the working guide for code changes. Product boundaries live in [Project 
 - Settings format: TOML through `serde` and `toml`.
 - Localization: `rust-i18n` with files in `locales/`.
 - Windows integration: direct Win32 APIs through `windows` and `windows-sys`.
+- Typed error boilerplate uses `thiserror`; keep conditional Windows status
+  formatting explicit when a derive would require extra helpers.
 
 After code or dependency changes, use these checks before handoff:
 
@@ -81,6 +83,12 @@ Follow the Graphify rules in [AGENTS.md](../AGENTS.md).
 - Prefer an existing solution that reasonably meets the requirement. Check maintenance, license compatibility, Windows/Iced version support, dependency weight, and performance before adding a crate.
 - Implement custom code only when existing options do not reasonably fit; briefly record the concrete gap or tradeoff. Finding a crate does not automatically justify adding it.
 - Reuse findings while they remain applicable. Routine edits to an established implementation do not require repeating the same crate search.
+
+The native tray integration retains Watchdog balloon notifications and
+click-to-restore. The evaluated [`tray-icon` API](https://docs.rs/tray-icon/0.26.1/tray_icon/struct.TrayIcon.html)
+does not expose those operations, so adopting it would still require custom
+Win32 integration. Keep the current tray owner until a replacement covers these
+behaviors and registration failure handling before hiding the window.
 
 ## Routine Chores
 
