@@ -163,7 +163,9 @@ that event from a blocked listener thread, so the handoff adds no polling wake s
 
 ## Winderust Self-Power
 
-`src/backend/self_power.rs` owns Winderust's own process-lifetime priority and Power Throttling state. Before its first write, `SelfPowerController` strictly reads both original values; failure to capture either reversible baseline blocks the transition. Hidden-to-tray and Adaptive requests are composed into one desired state, applied as one verified transaction, and compensated if a later write or verification fails. These requests control only EcoQoS and hidden Idle priority; they preserve timer-resolution throttling bits exactly as observed. Clean disable and shutdown restore the exact captured baseline. This state does not use the external journal because process termination also terminates the controlled Winderust process.
+`src/backend/self_power.rs` owns Winderust's own process-lifetime priority and Power Throttling state. Before its first write, `SelfPowerController` strictly reads both original values; failure to capture either reversible baseline blocks the transition. Hidden-to-tray requests EcoQoS and Idle priority as one verified transaction, compensated if a later write or verification fails. Showing the window restores the exact captured baseline even when Adaptive Engine is enabled; visible software rendering must not receive an application-requested EcoQoS policy. Timer-resolution throttling bits are preserved exactly as observed. Clean shutdown also restores the captured baseline. This state does not use the external journal because process termination also terminates the controlled Winderust process.
+
+[Microsoft QoS guidance](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) reserves EcoQoS for work that does not contribute to the foreground user experience.
 
 `src/platform/windows/self_power.rs` owns the current-process pseudo-handle and every raw query/set
 for this lifecycle. It converts the Windows structure to the shared platform-layer typed Power

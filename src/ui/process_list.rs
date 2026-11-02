@@ -26,6 +26,7 @@ pub(super) enum PlanCatalog<'a> {
     Loaded(&'a [crate::power::PowerPlan]),
 }
 const ROW_HEIGHT: f32 = 36.0;
+const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 type Icons = HashMap<PathBuf, Option<Arc<image::Handle>>>;
 #[derive(Debug, Clone)]
 pub(super) struct Population {
@@ -176,6 +177,7 @@ pub(super) struct ProcessList {
     search: String,
     offset: std::cell::Cell<f32>,
     refreshing: bool,
+    refresh_started_at: Option<std::time::Instant>,
     error: Option<String>,
     hide_inaccessible: bool,
     grouped: bool,
@@ -211,6 +213,7 @@ impl Default for ProcessList {
             search: String::new(),
             offset: std::cell::Cell::new(0.0),
             refreshing: false,
+            refresh_started_at: None,
             error: None,
             hide_inaccessible: true,
             grouped: true,
@@ -234,6 +237,23 @@ impl Default for ProcessList {
     }
 }
 impl ProcessList {
+    pub(super) fn rulesets_open(&self) -> bool {
+        self.selected.is_some() && self.process_tab == ProcessTab::Rulesets
+    }
+
+    fn refresh_if_due(&mut self, now: std::time::Instant) -> Task<Message> {
+        if self.refreshing
+            || self
+                .refresh_started_at
+                .is_some_and(|started| now.saturating_duration_since(started) < REFRESH_INTERVAL)
+        {
+            return Task::none();
+        }
+        self.refreshing = true;
+        self.refresh_started_at = Some(now);
+        background(load_population, Message::Loaded)
+    }
+
     pub(super) fn context_open(&self) -> bool {
         self.context.is_some() && self.selected.is_some()
     }
@@ -245,11 +265,7 @@ impl ProcessList {
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
         match message {
-            Message::Refresh if !self.refreshing => {
-                self.refreshing = true;
-                return background(load_population, Message::Loaded);
-            }
-            Message::Refresh => {}
+            Message::Refresh => return self.refresh_if_due(std::time::Instant::now()),
             Message::Loaded(result) => {
                 self.refreshing = false;
                 match result {
@@ -1898,6 +1914,60 @@ fn load_population() -> Result<Population, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_and_ticks_share_one_refresh_deadline() {
+        use std::time::{Duration, Instant};
+
+        let mut list = ProcessList::default();
+        let start = Instant::now();
+        assert_eq!(list.refresh_if_due(start).units(), 1);
+        assert!(list.refreshing);
+
+        // A slow population/icon query must remain the only refresh in flight.
+        assert_eq!(
+            list.refresh_if_due(start + Duration::from_secs(2)).units(),
+            0
+        );
+        assert_eq!(list.refresh_started_at, Some(start));
+
+        // Simulate completion so repeat visits exercise the freshness guard.
+        list.refreshing = false;
+        for milliseconds in [0, 10, 250, 500, 999] {
+            assert_eq!(
+                list.refresh_if_due(start + Duration::from_millis(milliseconds))
+                    .units(),
+                0
+            );
+        }
+        let next = start + REFRESH_INTERVAL;
+        assert_eq!(list.refresh_if_due(next).units(), 1);
+        assert_eq!(list.refresh_started_at, Some(next));
+        list.refreshing = false;
+        assert_eq!(
+            list.refresh_if_due(next + Duration::from_millis(250))
+                .units(),
+            0
+        );
+    }
+
+    #[test]
+    fn rulesets_need_a_selected_process() {
+        let mut list = ProcessList {
+            process_tab: ProcessTab::Rulesets,
+            ..ProcessList::default()
+        };
+        assert!(!list.rulesets_open());
+        list.selected = Some(Selection {
+            nested: false,
+            processes: vec![process(1, 1, "app.exe")],
+            path: "app.exe".into(),
+            name: "app.exe".into(),
+        });
+        assert!(list.rulesets_open());
+        list.process_tab = ProcessTab::Immediate;
+        assert!(!list.rulesets_open());
+    }
     #[test]
     fn page_process_list_transitions_keep_repaints_bounded() {
         use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
@@ -1919,7 +1989,8 @@ mod tests {
         eprintln!("rebuild/auto-fit: {:?}", rebuild.elapsed());
         let settings = Settings::default();
         let status = RuntimeStatusSnapshot::default();
-        let home = super::super::home::Model::default();
+        let mut home = super::super::home::Model::default();
+        home.populate_smoke_history();
         let log = super::super::action_log::Editor::default();
         let entries: Vec<_> = (1..=500)
             .map(|id| crate::action_log::ActionLogEntry {
@@ -1946,7 +2017,7 @@ mod tests {
             let home_page = frame < 8 && frame % 2 == 0;
             let log_page = frame >= 8 && frame % 2 == 0;
             let content = if home_page {
-                home.view(&settings, &status.feature_status, &[])
+                home.view(&settings, &status.feature_status, &entries)
                     .map(|_| Message::Refresh)
             } else if log_page {
                 log.view(&entries, &[]).map(|_| Message::Refresh)

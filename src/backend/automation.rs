@@ -419,12 +419,7 @@ impl RuntimeHandle {
         let self_power = Arc::new(Mutex::new(SelfPowerController::default()));
         let self_power_error = {
             let mut controller = lock_unpoisoned(&self_power);
-            controller
-                .set_requests(
-                    tray::is_hidden_to_tray(),
-                    settings.value.adaptive_engine.enabled,
-                )
-                .err()
+            controller.set_hidden_mode(tray::is_hidden_to_tray()).err()
         };
         let visibility_self_power = Arc::clone(&self_power);
         let visibility_shared = Arc::clone(&shared);
@@ -482,7 +477,7 @@ impl RuntimeHandle {
             self.sync_windows_event_watcher(settings);
             self.sync_input_hook(settings);
         }
-        self.sync_self_power(settings);
+        self.sync_self_power();
     }
 
     pub fn shutdown(&self) -> Result<(), String> {
@@ -914,18 +909,13 @@ impl RuntimeHandle {
         }
     }
 
-    fn sync_self_power(&self, settings: &RuntimeSettingsSnapshot) {
+    fn sync_self_power(&self) {
         if lock_unpoisoned(&self.shared.state).stop_requested {
             return;
         }
-        if let Err(error) = lock_unpoisoned(&self.self_power).set_adaptive_engine(
-            settings.value.adaptive_engine.enabled
-                || settings
-                    .value
-                    .on_battery
-                    .as_deref()
-                    .is_some_and(|settings| settings.adaptive_engine.enabled),
-        ) {
+        if let Err(error) =
+            lock_unpoisoned(&self.self_power).set_hidden_mode(tray::is_hidden_to_tray())
+        {
             update_worker_error(&self.shared, Some(error));
         }
     }

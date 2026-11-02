@@ -173,7 +173,7 @@ remain available in Git history rather than in the active documentation set.
   owns freeze/thaw and the compatibility-sensitive layout; `src/platform/windows/cpu_limiter.rs`
   owns the high-resolution waitable timer and command event.
 - `src/backend/self_power.rs`: instance-owned composition, verification, compensation, retry, and
-  restoration of Winderust's hidden/Adaptive process priority and Power Throttling state.
+  restoration of Winderust's hidden-to-tray process priority and Power Throttling state.
   `src/platform/windows/self_power.rs` is the sole raw current-process query/set adapter; this
   process-lifetime state intentionally has no crash-recovery journal.
 - `src/backend/file_dialog.rs`: native settings and Action Log file dialogs.

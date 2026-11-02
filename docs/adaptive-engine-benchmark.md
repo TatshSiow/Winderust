@@ -199,9 +199,9 @@ and kills the workers during cleanup.
 ## Visibility and foreground thread policy
 
 Keep window visibility fixed when comparing builds or presets. Hiding to tray
-requests Idle process priority for Winderust as well as reducing UI work. Hidden
-mode or Adaptive Engine also requests execution-speed throttling; when Adaptive
-Engine is already enabled, hiding does not introduce a new throttling request.
+requests Idle process priority and execution-speed throttling for Winderust as well
+as reducing UI work. Showing the window restores both captured baselines, including
+when Adaptive Engine is enabled, so the visible software renderer is not throttled.
 Record actual application outcomes, not only requested settings. Visible versus
 hidden is a comparison of complete operating modes, not an isolated UI benchmark.
 

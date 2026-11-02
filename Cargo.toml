@@ -79,6 +79,12 @@ winreg = "0.56.0"
 [profile.dev.package."*"]
 opt-level = 2
 
+# Keep pixel loops optimized while application code retains debug checks.
+[profile.dev.package.tiny-skia]
+opt-level = 2
+debug-assertions = false
+overflow-checks = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

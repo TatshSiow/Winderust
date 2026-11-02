@@ -145,9 +145,9 @@ pub(super) enum Message {
     HoverChart(ChartKind, Option<usize>),
 }
 impl Model {
-    #[cfg(feature = "render-smoke")]
+    #[cfg(any(test, feature = "render-smoke"))]
     pub(super) fn populate_smoke_history(&mut self) {
-        // Deterministic visual fixtures are compiled only into the render-smoke build.
+        // Deterministic visual fixtures stay outside normal application builds.
         for index in 0..HISTORY_LEN {
             let wave = (index as f64 * 0.55).sin();
             self.record(Sample {

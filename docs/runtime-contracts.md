@@ -86,9 +86,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   explicit application service and never enters the automatic recovery journal. Its optional
   long/short-running thread scheduling policies stay outside Adaptive Engine processor profiles;
   built-in presets preserve current policies, and custom presets can select optional overrides.
-- `src/backend/self_power.rs` owns Winderust's composed hidden/Adaptive priority and Power
+- `src/backend/self_power.rs` owns Winderust's hidden-to-tray priority and Power
   Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
-  clean shutdown. Raw current-process query/set calls live only in
+  clean shutdown. Showing the window restores its baseline even when Adaptive Engine is enabled,
+  so foreground rendering is not throttled by Winderust. Raw current-process query/set calls live only in
   `src/platform/windows/self_power.rs`. This process-lifetime state does not use crash recovery.
 
 ## Failure handling

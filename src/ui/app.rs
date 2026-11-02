@@ -247,7 +247,6 @@ pub(crate) fn run(
                     sampler: std::sync::Arc::new(std::sync::Mutex::new(home::Sampler::default())),
                     sampled_at: std::time::Instant::now(),
                     sampling: false,
-                    process_sampled_at: std::time::Instant::now(),
                     catalog_sampled_at: std::time::Instant::now(),
                     suspension: app_suspension::Editor::default(),
                     trim: memory_trim::Editor::default(),
@@ -484,7 +483,6 @@ struct WinderustApp {
     sampler: std::sync::Arc<std::sync::Mutex<home::Sampler>>,
     sampled_at: std::time::Instant,
     sampling: bool,
-    process_sampled_at: std::time::Instant,
     catalog_sampled_at: std::time::Instant,
     suspension: app_suspension::Editor,
     trim: memory_trim::Editor,
@@ -1524,7 +1522,7 @@ impl WinderustApp {
                     self.power_tuning.ensure_plan(&self.power_plans);
                 }
                 let mut tasks = Vec::new();
-                if page_needs_power_plans(page) {
+                if page_needs_power_plans(page, self.processes.rulesets_open()) {
                     tasks.push(self.load_power_plans());
                 }
                 if page == Page::ProcessList {
@@ -1559,10 +1557,19 @@ impl WinderustApp {
                 return self.load_power_plans();
             }
             Message::Processes(message) => {
-                return self
+                let load_plans = matches!(
+                    message,
+                    process_list::Message::ProcessTab(process_list::ProcessTab::Rulesets)
+                );
+                let task = self
                     .processes
                     .update(message, &mut self.settings, &self.runtime)
                     .map(Message::Processes);
+                return if load_plans && self.processes.rulesets_open() {
+                    Task::batch([task, self.load_power_plans()])
+                } else {
+                    task
+                };
             }
             Message::Wake => {
                 self.sync_tray();
@@ -1660,10 +1667,7 @@ impl WinderustApp {
                     }
                 }
                 if !self.hidden {
-                    if self.page == Page::ProcessList
-                        && self.process_sampled_at.elapsed() >= Duration::from_secs(1)
-                    {
-                        self.process_sampled_at = std::time::Instant::now();
+                    if self.page == Page::ProcessList {
                         work.push(
                             self.processes
                                 .update(
@@ -3002,8 +3006,9 @@ fn tray_retry_due(
     })
 }
 
-fn page_needs_power_plans(page: Page) -> bool {
-    page == Page::ProcessList || page.section_landing_page() == Page::PowerPlanControl
+fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
+    (page == Page::ProcessList && process_rulesets_open)
+        || page.section_landing_page() == Page::PowerPlanControl
 }
 
 fn ui_wake_channel() -> (
@@ -3528,10 +3533,16 @@ mod tests {
     }
 
     #[test]
-    fn process_list_requests_its_power_plan_dependency() {
-        assert!(page_needs_power_plans(Page::ProcessList));
-        assert!(page_needs_power_plans(Page::PowerPlanControl));
-        assert!(!page_needs_power_plans(Page::Home));
+    fn process_rulesets_request_power_plans_only_when_visible() {
+        assert!(!page_needs_power_plans(Page::ProcessList, false));
+        assert!(page_needs_power_plans(Page::ProcessList, true));
+        for process_rulesets_open in [false, true] {
+            assert!(page_needs_power_plans(
+                Page::PowerPlanControl,
+                process_rulesets_open
+            ));
+            assert!(!page_needs_power_plans(Page::Home, process_rulesets_open));
+        }
     }
 
     use super::*;

@@ -41,8 +41,7 @@ pub(crate) struct SelfPowerController<P: SelfPowerPlatform = WindowsSelfPowerPla
     platform: P,
     state: Option<ManagedSelfPowerState>,
     hidden_mode: bool,
-    adaptive_engine: bool,
-    failed_request: Option<(bool, bool)>,
+    failed_request: Option<bool>,
     retry_at: Option<Instant>,
     shutdown: bool,
 }
@@ -59,24 +58,10 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
             platform,
             state: None,
             hidden_mode: false,
-            adaptive_engine: false,
             failed_request: None,
             retry_at: None,
             shutdown: false,
         }
-    }
-
-    pub(crate) fn set_requests(
-        &mut self,
-        hidden_mode: bool,
-        adaptive_engine: bool,
-    ) -> Result<(), String> {
-        if self.shutdown {
-            return Ok(());
-        }
-        self.hidden_mode = hidden_mode;
-        self.adaptive_engine = adaptive_engine;
-        self.reconcile(false)
     }
 
     pub(crate) fn set_hidden_mode(&mut self, enabled: bool) -> Result<(), String> {
@@ -87,20 +72,11 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
         self.reconcile(false)
     }
 
-    pub(crate) fn set_adaptive_engine(&mut self, enabled: bool) -> Result<(), String> {
-        if self.shutdown {
-            return Ok(());
-        }
-        self.adaptive_engine = enabled;
-        self.reconcile(false)
-    }
-
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         if self.shutdown {
             return Ok(());
         }
         self.hidden_mode = false;
-        self.adaptive_engine = false;
         let result = self.reconcile(true);
         if result.is_ok() {
             self.shutdown = true;
@@ -109,7 +85,7 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
     }
 
     fn reconcile(&mut self, force: bool) -> Result<(), String> {
-        let request = (self.hidden_mode, self.adaptive_engine);
+        let request = self.hidden_mode;
         let now = Instant::now();
         if !force
             && self.failed_request == Some(request)
@@ -130,7 +106,8 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
     }
 
     fn reconcile_now(&mut self) -> Result<(), String> {
-        let enabled = self.hidden_mode || self.adaptive_engine;
+        // Foreground software rendering must not inherit an EcoQoS request.
+        let enabled = self.hidden_mode;
         let current = if self.state.is_none() {
             if !enabled {
                 return Ok(());
@@ -352,6 +329,17 @@ mod tests {
     }
 
     #[test]
+    fn visible_window_leaves_process_power_state_untouched() {
+        let mut controller = SelfPowerController::with_platform(FakePlatform::new());
+        let baseline = controller.platform.snapshot;
+        controller.set_hidden_mode(false).unwrap();
+        assert!(same_snapshot(controller.platform.snapshot, baseline));
+        assert_eq!(controller.platform.power_writes, 0);
+        assert_eq!(controller.platform.priority_writes, 0);
+        assert!(controller.state.is_none());
+    }
+
+    #[test]
     fn baseline_read_failure_blocks_every_mutation() {
         let mut platform = FakePlatform::new();
         platform.query_error = true;
@@ -363,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_and_adaptive_requests_compose_without_changing_timer_resolution() {
+    fn showing_window_restores_priority_and_throttling_without_changing_timer_resolution() {
         let mut controller = SelfPowerController::with_platform(FakePlatform::new());
         let baseline = controller.platform.snapshot;
 
@@ -374,7 +362,6 @@ mod tests {
             0
         );
 
-        controller.set_adaptive_engine(true).unwrap();
         assert_eq!(
             controller.platform.snapshot.power_throttling.state_mask
                 & POWER_IGNORE_TIMER_RESOLUTION,
@@ -386,16 +373,15 @@ mod tests {
             baseline.priority_class
         );
 
-        controller.set_adaptive_engine(false).unwrap();
         assert!(same_snapshot(controller.platform.snapshot, baseline));
         assert!(controller.state.is_none());
     }
 
     #[test]
-    fn combined_startup_request_applies_one_composed_transition() {
+    fn hidden_startup_applies_one_verified_transition() {
         let mut controller = SelfPowerController::with_platform(FakePlatform::new());
 
-        controller.set_requests(true, true).unwrap();
+        controller.set_hidden_mode(true).unwrap();
 
         assert_eq!(controller.platform.power_writes, 1);
         assert_eq!(controller.platform.priority_writes, 1);
@@ -425,7 +411,7 @@ mod tests {
         platform.query_error_at = Some(2);
         let mut controller = SelfPowerController::with_platform(platform);
 
-        assert!(controller.set_requests(true, true).is_err());
+        assert!(controller.set_hidden_mode(true).is_err());
 
         assert!(same_snapshot(controller.platform.snapshot, baseline));
     }

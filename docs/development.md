@@ -8,6 +8,7 @@ This is the working guide for code changes. Product boundaries live in [Project 
 - UI stack: Iced 0.14 with tiny-skia only and rust-i18n locales.
 - Keep the software renderer; do not restore GPUI, WGPU, or vendored renderer code.
 - Use the unmodified crates.io `iced_tiny_skia` renderer; do not add local renderer patches. Rendering regressions live in the application test suite (`src/ui/scrolling.rs`, `motion.rs`, `select.rs`, and page tests).
+- Debug builds optimize dependencies and disable runtime checks in upstream `tiny-skia` pixel loops; application debug checks remain enabled.
 - Settings format: TOML through `serde` and `toml`.
 - Localization: `rust-i18n` with files in `locales/`.
 - Windows integration: direct Win32 APIs through `windows` and `windows-sys`.
