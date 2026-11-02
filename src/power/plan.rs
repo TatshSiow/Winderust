@@ -93,6 +93,106 @@ pub struct ProcessorPowerSourceValues {
     pub battery: ProcessorPowerValues,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u32)]
+pub enum ProcessorSchedulingPolicy {
+    AllProcessors = 0,
+    PerformanceProcessors = 1,
+    PreferPerformanceProcessors = 2,
+    EfficiencyProcessors = 3,
+    PreferEfficiencyProcessors = 4,
+    Automatic = 5,
+}
+
+impl ProcessorSchedulingPolicy {
+    pub const ALL: [Self; 6] = [
+        Self::AllProcessors,
+        Self::PerformanceProcessors,
+        Self::PreferPerformanceProcessors,
+        Self::EfficiencyProcessors,
+        Self::PreferEfficiencyProcessors,
+        Self::Automatic,
+    ];
+
+    pub fn from_power_value(value: u32) -> Result<Self, String> {
+        Self::ALL
+            .get(value as usize)
+            .copied()
+            .ok_or_else(|| format!("Unknown processor scheduling policy value: {value}."))
+    }
+
+    pub const fn power_value(self) -> u32 {
+        self as u32
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvancedPowerPlanTuningValues {
+    #[serde(flatten)]
+    pub processor: ProcessorPowerValues,
+    // None leaves the selected plan's scheduling policy unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling_policy: Option<ProcessorSchedulingPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_scheduling_policy: Option<ProcessorSchedulingPolicy>,
+}
+
+impl From<ProcessorPowerValues> for AdvancedPowerPlanTuningValues {
+    fn from(processor: ProcessorPowerValues) -> Self {
+        Self {
+            processor,
+            scheduling_policy: None,
+            short_scheduling_policy: None,
+        }
+    }
+}
+
+impl AdvancedPowerPlanTuningValues {
+    pub fn for_preset(preset: ProcessorPowerPreset) -> Self {
+        ProcessorPowerValues::for_preset(preset).into()
+    }
+
+    pub fn normalized(self) -> Self {
+        Self {
+            processor: self.processor.normalized(),
+            ..self
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdvancedPowerPlanTuningSourceValues {
+    pub ac: AdvancedPowerPlanTuningValues,
+    pub battery: AdvancedPowerPlanTuningValues,
+}
+
+impl From<ProcessorPowerSourceValues> for AdvancedPowerPlanTuningSourceValues {
+    fn from(values: ProcessorPowerSourceValues) -> Self {
+        Self {
+            ac: values.ac.into(),
+            battery: values.battery.into(),
+        }
+    }
+}
+
+impl AdvancedPowerPlanTuningSourceValues {
+    #[cfg(test)]
+    pub fn same(values: AdvancedPowerPlanTuningValues) -> Self {
+        Self {
+            ac: values,
+            battery: values,
+        }
+    }
+
+    pub fn normalized(self) -> Self {
+        Self {
+            ac: self.ac.normalized(),
+            battery: self.battery.normalized(),
+        }
+    }
+}
+
 impl ProcessorPowerValues {
     pub const fn new_with_boost_mode(
         core_parking_min: u32,
@@ -495,6 +595,42 @@ mod adaptive_tests {
             efficiency_peak_cpu_percent: None,
             foreground_cpu_percent: Some(0.0),
             io_bytes_per_second: Some(0.0),
+        }
+    }
+
+    #[test]
+    fn scheduling_policy_values_and_presets_round_trip_without_changing_adaptive_tuning() {
+        let processor = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced);
+        let mut tuning = AdvancedPowerPlanTuningValues::from(processor);
+        let saved = toml::to_string(&tuning).unwrap();
+        assert!(!saved.contains("scheduling_policy"));
+        assert_eq!(
+            toml::from_str::<AdvancedPowerPlanTuningValues>(&saved).unwrap(),
+            tuning
+        );
+        for (index, policy) in ProcessorSchedulingPolicy::ALL.into_iter().enumerate() {
+            assert_eq!(policy.power_value(), index as u32);
+            assert_eq!(
+                ProcessorSchedulingPolicy::from_power_value(index as u32),
+                Ok(policy)
+            );
+            tuning.scheduling_policy = Some(policy);
+            tuning.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+            let saved = toml::to_string(&tuning).unwrap();
+            assert_eq!(
+                toml::from_str::<AdvancedPowerPlanTuningValues>(&saved).unwrap(),
+                tuning
+            );
+        }
+        for unknown in [6, 100, u32::MAX] {
+            assert!(ProcessorSchedulingPolicy::from_power_value(unknown).is_err());
+        }
+        let automatic: AdvancedPowerPlanTuningSourceValues =
+            ProcessorPowerSourceValues::same(processor).into();
+        for source in [automatic.ac, automatic.battery] {
+            assert_eq!(source.processor, processor);
+            assert_eq!(source.scheduling_policy, None);
+            assert_eq!(source.short_scheduling_policy, None);
         }
     }
 

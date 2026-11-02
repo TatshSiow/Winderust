@@ -69,12 +69,16 @@ fn read_toml_settings(path: &Path) -> Result<Settings, String> {
 }
 
 fn parse_toml_settings(path: &Path, raw: &str) -> Result<Settings, String> {
-    toml::from_str(raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
+    let settings: Settings =
+        toml::from_str(raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))?;
+    settings.validate_watchdog()?;
+    Ok(settings)
 }
 
 fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
     settings
-        .validate_dynamic_resource_zones()
+        .validate_watchdog()
+        .and_then(|()| settings.validate_dynamic_resource_zones())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let raw = toml::to_string_pretty(settings)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -94,6 +98,26 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watchdog_validation_covers_both_resources_on_import_and_export() {
+        let mut settings = Settings::default();
+        let mut rule = crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into());
+        rule.memory.enabled = true;
+        rule.memory.critical.threshold = 50;
+        settings.watchdog.rules.push(rule);
+        let raw = toml::to_string(&settings).unwrap();
+        assert!(parse_toml_settings(Path::new("test.toml"), &raw).is_err());
+        assert!(settings.validate_watchdog().is_err());
+        settings.watchdog.rules[0].memory.critical.threshold = 90;
+        settings.battery_profile_mut();
+        settings.sync_shared_settings_to_battery();
+        let raw = toml::to_string(&settings).unwrap();
+        assert_eq!(
+            parse_toml_settings(Path::new("test.toml"), &raw).unwrap(),
+            settings
+        );
+    }
 
     use crate::config::{
         AccentSettings, ActionLogMode, AdaptiveEnginePreset, AdaptiveEngineProcessSettings,
@@ -434,11 +458,11 @@ mod tests {
                 theme_mode: AppThemeMode::Dark,
                 accent: AccentSettings::default(),
                 language: AppLanguage::ZhTw,
-                navigation_collapsed: true,
                 show_enabled_feature_counts_in_sidebar: false,
                 show_feature_status_on_cards: false,
                 animation_mode: crate::config::AnimationMode::Off,
                 pause_power_plan_switching_while_plugged_in: true,
+                search_hotkeys: crate::config::SearchHotkeys::default(),
                 check_interval_ms: 2_500,
             },
             advanced: AdvancedSettings {
@@ -633,7 +657,8 @@ mod tests {
                     100,
                     100,
                     crate::power::plan::ProcessorBoostMode::Aggressive,
-                ),
+                )
+                .into(),
             }],
             cpu_limiter: CpuLimiterSettings {
                 enabled: true,
@@ -797,6 +822,7 @@ mod tests {
                     desired_100ns: 20_000,
                 }],
             },
+            watchdog: crate::config::WatchdogSettings::default(),
             memory_trim: MemoryTrimSettings {
                 enabled: true,
                 system_memory_load_threshold_percent: 80,
@@ -815,10 +841,13 @@ mod tests {
             .memory_trim
             .system_memory_load_threshold_percent = 72;
 
-        let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
-        let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
+        for mode in AppThemeMode::ALL {
+            settings.general.theme_mode = mode;
+            let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
+            let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
-        assert_eq!(parsed, settings);
+            assert_eq!(parsed, settings);
+        }
     }
 
     #[test]

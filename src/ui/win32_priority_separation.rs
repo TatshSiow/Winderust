@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, pick_list};
+use super::widgets::{action_button, pick_list};
 use crate::application::{Win32PrioritySeparationError, Win32PrioritySeparationService};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
@@ -146,29 +146,33 @@ impl Editor {
                 })
         };
         let mut body = column![
-            super::widgets::settings_card(
-                column![
-                    super::widgets::setting_row(
-                        "settings.win32_priority_separation_current",
-                        display(self.current.map(format_value).unwrap_or_else(|| {
-                            t!("settings.win32_priority_separation_unavailable").to_string()
-                        }))
-                    ),
-                    super::widgets::setting_row(
-                        "settings.win32_priority_separation_backup",
-                        display(self.backup.map(format_value).unwrap_or_else(|| {
-                            t!("settings.win32_priority_separation_no_backup").to_string()
-                        }))
-                    )
-                ]
-                .spacing(design::space::MEDIUM)
+            super::widgets::heading(
+                t!("settings.win32_priority_separation_saved_values").to_string(),
+                design::typography::BODY
             ),
+            super::widgets::settings_card(super::widgets::settings_rows([
+                super::widgets::setting_row(
+                    "settings.win32_priority_separation_current",
+                    display(self.current.map(format_value).unwrap_or_else(|| {
+                        t!("settings.win32_priority_separation_unavailable").to_string()
+                    }))
+                )
+                .into(),
+                super::widgets::setting_row(
+                    "settings.win32_priority_separation_backup",
+                    display(self.backup.map(format_value).unwrap_or_else(|| {
+                        t!("settings.win32_priority_separation_no_backup").to_string()
+                    }))
+                )
+                .into(),
+            ])),
             super::widgets::heading(
                 t!("settings.win32_priority_separation_scheduler_policy").to_string(),
-                design::typography::SECONDARY
+                design::typography::BODY
             )
         ]
         .spacing(super::widgets::CARD_GAP);
+        let mut policy = Vec::new();
         for (field, key, mask, bits) in [
             (Field::Duration, "quantum_duration", 0x30, vec![0x20, 0x10]),
             (
@@ -184,30 +188,39 @@ impl Editor {
                 .map(|bits| Choice(bits, field_label(field, bits)))
                 .collect::<Vec<_>>();
             let selected = normalize(self.value) & mask;
-            body = body.push(super::widgets::settings_card(super::widgets::setting_row(
-                &format!("settings.win32_priority_separation_{key}"),
-                pick_list(
-                    choices,
-                    Some(Choice(selected, field_label(field, selected))),
-                    move |v| Message::Field(field, v.0),
+            policy.push(
+                super::widgets::setting_row(
+                    &format!("settings.win32_priority_separation_{key}"),
+                    pick_list(
+                        choices,
+                        Some(Choice(selected, field_label(field, selected))),
+                        move |v| Message::Field(field, v.0),
+                    )
+                    .width(design::SELECT_WIDTH),
                 )
-                .width(design::SELECT_WIDTH),
-            )));
+                .into(),
+            );
         }
         let value = normalize(self.value);
-        body = body
-            .push(super::widgets::settings_card(super::widgets::setting_row(
+        policy.push(
+            super::widgets::setting_row(
                 "settings.win32_priority_separation_resulting_value",
                 display(format!("0x{value:02X} ({value})")),
-            )))
+            )
+            .into(),
+        );
+        body = body
+            .push(super::widgets::settings_card(
+                super::widgets::settings_rows(policy),
+            ))
             .push(
                 row![
                     iced::widget::Space::new().width(Fill),
-                    button(text(t!("settings.refresh").to_string())).on_press(Message::Refresh),
-                    button(text(t!("settings.save_backup").to_string())).on_press(Message::Backup),
-                    button(text(t!("settings.restore_backup").to_string()))
+                    action_button(t!("settings.refresh").to_string()).on_press(Message::Refresh),
+                    action_button(t!("settings.save_backup").to_string()).on_press(Message::Backup),
+                    action_button(t!("settings.restore_backup").to_string())
                         .on_press_maybe(self.backup.map(|_| Message::Restore)),
-                    button(text(t!("settings.apply").to_string()))
+                    action_button(t!("settings.apply").to_string())
                         .style(super::widgets::primary_button)
                         .on_press(Message::Apply)
                 ]

@@ -1,6 +1,6 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
 use super::design;
-use super::widgets::button;
+use super::widgets::action_button;
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
@@ -126,11 +126,19 @@ pub(super) fn view<'a>(
             "common.process_activity",
             column![
                 metric(
-                    "common.scanned_processes",
+                    if page == Page::Watchdog {
+                        "watchdog.monitored"
+                    } else {
+                        "common.scanned_processes"
+                    },
                     count(available.then_some(summary.scanned).flatten())
                 ),
                 metric(
-                    "common.adjusted_processes",
+                    if page == Page::Watchdog {
+                        "watchdog.alerting"
+                    } else {
+                        "common.adjusted_processes"
+                    },
                     count(available.then_some(summary.adjusted).flatten())
                 ),
                 metric(
@@ -282,7 +290,7 @@ pub(super) fn view<'a>(
         && !crate::privilege::is_running_as_admin()
     {
         body = body.push(
-            button(text(t!("admin_rights.relaunch").to_string())).on_press(Message::RelaunchAdmin),
+            action_button(t!("admin_rights.relaunch").to_string()).on_press(Message::RelaunchAdmin),
         );
     }
     let content: Element<'a, Message> = scrollable(
@@ -293,22 +301,7 @@ pub(super) fn view<'a>(
     .width(Fill)
     .height(Fill)
     .into();
-    Some(
-        if matches!(
-            page,
-            Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard
-        ) {
-            content
-        } else {
-            column![
-                super::widgets::panel_heading(t!("common.status").to_string()),
-                content
-            ]
-            .spacing(design::space::MEDIUM)
-            .height(Fill)
-            .into()
-        },
-    )
+    Some(content)
 }
 fn saved_runtime_settings(
     editor: &crate::application::SettingsEditor,
@@ -397,7 +390,8 @@ fn sidebar_state(
     {
         return FeatureRunState::Paused;
     }
-    let active = summary.adjusted.is_some_and(|count| count > 0)
+    let active = (page == Page::Watchdog && summary.scanned.is_some_and(|count| count > 0))
+        || summary.adjusted.is_some_and(|count| count > 0)
         || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some())
         || (page == Page::AdaptiveEngine
             && plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
@@ -493,6 +487,17 @@ fn feature_status_summary(
                 skipped: Some(status.skipped_processes),
                 last_error: status.last_error.clone(),
                 action_log_feature: ActionLogFeature::BackgroundEfficiency,
+            }
+        }
+        Page::Watchdog => {
+            let status = &runtime.feature_status.watchdog;
+            FeatureStatusSummary {
+                scanned: Some(status.monitored_processes),
+                adjusted: Some(status.alerting_processes),
+                protected_or_denied: None,
+                skipped: Some(status.skipped_processes),
+                last_error: status.last_error.clone(),
+                action_log_feature: ActionLogFeature::Watchdog,
             }
         }
         Page::MemoryTrim => {

@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, slider, text_input};
+use super::widgets::{action_button, checkbox, icon_button, pick_list, slider, text_input};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
@@ -216,14 +216,12 @@ impl CpuLimiter {
             None => Message::Default(tier, value),
         };
         row![
-            button(super::navigation::glyph("icons/minus.svg"))
-                .padding(7)
-                .height(32)
+            icon_button("icons/minus.svg")
+                .style(super::widgets::control_button)
                 .on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
             slider(1..=100, value, change).width(Fill),
-            button(super::navigation::glyph("icons/plus.svg"))
-                .padding(7)
-                .height(32)
+            icon_button("icons/plus.svg")
+                .style(super::widgets::control_button)
                 .on_press_maybe((value < 100).then(|| change(value.saturating_add(1)))),
             text_input("1-100", &self.number(path, tier, value))
                 .on_input(move |raw| Message::Number(index, tier, raw))
@@ -240,13 +238,11 @@ impl CpuLimiter {
         path: &str,
         value: u8,
     ) -> Element<'_, Message> {
-        row![
+        column![
             text(super::widgets::label_with_unit(&tier.label(), "%")).width(Fill),
-            iced::widget::container(self.limit_control(index, tier, path, value)).width(420)
+            self.limit_control(index, tier, path, value)
         ]
-        .spacing(design::space::MEDIUM)
-        .height(super::widgets::SETTING_ROW_HEIGHT)
-        .align_y(iced::Center)
+        .spacing(design::space::SMALL)
         .into()
     }
     pub(super) fn view<'a>(
@@ -264,20 +260,20 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        let mut defaults = column![].spacing(design::space::MEDIUM);
+        let mut defaults = Vec::new();
         for (tier, value) in Tier::ALL.into_iter().zip([
             settings.focus_allowed_cpu_time_percent,
             settings.visible_window_allowed_cpu_time_percent,
             settings.background_allowed_cpu_time_percent,
         ]) {
-            defaults = defaults.push(self.limit_row(None, tier, "", value));
+            defaults.push(self.limit_row(None, tier, "", value));
         }
         body = body.push(super::widgets::setting_group(
             "cpu_limiter.enable".to_string(),
             self.expanded,
             Message::Collapse,
             super::widgets::switch(settings.enabled, Some(Message::Enabled)),
-            defaults,
+            super::widgets::settings_rows(defaults),
         ));
         body = body
             .push(super::widgets::setting_title("cpu_limiter.rules"))
@@ -332,12 +328,7 @@ impl CpuLimiter {
                 cells,
                 row![
                     iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::Edit(index)),
+                        icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top
                     ),
@@ -349,7 +340,7 @@ impl CpuLimiter {
             );
             cards.push((
                 super::widgets::stable_key(&rule.executable_path),
-                column![header, iced::widget::rule::horizontal(1)].into(),
+                column![header, super::widgets::settings_divider()].into(),
             ));
         }
         body = body.push(super::widgets::process_rules_table_with_actions(
@@ -381,8 +372,12 @@ impl CpuLimiter {
                 .style(move |theme| super::widgets::rule_status_chip(theme, key))
         ]
         .align_y(iced::Center)]
-        .spacing(24);
+        .spacing(super::widgets::CARD_GAP);
 
+        details = details.push(super::widgets::heading(
+            t!("common.rule_details").to_string(),
+            design::typography::BODY,
+        ));
         details = details.push(super::widgets::settings_card(
             column![
                 super::app_picker::app_name(&rule.executable_path, candidates),
@@ -390,6 +385,7 @@ impl CpuLimiter {
             ]
             .spacing(design::space::SMALL),
         ));
+        let mut limits = Vec::new();
         for (tier, (mode, value)) in Tier::ALL.into_iter().zip([
             (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
             (
@@ -401,8 +397,9 @@ impl CpuLimiter {
                 rule.background_allowed_cpu_time_percent,
             ),
         ]) {
-            let mut card = column![super::widgets::setting_row(
+            let mut controls = column![super::widgets::setting_row_with_unit(
                 tier.key(),
+                "%",
                 pick_list(
                     ProcessRuleMode::ALL
                         .into_iter()
@@ -413,23 +410,36 @@ impl CpuLimiter {
                 )
                 .width(design::SELECT_WIDTH),
             )]
-            .spacing(design::space::MEDIUM);
+            .spacing(design::space::SMALL);
             if mode == ProcessRuleMode::Enabled {
-                card = card.push(self.limit_row(Some(index), tier, &rule.executable_path, value));
+                controls = controls.push(self.limit_control(
+                    Some(index),
+                    tier,
+                    &rule.executable_path,
+                    value,
+                ));
             }
-            details = details.push(super::widgets::settings_card(card));
+            limits.push(controls.into());
         }
+        details = details
+            .push(super::widgets::heading(
+                t!("cpu_limiter.limits").to_string(),
+                design::typography::BODY,
+            ))
+            .push(super::widgets::settings_card(
+                super::widgets::settings_rows(limits),
+            ));
         let header = row![
             text(t!("common.edit").to_string()).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::CancelRule)
+            icon_button("icons/x.svg").on_press(Message::CancelRule)
         ]
         .align_y(iced::Center);
         let footer = row![
             iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
+            action_button(t!("common.cancel").to_string())
                 .style(super::widgets::tertiary_button)
                 .on_press(Message::CancelRule),
-            button(text(t!("common.save").to_string()))
+            action_button(t!("common.save").to_string())
                 .style(super::widgets::primary_button)
                 .on_press_maybe((!self.has_invalid_inputs()).then_some(Message::SaveRule))
         ]
@@ -496,6 +506,28 @@ fn rule_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn limit_labels_and_controls_fit_beside_the_dock() {
+        use iced::advanced::{layout, widget::Tree};
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let editor = CpuLimiter::default();
+        for tier in Tier::ALL {
+            let mut view = editor.limit_row(None, tier, "", 50);
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(400.0, 1000.0)),
+            );
+            let label = node.children()[0].bounds();
+            let control = node.children()[1].bounds();
+            assert_eq!(label.width, 400.0);
+            assert_eq!(control.width, 400.0);
+            assert!(control.y >= label.y + label.height);
+            assert!(control.height <= 40.0);
+        }
+    }
+
     #[test]
     fn rule_status_uses_confirmed_limited_apps_and_enable_switches() {
         let mut rule = new_cpu_limiter_rule(r"C:\Apps\test.exe");

@@ -14,7 +14,8 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Shell::{
-            Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+            Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_WARNING,
+            NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
         },
         WindowsAndMessaging::{
             AppendMenuW, CallWindowProcW, ChangeWindowMessageFilterEx, CreatePopupMenu,
@@ -117,6 +118,26 @@ fn menu_action(command: usize, state: &MenuState) -> Option<MenuAction> {
 }
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static NOTIFICATION_WINDOW: AtomicIsize = AtomicIsize::new(0);
+
+pub(crate) fn show_notification(title: &str, body: &str, critical: bool) -> Result<(), String> {
+    let hwnd = NOTIFICATION_WINDOW.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return Err("Windows notification tray icon is unavailable.".into());
+    }
+    let mut data = notify_data(hwnd as HWND);
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = if critical { NIIF_ERROR } else { NIIF_WARNING };
+    write_wide_fixed(&mut data.szInfoTitle, title);
+    write_wide_fixed(&mut data.szInfo, body);
+    // SAFETY: data is initialized and identifies the registered tray icon. Shell validates
+    // the window if teardown raced with this call; no borrowed pointers escape.
+    if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) } == 0 {
+        Err("Windows rejected the Watchdog notification.".into())
+    } else {
+        Ok(())
+    }
+}
 static TASKBAR_RECREATED: AtomicBool = AtomicBool::new(false);
 
 pub fn take_taskbar_created() -> bool {
@@ -200,6 +221,7 @@ impl TrayIcon {
     }
 
     pub fn invalidate(&mut self) {
+        NOTIFICATION_WINDOW.store(0, Ordering::Release);
         self.registered = false;
     }
 
@@ -212,6 +234,7 @@ impl TrayIcon {
         // SAFETY: data identifies the live window and uses a shared icon handle.
         self.registered = unsafe { Shell_NotifyIconW(NIM_ADD, &data) } != 0;
         if self.registered {
+            NOTIFICATION_WINDOW.store(self.hwnd as isize, Ordering::Release);
             Ok(())
         } else {
             Err("Failed to add Winderust to the system tray.".into())
@@ -221,6 +244,7 @@ impl TrayIcon {
 
 impl Drop for TrayIcon {
     fn drop(&mut self) {
+        NOTIFICATION_WINDOW.store(0, Ordering::Release);
         let data = notify_data(self.hwnd);
         // SAFETY: data identifies the tray icon installed for this live window and deletion does
         // not transfer ownership.
@@ -269,11 +293,16 @@ fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
 }
 
 fn write_wide_fixed<const N: usize>(target: &mut [u16; N], value: &str) {
-    for (slot, code) in target
-        .iter_mut()
-        .zip(value.encode_utf16().chain(std::iter::once(0)))
-    {
-        *slot = code;
+    target.fill(0);
+    let mut used = 0;
+    for character in value.chars() {
+        let mut units = [0; 2];
+        let encoded = character.encode_utf16(&mut units);
+        if used + encoded.len() >= N {
+            break;
+        }
+        target[used..used + encoded.len()].copy_from_slice(encoded);
+        used += encoded.len();
     }
 }
 
@@ -397,7 +426,7 @@ unsafe extern "system" fn tray_wnd_proc(
 
     if message == WM_TRAYICON && wparam as u32 == TRAY_UID {
         match lparam as u32 {
-            WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
+            WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_BALLOONUSERCLICK => {
                 show_window(hwnd);
                 return 0;
             }
@@ -666,5 +695,18 @@ mod tests {
 
         assert!(take_requested(&requested));
         assert!(!take_requested(&requested));
+    }
+
+    #[test]
+    fn notification_text_is_terminated_without_splitting_surrogates() {
+        let mut text = [1; 5];
+        write_wide_fixed(&mut text, "ab😀c");
+        assert_eq!(String::from_utf16(&text[..4]).unwrap(), "ab😀");
+        assert_eq!(text[4], 0);
+        write_wide_fixed(&mut text, "a");
+        assert_eq!(text, [97, 0, 0, 0, 0]);
+        let mut tiny = [1; 2];
+        write_wide_fixed(&mut tiny, "😀");
+        assert_eq!(tiny, [0, 0]);
     }
 }
