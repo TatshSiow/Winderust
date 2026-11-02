@@ -1,6 +1,6 @@
 use super::design;
 use super::priority_control::{Kind, Value};
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{action_button, button, checkbox, pick_list, text_input};
 use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
 use crate::config::*;
 use crate::foreground::{
@@ -26,12 +26,12 @@ pub(super) enum PlanCatalog<'a> {
     Loaded(&'a [crate::power::PowerPlan]),
 }
 const ROW_HEIGHT: f32 = 36.0;
+type Icons = HashMap<PathBuf, Option<Arc<image::Handle>>>;
 #[derive(Debug, Clone)]
 pub(super) struct Population {
     processes: Vec<ProcessInfo>,
     samples: BTreeMap<u32, ProcessResourceSample>,
     total_memory_bytes: Option<u64>,
-    icons: HashMap<PathBuf, Option<Arc<image::Handle>>>,
 }
 #[derive(Debug, Clone)]
 struct Entry {
@@ -125,9 +125,9 @@ pub(super) enum MenuBranch {
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
-    PausePopulation(bool),
     Refresh,
     Loaded(Result<Population, String>),
+    IconsLoaded(Result<Icons, String>),
     Search(String),
     Scrolled(f32),
     ResizeStart(Sort, f32),
@@ -164,7 +164,6 @@ pub(super) enum Message {
 }
 
 pub(super) struct ProcessList {
-    pub(super) population_paused: bool,
     processes: Vec<ProcessInfo>,
     rows: Vec<Entry>,
     offsets: Vec<f32>,
@@ -173,7 +172,7 @@ pub(super) struct ProcessList {
     total_memory_bytes: Option<u64>,
     cpu: HashMap<u32, f32>,
     suspended_process_ids: Vec<u32>,
-    icons: HashMap<PathBuf, Option<Arc<image::Handle>>>,
+    icons: Icons,
     search: String,
     offset: std::cell::Cell<f32>,
     refreshing: bool,
@@ -212,7 +211,6 @@ impl Default for ProcessList {
             search: String::new(),
             offset: std::cell::Cell::new(0.0),
             refreshing: false,
-            population_paused: false,
             error: None,
             hide_inaccessible: true,
             grouped: true,
@@ -240,27 +238,6 @@ impl ProcessList {
         self.context.is_some() && self.selected.is_some()
     }
 
-    pub(super) fn discard(&mut self, message: Message) {
-        if matches!(message, Message::Loaded(_)) {
-            self.refreshing = false;
-        }
-        self.clear();
-    }
-    pub(super) fn clear(&mut self) {
-        self.rows_revision = self.rows_revision.wrapping_add(1);
-        self.processes.clear();
-        self.rows.clear();
-        self.offsets = vec![0.0];
-        self.samples.clear();
-        self.cpu.clear();
-        self.icons.clear();
-        self.expanded.clear();
-        self.focused = None;
-        self.selected = None;
-        self.context = None;
-        self.stopping = None;
-        self.offset.set(0.0);
-    }
     pub(super) fn update(
         &mut self,
         message: Message,
@@ -268,42 +245,9 @@ impl ProcessList {
         runtime: &RuntimeHandle,
     ) -> Task<Message> {
         match message {
-            Message::PausePopulation(value) => self.population_paused = value,
             Message::Refresh if !self.refreshing => {
                 self.refreshing = true;
-                let cached = self.icons.keys().cloned().collect::<HashSet<_>>();
-                return background(
-                    move || {
-                        let processes = foreground::list_processes_with_paths()?;
-                        let mut samples = foreground::sample_process_resources(&processes);
-                        let identities = processes
-                            .iter()
-                            .map(|p| (p.id, p.creation_time))
-                            .collect::<HashMap<_, _>>();
-                        samples.retain(|id, sample| {
-                            identities.get(id) == Some(&Some(sample.creation_time))
-                        });
-                        let mut icons = HashMap::new();
-                        for p in &processes {
-                            if let Some(path) = &p.image_path {
-                                if !cached.contains(path) && !icons.contains_key(path) {
-                                    icons.insert(
-                                        path.clone(),
-                                        crate::process_icon::load_process_icon(path),
-                                    );
-                                }
-                            }
-                        }
-                        Ok(Population {
-                            total_memory_bytes: crate::dashboard_metrics::sample_memory_usage()
-                                .total_physical_bytes,
-                            processes,
-                            samples,
-                            icons,
-                        })
-                    },
-                    Message::Loaded,
-                );
+                return background(load_population, Message::Loaded);
             }
             Message::Refresh => {}
             Message::Loaded(result) => {
@@ -326,7 +270,6 @@ impl ProcessList {
                         self.processes = data.processes;
                         self.samples = data.samples;
                         self.total_memory_bytes = data.total_memory_bytes;
-                        self.icons.extend(data.icons);
                         let paths = self
                             .processes
                             .iter()
@@ -334,9 +277,38 @@ impl ProcessList {
                             .collect::<HashSet<_>>();
                         self.icons.retain(|p, _| paths.contains(p));
                         self.error = None;
+                        let missing = paths
+                            .into_iter()
+                            .filter(|path| !self.icons.contains_key(*path))
+                            .cloned()
+                            .collect::<Vec<_>>();
                         self.rebuild();
+                        if !missing.is_empty() {
+                            // Publish rows before extracting executable icons, and keep one refresh in flight.
+                            self.refreshing = true;
+                            return background(
+                                move || {
+                                    Ok(missing
+                                        .into_iter()
+                                        .map(|path| {
+                                            let icon =
+                                                crate::process_icon::load_process_icon(&path);
+                                            (path, icon)
+                                        })
+                                        .collect())
+                                },
+                                Message::IconsLoaded,
+                            );
+                        }
                     }
                     Err(e) => self.error = Some(e),
+                }
+            }
+            Message::IconsLoaded(result) => {
+                self.refreshing = false;
+                match result {
+                    Ok(icons) => self.icons.extend(icons),
+                    Err(error) => self.error = Some(error),
                 }
             }
             Message::Search(v) => {
@@ -738,6 +710,7 @@ impl ProcessList {
 
     fn auto_width(&self, col: Sort) -> f32 {
         let mut width = measure_column_text(&col.label()) + 44.0;
+        let mut measured = HashMap::new();
         for entry in &self.rows {
             let value = self.cell_value(entry, col);
             let value = if col == Sort::Status {
@@ -756,7 +729,10 @@ impl ProcessList {
                 Sort::Status => 32.0,
                 _ => 12.0,
             };
-            width = width.max(measure_column_text(&value) + padding);
+            let value_width = measured
+                .entry(value)
+                .or_insert_with_key(|value| measure_column_text(value));
+            width = width.max(*value_width + padding);
         }
         width.ceil()
     }
@@ -970,7 +946,7 @@ impl ProcessList {
         )
     }
     fn immediate_priorities(&self, settings: &Settings, eligible: bool) -> Element<'_, Message> {
-        let mut controls = column![].spacing(design::space::SMALL);
+        let mut controls = Vec::new();
         for kind in [
             Kind::Process,
             Kind::Thread,
@@ -1006,11 +982,9 @@ impl ProcessList {
                 )
                 .into()
             };
-            controls = controls.push(super::widgets::settings_card(super::widgets::setting_row(
-                &key, control,
-            )));
+            controls.push(super::widgets::setting_row(&key, control).into());
         }
-        controls.into()
+        super::widgets::settings_card(super::widgets::settings_rows(controls)).into()
     }
 
     pub(super) fn side_panel(&self) -> Element<'_, Message> {
@@ -1092,22 +1066,6 @@ impl ProcessList {
             ),
             Space::new().width(Fill),
             text(t!("process_list.count", count = self.processes.len()).to_string()),
-            button(text(
-                if self.population_paused {
-                    t!("process_list.resume_population")
-                } else {
-                    t!("process_list.pause_population")
-                }
-                .to_string()
-            ))
-            .on_press(Message::PausePopulation(!self.population_paused)),
-            iced::widget::tooltip(
-                button(super::navigation::glyph("icons/refresh-cw.svg"))
-                    .style(super::widgets::quiet)
-                    .on_press(Message::Refresh),
-                text(t!("settings.refresh").to_string()),
-                iced::widget::tooltip::Position::Bottom,
-            ),
         ]
         .spacing(design::space::SMALL)
         .align_y(iced::Center);
@@ -1117,7 +1075,7 @@ impl ProcessList {
         if let Some(e) = &self.error {
             body = body.push(text(e));
         }
-        body = body.push(responsive(move |size| {
+        body = body.push(super::widgets::table_frame(responsive(move |size| {
             let widths = self.layout_widths(size.width);
             let name_width = widths[Sort::Name as usize];
             let sort_header = |col: Sort, width| {
@@ -1306,15 +1264,9 @@ impl ProcessList {
                 - design::space::SMALL as f32
                 + 32.0;
             scrollable(scrolling::table_surface(
-                container(
-                    column![
-                        container(header).height(32).style(super::widgets::surface),
-                        table,
-                    ]
+                container(column![container(header).height(32), table,].height(Fill))
+                    .width(size.width.max(table_width))
                     .height(Fill),
-                )
-                .width(size.width.max(table_width))
-                .height(Fill),
             ))
             .direction(iced::widget::scrollable::Direction::Horizontal(
                 iced::widget::scrollable::Scrollbar::default(),
@@ -1322,7 +1274,7 @@ impl ProcessList {
             .width(Fill)
             .height(Fill)
             .into()
-        }));
+        })));
         let body = mouse_area(body).on_move(Message::PointerMoved);
         if let Some((stopping, tree)) = &self.stopping {
             let dialog = container(
@@ -1344,10 +1296,10 @@ impl ProcessList {
                     ),
                     row![
                         Space::new().width(Fill),
-                        button(text(t!("process_list.kill").to_string()))
+                        action_button(t!("process_list.kill").to_string())
                             .style(super::widgets::danger_button)
                             .on_press(Message::ConfirmStop),
-                        button(text(t!("common.cancel").to_string()))
+                        action_button(t!("common.cancel").to_string())
                             .style(crate::ui::widgets::tertiary_button)
                             .on_press(Message::CancelStop),
                     ]
@@ -1412,9 +1364,12 @@ impl ProcessList {
                                 super::navigation::glyph("icons/chevron-right.svg"),
                             ]
                             .spacing(design::space::SMALL)
+                            .height(Fill)
                             .align_y(iced::Center),
                         )
                         .width(Fill)
+                        .height(design::BUTTON_HEIGHT)
+                        .padding([0, design::space::MEDIUM as u16])
                         .style(super::widgets::quiet)
                         .on_press(Message::MenuBranch(MenuBranch::Efficiency));
                         let mut menu = column![
@@ -1427,9 +1382,12 @@ impl ProcessList {
                                         super::navigation::glyph("icons/chevron-right.svg")
                                     ]
                                     .spacing(design::space::SMALL)
+                                    .height(Fill)
                                     .align_y(iced::Center)
                                 )
                                 .width(Fill)
+                                .height(design::BUTTON_HEIGHT)
+                                .padding([0, design::space::MEDIUM as u16])
                                 .style(super::widgets::quiet)
                                 .on_press(Message::MenuBranch(MenuBranch::Types))
                             )
@@ -1472,7 +1430,7 @@ impl ProcessList {
                             }
                             menu = menu.push(
                                 mouse_area(
-                                    button(text(t!(key).to_string()))
+                                    action_button(t!(key).to_string())
                                         .width(Fill)
                                         .style(move |theme, status| {
                                             let mut style = super::widgets::quiet(theme, status);
@@ -1486,11 +1444,7 @@ impl ProcessList {
                                                             .color
                                                     }
                                                     "process_list.resume_process" => {
-                                                        if theme.extended_palette().is_dark {
-                                                            iced::Color::from_rgb8(0x70, 0xb7, 0xff)
-                                                        } else {
-                                                            iced::Color::from_rgb8(0x00, 0x67, 0xb0)
-                                                        }
+                                                        theme.palette().primary
                                                     }
                                                     "process_list.stop_process"
                                                     | "process_list.stop_process_tree" => {
@@ -1537,7 +1491,7 @@ impl ProcessList {
                                 [(true, "common.enabled"), (false, "common.disabled")]
                             {
                                 options = options.push(
-                                    button(text(t!(key).to_string()))
+                                    action_button(t!(key).to_string())
                                         .width(Fill)
                                         .style(if self.efficiency == Some(enabled) {
                                             super::widgets::selected
@@ -1575,9 +1529,12 @@ impl ProcessList {
                                                 .width(design::ICON_SIZE)
                                             ]
                                             .spacing(design::space::SMALL)
+                                            .height(Fill)
                                             .align_y(iced::Center),
                                         )
                                         .width(Fill)
+                                        .height(design::BUTTON_HEIGHT)
+                                        .padding([0, design::space::MEDIUM as u16])
                                         .style(if self.menu_branch == MenuBranch::Levels(kind) {
                                             super::widgets::selected
                                         } else {
@@ -1598,7 +1555,7 @@ impl ProcessList {
                                 {
                                     let selected = self.current.contains(&value);
                                     levels = levels.push(
-                                        button(text(value.to_string()))
+                                        action_button(value.to_string())
                                             .width(Fill)
                                             .style(move |theme, status| {
                                                 let mut style = if selected {
@@ -1660,13 +1617,13 @@ impl ProcessList {
                     ]
                     .width(Fill)
                     .spacing(design::space::TIGHT),
-                    button(text("\u{00d7}")).on_press(Message::CloseSelection),
+                    super::widgets::icon_button("icons/x.svg").on_press(Message::CloseSelection),
                 ]
                 .spacing(design::space::MEDIUM)
                 .align_y(iced::Center),
             )
             .padding(design::space::LARGE as u16);
-            let mut tabs = row![].spacing(design::space::SMALL);
+            let mut tabs = row![];
             for (tab, key) in [
                 (ProcessTab::Immediate, "process_list.immediate_actions"),
                 (ProcessTab::Rulesets, "process_list.rulesets"),
@@ -1675,7 +1632,6 @@ impl ProcessList {
                     t!(key).to_string(),
                     self.process_tab == tab,
                     Message::ProcessTab(tab),
-                    false,
                 ));
             }
             let mut pane = column![].spacing(super::widgets::CARD_GAP);
@@ -1691,18 +1647,22 @@ impl ProcessList {
                 }
                 ProcessTab::Immediate => {
                     let efficiency: Element<'_, Message> = match self.efficiency {
-                        Some(enabled) => super::widgets::switch(
+                        Some(enabled) => super::widgets::toggle_card(
+                            "process_list.efficiency_mode",
                             enabled,
                             eligible.then_some(|value| Message::Action(Action::Efficiency(value))),
                         ),
-                        None => text(t!("common.unknown").to_string()).into(),
+                        None => super::widgets::settings_card(super::widgets::setting_row(
+                            "process_list.efficiency_mode",
+                            text(t!("common.unknown").to_string()),
+                        ))
+                        .into(),
                     };
                     pane = pane
-                        .push(super::widgets::settings_card(super::widgets::setting_row(
-                            "process_list.efficiency_mode",
+                        .push(
                             mouse_area(efficiency)
                                 .on_enter(Message::MenuBranch(MenuBranch::Closed)),
-                        )))
+                        )
                         .push(super::widgets::heading(
                             t!("nav.priority_control").to_string(),
                             design::typography::BODY,
@@ -1710,17 +1670,17 @@ impl ProcessList {
                         .push(self.immediate_priorities(settings, eligible))
                         .push(
                             row![
-                                button(text(t!(suspension_label).to_string())).on_press_maybe(
+                                action_button(t!(suspension_label).to_string()).on_press_maybe(
                                     suspendable
                                         .then_some(Message::Action(Action::Suspend(!suspended)))
                                 ),
-                                button(text(t!("process_list.open_process_location").to_string()))
+                                action_button(t!("process_list.open_process_location").to_string())
                                     .on_press_maybe(
                                         (!selection.path.is_empty())
                                             .then_some(Message::OpenLocation)
                                     ),
                                 Space::new().width(Fill),
-                                button(text(t!(stop_label).to_string()))
+                                action_button(t!(stop_label).to_string())
                                     .style(super::widgets::danger_button)
                                     .on_press_maybe(eligible.then_some(Message::Stop(tree))),
                             ]
@@ -1743,7 +1703,7 @@ impl ProcessList {
                     container(column![
                         header,
                         iced::widget::rule::horizontal(1),
-                        container(tabs)
+                        container(container(tabs).style(super::widgets::tab_bar))
                             .padding([design::space::SMALL as u16, design::space::LARGE as u16]),
                         scrollable(
                             container(super::motion::wrap(
@@ -1759,15 +1719,7 @@ impl ProcessList {
                     .max_width(960)
                     .height(Fill)
                     .max_height(680)
-                    .style(|theme| container::Style {
-                        background: Some(theme.palette().background.into()),
-                        border: iced::Border {
-                            color: theme.extended_palette().background.strong.color,
-                            width: 1.0,
-                            radius: design::CARD_RADIUS.into(),
-                        },
-                        ..Default::default()
-                    })
+                    .style(super::widgets::surface)
                 ))
                 .padding(design::space::MEDIUM as u16)
                 .center_x(Fill)
@@ -1830,21 +1782,19 @@ fn snapshot_target(p: &ProcessInfo) -> Result<ProcessActionTarget, ProcessAction
     })
 }
 fn status_cell(key: &str) -> Element<'static, Message> {
-    let (icon, dark, light) = match key {
-        "process_list.status_suspended" => ("icons/pause.svg", 0xe8b45b, 0x886000),
-        "process_list.status_efficiency_mode" => ("icons/leaf.svg", 0xa4db61, 0x477d23),
-        "process_list.status_active" => ("icons/play.svg", 0x70b7ff, 0x0067b0),
-        "process_list.status_system_protected" => ("icons/shield.svg", 0x9aa0a6, 0x666666),
-        "process_list.status_access_denied" => ("icons/ban.svg", 0x9aa0a6, 0x666666),
-        _ => ("icons/circle-help.svg", 0x9aa0a6, 0x666666),
+    let icon = match key {
+        "process_list.status_suspended" => "icons/pause.svg",
+        "process_list.status_efficiency_mode" => "icons/leaf.svg",
+        "process_list.status_active" => "icons/play.svg",
+        "process_list.status_system_protected" => "icons/shield.svg",
+        "process_list.status_access_denied" => "icons/ban.svg",
+        _ => "icons/circle-help.svg",
     };
-    let color = move |theme: &iced::Theme| {
-        let rgb = if theme.extended_palette().is_dark {
-            dark
-        } else {
-            light
-        };
-        iced::Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+    let color: fn(&iced::Theme) -> iced::Color = match key {
+        "process_list.status_suspended" => |theme| theme.palette().warning,
+        "process_list.status_efficiency_mode" => |theme| theme.palette().success,
+        "process_list.status_active" => |theme| theme.palette().primary,
+        _ => super::widgets::muted_color,
     };
     let label = t!(key);
     let cell = row![
@@ -1930,9 +1880,250 @@ fn background<T: Send + 'static>(
     super::tasks::run(work).map(move |result| map(result.and_then(|value| value)))
 }
 
+fn load_population() -> Result<Population, String> {
+    let processes = foreground::list_processes_with_paths()?;
+    let mut samples = foreground::sample_process_resources(&processes);
+    let identities = processes
+        .iter()
+        .map(|p| (p.id, p.creation_time))
+        .collect::<HashMap<_, _>>();
+    samples.retain(|id, sample| identities.get(id) == Some(&Some(sample.creation_time)));
+    Ok(Population {
+        total_memory_bytes: crate::dashboard_metrics::sample_memory_usage().total_physical_bytes,
+        processes,
+        samples,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn page_process_list_transitions_keep_repaints_bounded() {
+        use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
+        use iced::{mouse, Rectangle, Size};
+        use std::time::Instant;
+
+        let mut list = ProcessList {
+            processes: (1..=500)
+                .map(|id| {
+                    let mut process = process(id, id as u64, &format!("application-{id}.exe"));
+                    process.name = format!("application-{id}-long-process-name.exe");
+                    process
+                })
+                .collect(),
+            ..ProcessList::default()
+        };
+        let rebuild = Instant::now();
+        list.rebuild();
+        eprintln!("rebuild/auto-fit: {:?}", rebuild.elapsed());
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        let home = super::super::home::Model::default();
+        let log = super::super::action_log::Editor::default();
+        let entries: Vec<_> = (1..=500)
+            .map(|id| crate::action_log::ActionLogEntry {
+                sequence: id,
+                batch_id: id,
+                timestamp_epoch_ms: 1_700_000_000_000 + u128::from(id),
+                feature: crate::action_log::ActionLogFeature::ProcessPriority,
+                process_id: Some(id as u32),
+                process_name: format!("application-{id}.exe"),
+                result: crate::action_log::ActionLogResult::Applied,
+                reason: "Process Priority applied".into(),
+            })
+            .collect();
+        let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let bounds = Rectangle::with_size(Size::new(1400.0, 900.0));
+        let physical = Size::new(2100, 1350);
+        let viewport = iced::advanced::graphics::Viewport::with_physical_size(physical, 1.5);
+        let mut pixels = tiny_skia::Pixmap::new(physical.width, physical.height).unwrap();
+        let mut mask = tiny_skia::Mask::new(physical.width, physical.height).unwrap();
+        let mut tree = Tree::empty();
+        let mut previous = Vec::new();
+        for frame in 0..16 {
+            let start = Instant::now();
+            let home_page = frame < 8 && frame % 2 == 0;
+            let log_page = frame >= 8 && frame % 2 == 0;
+            let content = if home_page {
+                home.view(&settings, &status.feature_status, &[])
+                    .map(|_| Message::Refresh)
+            } else if log_page {
+                log.view(&entries, &[]).map(|_| Message::Refresh)
+            } else {
+                list.view(&settings, &status, PlanCatalog::Loaded(&[]))
+            };
+            let page = super::super::motion::wrap(
+                scrolling::repaint_group(content),
+                true,
+                super::super::motion::Effect::Content(if home_page {
+                    0
+                } else if log_page {
+                    1
+                } else {
+                    2
+                }),
+            );
+            let mut view: Element<'_, Message> = if home_page {
+                page
+            } else {
+                row![
+                    container(page).width(Fill).height(Fill),
+                    container(if log_page {
+                        log.side_panel(crate::config::ActionLogMode::Full, true, true)
+                            .map(|_| Message::Refresh)
+                    } else {
+                        list.side_panel()
+                    })
+                    .width(300)
+                    .height(Fill),
+                ]
+                .height(Fill)
+                .into()
+            };
+            tree.diff(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            let layout = start.elapsed();
+            renderer.reset(bounds);
+            view.as_widget().draw(
+                &tree,
+                &mut renderer,
+                &iced::Theme::Light,
+                &iced::advanced::renderer::Style::default(),
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &bounds,
+            );
+            let recorded = start.elapsed();
+            let damage = iced::advanced::graphics::damage::group(
+                iced::advanced::graphics::damage::diff(
+                    &previous,
+                    renderer.layers(),
+                    |layer| vec![layer.bounds],
+                    iced_tiny_skia::Layer::damage,
+                ),
+                bounds,
+            );
+            previous = renderer.layers().to_vec();
+            assert!(
+                damage.len() <= 4,
+                "Page / Process List transition {frame} fragmented into {} repaint regions",
+                damage.len()
+            );
+            let damaged_area: f32 = damage
+                .iter()
+                .map(|region| region.width * region.height)
+                .sum();
+            assert!(damaged_area <= bounds.width * bounds.height * 1.25);
+            renderer.draw(
+                &mut pixels.as_mut(),
+                &mut mask,
+                &viewport,
+                &damage,
+                iced::Color::WHITE,
+            );
+            eprintln!("transition {frame} home={home_page} log={log_page}: layout={layout:?}, draw={:?}, damage/raster={:?}, total={:?}, regions={}", recorded-layout, start.elapsed()-recorded, start.elapsed(), damage.len());
+        }
+    }
+
+    #[test]
+    #[ignore = "Measures live Process List opening; run manually with --nocapture"]
+    fn process_list_open_timing() {
+        use iced::advanced::{layout, widget::Tree};
+        use iced::{Rectangle, Size};
+        use std::time::Instant;
+
+        let font_start = Instant::now();
+        let _ = super::super::widgets::text_width("Home", design::typography::BODY);
+        eprintln!("Font warmup: {:?}", font_start.elapsed());
+        let start = Instant::now();
+        let population = load_population().unwrap();
+        let sampled = start.elapsed();
+        let mut list = ProcessList {
+            processes: population.processes,
+            samples: population.samples,
+            total_memory_bytes: population.total_memory_bytes,
+            ..ProcessList::default()
+        };
+        list.rebuild();
+        let rebuilt = start.elapsed();
+        let settings = Settings::default();
+        let status = RuntimeStatusSnapshot::default();
+        let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+        let mut tree = Tree::new(&view);
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let bounds = Rectangle::with_size(Size::new(1200.0, 800.0));
+        let _ = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, bounds.size()),
+        );
+        let ready = start.elapsed();
+        drop(view);
+        let mut icons = HashMap::new();
+        for process in &list.processes {
+            if let Some(path) = &process.image_path {
+                icons
+                    .entry(path.clone())
+                    .or_insert_with(|| crate::process_icon::load_process_icon(path));
+            }
+        }
+        eprintln!("Process List: processes={}, rows={}, population={sampled:?}, rebuild={:?}, view/layout={:?}, rows ready={ready:?}, subsequent icons={:?}", list.processes.len(), list.rows.len(), rebuilt - sampled, ready - rebuilt, start.elapsed() - ready);
+    }
+
+    #[test]
+    fn population_is_visible_before_icons_and_refreshes_do_not_overlap() {
+        let mut settings = Settings::default();
+        settings.general.enabled = false;
+        let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
+        let runtime = RuntimeHandle::start(&editor.runtime_settings_snapshot());
+        let mut list = ProcessList::default();
+        let path = PathBuf::from("missing-process-list-test.exe");
+        list.icons.insert(PathBuf::from("exited.exe"), None);
+        let population = || Population {
+            processes: vec![process(10, 100, path.to_str().unwrap())],
+            samples: BTreeMap::new(),
+            total_memory_bytes: None,
+        };
+        let icons = list.update(Message::Loaded(Ok(population())), &mut settings, &runtime);
+        assert_eq!(list.rows.len(), 1);
+        assert!(list.refreshing);
+        assert!(list.icons.is_empty());
+        assert!(icons.units() > 0);
+        assert_eq!(
+            list.update(Message::Refresh, &mut settings, &runtime)
+                .units(),
+            0
+        );
+        drop(icons);
+
+        let _ = list.update(
+            Message::IconsLoaded(Ok(HashMap::from([(path.clone(), None)]))),
+            &mut settings,
+            &runtime,
+        );
+        assert!(!list.refreshing);
+        assert!(list.icons.contains_key(&path));
+        // Cache failed extractions too, so subsequent refreshes do not repeat them.
+        assert_eq!(
+            list.update(Message::Loaded(Ok(population())), &mut settings, &runtime)
+                .units(),
+            0
+        );
+        assert!(!list.refreshing);
+        let _ = list.update(
+            Message::IconsLoaded(Err("worker unavailable".into())),
+            &mut settings,
+            &runtime,
+        );
+        assert!(!list.refreshing);
+        assert_eq!(list.error.as_deref(), Some("worker unavailable"));
+    }
+
     #[test]
     fn header_stays_clickable_after_scrolling_process_rows() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
@@ -2188,8 +2379,6 @@ mod tests {
             list.focused.as_ref().unwrap().2.processes[0].creation_time,
             Some(100)
         );
-        list.clear();
-        assert!(list.focused.is_none());
     }
 
     #[test]
@@ -2242,6 +2431,25 @@ mod tests {
         list.column_widths[Sort::Name as usize] = Some(400.0);
         list.rebuild();
         assert_eq!(list.column_width(Sort::Name), 400.0);
+    }
+
+    #[test]
+    fn auto_fit_keeps_the_largest_padding_for_repeated_names() {
+        let mut list = ProcessList {
+            processes: vec![process(10, 100, "app.exe"), process(11, 200, "app.exe")],
+            ..ProcessList::default()
+        };
+        for process in &mut list.processes {
+            process.name = "a_long_executable_name_shared_by_the_group.exe".into();
+        }
+        list.rebuild();
+        list.expanded.insert(list.rows[0].key.clone());
+        list.rebuild();
+        assert_eq!(list.rows.len(), 3);
+        assert_eq!(
+            list.auto_width(Sort::Name),
+            (measure_column_text(&list.processes[0].name) + 76.0).ceil()
+        );
     }
 
     #[test]
@@ -2336,7 +2544,8 @@ mod tests {
         assert!(list.rows[1].nested);
         assert_ne!(list.rows_revision, revision);
         assert_eq!(list.offsets.last(), Some(&(4.0 * ROW_HEIGHT)));
-        list.clear();
+        list.processes.clear();
+        list.rebuild();
         assert_eq!(list.offsets, vec![0.0]);
     }
     #[test]

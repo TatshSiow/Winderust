@@ -276,6 +276,32 @@ pub(crate) fn open_process_for_termination(
     )
 }
 
+pub(crate) fn open_process_for_restart(
+    target: &ProcessControlTarget,
+    allow_cross_session_process_control: bool,
+) -> Result<(ProcessIdentity, WinHandle), ProcessControlError> {
+    let (identity, process) = open_process_with_access(
+        target,
+        allow_cross_session_process_control,
+        ProcessAccess::Restart,
+        ProcessActionAccess::Terminate,
+    )?;
+    let current_session =
+        process_session_id(windows_process::current_process_id()).ok_or_else(|| {
+            ProcessControlError::Unavailable(
+                "Winderust's Windows session is unavailable.".to_owned(),
+            )
+        })?;
+    if identity.session_id != Some(current_session)
+        || crate::foreground::process_runs_as_service_account_from_handle(&process) != Some(false)
+    {
+        return Err(ProcessControlError::AccessDenied(
+            "Restart requires a non-service app in Winderust's Windows session.".to_owned(),
+        ));
+    }
+    Ok((identity, process))
+}
+
 pub(crate) fn open_process_for_job_assignment(
     target: &ProcessControlTarget,
     allow_cross_session_process_control: bool,

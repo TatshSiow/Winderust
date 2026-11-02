@@ -106,6 +106,7 @@ pub(super) struct RuntimeCore {
     memory_priority_controller: MemoryPriorityController,
     memory_trim_manager: MemoryTrimManager,
     memory_trim_controller: MemoryTrimController,
+    watchdog_manager: WatchdogManager,
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
@@ -119,7 +120,205 @@ pub(super) struct ProcessControlCommandStatuses {
     pub(super) app_suspension: Option<AppSuspensionSnapshot>,
 }
 
+#[derive(Default)]
+struct WatchdogActionCycle {
+    stopped: BTreeSet<(u32, u64)>,
+    restarts: std::collections::BTreeMap<Vec<(u32, u64)>, Result<(), String>>,
+}
+
+impl WatchdogActionCycle {
+    fn skipped_termination_reason(
+        &self,
+        targets: &[crate::foreground::ProcessActionTarget],
+    ) -> Option<&'static str> {
+        if targets.is_empty()
+            || targets
+                .iter()
+                .any(|target| !self.stopped.contains(&(target.id, target.creation_time)))
+        {
+            return None;
+        }
+        let mut key: Vec<_> = targets
+            .iter()
+            .map(|target| (target.id, target.creation_time))
+            .collect();
+        key.sort_unstable();
+        Some(if self.restarts.get(&key).is_some_and(Result::is_ok) {
+            "watchdog.already_restarted"
+        } else {
+            "watchdog.already_stopped"
+        })
+    }
+
+    fn restart_once(
+        &mut self,
+        targets: &[crate::foreground::ProcessActionTarget],
+        restart: impl FnOnce() -> crate::control::process_restart::RestartResult,
+    ) -> Result<(), String> {
+        let mut key: Vec<_> = targets
+            .iter()
+            .map(|target| (target.id, target.creation_time))
+            .collect();
+        key.sort_unstable();
+        self.restarts
+            .entry(key)
+            .or_insert_with(|| {
+                let outcome = restart();
+                self.stopped.extend(outcome.stopped);
+                outcome.result
+            })
+            .clone()
+    }
+}
+
 impl RuntimeCore {
+    pub(super) fn run_watchdog_update(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+    ) -> WatchdogSnapshot {
+        use crate::config::{WatchdogAction, WatchdogMetric};
+        use rust_i18n::t;
+        let (mut snapshot, mut events) = self.watchdog_manager.update(
+            &settings.watchdog,
+            settings.general.enabled,
+            observations,
+        );
+        // Prepare replacements before a simultaneous termination can stop the same app.
+        events.sort_by_key(|event| event.response.action != WatchdogAction::Restart);
+        let mut actions = WatchdogActionCycle::default();
+        for event in events {
+            let level = t!(if event.critical {
+                "watchdog.critical"
+            } else {
+                "watchdog.warning"
+            });
+            let metric = t!(match event.metric {
+                WatchdogMetric::CpuPercent => "watchdog.cpu",
+                WatchdogMetric::MemoryPercent => "watchdog.memory_percent",
+                WatchdogMetric::MemoryMib => "watchdog.memory_mib",
+            });
+            let detail = t!(
+                "watchdog.trigger_detail",
+                level = level,
+                app = &event.name,
+                count = event.targets.len(),
+                metric = metric,
+                value = format!("{:.1}", event.value),
+                threshold = event.response.threshold
+            )
+            .to_string();
+            let process_id = if event.targets.len() == 1 {
+                event.targets.first().map(|target| target.id)
+            } else {
+                None
+            };
+            let mut action_detail = t!("watchdog.no_action").to_string();
+            if event.response.action != WatchdogAction::None {
+                let targets: Vec<_> = event
+                    .targets
+                    .iter()
+                    .filter(|target| !actions.stopped.contains(&(target.id, target.creation_time)))
+                    .cloned()
+                    .collect();
+                let restarting = event.response.action == WatchdogAction::Restart;
+                let skipped = if restarting {
+                    None
+                } else {
+                    actions.skipped_termination_reason(&event.targets)
+                };
+                let result = if restarting {
+                    actions.restart_once(&event.targets, || {
+                        crate::control::process_restart::restart_app(
+                            event.targets.clone(),
+                            settings.general.allow_cross_session_process_control,
+                        )
+                    })
+                } else if targets.is_empty() {
+                    Ok(())
+                } else {
+                    let batch = self.process_termination_controller.terminate_batch(
+                        targets,
+                        settings.general.allow_cross_session_process_control,
+                    );
+                    for result in &batch.results {
+                        if result.outcome == crate::control::process_termination::ProcessTerminationOutcome::Terminated {
+                            actions.stopped.insert((result.target.id, result.target.creation_time));
+                        }
+                    }
+                    batch.into_process_list_result()
+                };
+                let outcome = match (result, skipped) {
+                    (Ok(()), Some(reason)) => {
+                        action_detail = t!(reason).to_string();
+                        ActionLogResult::Skipped
+                    }
+                    (Ok(()), None) => {
+                        action_detail = t!(
+                            if restarting {
+                                "watchdog.restarted"
+                            } else {
+                                "watchdog.terminated"
+                            },
+                            count = event.targets.len()
+                        )
+                        .to_string();
+                        ActionLogResult::Applied
+                    }
+                    (Err(error), _) => {
+                        snapshot.last_error = Some(error.clone());
+                        action_detail = t!(
+                            if restarting {
+                                "watchdog.restart_failed"
+                            } else {
+                                "watchdog.termination_failed"
+                            },
+                            error = error
+                        )
+                        .to_string();
+                        ActionLogResult::Failed
+                    }
+                };
+                self.action_log.record(
+                    ActionLogFeature::Watchdog,
+                    process_id,
+                    &event.name,
+                    outcome,
+                    format!("{detail}. {action_detail}"),
+                );
+            }
+            if event.notify {
+                let result = tray::show_notification(
+                    &format!("Winderust Watchdog · {level}"),
+                    &t!(
+                        "watchdog.notification_body",
+                        action = action_detail,
+                        detail = detail
+                    ),
+                    event.critical,
+                );
+                let (outcome, reason) = match result {
+                    Ok(()) => (
+                        ActionLogResult::Applied,
+                        format!("{detail}. {}", t!("watchdog.notification_sent")),
+                    ),
+                    Err(error) => {
+                        snapshot.last_error = Some(error.clone());
+                        (ActionLogResult::Failed, format!("{detail}. {error}"))
+                    }
+                };
+                self.action_log.record(
+                    ActionLogFeature::Watchdog,
+                    process_id,
+                    &event.name,
+                    outcome,
+                    reason,
+                );
+            }
+        }
+        snapshot
+    }
+
     fn with_app_suspension<R>(
         &mut self,
         apply: impl FnOnce(&mut AppSuspensionManager, &mut SuspensionController, &mut ActionLog) -> R,
@@ -1491,5 +1690,104 @@ mod settings_tests {
             activity_idle_check_delay(&settings, snapshot.idle_for),
             Some(configured_check_interval(&settings))
         );
+    }
+}
+
+#[cfg(test)]
+mod watchdog_action_tests {
+    use super::*;
+    use crate::{control::process_restart::RestartResult, foreground::ProcessActionTarget};
+
+    #[test]
+    fn skipped_termination_reports_only_a_successful_restart_of_the_same_instances() {
+        let target = |id| ProcessActionTarget {
+            id,
+            name: "app.exe".into(),
+            executable_path: r"C:\Apps\app.exe".into(),
+            creation_time: u64::from(id),
+            session_id: Some(1),
+            is_service_account: Some(false),
+        };
+        let targets = [target(1), target(2)];
+        for result in [Ok(()), Err("Replacement could not start.".to_owned())] {
+            let mut cycle = WatchdogActionCycle::default();
+            assert_eq!(cycle.skipped_termination_reason(&targets), None);
+            let expected = if result.is_ok() {
+                "watchdog.already_restarted"
+            } else {
+                "watchdog.already_stopped"
+            };
+            let _ = cycle.restart_once(&targets, || RestartResult {
+                stopped: vec![(1, 1), (2, 2)],
+                result,
+            });
+            assert_eq!(cycle.skipped_termination_reason(&targets), Some(expected));
+            assert_eq!(
+                cycle.skipped_termination_reason(&[target(2), target(1)]),
+                Some(expected)
+            );
+            let mut replacement = target(1);
+            replacement.creation_time += 1;
+            assert_eq!(cycle.skipped_termination_reason(&[replacement]), None);
+        }
+        let mut cycle = WatchdogActionCycle::default();
+        let _ = cycle.restart_once(&[target(3)], || RestartResult {
+            stopped: vec![(3, 3)],
+            result: Ok(()),
+        });
+        cycle.stopped.insert((1, 1));
+        assert_eq!(cycle.skipped_termination_reason(&targets), None);
+        cycle.stopped.insert((2, 2));
+        assert_eq!(
+            cycle.skipped_termination_reason(&targets),
+            Some("watchdog.already_stopped")
+        );
+        assert_eq!(cycle.skipped_termination_reason(&[]), None);
+    }
+
+    #[test]
+    fn simultaneous_cpu_memory_restarts_run_once_even_on_partial_failure() {
+        for result in [
+            Ok(()),
+            Err("Stopped one process; another was denied.".to_owned()),
+        ] {
+            let mut cycle = WatchdogActionCycle::default();
+            let target = |id| ProcessActionTarget {
+                id,
+                name: "app.exe".into(),
+                executable_path: r"C:\Apps\app.exe".into(),
+                creation_time: u64::from(id),
+                session_id: Some(1),
+                is_service_account: Some(false),
+            };
+            let targets = [target(1), target(2)];
+            let mut launches = 0;
+            for batch in [targets.to_vec(), targets.into_iter().rev().collect()] {
+                assert_eq!(
+                    cycle.restart_once(&batch, || {
+                        launches += 1;
+                        RestartResult {
+                            stopped: vec![(1, 1)],
+                            result: result.clone(),
+                        }
+                    }),
+                    result
+                );
+            }
+            assert_eq!(launches, 1);
+            assert_eq!(cycle.stopped, BTreeSet::from([(1, 1)]));
+            let mut replacement = target(1);
+            replacement.creation_time += 1;
+            assert!(cycle
+                .restart_once(&[replacement], || {
+                    launches += 1;
+                    RestartResult {
+                        stopped: vec![(1, 2)],
+                        result: Ok(()),
+                    }
+                })
+                .is_ok());
+            assert_eq!(launches, 2);
+        }
     }
 }

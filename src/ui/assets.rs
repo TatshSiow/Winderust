@@ -2,6 +2,15 @@ use std::{collections::HashMap, sync::LazyLock};
 
 use icondata_core::IconData;
 
+pub(super) fn logo() -> iced::widget::image::Handle {
+    static HANDLE: LazyLock<iced::widget::image::Handle> = LazyLock::new(|| {
+        iced::widget::image::Handle::from_bytes(
+            include_bytes!("../../image/icon-design.png").as_slice(),
+        )
+    });
+    HANDLE.clone()
+}
+
 const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/app-window.svg", icondata_lu::LuAppWindow),
     ("icons/brain-circuit.svg", icondata_lu::LuBrainCircuit),
@@ -37,6 +46,8 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/info.svg", icondata_lu::LuInfo),
     ("icons/leaf.svg", icondata_lu::LuLeaf),
     ("icons/minus.svg", icondata_lu::LuMinus),
+    ("icons/square.svg", icondata_lu::LuSquare),
+    ("icons/copy.svg", icondata_lu::LuCopy),
     ("icons/life-buoy.svg", icondata_lu::LuLifeBuoy),
     ("icons/list.svg", icondata_lu::LuList),
     ("icons/memory-stick.svg", icondata_lu::LuMemoryStick),
@@ -60,6 +71,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/pencil.svg", icondata_lu::LuPencil),
     ("icons/plus.svg", icondata_lu::LuPlus),
     ("icons/refresh-cw.svg", icondata_lu::LuRefreshCw),
+    ("icons/rotate-ccw.svg", icondata_lu::LuRotateCcw),
     ("icons/rocket.svg", icondata_lu::LuRocket),
     ("icons/rotate-3d.svg", icondata_lu::LuRotate3d),
     ("icons/scissors.svg", icondata_lu::LuScissors),

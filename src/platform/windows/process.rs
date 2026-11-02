@@ -1,7 +1,7 @@
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
     System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_INFORMATION,
+        GetCurrentProcessId, OpenProcess, PROCESS_CREATE_PROCESS, PROCESS_QUERY_INFORMATION,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
         PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     },
@@ -16,6 +16,7 @@ pub(crate) enum ProcessAccess {
     ThreadSnapshot,
     WorkingSetTrim,
     Termination,
+    Restart,
     JobAssignment,
 }
 
@@ -56,6 +57,10 @@ fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
     const THREAD_SNAPSHOT: &[u32] = &[PROCESS_QUERY_INFORMATION];
     const WORKING_SET_TRIM: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA];
     const TERMINATION: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE];
+    const RESTART: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION
+        | PROCESS_TERMINATE
+        | PROCESS_SYNCHRONIZE
+        | PROCESS_CREATE_PROCESS];
     const JOB_ASSIGNMENT: &[u32] = &[
         PROCESS_QUERY_LIMITED_INFORMATION
             | PROCESS_SET_QUOTA
@@ -70,6 +75,7 @@ fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
         ProcessAccess::ThreadSnapshot => THREAD_SNAPSHOT,
         ProcessAccess::WorkingSetTrim => WORKING_SET_TRIM,
         ProcessAccess::Termination => TERMINATION,
+        ProcessAccess::Restart => RESTART,
         ProcessAccess::JobAssignment => JOB_ASSIGNMENT,
     }
 }
@@ -99,6 +105,13 @@ mod tests {
         assert_eq!(
             desired_access_masks(ProcessAccess::Termination),
             &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE]
+        );
+        assert_eq!(
+            desired_access_masks(ProcessAccess::Restart),
+            &[PROCESS_QUERY_LIMITED_INFORMATION
+                | PROCESS_TERMINATE
+                | PROCESS_SYNCHRONIZE
+                | PROCESS_CREATE_PROCESS]
         );
     }
 

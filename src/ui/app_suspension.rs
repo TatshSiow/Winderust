@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{action_button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
@@ -160,16 +160,25 @@ impl Editor {
         unavailable: &[String],
         candidates: &[super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
-            "app_suspension.enable",
-            super::widgets::switch(s.enabled, Some(Message::Enabled))
-        )),]
+        let mut body = column![
+            super::widgets::heading(
+                t!("app_suspension.behavior").to_string(),
+                design::typography::BODY
+            ),
+            super::widgets::settings_card(super::widgets::settings_rows([
+                super::widgets::setting_row(
+                    "app_suspension.enable",
+                    super::widgets::switch(s.enabled, Some(Message::Enabled))
+                )
+                .into(),
+                delay_row(
+                    Delay::Background,
+                    "app_suspension.background_delay",
+                    s.background_delay_seconds,
+                ),
+            ])),
+        ]
         .spacing(super::widgets::CARD_GAP);
-        body = body.push(super::widgets::settings_card(delay_row(
-            Delay::Background,
-            "app_suspension.background_delay",
-            s.background_delay_seconds,
-        )));
         for (i, key, enabled, toggle, rows) in [
             (
                 0,
@@ -212,11 +221,10 @@ impl Editor {
                 )],
             ),
         ] {
-            let controls = iced::widget::Column::with_children(
+            let controls = super::widgets::settings_rows(
                 rows.into_iter()
                     .map(|(field, label, value)| delay_row(field, label, value)),
-            )
-            .spacing(design::space::SMALL);
+            );
             body = body.push(super::widgets::setting_group(
                 key.to_string(),
                 self.expanded[i],
@@ -225,6 +233,10 @@ impl Editor {
                 controls,
             ));
         }
+        body = body.push(super::widgets::heading(
+            t!("common.rules").to_string(),
+            design::typography::BODY,
+        ));
         body = body.push(super::app_picker::view(
             &self.path,
             candidates,
@@ -249,14 +261,14 @@ impl Editor {
                 .any(|p| process_setting_matches(p, &r.executable_path));
             let state = column![
                 text(indicator(status, &r.executable_path, blocked)),
-                button(text(
+                action_button(
                     t!(if frozen {
                         "app_suspension.thaw"
                     } else {
                         "app_suspension.freeze"
                     })
                     .to_string()
-                ))
+                )
                 .on_press_maybe(
                     (frozen || (status.enabled && r.enabled && !blocked))
                         .then_some(Message::Toggle(i))
@@ -318,7 +330,7 @@ impl Editor {
                         .center_x(80)
                         .into(),
                     ),
-                    iced::widget::rule::horizontal(1)
+                    super::widgets::settings_divider()
                 ]
                 .into(),
             ));

@@ -1,6 +1,6 @@
 use super::design;
 use super::widgets::{self, Choice};
-use super::widgets::{button, pick_list, text_input};
+use super::widgets::{action_button, button, pick_list, text_input};
 use crate::ui::scrolling::scrollable;
 use crate::{config::*, ui::Page};
 use iced::widget::{column, row, text};
@@ -9,6 +9,7 @@ use rust_i18n::t;
 
 #[derive(Default)]
 pub(super) struct Editor {
+    pub(super) hotkey_capture: Option<SearchHotkeySlot>,
     color: Option<String>,
     failure_threshold: Option<String>,
     accent_expanded: bool,
@@ -18,6 +19,25 @@ pub(super) struct Editor {
     pub(super) download: Option<String>,
     pub(super) update_error: Option<String>,
     pub(super) show_update: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SearchHotkeySlot {
+    Primary,
+    Secondary,
+}
+impl SearchHotkeySlot {
+    fn binding(self, settings: &SearchHotkeys) -> &KeyboardShortcut {
+        match self {
+            Self::Primary => &settings.primary,
+            Self::Secondary => &settings.secondary,
+        }
+    }
+    fn binding_mut(self, settings: &mut SearchHotkeys) -> &mut KeyboardShortcut {
+        match self {
+            Self::Primary => &mut settings.primary,
+            Self::Secondary => &mut settings.secondary,
+        }
+    }
 }
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Flag {
@@ -35,6 +55,10 @@ pub(super) enum Flag {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Flag(Flag, bool),
+    RecordSearchHotkey(SearchHotkeySlot),
+    CancelSearchHotkey,
+    SetSearchHotkey(SearchHotkeySlot, Option<KeyboardShortcut>),
+    ResetSearchHotkeys,
     Language(AppLanguage),
     Animation(AnimationMode),
     Theme(AppThemeMode),
@@ -71,6 +95,7 @@ impl Editor {
     }
 
     pub(super) fn reset_drafts(&mut self) {
+        self.hotkey_capture = None;
         self.color = None;
         self.failure_threshold = None;
         self.latest = None;
@@ -91,6 +116,8 @@ impl Editor {
 
     pub(super) fn update_ui(&mut self, current_channel: UpdateChannel, message: Message) {
         match message {
+            Message::RecordSearchHotkey(slot) => self.hotkey_capture = Some(slot),
+            Message::CancelSearchHotkey => self.hotkey_capture = None,
             Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
             Message::DismissUpdate => self.show_update = false,
             Message::Checked(channel, result) => {
@@ -115,6 +142,22 @@ impl Editor {
 
     pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
         match m {
+            Message::SetSearchHotkey(slot, shortcut) => {
+                let binding = slot.binding_mut(&mut s.general.search_hotkeys);
+                if let Some(shortcut) = shortcut {
+                    *binding = shortcut;
+                } else {
+                    binding.enabled = false;
+                }
+                self.hotkey_capture = None;
+            }
+            Message::ResetSearchHotkeys => {
+                s.general.search_hotkeys = SearchHotkeys::default();
+                self.hotkey_capture = None;
+            }
+            Message::RecordSearchHotkey(_) | Message::CancelSearchHotkey => {
+                self.update_ui(s.general.update_channel, m)
+            }
             Message::Flag(flag, value) => match flag {
                 Flag::Enabled => s.general.enabled = value,
                 Flag::Startup => s.general.startup_with_windows = value,
@@ -220,12 +263,44 @@ impl Editor {
             | Message::EditColor(_) => {}
         }
     }
+    fn search_hotkey_row<'a>(
+        &self,
+        s: &'a Settings,
+        slot: SearchHotkeySlot,
+        label: &str,
+    ) -> Element<'a, Message> {
+        let binding = slot.binding(&s.general.search_hotkeys);
+        let recording = self.hotkey_capture == Some(slot);
+        let value = if recording {
+            t!("settings.shortcut_record_prompt").to_string()
+        } else if binding.enabled {
+            binding.to_string()
+        } else {
+            t!("common.disabled").to_string()
+        };
+        widgets::setting_row(
+            label,
+            row![
+                action_button(value).on_press(Message::RecordSearchHotkey(slot)),
+                action_button(t!("settings.clear_shortcut").to_string())
+                    .style(widgets::tertiary_button)
+                    .on_press(Message::SetSearchHotkey(slot, None)),
+            ]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center),
+        )
+        .into()
+    }
+
     pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
-        let flag = |key: &str, value, flag| {
-            widgets::settings_card(widgets::setting_row(
+        let flag_row = |key: &str, value, flag| {
+            widgets::setting_row(
                 key,
                 widgets::switch(value, Some(move |value| Message::Flag(flag, value))),
-            ))
+            )
+        };
+        let flag = |key: &str, value, flag| {
+            widgets::toggle_card(key, value, Some(move |value| Message::Flag(flag, value)))
         };
         let body = match page {
             Page::WinderustBehaviour => column![
@@ -238,55 +313,84 @@ impl Editor {
                     t!("settings.launch_settings").to_string(),
                     design::typography::BODY
                 ),
-                column![
-                    flag(
+                widgets::settings_card(widgets::settings_rows([
+                    flag_row(
                         "settings.startup_windows",
                         s.general.startup_with_windows,
                         Flag::Startup
-                    ),
-                    flag(
+                    )
+                    .into(),
+                    flag_row(
                         "settings.start_minimized",
                         s.general.start_minimized,
                         Flag::Minimized
-                    ),
-                    flag("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray),
-                ]
-                .spacing(widgets::CARD_GAP),
+                    )
+                    .into(),
+                    flag_row("settings.hide_to_tray", s.general.hide_to_tray, Flag::Tray).into(),
+                ])),
                 widgets::heading(
                     t!("settings.advanced").to_string(),
                     design::typography::BODY
                 ),
-                flag(
-                    "settings.allow_cross_session_process_control",
-                    s.general.allow_cross_session_process_control,
-                    Flag::CrossSession
-                ),
-                widgets::settings_card(widgets::setting_row(
-                    "settings.failure_suppression_threshold",
-                    text_input(
-                        "",
-                        self.failure_threshold.as_deref().unwrap_or(
-                            &s.advanced
-                                .execution_failure_suppression_threshold
-                                .to_string()
-                        )
+                widgets::settings_card(widgets::settings_rows([
+                    flag_row(
+                        "settings.allow_cross_session_process_control",
+                        s.general.allow_cross_session_process_control,
+                        Flag::CrossSession
                     )
-                    .on_input(Message::FailureThreshold)
-                    .align_x(iced::Center)
-                    .width(design::STANDALONE_NUMERIC_WIDTH),
-                )),
+                    .into(),
+                    widgets::setting_row(
+                        "settings.failure_suppression_threshold",
+                        text_input(
+                            "",
+                            self.failure_threshold.as_deref().unwrap_or(
+                                &s.advanced
+                                    .execution_failure_suppression_threshold
+                                    .to_string()
+                            )
+                        )
+                        .on_input(Message::FailureThreshold)
+                        .align_x(iced::Center)
+                        .width(design::STANDALONE_NUMERIC_WIDTH),
+                    )
+                    .into(),
+                ])),
+                widgets::heading(
+                    t!("settings.keyboard_shortcuts").to_string(),
+                    design::typography::BODY
+                ),
+                text(t!("settings.shortcut_help").to_string())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+                widgets::settings_card(widgets::settings_rows([
+                    self.search_hotkey_row(
+                        s,
+                        SearchHotkeySlot::Primary,
+                        "settings.search_shortcut"
+                    ),
+                    self.search_hotkey_row(
+                        s,
+                        SearchHotkeySlot::Secondary,
+                        "settings.search_alternate_shortcut"
+                    ),
+                    row![action_button(t!("settings.reset_shortcuts").to_string())
+                        .on_press(Message::ResetSearchHotkeys)]
+                    .into(),
+                ])),
                 widgets::heading(
                     t!("settings.settings_files").to_string(),
                     design::typography::BODY
                 ),
-                row![
-                    button(text(t!("settings.export_settings").to_string()))
-                        .on_press(Message::Export),
-                    button(text(t!("settings.import_settings").to_string()))
-                        .on_press(Message::Import),
-                ]
-                .spacing(design::space::SMALL)
-                .align_y(iced::Center),
+                widgets::settings_card(
+                    row![
+                        action_button(t!("settings.export_settings").to_string())
+                            .on_press(Message::Export),
+                        action_button(t!("settings.import_settings").to_string())
+                            .on_press(Message::Import),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .align_y(iced::Center),
+                ),
             ]
             .spacing(super::widgets::CARD_GAP),
             Page::LanguageAndAppearance => {
@@ -316,13 +420,13 @@ impl Editor {
                                 .into(),
                                 iced::widget::container(
                                     column![
-                                        button(text(t!("common.edit").to_string()))
+                                        action_button(t!("common.edit").to_string())
                                             .width(Fill)
                                             .style(widgets::quiet)
                                             .on_press(Message::EditColor(*color)),
-                                        button(text(t!("common.remove").to_string()))
+                                        action_button(t!("common.remove").to_string())
                                             .width(Fill)
-                                            .style(widgets::quiet)
+                                            .style(widgets::danger_button)
                                             .on_press(Message::RemoveColor(chunk_index * 8 + i)),
                                     ]
                                     .spacing(design::space::TINY),
@@ -353,6 +457,7 @@ impl Editor {
                 let custom = column![
                     text(t!("accent.color_palette").to_string()),
                     colors,
+                    widgets::settings_divider(),
                     text(t!("accent.custom_colors").to_string()),
                     row![
                         picker,
@@ -365,7 +470,7 @@ impl Editor {
                         )
                         .on_input(Message::AccentHex)
                         .width(130),
-                        button(text(t!("common.save").to_string()))
+                        action_button(t!("common.save").to_string())
                             .style(widgets::primary_button)
                             .on_press_maybe(
                                 self.color
@@ -380,9 +485,13 @@ impl Editor {
                 ]
                 .spacing(design::space::COMPACT);
                 column![
-                    super::widgets::settings_card(
-                        row![
-                            text(t!("common.language").to_string()).width(Fill),
+                    widgets::heading(
+                        t!("settings.interface").to_string(),
+                        design::typography::BODY
+                    ),
+                    widgets::settings_card(widgets::settings_rows([
+                        widgets::setting_row(
+                            "common.language",
                             pick_list(
                                 AppLanguage::ALL
                                     .into_iter()
@@ -395,10 +504,40 @@ impl Editor {
                                 |v| Message::Language(v.0)
                             )
                             .width(design::SELECT_WIDTH)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .align_y(iced::Center)
-                    ),
+                        )
+                        .into(),
+                        widgets::setting_row(
+                            "common.theme",
+                            pick_list(
+                                AppThemeMode::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, theme_label(v)))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.theme_mode,
+                                    theme_label(s.general.theme_mode)
+                                )),
+                                |v| Message::Theme(v.0)
+                            )
+                            .width(design::SELECT_WIDTH)
+                        )
+                        .into(),
+                        widgets::setting_row(
+                            "settings.animation_mode",
+                            pick_list(
+                                AnimationMode::ALL
+                                    .map(|v| Choice(v, animation_label(v)))
+                                    .to_vec(),
+                                Some(Choice(
+                                    s.general.animation_mode,
+                                    animation_label(s.general.animation_mode)
+                                )),
+                                |v| Message::Animation(v.0),
+                            )
+                            .width(design::SELECT_WIDTH),
+                        )
+                        .into(),
+                    ])),
                     super::widgets::setting_group(
                         "accent.source".to_string(),
                         self.accent_expanded,
@@ -424,65 +563,48 @@ impl Editor {
                         .width(design::SELECT_WIDTH),
                         custom
                     ),
-                    super::widgets::settings_card(
-                        row![
-                            text(t!("common.theme").to_string()).width(Fill),
-                            pick_list(
-                                AppThemeMode::ALL
-                                    .into_iter()
-                                    .map(|v| Choice(v, theme_label(v)))
-                                    .collect::<Vec<_>>(),
-                                Some(Choice(
-                                    s.general.theme_mode,
-                                    theme_label(s.general.theme_mode)
-                                )),
-                                |v| Message::Theme(v.0)
-                            )
-                            .width(design::SELECT_WIDTH)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .align_y(iced::Center)
+                    widgets::heading(
+                        t!("settings.navigation_display").to_string(),
+                        design::typography::BODY
                     ),
-                    widgets::settings_card(widgets::setting_row(
-                        "settings.animation_mode",
-                        pick_list(
-                            AnimationMode::ALL
-                                .map(|v| Choice(v, animation_label(v)))
-                                .to_vec(),
-                            Some(Choice(
-                                s.general.animation_mode,
-                                animation_label(s.general.animation_mode)
-                            )),
-                            |v| Message::Animation(v.0),
+                    widgets::settings_card(widgets::settings_rows([
+                        flag_row(
+                            "settings.show_enabled_feature_counts_in_sidebar",
+                            s.general.show_enabled_feature_counts_in_sidebar,
+                            Flag::FeatureCounts
                         )
-                        .width(design::SELECT_WIDTH),
-                    )),
-                    flag(
-                        "settings.show_enabled_feature_counts_in_sidebar",
-                        s.general.show_enabled_feature_counts_in_sidebar,
-                        Flag::FeatureCounts
-                    ),
-                    flag(
-                        "settings.show_feature_status_on_cards",
-                        s.general.show_feature_status_on_cards,
-                        Flag::CardStatus
-                    ),
+                        .into(),
+                        flag_row(
+                            "settings.show_feature_status_on_cards",
+                            s.general.show_feature_status_on_cards,
+                            Flag::CardStatus
+                        )
+                        .into(),
+                    ])),
                 ]
-                .spacing(super::widgets::CARD_GAP)
+                .spacing(widgets::CARD_GAP)
             }
             Page::ExperimentalFeatures => column![
-                flag(
-                    "settings.expose_all_priority_values",
-                    s.advanced.expose_all_priority_values,
-                    Flag::AdvancedValues
+                widgets::heading(
+                    t!("settings.control_visibility").to_string(),
+                    design::typography::BODY
                 ),
-                flag(
-                    "settings.show_advanced_controls",
-                    s.advanced.show_advanced_controls,
-                    Flag::AdvancedControls
-                ),
+                widgets::settings_card(widgets::settings_rows([
+                    flag_row(
+                        "settings.expose_all_priority_values",
+                        s.advanced.expose_all_priority_values,
+                        Flag::AdvancedValues
+                    )
+                    .into(),
+                    flag_row(
+                        "settings.show_advanced_controls",
+                        s.advanced.show_advanced_controls,
+                        Flag::AdvancedControls
+                    )
+                    .into(),
+                ]))
             ]
-            .spacing(super::widgets::CARD_GAP),
+            .spacing(widgets::CARD_GAP),
             Page::About => {
                 let mut links = row![].spacing(design::space::SMALL);
                 for (key, url) in [
@@ -498,13 +620,15 @@ impl Editor {
                     ),
                 ] {
                     links = links.push(
-                        button(text(t!(key).to_string())).on_press(Message::Open(url.into())),
+                        action_button(t!(key).to_string()).on_press(Message::Open(url.into())),
                     );
                 }
                 let identity = widgets::settings_card(
                     column![
                         row![
-                            iced::widget::image(logo()).width(52).height(52),
+                            iced::widget::image(super::assets::logo())
+                                .width(52)
+                                .height(52),
                             column![
                                 widgets::heading(
                                     t!("app.name").to_string(),
@@ -526,46 +650,44 @@ impl Editor {
                     ]
                     .spacing(design::space::LARGE),
                 );
-                let updates = widgets::settings_card(
-                    column![
-                        widgets::setting_row(
-                            "about.update_channel",
-                            row![
-                                pick_list(
-                                    UpdateChannel::ALL
-                                        .into_iter()
-                                        .map(|v| Choice(v, channel_label(v)))
-                                        .collect::<Vec<_>>(),
-                                    Some(Choice(
-                                        s.general.update_channel,
-                                        channel_label(s.general.update_channel)
-                                    )),
-                                    |v| Message::Channel(v.0)
-                                )
-                                .width(design::SELECT_WIDTH),
-                                button(text(t!("about.check_for_updates").to_string()))
-                                    .on_press_maybe((!self.checking).then_some(Message::Check))
-                            ]
-                            .spacing(design::space::MEDIUM)
-                        ),
-                        widgets::setting_row(
-                            "about.latest_version",
-                            text(self.latest.as_deref().unwrap_or("-"))
-                        ),
-                        widgets::setting_row(
-                            "about.current_version",
-                            text(env!("CARGO_PKG_VERSION"))
-                        ),
-                        widgets::setting_row(
-                            "about.automatic_check_for_updates_on_startup",
-                            widgets::switch(
-                                s.general.check_for_updates,
-                                Some(|v| Message::Flag(Flag::UpdateCheck, v))
+                let updates = widgets::settings_card(super::widgets::settings_rows([
+                    widgets::setting_row(
+                        "about.update_channel",
+                        row![
+                            pick_list(
+                                UpdateChannel::ALL
+                                    .into_iter()
+                                    .map(|v| Choice(v, channel_label(v)))
+                                    .collect::<Vec<_>>(),
+                                Some(Choice(
+                                    s.general.update_channel,
+                                    channel_label(s.general.update_channel)
+                                )),
+                                |v| Message::Channel(v.0)
                             )
-                        )
-                    ]
-                    .spacing(design::space::SMALL),
-                );
+                            .width(design::SELECT_WIDTH),
+                            action_button(t!("about.check_for_updates").to_string())
+                                .on_press_maybe((!self.checking).then_some(Message::Check))
+                        ]
+                        .spacing(design::space::MEDIUM),
+                    )
+                    .into(),
+                    widgets::setting_row(
+                        "about.latest_version",
+                        text(self.latest.as_deref().unwrap_or("-")),
+                    )
+                    .into(),
+                    widgets::setting_row("about.current_version", text(env!("CARGO_PKG_VERSION")))
+                        .into(),
+                    widgets::setting_row(
+                        "about.automatic_check_for_updates_on_startup",
+                        widgets::switch(
+                            s.general.check_for_updates,
+                            Some(|v| Message::Flag(Flag::UpdateCheck, v)),
+                        ),
+                    )
+                    .into(),
+                ]));
                 let mut body = column![
                     widgets::heading(t!("nav.about").to_string(), design::typography::BODY),
                     identity,
@@ -585,7 +707,8 @@ impl Editor {
                 }
                 if let Some(url) = &self.download {
                     body = body.push(
-                        button(text(t!("about.download_update").to_string()))
+                        action_button(t!("about.download_update").to_string())
+                            .style(widgets::primary_button)
                             .on_press(Message::Open(url.clone())),
                     );
                 }
@@ -630,6 +753,7 @@ fn theme_label(v: AppThemeMode) -> String {
         AppThemeMode::System => t!("theme.system"),
         AppThemeMode::Light => t!("theme.light"),
         AppThemeMode::Dark => t!("theme.dark"),
+        AppThemeMode::Amoled => t!("theme.amoled"),
     }
     .to_string()
 }
@@ -658,15 +782,18 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
     );
     let light = match s.theme_mode {
         AppThemeMode::Light => true,
-        AppThemeMode::Dark => false,
+        AppThemeMode::Dark | AppThemeMode::Amoled => false,
         AppThemeMode::System => system.as_ref().is_none_or(|appearance| appearance.light),
     };
-    let mut palette = design::palette(light);
-    if s.accent.source == AccentColorSource::Custom {
-        palette.primary = rgb(s.accent.custom_color);
-    } else if let Some(system) = system {
-        palette.primary = rgb(system.accent);
+    let accent = if s.accent.source == AccentColorSource::Custom {
+        Some(rgb(s.accent.custom_color))
+    } else {
+        system.map(|appearance| rgb(appearance.accent))
+    };
+    if s.theme_mode == AppThemeMode::Amoled {
+        return design::amoled_theme(accent);
     }
+    let palette = design::palette(light, accent);
     Theme::custom_with_fn("Winderust", palette, design::extended_palette)
 }
 
@@ -881,17 +1008,43 @@ fn parse_color(value: &str) -> Option<u32> {
         .then(|| u32::from_str_radix(value, 16).ok())
         .flatten()
 }
-fn logo() -> iced::widget::image::Handle {
-    static HANDLE: std::sync::LazyLock<iced::widget::image::Handle> =
-        std::sync::LazyLock::new(|| {
-            iced::widget::image::Handle::from_bytes(
-                include_bytes!("../../image/icon-design.png").as_slice(),
-            )
-        });
-    HANDLE.clone()
-}
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_hotkey_record_clear_and_reset_keep_slots_independent() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        let original = settings.general.search_hotkeys.clone();
+        editor.update_ui(
+            settings.general.update_channel,
+            Message::RecordSearchHotkey(SearchHotkeySlot::Primary),
+        );
+        assert_eq!(editor.hotkey_capture, Some(SearchHotkeySlot::Primary));
+        assert_eq!(settings.general.search_hotkeys, original);
+        let shortcut = super::super::hotkeys::capture(
+            &iced::keyboard::Key::Character("j".into()),
+            iced::keyboard::Modifiers::CTRL,
+        )
+        .unwrap();
+        editor.update(
+            &mut settings,
+            Message::SetSearchHotkey(SearchHotkeySlot::Primary, Some(shortcut.clone())),
+        );
+        assert_eq!(settings.general.search_hotkeys.primary, shortcut);
+        assert_eq!(
+            settings.general.search_hotkeys.secondary,
+            original.secondary
+        );
+        assert!(editor.hotkey_capture.is_none());
+        editor.update(
+            &mut settings,
+            Message::SetSearchHotkey(SearchHotkeySlot::Secondary, None),
+        );
+        assert!(!settings.general.search_hotkeys.secondary.enabled);
+        editor.update(&mut settings, Message::ResetSearchHotkeys);
+        assert_eq!(settings.general.search_hotkeys, original);
+    }
+
     #[test]
     fn ui_only_preferences_need_no_mutable_settings() {
         let settings = Settings::default();
