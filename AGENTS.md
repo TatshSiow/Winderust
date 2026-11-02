@@ -1,6 +1,7 @@
 # Agent Start
 
-Read `.agents/memory/README.md` first.
+Read [docs/README.md](docs/README.md) first. Work directly on `dev`; create or
+switch branches only when the user explicitly requests it.
 
 ## Current Product Contract
 
@@ -25,7 +26,7 @@ Read `.agents/memory/README.md` first.
 - Prefer typed errors when callers must distinguish failures; do not use `unwrap` or `expect` on runtime Win32/process paths, and do not silently ignore impossible internal wiring.
 - Keep every unsafe operation in the smallest practical explicit `unsafe` block, including inside `unsafe fn`, with an immediately preceding `SAFETY:` rationale.
 - When a feature-defining or compatibility-sensitive Win32, NT, or WDK
-  boundary changes, update `.agents/memory/30-reference-library.md` with the
+  boundary changes, update `docs/windows-api-reference.md` with the
   implementation path, direct official reference when available, and any
   undocumented contract.
 - Before handoff, run `git diff --check`, `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn`, `cargo test --locked`, the legacy scan from the development guide, and `graphify update .` after code changes.

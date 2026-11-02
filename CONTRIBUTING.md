@@ -56,6 +56,12 @@ and controllers.
 Fork the repository, create a branch from `dev`, and make your change there.
 Releasable changes are integrated into `dev` before promotion to `main`.
 
+Maintainers and repository automation work directly on `dev` unless another branch
+is explicitly requested. External contributors use their fork and submit a pull
+request targeting `dev`. See the [documentation index](docs/README.md) and
+[development guide](docs/development.md) for implementation and validation details.
+Documentation-only changes require link/path, whitespace, and naming checks.
+
 ## Change Guidelines
 
 - Keep code names, settings, tests, locale keys, scripts, and documentation
@@ -71,7 +77,7 @@ Releasable changes are integrated into `dev` before promotion to `main`.
 - Add or update tests for behavior changes.
 - Update English and Traditional Chinese locale entries together when visible
   UI text changes.
-- Update the Windows API reference in `.agents/memory/30-reference-library.md`
+- Update the Windows API reference in [docs/windows-api-reference.md](docs/windows-api-reference.md)
   when changing a compatibility-sensitive Win32, NT, or WDK boundary.
 - Do not commit credentials, signing keys, private email addresses, logs,
   exported settings, `.codex/`, `.agents/skills/`, or `graphify-out/`.
@@ -88,7 +94,8 @@ git diff --check
 cargo fmt -- --check
 cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
 cargo test --locked
-rg -n -i --glob '!target/**' --glob '!graphify-out/**' --glob '!.git/**' --glob '!.agents/**' --glob '!CONTRIBUTING.md' 'PowerLeaf|Smart Saver|Smart Trim|Background CPU Restriction|Core Steering|Soft CPU Sets|Hard CPU Affinity|background_cpu_restriction|core_steering|soft_cpu_sets|hard_cpu_affinity|serde.*alias|fill_missing_power_plan_mappings|Settings::power_plans' .
+.\scripts\check_architecture_ownership.ps1
+.\scripts\check_legacy_names.ps1
 ```
 
 For release-related changes, also run:

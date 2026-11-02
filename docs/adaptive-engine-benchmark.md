@@ -161,7 +161,7 @@ when each percentage has a different adjacent Stock denominator.
 ## Current Adaptive Engine Preset Model
 
 Keep this in sync with the Adaptive Engine preset values in
-`src/ui/app/shared/presets.rs`.
+`src/ui/adaptive_presets.rs`.
 
 | Preset | Benchmark model |
 | --- | --- |

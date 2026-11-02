@@ -1,4 +1,4 @@
-# Reference Library
+# Windows API Reference
 
 This file collects the Windows API references behind Winderust features.
 It covers feature-defining and compatibility-sensitive boundaries; routine
@@ -709,7 +709,7 @@ therefore reports suspension only for process IDs currently suspended and
 tracked by Winderust; it does not infer suspension from undocumented NT thread
 state.
 
-# GPU Engine utilization
+## GPU Engine utilization
 
 - Implementation: `src/platform/windows/gpu_usage.rs` owns the English PDH wildcard query for
   `\\GPU Engine(*)\\Utilization Percentage`, formatted-array parsing, per-engine aggregation, and
@@ -720,7 +720,7 @@ state.
   matching physical-engine instances, clamp each engine to 100%, and report the busiest engine.
   Missing or invalid samples are unavailable observations, not zero utilization.
 
-# Appearance change notifications
+## Appearance change notifications
 
 - `src/backend/windows_events.rs` routes WM_SETTINGCHANGE, WM_THEMECHANGED, and
   WM_DWMCOLORIZATIONCOLORCHANGED through AppearanceChanged. The runtime generation
@@ -809,7 +809,7 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 
 ### Dynamic Resource Zones allocation contract
 
-`src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background soft CPU Sets through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
+`src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background CPU Sets (Soft) through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
 
 - https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount ? zero means failure; multiple groups are outside this mask domain.
 - https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets ? thread-selected sets and restrictive affinity still apply; placement is not exclusive physical-core ownership.

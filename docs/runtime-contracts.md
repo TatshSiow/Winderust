@@ -1,6 +1,6 @@
 # Runtime Contracts
 
-Read the relevant section before changing feature policy, ownership, restoration, or backend boundaries. API evidence lives in [30-reference-library.md](30-reference-library.md); UI presentation lives in [15-design-spec.md](15-design-spec.md).
+Read the relevant section before changing feature policy, ownership, restoration, or backend boundaries. API evidence lives in [Windows API reference](windows-api-reference.md); UI presentation lives in [Design](design.md).
 
 ## Application boundaries
 
@@ -16,6 +16,20 @@ Read the relevant section before changing feature policy, ownership, restoration
   `WinderustApp` composition boundary.
 
 ## Restoration and process safety
+
+- Never target Winderust itself or protected/system processes. Cross-session targeting
+  still requires Windows access, built-in exclusions, and exact identity validation.
+  Treat access denied as skipped unless it exposes an implementation bug.
+- Keep High/Realtime priority out of automatic paths; broad App Suspension stays
+  narrow and opt-in. Restore owned state on disable, rule mismatch, observed exit,
+  or shutdown without bypassing identity and external-state checks.
+- Before reversible process/thread, suspension, or automatic power-plan mutations,
+  synchronously journal the original and expected state to the crash helper and wait
+  for acknowledgment. If the helper is unavailable, block the mutation.
+- Clean shutdown stops new work before reversing applied changes. `RuntimeCore`
+  and `PowerPlanController` own automatic restoration order; `RuntimeHandle`
+  restores Winderust self-power. Manual reversible Process List actions remain
+  owned by `RuntimeCore`.
 
 - Thread Priority and I/O Priority pending automatic releases retain exact identities and retry independently of feature enablement. Cancel pending cleanup only when that exact target accepts replacement ownership or completes restoration/relinquishment; failed or partially successful requests retain unresolved cleanup.
 - Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
@@ -62,7 +76,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Power plans
 
 - Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans. Ownership starts immediately after duplication, before metadata or idle-state initialization. A never-activated clone whose source remains active preserves the ordinary restoration chain; genuine external plan changes still invalidate it.
-- Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
+- Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global power-plan fallback or load-time mapping migration. The `power_plans` field on `ByActivitySettings` owns the visible Idle/Active selections.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
 - `PowerPlanController` owns all automatic active-plan and temporary Adaptive-plan lifecycle state.
@@ -136,9 +150,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   mutual exclusion, actual-owner Action Log attribution, and clean/crash restoration are part of
   the boundary. Raw affinity, CPU Set, and packed topology-buffer calls live only in
   `src/platform/windows/cpu_allocation.rs`.
-- Adaptive Engine has no separate master gate. Within an enabled Adaptive Engine, CPU Pressure
-  Restraint and Limit Background Processors run independently; disabling one must not disable or
-  apply the other. Limit Background Processors exposes one explicit processor selection:
+- Adaptive Engine's master switch gates its policies. CPU Behaviour has no additional master
+  gate: CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones have
+  independent switches. Disabling one must not disable or apply the others.
+  Limit Background Processors exposes one explicit processor selection:
   least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
   fixed P/E/no-SMT topology masks, or an exact custom mask. The per-app CPU threshold decides when a background app becomes eligible;
   the shared CPU allocation coordinator remains the only mutation and restoration owner.

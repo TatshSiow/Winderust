@@ -1,6 +1,16 @@
 # Winderust Design Spec
 
-This file describes the current app design direction. Use it when changing Iced UI code, adding pages, or cleaning UI helpers.
+This is the canonical app design guide for Iced UI changes, new pages, and shared
+controls. Use [Architecture](architecture.md) for ownership and navigation,
+[Runtime contracts](runtime-contracts.md) for behavior, and
+[Project scope](project-scope.md) for product boundaries.
+
+The audience is Windows power users and gamers configuring application performance
+and efficiency on desktops and laptops, in standard or administrator sessions.
+Use calm, direct language that states scope, consequence, and actual applied state.
+Present CPU Sets (Soft) as recommended and Processor Affinity (Hard) as strict.
+Preserve keyboard reachability, focus, contrast, semantic labels, icon tooltips,
+and reduced-motion behavior.
 
 ## Product Feel
 
@@ -71,7 +81,15 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Reuse bundled Lucide SVGs through `src/ui/assets.rs`; page icons are mapped in
   `src/ui/navigation.rs`.
 - Trace all asset consumers before changing Lucide generation or dependencies.
+- Verify consumers before trimming `icondata_core` or `icondata_lu`.
 - Keep action icons at existing sizes, usually 12-18 px depending on row density.
+
+Accent fills, checkbox marks, and switch thumbs use white in Light. In dark themes,
+use white when weighted RGB brightness (0.299R + 0.587G + 0.114B) is below 140,
+otherwise #111111. Windows appearance comes from `UISettings.GetColorValue`;
+explicit theme and custom accent preferences override it. Inactive navigation icons
+and resting control borders use neutral tones. Keep card outlines stable across
+hover/press; background shading supplies feedback.
 
 ## Motion and scrolling
 
@@ -101,12 +119,12 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## Settings Pages
 
-- Adaptive Engine is the parent of Adaptive Engine. Adaptive Engine has no separate master switch;
+- Within Adaptive Engine, CPU Behaviour has no separate master switch;
   CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
   configuration while Adaptive Engine is off.
 - Adaptive Engine uses the right-rail Status / Presets / Info tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
 - Adaptive Engine and preset details share CPU Behaviour, Processor Power, and Priority Control tabs; the live page also exposes Custom Rules. Preset modal state is independent of the live page.
-- Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in `25-runtime-contracts.md`.
+- Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
 - Processor Power groups Base Processor Policy, Background Pressure Profile, and Focus and Launch Profile into one card per section with shared internal dividers. CPU Pressure Restraint and Limit Background Processors have independent switches; configuration remains editable while off.
 - Processor Power exposes separate editable A/C and Battery boost policy/mode values for Background Pressure and Focus and Launch. Background-dominant pressure selects Background Pressure; app launches and genuinely heavy Focus App demand select Focus and Launch. These values are part of Adaptive Engine presets rather than hidden runtime constants.
 - Prefer one setting per row when possible.
@@ -152,6 +170,49 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   details show a 1% to 100% Allowed CPU Time slider only for Custom tiers, and an inactive rule
   retains its configured values while those sliders are disabled. A 100% target is Unlimited.
 
+### Advanced Power Plan Tuning
+
+- Expose separate Plugged In / On Battery long- and short-running thread scheduling
+  policies for hybrid processors. Read the selected plan and offer all six Windows
+  choices without an implicit Automatic override. Missing settings are unavailable;
+  unknown indices and access errors remain visible failures.
+- Built-in presets keep current scheduling policies; custom presets can capture
+  choices or keep current. Re-read after every Apply attempt, including partial
+  failure. Adaptive Engine does not own these persistent writes.
+
+### Watchdog
+
+- Keep Watchdog under Winderust Features, global across power sources, with the shared
+  app picker, rule table, and Status / Info tabs. CPU and Memory columns show warning
+  and critical thresholds. Pencil dialogs show app identity below the header divider,
+  then CPU / Memory tabs. Drafts apply only on OK; Cancel, Close, and Escape discard.
+- Each tab starts with its Enable CPU Watchdog or Enable Memory Watchdog toggle and
+  reveals thresholds and optional termination/restart only when enabled. Default to
+  notification only and show the data-loss consequence inline. The main page owns
+  shared sustained duration and one notification switch.
+- Explain that each rule aggregates eligible instances of its executable, excluding
+  different child executables; summed working sets may double-count shared memory.
+  Restart preserves the original user and privileges, supports non-service apps in
+  the current session, and launches without previous arguments.
+- Notifications lead with the actual action result, then trigger details. Keep the
+  registered tray icon for enabled notifications independently of hide-on-close;
+  respect Windows notification suppression. Runtime sequencing belongs in the
+  [Watchdog contract](runtime-contracts.md#watchdog).
+
+### Appearance, About, and Adaptive priority details
+
+- Appearance groups Language, Theme, and Animation under Interface, keeps Accent
+  independently expandable, and groups navigation and feature-card display settings.
+  Use square color swatches and shared select widths. About groups identity and
+  updates into separate surfaces; unsaved settings stay in the lower-right notice.
+- Adaptive Engine Priority Control keeps each control's advanced options in its own
+  expandable row under Focus, Visible Window, and Background. Process and Memory
+  Priority include detection/preservation controls. Detection falls through to the
+  next tier without changing CPU restraint's focus protection. Process Priority
+  protects existing High/Realtime classes; same-or-higher/lower preservation defaults
+  off, Memory preservation defaults on, and both detection layers default on.
+  Custom presets capture these options; built-ins restore defaults.
+
 ## Localization
 
 - All translatable user-facing strings should use `t!()` and locale files.
@@ -168,7 +229,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## What Not To Add
 
-- No landing pages, hero sections, marketing copy, decorative illustrations, or oversized cards.
+- No marketing landing pages, hero sections, decorative illustrations, or oversized cards. Keep existing feature-section landing pages.
 - No new design framework.
 - No new icon system while Lucide assets are active.
 - Reuse the existing shared rule-table helpers instead of introducing another table design.
@@ -176,6 +237,16 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## Panels, rules, and dialogs
 
+- Use `src/ui/app_picker.rs` for custom-rule selection: compact input beside Add,
+  two-line name/path entries with cached icons/placeholders, and Browse local
+  executable inside the menu. Keep the overlay inside the viewport with keyboard
+  selection and outside-click dismissal. Each feature owns eligibility and duplicate
+  checks; unavailable App Suspension targets stay visible and disabled.
+- Dropdowns use the shared Select: native Iced field and overlay, persistent accent
+  selection marker, gentle accent hover, and base option text. Scroll to the selected
+  option on opening; retain keyboard and outside-click behavior.
+- Removing a rule, exclusion, or custom preset immediately updates the settings draft.
+  Save commits and Discard restores; do not add a second removal confirmation.
 - Side panels follow tabs (when present), main title, subtitle, then content. Subtitles stay outside cards. Put primary panel actions in the bottom footer.
 - Feature info belongs in a full-height scrollable Info tab in the right sidebar. Use shared Status / Info tabs, with Presets between them on Adaptive Engine, CPU Sets (Soft), and Processor Affinity (Hard). Advanced Power Plan Tuning uses Presets / Info. Reset to the first tab on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
 - Use shared rule tables and icon edit/delete actions. Reuse existing modal layouts: name first, related settings together, actions at the bottom.
@@ -187,18 +258,33 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 ## Current reference layout
 
-- The user approved the 2026-10-30 light dashboard direction across all UI and the sidebar; `DESIGN.md` records the reference mapping.
-- The later two-panel sidebar reference uses an 88px icon-and-label rail, a separate closable category menu, and tinted selected entries. Keep all existing categories and global search.
-- Use 16px card padding, 12px card gaps, regular Segoe UI body text, semibold headings, and prominent dashboard values.
+- The user-approved 2026-10-30 dashboard direction guides the palette, spacing, and metric hierarchy. The App Shell section owns current navigation and window behavior.
+- Keep the 88px primary rail, floating child menus, tinted selected entries, all existing categories, and independent global search.
+- Use 16px card padding, 12px card gaps, regular Segoe UI body text at 14px, 13px sidebar labels, semibold headings, and prominent 28px dashboard values. The primary rail uses 11px centered wrapping labels. Keep advanced shaping, system font fallback, and DPI-aware software text rendering; do not claim ClearType support.
 - Use one 18px breadcrumb heading on every page: Home > section > current page, omitting unused levels. Ancestors are clickable; the current page is semibold text. Home shows only Home. Wrap the path in narrow windows; do not repeat the current page as a separate title.
 - Home uses a two-by-two chart grid above Enabled Features and Recent Logs. Shared content is capped at 1440px.
 - Dense virtual process and log tables retain borderless tiled backgrounds and existing row geometry.
-- Keep System/Light/Dark and custom/system accent behavior. Do not infer new telemetry or optimization guarantees from the reference image.
+- Keep System/Light/Dark/AMOLED and custom/system accent behavior. Do not infer new telemetry or optimization guarantees from the reference image.
 
 ## Home dashboard
 
-- Follow the latest dashboard reference: a 2x2 CPU/RAM/Disk I/O/Network I/O chart grid, then equal-width Enabled Features and Recent Logs panels. Adapt card heights to available content height. Use four metric columns at widths of at least 1280px and heights below 680px, two columns from 720px wide, otherwise one column. Omit redundant dashboard subtitles at every size. Preserve readable minimum card sizes and retain page scrolling only when they cannot fit; the feature and log lists scroll independently.
+- Follow the latest dashboard reference: a 2x2 CPU/RAM/Disk I/O/Network I/O chart grid, then equal-width Enabled Features and Recent Logs panels. Adapt card heights to available content height. Use four metric columns at widths of at least 1280px and heights below 680px, two columns from 720px wide, otherwise one column. Omit redundant dashboard subtitles at every size. Keep chart cards at least 200px high and summary panels at least 160px high; retain page scrolling only when these readable minimums cannot fit; the feature and log lists scroll independently.
 - Charts show 60 seconds of real history with axes and legends. Hover shows a floating tooltip with the actual sample timestamp and named series values, plus a dashed crosshair and point markers. Clamp the tooltip to the viewport, including compact charts. CPU headers show Usage on the left and Frequency on the right. Render only recorded chart samples: missing history stays blank, actual zero samples remain visible. RAM headers show Usage with a Used label and used/total capacity on the left and Available on the right. Disk and Network I/O headers show their two named, curve-colored metrics on the left and Total on the right. Network uses decimal Mb/s. CPU frequency is explicitly relative on the shared percentage scale, with the current GHz value shown separately.
 - Enabled Features and Recent Logs preserve card height and fixed headers in both empty and populated states. Enabled Features has no View All footer; Recent Logs retains its Details footer. Center empty messages in the remaining content area; populated lists use inset scrolling with space for the scrollbar and links to their full pages. Recent Logs shows compact INFO (Applied/Restored), WARN (Skipped), and ERROR (Failed) levels derived from actual Action Log entries, preserving the outcome in the description. The Log table keeps Level and Result separate; its level filters, capture thresholds, and CSV level field share the same mapping and short labels in both languages. Never fabricate log events. Keep unavailable telemetry and empty logs honest.
 - Keep category shortcuts in navigation and global search; omit the old dashboard shortcut grid.
 - Dashboard sampling runs only while Home is selected and the window is not hidden to tray. Do not add manual Pause/Resume metrics controls; background automation retains its independent monitoring.
+
+
+## Verification
+
+Use the [render harness](development.md#rendering-and-performance) for both locales,
+light/dark themes, AMOLED, minimum-size and desktop windows, empty/populated rules,
+collapsed/expanded groups, live/editable/read-only presets, Info tabs, flyouts, and
+search. Check header controls independently from expansion; each must retain its own
+hit target. Preserve live/preset navigation and collapse-state isolation.
+
+Review the captures and exercise native interactions. Capture counts and passing Rust
+tests establish coverage, not visual or behavioral equivalence with historical UI.
+Do not recreate unmapped historical features or infer telemetry/performance promises
+from a reference image. Completed port audits and their old findings remain in Git
+history rather than defining current behavior.
