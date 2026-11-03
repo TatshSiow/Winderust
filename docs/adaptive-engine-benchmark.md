@@ -47,8 +47,16 @@ script scales it to watts before summarizing.
 The default benchmark also runs a compact foreground score suite while the same
 generated background workers are active. The score suite covers managed integer
 and double arithmetic, an unrolled float-batch instruction proxy, GZip and
-Deflate round trips, SHA-256 hashing, AES-CBC encrypt/decrypt, a 256 KiB
+Deflate round trips, SHA-256 hashing, AES-CBC encrypt/decrypt, a 256 KB
 L2-cache-size scan proxy, and a larger memory-copy probe.
+
+Byte sizes and byte rates use decimal units: 1 KB is 1,000 bytes and 1 MB is
+1,000,000 bytes. Score results record `byte_unit_base = 1000` and
+`byte_rate_unit = "MB/s"`, including scores embedded in real-runtime reports.
+`-ScoreDataKb` now allocates 1,000 bytes per KB; buffer sizes therefore differ
+from runs before unit standardization even when the numeric parameter is the
+same. Compare timings only across runs with the same byte-unit base and buffer
+sizes. [Archived results](../benchmark/README.md) retain their original units.
 
 ZIP archive structure, BZIP2, 7z, and native AVX/SSE/SSE2/SSE4/AVX2/FMA feature
 microbenchmarks are not included because Windows PowerShell/.NET Framework does

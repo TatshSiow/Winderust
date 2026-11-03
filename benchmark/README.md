@@ -79,6 +79,18 @@ compared case; it adds measurement overhead. No sensor driver is installed.
 Adaptive Engine benchmark results are stored separately from the project README
 because they are specific to the machine and its current thermal and power state.
 
+Current custom-runner results use decimal byte units: 1 KB is 1,000 bytes and
+1 MB is 1,000,000 bytes. Their score objects record `byte_unit_base = 1000` and
+`byte_rate_unit = "MB/s"`. Before unit standardization, custom-runner byte rates
+used 1,048,576 bytes per displayed unit, despite the `_mbps` field names and
+MB/s table labels; size parameters used 1,024 bytes per KB. The archived raw
+JSON and historical Markdown measurements remain unmodified evidence of those
+runs. Multiply an archived custom-runner byte-rate value by 1.048576 to express
+it in decimal MB/s. Percentage ratios need no conversion. This does not apply
+to independently recorded third-party diagnostic results. Matching numeric
+buffer-size parameters across the two conventions also changes the actual
+workload, so cross-revision timing comparisons require matching byte sizes.
+
 For a read-only observation-cost probe, run
 `cargo test --locked profile_live_observation_costs -- --ignored --nocapture`
 alone on an interactive Windows desktop. It checks that the visible-process

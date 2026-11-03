@@ -400,8 +400,9 @@ impl Model {
                 t!("home.cpu_frequency_relative").to_string(),
             ],
             ChartKind::Memory => [format!("{title} (%)"), String::new()],
-            ChartKind::Io => [format!("{first} (B/s)"), format!("{second} (B/s)")],
-            ChartKind::Network => [format!("{first} (Mb/s)"), format!("{second} (Mb/s)")],
+            ChartKind::Io | ChartKind::Network => {
+                [format!("{first} (B/s)"), format!("{second} (B/s)")]
+            }
         };
         let mut legend = row![].spacing(design::space::LARGE);
         for (series, label) in labels.into_iter().enumerate() {
@@ -583,8 +584,8 @@ impl Model {
                     ChartSample {
                         captured_at: sample.captured_at,
                         values: [
-                            s.download_bytes_per_second.unwrap_or(0.0) * 8.0 / 1_000_000.0,
-                            s.upload_bytes_per_second.unwrap_or(0.0) * 8.0 / 1_000_000.0,
+                            s.download_bytes_per_second.unwrap_or(0.0),
+                            s.upload_bytes_per_second.unwrap_or(0.0),
                         ],
                         labels: [
                             network_usage_label(s.download_bytes_per_second),
@@ -896,8 +897,7 @@ impl Chart {
             frame.fill_text(canvas::Text {
                 content: match self.kind {
                     ChartKind::Cpu | ChartKind::Memory => format!("{value:.0}%"),
-                    ChartKind::Io => format_bytes_per_second(value),
-                    ChartKind::Network => format!("{value:.1}"),
+                    ChartKind::Io | ChartKind::Network => format_bytes_per_second(value),
                 },
                 position: Point::new(
                     width + 6.0,
@@ -1052,7 +1052,7 @@ fn memory_available_value_label(snapshot: MemoryUsageSnapshot) -> String {
 
 fn network_usage_label(bytes_per_second: Option<f64>) -> String {
     bytes_per_second
-        .map(|bytes| format!("{:.1} Mb/s", bytes * 8.0 / 1_000_000.0))
+        .map(format_bytes_per_second)
         .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 fn io_usage_label(bytes_per_second: Option<f64>) -> String {
@@ -1079,30 +1079,30 @@ fn format_capacity_number(value: f64) -> String {
 }
 
 fn memory_capacity_parts(bytes: u64) -> MemoryCapacityParts {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    const TIB: f64 = GIB * 1024.0;
+    const KB: f64 = 1_000.0;
+    const MB: f64 = KB * 1_000.0;
+    const GB: f64 = MB * 1_000.0;
+    const TB: f64 = GB * 1_000.0;
 
     let bytes = bytes as f64;
-    if bytes >= TIB {
+    if bytes >= TB {
         MemoryCapacityParts {
-            value: bytes / TIB,
+            value: bytes / TB,
             unit: "TB",
         }
-    } else if bytes >= GIB {
+    } else if bytes >= GB {
         MemoryCapacityParts {
-            value: bytes / GIB,
+            value: bytes / GB,
             unit: "GB",
         }
-    } else if bytes >= MIB {
+    } else if bytes >= MB {
         MemoryCapacityParts {
-            value: bytes / MIB,
+            value: bytes / MB,
             unit: "MB",
         }
-    } else if bytes >= KIB {
+    } else if bytes >= KB {
         MemoryCapacityParts {
-            value: bytes / KIB,
+            value: bytes / KB,
             unit: "KB",
         }
     } else {
@@ -1114,16 +1114,19 @@ fn memory_capacity_parts(bytes: u64) -> MemoryCapacityParts {
 }
 
 fn format_bytes_per_second(bytes_per_second: f64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
+    const KB: f64 = 1_000.0;
+    const MB: f64 = KB * 1_000.0;
+    const GB: f64 = MB * 1_000.0;
+    const TB: f64 = GB * 1_000.0;
 
-    if bytes_per_second >= GIB {
-        format!("{:.1} GB/s", bytes_per_second / GIB)
-    } else if bytes_per_second >= MIB {
-        format!("{:.1} MB/s", bytes_per_second / MIB)
-    } else if bytes_per_second >= KIB {
-        format!("{:.1} KB/s", bytes_per_second / KIB)
+    if bytes_per_second >= TB {
+        format!("{:.1} TB/s", bytes_per_second / TB)
+    } else if bytes_per_second >= GB {
+        format!("{:.1} GB/s", bytes_per_second / GB)
+    } else if bytes_per_second >= MB {
+        format!("{:.1} MB/s", bytes_per_second / MB)
+    } else if bytes_per_second >= KB {
+        format!("{:.1} KB/s", bytes_per_second / KB)
     } else {
         format!("{bytes_per_second:.0} B/s")
     }
@@ -1675,17 +1678,62 @@ mod tests {
         }
     }
     #[test]
-    fn dashboard_uses_available_memory_and_decimal_network_bits() {
-        assert_eq!(network_usage_label(Some(1_000_000.0)), "8.0 Mb/s");
+    fn dashboard_uses_available_memory_and_decimal_network_bytes() {
+        assert_eq!(network_usage_label(Some(1_000_000.0)), "1.0 MB/s");
         assert_eq!(
             memory_available_value_label(MemoryUsageSnapshot {
                 total_physical_bytes: Some(16 * 1024 * 1024 * 1024),
                 used_physical_bytes: Some(7 * 1024 * 1024 * 1024),
                 ..Default::default()
             }),
-            "9.0 GB"
+            "9.7 GB"
         );
         assert_eq!(network_usage_label(None), t!("home.collecting").to_string());
+    }
+    #[test]
+    fn network_chart_and_headers_use_the_same_byte_rates() {
+        let mut model = Model::default();
+        model.record(Sample {
+            network: NetworkUsageSnapshot {
+                bytes_per_second: Some(1_500_000.0),
+                download_bytes_per_second: Some(1_000_000.0),
+                upload_bytes_per_second: Some(500_000.0),
+            },
+            ..Default::default()
+        });
+        let chart = model.chart(ChartKind::Network);
+        let sample = chart.sample_at(HISTORY_LEN - 1).unwrap();
+        assert_eq!(chart.maximum, 1_000_000.0);
+        assert_eq!(sample.values, [1_000_000.0, 500_000.0]);
+        assert_eq!(sample.labels, ["1.0 MB/s", "500.0 KB/s"]);
+        assert_eq!(
+            sample.labels,
+            [
+                network_usage_label(model.latest.network.download_bytes_per_second),
+                network_usage_label(model.latest.network.upload_bytes_per_second),
+            ]
+        );
+        assert_eq!(
+            network_usage_label(model.latest.network.bytes_per_second),
+            "1.5 MB/s"
+        );
+    }
+    #[test]
+    fn byte_capacities_and_rates_use_decimal_units() {
+        for (bytes, value, unit, capacity, rate) in [
+            (999, 999.0, "B", "999 B", "999 B/s"),
+            (1_000, 1.0, "KB", "1.0 KB", "1.0 KB/s"),
+            (1_000_000, 1.0, "MB", "1.0 MB", "1.0 MB/s"),
+            (1_500_000, 1.5, "MB", "1.5 MB", "1.5 MB/s"),
+            (1_000_000_000, 1.0, "GB", "1.0 GB", "1.0 GB/s"),
+            (1_000_000_000_000, 1.0, "TB", "1.0 TB", "1.0 TB/s"),
+        ] {
+            let parts = memory_capacity_parts(bytes);
+            assert_eq!(parts.unit, unit);
+            assert_eq!(parts.value, value);
+            assert_eq!(format_memory_capacity(bytes), capacity);
+            assert_eq!(format_bytes_per_second(bytes as f64), rate);
+        }
     }
     #[test]
     fn missing_history_has_no_zero_line_but_sampled_zero_does() {
@@ -1745,7 +1793,7 @@ mod tests {
                 total_physical_bytes: Some(16 * 1024 * 1024 * 1024),
                 ..Default::default()
             }),
-            "7.0 / 16.0 GB"
+            "7.5 / 17.2 GB"
         );
     }
 

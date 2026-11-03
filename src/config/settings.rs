@@ -1357,6 +1357,7 @@ pub struct MemoryTrimSettings {
     #[serde(default = "default_memory_trim_system_memory_load_threshold_percent")]
     pub system_memory_load_threshold_percent: u8,
     #[serde(default = "default_memory_trim_process_working_set_threshold_mb")]
+    /// Working-set threshold in decimal megabytes (1 MB = 1,000,000 bytes).
     pub process_working_set_threshold_mb: u64,
     #[serde(default = "default_memory_trim_process_idle_seconds")]
     pub process_idle_seconds: u64,
@@ -1713,10 +1714,6 @@ pub enum NetworkThresholdUnit {
     Kilobytes,
     Megabytes,
     Gigabytes,
-    Bits,
-    Kilobits,
-    Megabits,
-    Gigabits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2052,15 +2049,11 @@ const fn default_rule_network_download_threshold_bytes() -> u64 {
 }
 
 impl NetworkThresholdUnit {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 4] = [
         Self::Bytes,
         Self::Kilobytes,
         Self::Megabytes,
         Self::Gigabytes,
-        Self::Bits,
-        Self::Kilobits,
-        Self::Megabits,
-        Self::Gigabits,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -2069,10 +2062,6 @@ impl NetworkThresholdUnit {
             Self::Kilobytes => "KB",
             Self::Megabytes => "MB",
             Self::Gigabytes => "GB",
-            Self::Bits => "b",
-            Self::Kilobits => "kb",
-            Self::Megabits => "mb",
-            Self::Gigabits => "gb",
         }
     }
 
@@ -2083,10 +2072,6 @@ impl NetworkThresholdUnit {
             Self::Kilobytes => bytes / 1_000.0,
             Self::Megabytes => bytes / 1_000_000.0,
             Self::Gigabytes => bytes / 1_000_000_000.0,
-            Self::Bits => bytes * 8.0,
-            Self::Kilobits => bytes * 8.0 / 1_000.0,
-            Self::Megabits => bytes * 8.0 / 1_000_000.0,
-            Self::Gigabits => bytes * 8.0 / 1_000_000_000.0,
         }
     }
 
@@ -2100,10 +2085,6 @@ impl NetworkThresholdUnit {
             Self::Kilobytes => value * 1_000.0,
             Self::Megabytes => value * 1_000_000.0,
             Self::Gigabytes => value * 1_000_000_000.0,
-            Self::Bits => value / 8.0,
-            Self::Kilobits => value * 1_000.0 / 8.0,
-            Self::Megabits => value * 1_000_000.0 / 8.0,
-            Self::Gigabits => value * 1_000_000_000.0 / 8.0,
         };
 
         if bytes >= u64::MAX as f64 {
@@ -2816,17 +2797,27 @@ mod tests {
             1_250_000
         );
         assert_eq!(
-            NetworkThresholdUnit::Bits.threshold_bytes_from_value(9.0),
+            NetworkThresholdUnit::Gigabytes.threshold_bytes_from_value(1.25),
+            1_250_000_000
+        );
+        assert_eq!(
+            NetworkThresholdUnit::Megabytes.threshold_value_from_bytes(1_250_000),
+            1.25
+        );
+        assert_eq!(
+            NetworkThresholdUnit::Bytes.threshold_bytes_from_value(1.1),
             2
         );
-        assert_eq!(
-            NetworkThresholdUnit::Kilobits.threshold_bytes_from_value(1.0),
-            125
-        );
-        assert_eq!(
-            NetworkThresholdUnit::Megabits.threshold_value_from_bytes(125_000),
-            1.0
-        );
+        for unit in NetworkThresholdUnit::ALL {
+            let raw = 1_250_000_000;
+            assert_eq!(
+                unit.threshold_bytes_from_value(unit.threshold_value_from_bytes(raw)),
+                raw
+            );
+            for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
+                assert_eq!(unit.threshold_bytes_from_value(invalid), 0);
+            }
+        }
     }
 
     #[test]

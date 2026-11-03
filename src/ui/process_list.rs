@@ -1851,7 +1851,7 @@ fn format_memory_usage(bytes: u64, total: Option<u64>, percentage: bool) -> Stri
             None => t!("common.unknown").to_string(),
         }
     } else {
-        format!("{:.1} MiB", bytes as f64 / 1048576.0)
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
     }
 }
 
@@ -2534,9 +2534,10 @@ mod tests {
     #[test]
     fn memory_metrics_show_value_or_share_of_physical_memory() {
         assert_eq!(
-            format_memory_usage(1048576, Some(4194304), false),
-            "1.0 MiB"
+            format_memory_usage(1_000_000, Some(4_000_000), false),
+            "1.0 MB"
         );
+        assert_eq!(format_memory_usage(1_500_000, None, false), "1.5 MB");
         assert_eq!(format_memory_usage(1048576, Some(4194304), true), "25.0%");
         assert_eq!(format_memory_usage(0, Some(4194304), true), "0.0%");
         assert_eq!(

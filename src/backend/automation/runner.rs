@@ -196,7 +196,7 @@ impl RuntimeCore {
             let metric = t!(match event.metric {
                 WatchdogMetric::CpuPercent => "watchdog.cpu",
                 WatchdogMetric::MemoryPercent => "watchdog.memory_percent",
-                WatchdogMetric::MemoryMib => "watchdog.memory_mib",
+                WatchdogMetric::MemoryMb => "watchdog.memory_mb",
             });
             let detail = t!(
                 "watchdog.trigger_detail",

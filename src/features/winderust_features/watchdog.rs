@@ -298,9 +298,9 @@ fn metric_value(
             .working_set_bytes
             .zip(total_memory.filter(|total| *total > 0))
             .map(|(bytes, total)| bytes as f64 / total as f64 * 100.0),
-        WatchdogMetric::MemoryMib => current
+        WatchdogMetric::MemoryMb => current
             .working_set_bytes
-            .map(|bytes| bytes as f64 / 1_048_576.0),
+            .map(|bytes| bytes as f64 / 1_000_000.0),
     }
 }
 
@@ -536,12 +536,12 @@ mod tests {
     }
 
     #[test]
-    fn units_use_real_memory_and_cpu_requires_an_interval() {
+    fn units_use_decimal_memory_and_cpu_requires_an_interval() {
         let now = Instant::now();
         let process = process();
-        let mut sample = sample(&process, now, Some(512 * 1_048_576))[&process.id];
+        let mut sample = sample(&process, now, Some(512 * 1_000_000))[&process.id];
         assert_eq!(
-            metric_value(WatchdogMetric::MemoryMib, None, &sample, None),
+            metric_value(WatchdogMetric::MemoryMb, None, &sample, None),
             Some(512.0)
         );
         assert_eq!(
@@ -549,7 +549,7 @@ mod tests {
                 WatchdogMetric::MemoryPercent,
                 None,
                 &sample,
-                Some(1024 * 1_048_576)
+                Some(1024 * 1_000_000)
             ),
             Some(50.0)
         );
@@ -666,9 +666,9 @@ mod tests {
                 let now = start + Duration::from_secs(second);
                 let samples = processes
                     .iter()
-                    .flat_map(|p| sample(p, now, Some(memory * 1_048_576)))
+                    .flat_map(|p| sample(p, now, Some(memory * 1_000_000)))
                     .collect();
-                manager.evaluate(&settings, &processes, &samples, Some(100 * 1_048_576), now)
+                manager.evaluate(&settings, &processes, &samples, Some(100 * 1_000_000), now)
             };
             assert!(observe(0, 40).1.is_empty());
             assert!(observe(1, 40).1.is_empty());
@@ -836,7 +836,7 @@ mod tests {
         );
         rule.cpu.enabled = false;
         rule.memory.enabled = true;
-        rule.memory_unit = crate::config::WatchdogMemoryUnit::Mib;
+        rule.memory_unit = crate::config::WatchdogMemoryUnit::Megabytes;
         rule.memory.warning.threshold = 1;
         rule.memory.critical.threshold = 2;
         rule.memory.critical.action = WatchdogAction::Terminate;

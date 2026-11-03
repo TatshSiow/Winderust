@@ -24,14 +24,14 @@ impl Default for WatchdogSettings {
 pub enum WatchdogMetric {
     CpuPercent,
     MemoryPercent,
-    MemoryMib,
+    MemoryMb,
 }
 
 impl WatchdogMetric {
     pub fn maximum(self) -> u64 {
         match self {
             Self::CpuPercent | Self::MemoryPercent => 100,
-            Self::MemoryMib => 1_048_576,
+            Self::MemoryMb => 1_000_000,
         }
     }
 }
@@ -64,16 +64,16 @@ impl WatchdogResource {
 #[serde(rename_all = "snake_case")]
 pub enum WatchdogMemoryUnit {
     Percent,
-    Mib,
+    Megabytes,
 }
 
 impl WatchdogMemoryUnit {
-    pub const ALL: [Self; 2] = [Self::Percent, Self::Mib];
+    pub const ALL: [Self; 2] = [Self::Percent, Self::Megabytes];
 
     pub fn metric(self) -> WatchdogMetric {
         match self {
             Self::Percent => WatchdogMetric::MemoryPercent,
-            Self::Mib => WatchdogMetric::MemoryMib,
+            Self::Megabytes => WatchdogMetric::MemoryMb,
         }
     }
 }
@@ -194,13 +194,14 @@ mod tests {
         assert_eq!(rule.cpu.warning.action, WatchdogAction::None);
         assert_eq!(rule.memory.critical.action, WatchdogAction::None);
         rule.memory.enabled = true;
-        rule.memory_unit = WatchdogMemoryUnit::Mib;
-        rule.memory.warning.threshold = 1024;
-        rule.memory.critical.threshold = 2048;
+        rule.memory_unit = WatchdogMemoryUnit::Megabytes;
+        rule.memory.warning.threshold = 1000;
+        rule.memory.critical.threshold = 2000;
         rule.cpu.warning.action = WatchdogAction::Restart;
         rule.memory.critical.action = WatchdogAction::Terminate;
         assert!(rule.validate().is_ok());
         let raw = toml::to_string(&rule).unwrap();
+        assert!(raw.contains("memory_unit = \"megabytes\""));
         assert_eq!(toml::from_str::<WatchdogRule>(&raw).unwrap(), rule);
         rule.cpu.warning.threshold = 90;
         assert!(rule.validate().is_err());

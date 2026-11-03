@@ -368,7 +368,7 @@ public static class AdaptiveEngineProcessBenchmarkNative
             sink ^= decompressed[decompressed.Length - 1];
         }
         sw.Stop();
-        return Rate(bytes, sw, 1024.0 * 1024.0);
+        return Rate(bytes, sw, 1000000.0);
     }
 
     public static double DeflateRoundTripMbps(int kiloBytes, int rounds)
@@ -385,7 +385,7 @@ public static class AdaptiveEngineProcessBenchmarkNative
             sink ^= decompressed[decompressed.Length - 1];
         }
         sw.Stop();
-        return Rate(bytes, sw, 1024.0 * 1024.0);
+        return Rate(bytes, sw, 1000000.0);
     }
 
     public static double Sha256Mbps(int kiloBytes, int rounds)
@@ -404,7 +404,7 @@ public static class AdaptiveEngineProcessBenchmarkNative
             }
         }
         sw.Stop();
-        return Rate(bytes, sw, 1024.0 * 1024.0);
+        return Rate(bytes, sw, 1000000.0);
     }
 
     public static double AesCbcRoundTripMbps(int kiloBytes, int rounds)
@@ -437,7 +437,7 @@ public static class AdaptiveEngineProcessBenchmarkNative
             }
         }
         sw.Stop();
-        return Rate(bytes, sw, 1024.0 * 1024.0);
+        return Rate(bytes, sw, 1000000.0);
     }
 
     public static double MemoryScanMbps(int kiloBytes, int rounds)
@@ -455,7 +455,7 @@ public static class AdaptiveEngineProcessBenchmarkNative
         }
         sw.Stop();
         sink ^= sum;
-        return Rate((long)data.Length * rounds, sw, 1024.0 * 1024.0);
+        return Rate((long)data.Length * rounds, sw, 1000000.0);
     }
 
     public static double MemoryCopyMbps(int kiloBytes, int rounds)
@@ -470,7 +470,7 @@ public static class AdaptiveEngineProcessBenchmarkNative
             sink ^= target[round % target.Length];
         }
         sw.Stop();
-        return Rate((long)source.Length * rounds, sw, 1024.0 * 1024.0);
+        return Rate((long)source.Length * rounds, sw, 1000000.0);
     }
 
     private static double Rate(long work, Stopwatch sw, double divisor)
@@ -484,7 +484,7 @@ public static class AdaptiveEngineProcessBenchmarkNative
 
     private static byte[] MakeData(int kiloBytes)
     {
-        int size = Math.Max(1, kiloBytes) * 1024;
+        int size = Math.Max(1, kiloBytes) * 1000;
         byte[] data = new byte[size];
         uint state = 2166136261u;
         for (int index = 0; index < data.Length; index++)
@@ -614,6 +614,8 @@ function Measure-ScoreBenchmarks {
     $memoryCopyKb = [Math]::Max(8192, $scoreDataKbValue * 16)
 
     $score = [ordered]@{
+        byte_unit_base = 1000
+        byte_rate_unit = 'MB/s'
         score_iterations = $scoreIterations
         score_data_kb = $scoreDataKbValue
         score_rounds = $scoreRoundsValue
@@ -1982,6 +1984,8 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     foreground_scenario = $ForegroundScenario
     process_tier = $ProcessTier
     score_benchmark_enabled = -not $SkipScoreBenchmark
+    byte_unit_base = 1000
+    byte_rate_unit = 'MB/s'
     score_iterations = $ScoreIterations
     score_data_kb = $ScoreDataKb
     score_rounds = $ScoreRounds

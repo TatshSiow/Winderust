@@ -52,7 +52,7 @@ impl Editor {
             }
             Message::WorkingSet(v) => {
                 if let Ok(v) = v.parse::<u64>() {
-                    if (1..=1_048_576).contains(&v) {
+                    if (1..=1_000_000).contains(&v) {
                         settings.process_working_set_threshold_mb = v;
                     }
                 }
@@ -112,7 +112,7 @@ impl Editor {
                     .into(),
                     field(
                         "memory_trim.working_set_threshold",
-                        "MiB",
+                        "MB",
                         settings.process_working_set_threshold_mb.to_string(),
                         Message::WorkingSet,
                     )

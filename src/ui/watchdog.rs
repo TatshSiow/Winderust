@@ -14,7 +14,7 @@ impl std::fmt::Display for WatchdogMetric {
         f.write_str(&t!(match self {
             Self::CpuPercent => "watchdog.cpu",
             Self::MemoryPercent => "watchdog.memory_percent",
-            Self::MemoryMib => "watchdog.memory_mib",
+            Self::MemoryMb => "watchdog.memory_mb",
         }))
     }
 }
@@ -22,7 +22,7 @@ impl std::fmt::Display for WatchdogMemoryUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&t!(match self {
             Self::Percent => "watchdog.memory_percent",
-            Self::Mib => "watchdog.memory_mib",
+            Self::Megabytes => "watchdog.memory_mb",
         }))
     }
 }
@@ -196,8 +196,8 @@ impl Editor {
                 if let Some(draft) = &mut self.draft {
                     if draft.rule.memory_unit != unit {
                         draft.rule.memory_unit = unit;
-                        let (warning, critical) = if unit == WatchdogMemoryUnit::Mib {
-                            (1024, 2048)
+                        let (warning, critical) = if unit == WatchdogMemoryUnit::Megabytes {
+                            (1000, 2000)
                         } else {
                             (70, 90)
                         };
@@ -257,9 +257,9 @@ impl Editor {
                                 .into_iter()
                                 .map(|resource| {
                                     let monitor = rule.monitor(resource);
-                                    let unit = if rule.metric(resource) == WatchdogMetric::MemoryMib
+                                    let unit = if rule.metric(resource) == WatchdogMetric::MemoryMb
                                     {
-                                        " MiB"
+                                        " MB"
                                     } else {
                                         "%"
                                     };
@@ -398,8 +398,8 @@ impl Editor {
                     .push(widgets::settings_card(widgets::settings_rows([
                         widgets::setting_row_with_unit(
                             "watchdog.threshold",
-                            if metric == WatchdogMetric::MemoryMib {
-                                "MiB"
+                            if metric == WatchdogMetric::MemoryMb {
+                                "MB"
                             } else {
                                 "%"
                             },
@@ -687,7 +687,10 @@ mod tests {
             Message::MonitorEnabled(WatchdogResource::Memory, true),
         );
         editor.update(&mut settings, Message::Tab(WatchdogResource::Memory));
-        editor.update(&mut settings, Message::MemoryUnit(WatchdogMemoryUnit::Mib));
+        editor.update(
+            &mut settings,
+            Message::MemoryUnit(WatchdogMemoryUnit::Megabytes),
+        );
         editor.update(
             &mut settings,
             Message::Threshold(WatchdogResource::Cpu, false, "65".into()),
@@ -701,7 +704,8 @@ mod tests {
         assert!(!editor.has_pending_editor());
         assert!(settings.rules[0].cpu.enabled && settings.rules[0].memory.enabled);
         assert_eq!(settings.rules[0].cpu.warning.threshold, 65);
-        assert_eq!(settings.rules[0].memory.critical.threshold, 2048);
+        assert_eq!(settings.rules[0].memory.warning.threshold, 1000);
+        assert_eq!(settings.rules[0].memory.critical.threshold, 2000);
         assert_eq!(settings.rules[0].cpu.critical.action, WatchdogAction::None);
         assert_eq!(
             settings.rules[0].memory.critical.action,

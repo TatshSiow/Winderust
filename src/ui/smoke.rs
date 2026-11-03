@@ -109,9 +109,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let mut rule =
                 crate::config::WatchdogRule::new(r"C:\Apps\Resource Monitor\sample.exe".into());
             rule.memory.enabled = true;
-            rule.memory_unit = crate::config::WatchdogMemoryUnit::Mib;
-            rule.memory.warning.threshold = 1024;
-            rule.memory.critical.threshold = 2048;
+            rule.memory_unit = crate::config::WatchdogMemoryUnit::Megabytes;
+            rule.memory.warning.threshold = 1000;
+            rule.memory.critical.threshold = 2000;
             rule.memory.critical.action = crate::config::WatchdogAction::Terminate;
             app.settings
                 .edit_global(|settings| settings.watchdog.rules = vec![rule]);
