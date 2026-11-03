@@ -1,6 +1,6 @@
 //! Native pick-list field with a menu that distinguishes selection from hover.
 use super::{design, widgets};
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::{popup_scrollable, repaint_popup};
 use iced::advanced::{
     layout, renderer,
     widget::{tree, Operation, Tree},
@@ -130,7 +130,12 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                 .on_press(index),
             );
         }
-        (container(scrollable(items).id("select-options").height(Length::Fill))
+        repaint_popup(
+            container(
+                popup_scrollable(items)
+                    .id("select-options")
+                    .height(Length::Fill),
+            )
             .padding(8)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -141,8 +146,8 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
                     border: menu.border,
                     ..Default::default()
                 }
-            }))
-        .into()
+            }),
+        )
     }
 }
 

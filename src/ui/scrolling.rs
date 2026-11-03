@@ -193,11 +193,21 @@ pub(super) fn repaint_group<'a, Message: 'a>(
     })
 }
 
+pub(super) fn repaint_popup<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    Element::new(ScrollContent {
+        content: content.into(),
+        behavior: Behavior::Popup,
+    })
+}
+
 enum Behavior<'a, Message> {
     Scroll,
     Table(f32),
     FillWidth,
     Group,
+    Popup,
     Buffer(Buffer<'a, Message>),
 }
 
@@ -307,6 +317,17 @@ pub(super) fn scrollable<'a, Message: 'a>(
     }))
     .direction(iced::widget::scrollable::Direction::Vertical(scrollbar()))
     .style(scroll_style)
+}
+
+/// Popups reserve scrollbar space only when their own content overflows.
+pub(super) fn popup_scrollable<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Scrollable<'a, Message> {
+    iced::widget::scrollable(content)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            scrollbar().spacing(super::design::space::CONTROL as f32),
+        ))
+        .style(scroll_style)
 }
 
 /// The compact navigation rail keeps its scrollbar inside the outer inset.
@@ -420,10 +441,19 @@ impl<Message> Widget<Message, Theme, Renderer> for ScrollContent<'_, Message> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        if matches!(self.behavior, Behavior::Group | Behavior::FillWidth) {
+        if matches!(
+            self.behavior,
+            Behavior::Group | Behavior::Popup | Behavior::FillWidth
+        ) {
             use iced::advanced::Renderer as _;
+            // Overlay hosts often pass the exact surface bounds, excluding edge coverage.
+            let viewport = if matches!(self.behavior, Behavior::Popup) {
+                viewport.expand(1.0)
+            } else {
+                *viewport
+            };
             // Leave room for antialias coverage along card borders.
-            if let Some(clip) = layout.bounds().expand(1.0).intersection(viewport) {
+            if let Some(clip) = layout.bounds().expand(1.0).intersection(&viewport) {
                 renderer.with_layer(clip, |renderer| {
                     self.content
                         .as_widget()
@@ -671,6 +701,35 @@ fn check_scroll_damage_with_delta<M>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popup_scrollbars_reserve_space_only_for_overflow_changes() {
+        use iced::advanced::{layout, widget::Tree};
+        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let size = Size::new(240.0, 120.0);
+        let mut tree = Tree::empty();
+        for overflowing in [false, true, false, true] {
+            let mut view: Element<'_, ()> = popup_scrollable(
+                iced::widget::Space::new()
+                    .width(Length::Fill)
+                    .height(if overflowing { 480.0 } else { 80.0 }),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+            tree.diff(&view);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, size),
+            );
+            assert_eq!(node.size(), size);
+            assert_eq!(
+                size.width - node.children()[0].size().width,
+                if overflowing { SCROLLBAR_GUTTER } else { 0.0 },
+            );
+        }
+    }
 
     #[test]
     fn scrollbar_visibility_does_not_change_content_geometry() {

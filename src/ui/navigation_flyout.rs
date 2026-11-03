@@ -549,116 +549,195 @@ mod tests {
     #[test]
     fn flyout_partial_repaints_match_full_frames_when_opening_moving_and_closing() {
         use iced::advanced::renderer::Renderer as _;
-        let theme = Theme::custom_with_fn(
-            "test",
-            super::super::design::palette(true, None),
-            super::super::design::extended_palette,
-        );
-        let size = Size::new(600.0, 400.0);
-        let bounds = Rectangle::with_size(size);
-        let viewport =
-            iced::advanced::graphics::Viewport::with_physical_size(Size::new(600, 400), 1.0);
-        let mut renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let mut pixels = tiny_skia::Pixmap::new(600, 400).unwrap();
-        let mut mask = tiny_skia::Mask::new(600, 400).unwrap();
-        let mut previous = Vec::new();
-        let mut tree = Tree::empty();
-        for (frame, position) in [None, Some(12.0), Some(12.0), Some(240.0), None]
-            .into_iter()
-            .enumerate()
-        {
-            let mut element = view(
-                Page::SettingsHome,
-                iced::widget::button("Settings")
-                    .width(76)
-                    .height(64)
-                    .on_press(Message::Select(Page::SettingsHome))
-                    .into(),
-                position.map(|_| {
-                    iced::widget::container(
-                        iced::widget::column![
-                            iced::widget::text("Settings"),
-                            iced::widget::button("Winderust Behaviour")
-                                .on_press(Message::Select(Page::WinderustBehaviour))
-                        ]
-                        .spacing(12),
-                    )
-                    .padding(12)
-                    .width(Length::Fill)
-                    .style(super::super::widgets::surface)
-                    .into()
-                }),
-            );
-            tree.diff(&element);
-            let node = element
-                .as_widget_mut()
-                .layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size))
-                .move_to(iced::Point::new(6.0, position.unwrap_or(12.0)));
-            renderer.reset(bounds);
-            let style = renderer::Style {
-                text_color: theme.palette().text,
-            };
-            element.as_widget().draw(
-                &tree,
-                &mut renderer,
-                &theme,
-                &style,
-                Layout::new(&node),
-                mouse::Cursor::Unavailable,
-                &bounds,
-            );
-            if let Some(mut overlay) = element.as_widget_mut().overlay(
-                &mut tree,
-                Layout::new(&node),
-                &renderer,
-                &bounds,
-                Vector::ZERO,
-            ) {
-                let layout = overlay.as_overlay_mut().layout(&renderer, size);
-                overlay.as_overlay().draw(
-                    &mut renderer,
-                    &theme,
-                    &style,
-                    Layout::new(&layout),
-                    mouse::Cursor::Unavailable,
-                );
+        for (name, theme) in [
+            (
+                "light",
+                Theme::custom_with_fn(
+                    "light",
+                    super::super::design::palette(true, None),
+                    super::super::design::extended_palette,
+                ),
+            ),
+            (
+                "dark",
+                Theme::custom_with_fn(
+                    "dark",
+                    super::super::design::palette(false, None),
+                    super::super::design::extended_palette,
+                ),
+            ),
+            ("amoled", super::super::design::amoled_theme(None)),
+        ] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let size = Size::new(600.0, 400.0);
+                let bounds = Rectangle::with_size(size);
+                let physical = Size::new((size.width * scale) as u32, (size.height * scale) as u32);
+                let viewport =
+                    iced::advanced::graphics::Viewport::with_physical_size(physical, scale);
+                let mut renderer =
+                    Renderer::new(super::super::design::typography::FONT, iced::Pixels(14.0));
+                let mut pixels = tiny_skia::Pixmap::new(physical.width, physical.height).unwrap();
+                let mut mask = tiny_skia::Mask::new(physical.width, physical.height).unwrap();
+                let mut previous = Vec::new();
+                let mut tree = Tree::empty();
+                for (frame, position) in [
+                    None,
+                    Some(12.0),
+                    Some(12.0),
+                    Some(12.0),
+                    Some(12.0),
+                    Some(12.0),
+                    Some(240.0),
+                    None,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut element = view(
+                        Page::SettingsHome,
+                        iced::widget::button("Settings")
+                            .width(76)
+                            .height(64)
+                            .on_press(Message::Select(Page::SettingsHome))
+                            .into(),
+                        position.map(|_| {
+                            super::super::scrolling::repaint_popup(
+                                iced::widget::container(
+                                    iced::widget::column![
+                                        iced::widget::text("Settings"),
+                                        super::super::scrolling::popup_scrollable(
+                                            iced::widget::column![
+                                                iced::widget::button("Winderust Behaviour")
+                                                    .width(Length::Fill)
+                                                    .height(44)
+                                                    .style(|theme, status| navigation::item_style(
+                                                        theme, status, false, false
+                                                    ))
+                                                    .on_press(Message::Select(
+                                                        Page::WinderustBehaviour
+                                                    )),
+                                                iced::widget::button("Language and Appearance")
+                                                    .width(Length::Fill)
+                                                    .height(44)
+                                                    .style(|theme, status| navigation::item_style(
+                                                        theme, status, false, false
+                                                    ))
+                                                    .on_press(Message::Select(
+                                                        Page::LanguageAndAppearance
+                                                    )),
+                                            ]
+                                            .spacing(4)
+                                        )
+                                        .height(Length::Shrink)
+                                    ]
+                                    .spacing(12),
+                                )
+                                .padding(12)
+                                .width(Length::Fill)
+                                .style(super::super::widgets::surface),
+                            )
+                        }),
+                    );
+                    tree.diff(&element);
+                    let node = element
+                        .as_widget_mut()
+                        .layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size))
+                        .move_to(iced::Point::new(6.0, position.unwrap_or(12.0)));
+                    renderer.reset(bounds);
+                    let style = renderer::Style {
+                        text_color: theme.palette().text,
+                    };
+                    element.as_widget().draw(
+                        &tree,
+                        &mut renderer,
+                        &theme,
+                        &style,
+                        Layout::new(&node),
+                        mouse::Cursor::Unavailable,
+                        &bounds,
+                    );
+                    if let Some(mut overlay) = element.as_widget_mut().overlay(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &bounds,
+                        Vector::ZERO,
+                    ) {
+                        let layout = overlay.as_overlay_mut().layout(&renderer, size);
+                        let cursor = match frame {
+                            3 => mouse::Cursor::Available(
+                                layout.bounds().position() + Vector::new(40.0, 60.0),
+                            ),
+                            4 => mouse::Cursor::Available(
+                                layout.bounds().position() + Vector::new(40.0, 110.0),
+                            ),
+                            _ => mouse::Cursor::Unavailable,
+                        };
+                        overlay.as_overlay_mut().update(
+                            &Event::Window(iced::window::Event::RedrawRequested(
+                                iced::time::Instant::now(),
+                            )),
+                            Layout::new(&layout),
+                            cursor,
+                            &renderer,
+                            &mut iced::advanced::clipboard::Null,
+                            &mut Shell::new(&mut Vec::new()),
+                        );
+                        overlay.as_overlay().draw(
+                            &mut renderer,
+                            &theme,
+                            &style,
+                            Layout::new(&layout),
+                            cursor,
+                        );
+                    }
+                    let damage = if previous.is_empty() {
+                        vec![bounds]
+                    } else {
+                        iced::advanced::graphics::damage::group(
+                            iced::advanced::graphics::damage::diff(
+                                &previous,
+                                renderer.layers(),
+                                |layer| vec![layer.bounds],
+                                iced_tiny_skia::Layer::damage,
+                            ),
+                            bounds,
+                        )
+                    };
+                    if frame == 2 {
+                        assert!(damage.is_empty(), "Stable flyout repainted: {damage:?}");
+                    }
+                    if matches!(frame, 3..=5) {
+                        assert!(!damage.is_empty(), "Hover did not change frame {frame}");
+                    }
+                    renderer.draw(
+                        &mut pixels.as_mut(),
+                        &mut mask,
+                        &viewport,
+                        &damage,
+                        theme.palette().background,
+                    );
+                    let mut full = tiny_skia::Pixmap::new(physical.width, physical.height).unwrap();
+                    renderer.draw(
+                        &mut full.as_mut(),
+                        &mut mask,
+                        &viewport,
+                        &[bounds],
+                        theme.palette().background,
+                    );
+                    if frame == 4 && scale == 1.25 {
+                        std::fs::create_dir_all("target/ui-preview").unwrap();
+                        pixels
+                            .save_png(format!("target/ui-preview/flyout-hover-{name}.png"))
+                            .unwrap();
+                    }
+                    assert!(
+                        pixels.data() == full.data(),
+                        "Flyout left stale pixels in frame {frame}, theme {name}, scale {scale}"
+                    );
+                    previous = renderer.layers().to_vec();
+                }
             }
-            let damage = if previous.is_empty() {
-                vec![bounds]
-            } else {
-                iced::advanced::graphics::damage::group(
-                    iced::advanced::graphics::damage::diff(
-                        &previous,
-                        renderer.layers(),
-                        |layer| vec![layer.bounds],
-                        iced_tiny_skia::Layer::damage,
-                    ),
-                    bounds,
-                )
-            };
-            if frame == 2 {
-                assert!(damage.is_empty(), "Stable flyout repainted: {damage:?}");
-            }
-            renderer.draw(
-                &mut pixels.as_mut(),
-                &mut mask,
-                &viewport,
-                &damage,
-                theme.palette().background,
-            );
-            let mut full = tiny_skia::Pixmap::new(600, 400).unwrap();
-            renderer.draw(
-                &mut full.as_mut(),
-                &mut mask,
-                &viewport,
-                &[bounds],
-                theme.palette().background,
-            );
-            assert!(
-                pixels.data() == full.data(),
-                "Flyout left stale pixels in frame {frame}"
-            );
-            previous = renderer.layers().to_vec();
         }
     }
 

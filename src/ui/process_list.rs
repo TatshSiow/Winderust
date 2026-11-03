@@ -1478,7 +1478,7 @@ impl ProcessList {
                             );
                         }
                         let panel = |content: Element<'a, Message>| {
-                            iced::widget::opaque(
+                            iced::widget::opaque(scrolling::repaint_popup(
                                 container(content)
                                     .padding(design::space::SMALL as u16)
                                     .style(|theme| {
@@ -1498,7 +1498,7 @@ impl ProcessList {
                                         }
                                         style
                                     }),
-                            )
+                            ))
                         };
                         let mut cascade =
                             row![panel(menu.width(210).into())].spacing(design::space::TINY);
@@ -1591,7 +1591,7 @@ impl ProcessList {
                                     );
                                 }
                                 cascade = cascade.push(panel(
-                                    scrollable(levels)
+                                    scrolling::popup_scrollable(levels)
                                         .width(if kind == Kind::DynamicBoost { 100 } else { 160 })
                                         .height(iced::Shrink)
                                         .into(),

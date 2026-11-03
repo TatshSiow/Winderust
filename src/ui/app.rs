@@ -946,20 +946,23 @@ impl WinderustApp {
             );
         }
         let height = iced::Shrink;
-        container(
-            column![
-                header,
-                iced::widget::rule::horizontal(1),
-                scrollable(pages).id("secondary-navigation").height(height)
-            ]
-            .spacing(design::space::MEDIUM)
-            .height(height),
+        super::scrolling::repaint_popup(
+            container(
+                column![
+                    header,
+                    iced::widget::rule::horizontal(1),
+                    super::scrolling::popup_scrollable(pages)
+                        .id("secondary-navigation")
+                        .height(height)
+                ]
+                .spacing(design::space::MEDIUM)
+                .height(height),
+            )
+            .padding(design::space::MEDIUM as u16)
+            .width(Fill)
+            .height(height)
+            .style(widgets::surface),
         )
-        .padding(design::space::MEDIUM as u16)
-        .width(Fill)
-        .height(height)
-        .style(widgets::surface)
-        .into()
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -2601,9 +2604,11 @@ impl WinderustApp {
             ];
             if show_results {
                 search_content = search_content.push(iced::widget::rule::horizontal(1)).push(
-                    container(scrollable(results).id("navigation-search-results"))
-                        .max_height(320)
-                        .padding(6),
+                    container(
+                        super::scrolling::popup_scrollable(results).id("navigation-search-results"),
+                    )
+                    .max_height(320)
+                    .padding(6),
                 );
             }
             let search = navigation_search_panel(search_content);

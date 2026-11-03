@@ -428,7 +428,7 @@ fn process_group<'a>(
         entries[0].sequence,
         anchor,
         container(
-            scrollable(details)
+            super::scrolling::popup_scrollable(details)
                 .width(iced::Length::Shrink)
                 .height(iced::Length::Shrink),
         )

@@ -45,6 +45,10 @@ If `target\release\winderust.exe` is locked because the app is running:
 ## Rendering and performance
 
 - `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.
+- Floating surfaces use `repaint_popup` to include antialiased edges in their
+  repaint bounds, even when an overlay host supplies an exact surface viewport.
+  Use `popup_scrollable` inside them so only overflowing menus reserve a gutter;
+  page and tab scrolling retains its permanent gutter.
 - `src/ui/select.rs` retains native input while avoiding option measurement for explicitly sized fields.
 - `src/ui/motion.rs` and `animated_controls.rs` own small transitions. Do not add per-page animation timers or animate large lists.
 - Renderer dev-dependencies support pixel comparisons and damage-region tests; they do not replace the production renderer.

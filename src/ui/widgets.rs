@@ -8,9 +8,16 @@ pub(super) fn tooltip<'a, M: 'a>(
     tip: iced::widget::Text<'a>,
     position: iced::widget::tooltip::Position,
 ) -> iced::widget::Tooltip<'a, M> {
-    iced::widget::tooltip(content, tip.size(design::typography::SECONDARY), position)
-        .padding(design::space::SMALL as f32)
-        .style(tooltip_surface)
+    iced::widget::tooltip(
+        content,
+        super::scrolling::repaint_popup(
+            iced::widget::container(tip.size(design::typography::SECONDARY))
+                .padding(design::space::SMALL as u16)
+                .style(tooltip_surface),
+        ),
+        position,
+    )
+    .padding(0)
 }
 
 pub(super) fn tooltip_surface(theme: &iced::Theme) -> iced::widget::container::Style {

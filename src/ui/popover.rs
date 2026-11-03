@@ -15,7 +15,7 @@ pub(super) fn view<'a, Message: 'a>(
     Element::new(Popover {
         id,
         anchor,
-        content: Some(content),
+        content: Some(super::scrolling::repaint_popup(content)),
     })
 }
 pub(super) fn context_menu<'a, Message: Clone + 'a>(
@@ -25,7 +25,10 @@ pub(super) fn context_menu<'a, Message: Clone + 'a>(
 ) -> Element<'a, Message> {
     Element::new(Popover {
         id,
-        anchor: iced_aw::ContextMenu::new(anchor, content).into(),
+        anchor: iced_aw::ContextMenu::new(anchor, move || {
+            super::scrolling::repaint_popup(content())
+        })
+        .into(),
         content: None,
     })
 }

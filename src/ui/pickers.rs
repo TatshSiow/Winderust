@@ -48,7 +48,7 @@ fn popup<'a, M: Clone + 'a>(
     cancel: M,
     submit: Option<M>,
 ) -> Element<'a, M> {
-    iced::widget::opaque(
+    iced::widget::opaque(super::scrolling::repaint_popup(
         container(
             column![
                 widgets::heading(title, design::typography::BODY),
@@ -70,7 +70,7 @@ fn popup<'a, M: Clone + 'a>(
         .padding(design::space::MEDIUM as u16)
         .width(Fill)
         .style(widgets::tooltip_surface),
-    )
+    ))
 }
 
 pub(super) fn time(draft: &TimeDraft, start: bool) -> Element<'_, power_rules::Message> {
