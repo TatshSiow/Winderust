@@ -354,7 +354,6 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::CpuSetsSoft => ("cpu_sets_soft", 2),
         Page::ProcessorAffinityHard => ("processor_affinity_hard", 2),
         Page::TimerResolution => ("timer_resolution", 2),
-        Page::WinderustBehaviour => ("settings", 2),
         Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => ("", 0),
         _ => return String::new(),
     };

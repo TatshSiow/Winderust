@@ -3239,6 +3239,11 @@ mod tests {
 
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         assert!(feature_info_sidebar(None, Page::Home, SidePanelTab::Info).is_none());
+        for page in
+            std::iter::once(Page::SettingsHome).chain(navigation::children(Page::SettingsHome))
+        {
+            assert!(feature_info_sidebar(None, page, SidePanelTab::Info).is_none());
+        }
         for width in [216.0, 296.0] {
             for height in [500.0, 1000.0] {
                 let size = iced::Size::new(width, height);
@@ -3265,8 +3270,8 @@ mod tests {
                     }
                 }
                 let mut view =
-                    feature_info_sidebar(None, Page::WinderustBehaviour, SidePanelTab::Status)
-                        .expect("Winderust Behaviour shows information without a runtime panel");
+                    feature_info_sidebar(None, Page::TimerResolution, SidePanelTab::Status)
+                        .expect("feature information is available without a runtime panel");
                 let mut tree = Tree::new(&view);
                 let node = view.as_widget_mut().layout(
                     &mut tree,
