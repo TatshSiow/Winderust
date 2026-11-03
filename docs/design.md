@@ -136,7 +136,7 @@ hover/press; background shading supplies feedback.
 - Within Adaptive Engine, CPU Behaviour has no separate master switch;
   CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones own independent switches and retain their
   configuration while Adaptive Engine is off.
-- Adaptive Engine uses the right-rail Status / Presets / Info tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
+- Adaptive Engine uses the right-rail Info / Status / Presets tabs. Built-in presets are read-only; custom presets can be added, renamed, refreshed from the current tuning, and deleted. Presets exclude master enable switches, custom rules, exclusions, and the separate Background Efficiency feature. The preset editor spans the available modal width, and its control state remains independent from the live page rendered behind it.
 - Adaptive Engine and preset details share CPU Behaviour, Processor Power, and Priority Control tabs; the live page also exposes Custom Rules. Preset modal state is independent of the live page.
 - Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
 - Processor Power groups Base Processor Policy, Background Pressure Profile, and Focus and Launch Profile into one card per section with shared internal dividers. CPU Pressure Restraint and Limit Background Processors have independent switches; configuration remains editable while off.
@@ -197,7 +197,7 @@ hover/press; background shading supplies feedback.
 ### Watchdog
 
 - Keep Watchdog under Winderust Features, global across power sources, with the shared
-  app picker, rule table, and Status / Info tabs. CPU and Memory columns show warning
+  app picker, rule table, and Info / Status tabs. CPU and Memory columns show warning
   and critical thresholds. Pencil dialogs show app identity below the header divider,
   then CPU / Memory tabs. Drafts apply only on OK; Cancel, Close, and Escape discard.
 - Each tab starts with its Enable CPU Watchdog or Enable Memory Watchdog toggle and
@@ -271,7 +271,7 @@ hover/press; background shading supplies feedback.
 - Removing a rule, exclusion, or custom preset immediately updates the settings draft.
   Save commits and Discard restores; do not add a second removal confirmation.
 - Side panels follow tabs (when present), main title, subtitle, then content. Subtitles stay outside cards. Put primary panel actions in the bottom footer.
-- Feature info belongs in a full-height scrollable Info tab in the right sidebar. Use shared Status / Info tabs, with Presets between them on Adaptive Engine, CPU Sets (Soft), and Processor Affinity (Hard). Advanced Power Plan Tuning uses Presets / Info. Reset to the first tab on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
+- Feature info belongs in a full-height scrollable Info tab in the right sidebar. Order shared tabs left to right as Info / Status / Presets, omitting unavailable tabs. Adaptive Engine, CPU Sets (Soft), and Processor Affinity (Hard) use all three; Advanced Power Plan Tuning uses Info / Presets. Reset to Info on navigation. Pages with only feature information show it directly without a lone tab. Remove the header info action and inline page disclosure; retain essential setting consequences and live warnings beside their controls.
 - Use shared rule tables and icon edit/delete actions. Reuse existing modal layouts: name first, related settings together, actions at the bottom.
 - Keep breadcrumbs anchored at the top left. Power-source selectors stay beneath the breadcrumb; page-level reference stays in the right sidebar.
 - Quit confirmation is centered over a dimmed window. With unsaved changes show Cancel, Save and quit, and Quit without saving; otherwise show Cancel and Quit. Shutdown errors stay visible.

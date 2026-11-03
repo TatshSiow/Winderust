@@ -42,18 +42,18 @@ fn shell_widths(width: f32) -> (f32, f32, u16) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidePanelTab {
+    Info,
     Status,
     Presets,
-    Info,
 }
 impl SidePanelTab {
     fn for_page(feature_page: Page) -> &'static [Self] {
         match feature_page {
             Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard => {
-                &[Self::Status, Self::Presets, Self::Info]
+                &[Self::Info, Self::Status, Self::Presets]
             }
-            Page::AdvancedPowerPlanTuning => &[Self::Presets, Self::Info],
-            _ => &[Self::Status, Self::Info],
+            Page::AdvancedPowerPlanTuning => &[Self::Info, Self::Presets],
+            _ => &[Self::Info, Self::Status],
         }
     }
     fn label(self) -> String {
@@ -239,7 +239,7 @@ pub(crate) fn run(
                     navigation_search_selected: 0,
                     navigation: navigation::Flyout::default(),
                     side_panel_open: false,
-                    side_panel_tab: SidePanelTab::Status,
+                    side_panel_tab: SidePanelTab::Info,
                     preferences: settings_pages::Editor::default(),
                     home: home::Model::default(),
                     action_log: action_log::Editor::default(),
