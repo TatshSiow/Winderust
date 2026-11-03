@@ -22,7 +22,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Power Plan Control and Advanced Power Plan Tuning | `src/rules/decision_engine.rs`, `src/control/power_plan.rs`, `src/application/advanced_power_plan_tuning.rs`, `src/power/powercfg.rs`, and `src/platform/windows/power_plan.rs` | Power policy, automatic lifecycle/recovery, typed persistent tuning, domain façade, and the sole native power-scheme boundary |
 | Automation event wake handling | `src/backend/automation.rs`, `src/activity/input_hook.rs`, and `src/backend/windows_events.rs` | Runtime-owned low-level input hooks, foreground/window WinEvent hooks, power, suspend/resume, and session notifications |
 | Winderust self-power | `src/backend/self_power.rs` and `src/platform/windows/self_power.rs` | Strict baseline/composition lifecycle plus the sole raw current-process priority and Power Throttling adapter |
-| System tray lifecycle | `src/backend/tray.rs`, `src/ui/app.rs` | Notification-area icon, window-procedure subclassing, popup menu, restore/quit messages, and bounded install failure |
+| System tray lifecycle | `src/backend/tray.rs`, `src/ui/app.rs` | Independent hidden native host, notification-area icon, popup menu, restore/quit messages, and bounded install failure |
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, retained App Suspension and CPU Limiter freeze jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/adaptive_engine_process.rs`, `adaptive_engine_process/policy.rs`, `adaptive_engine_process/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
@@ -770,7 +770,7 @@ state.
 
 ## Watchdog notifications and termination
 
-- `src/backend/tray.rs::show_notification` uses [Shell_NotifyIconW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw) with `NIM_MODIFY` and `NIF_INFO` on the existing `(HWND, uID)` registration. [NOTIFYICONDATAW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-notifyicondataw) uses `NIIF_WARNING` for Warning and `NIIF_ERROR` for Critical; these are severity styles, not an alarm or a bypass of Windows notification preferences. Fixed UTF-16 fields stay terminated without splitting surrogate pairs. `NIN_BALLOONUSERCLICK` restores the existing window. An atomic published HWND is cleared on invalidation/drop; Shell failure is returned and logged. No undocumented Windows contract is used.
+- `src/backend/tray.rs::show_notification` uses [Shell_NotifyIconW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw) with `NIM_MODIFY` and `NIF_INFO` on the existing `(HWND, uID)` registration. [NOTIFYICONDATAW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-notifyicondataw) uses `NIIF_WARNING` for Warning and `NIIF_ERROR` for Critical; these are severity styles, not an alarm or a bypass of Windows notification preferences. Fixed UTF-16 fields stay terminated without splitting surrogate pairs. `NIN_BALLOONUSERCLICK` requests GUI restoration or recreation through the daemon. An atomic published tray-host HWND is cleared on invalidation/drop; Shell failure is returned and logged. No undocumented Windows contract is used.
 - `src/features/winderust_features/watchdog.rs` reuses process resource samples and creation timestamps, summing eligible instances by the rule's exact executable path. CPU uses per-instance deltas; memory sums working sets (shared pages may be counted more than once). `src/backend/automation/runner.rs::run_watchdog_update` routes explicitly configured automatic termination through `src/control/process_termination.rs` and its sole [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) adapter. PID/name/path/creation-time validation, critical/PPL and recovery-helper protection, cross-session settings, and Windows access checks remain authoritative immediately before mutation. Each app incident captures a batch of exact matching instances; controller preflight validates every target before any termination. Threshold observation does not authorize a raw process mutation.
 
 ## Watchdog app restart
@@ -783,7 +783,26 @@ Parent-token inheritance does not preserve the new token object's security descr
 
 ## Tray recreation
 
-`src/backend/tray.rs` registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification) and re-adds the notification icon without subclassing the window again. [ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex) allows only that payload-free shell notification through UIPI for elevated execution. `src/ui/app.rs` retries failed registration at five-second intervals and permits hide-on-close only while the icon is registered.
+`src/platform/windows/window_dpi.rs::ensure_visible` checks a recreated GUI window's physical
+screen rectangle with [GetWindowRect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowrect)
+and [MonitorFromRect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-monitorfromrect)
+on Winit's DPI-aware UI thread. A wholly off-screen window is moved to the nearest connected
+monitor's work-area origin from [GetMonitorInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmonitorinfow).
+[SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos)
+uses `SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE`. Visible placements and window dimensions
+remain unchanged. The check runs before restoring maximization so the normal restore rectangle
+is reachable too; failures are reported. No undocumented Windows contract is used.
+
+`src/backend/tray.rs` owns a hidden native top-level window and message thread independently of
+the Iced GUI. It registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification)
+and re-adds the notification icon after Explorer restarts. A top-level host is required because
+[message-only windows do not receive broadcasts](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows).
+[ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex)
+allows only that payload-free shell notification through UIPI for elevated execution.
+`src/ui/app.rs` retries failed registration at five-second intervals, recreates a failed host,
+and permits closing the GUI to the tray only while the icon is registered. Tray actions enqueue
+restore/quit intent without capturing a GUI HWND. The daemon destroys/recreates its Iced window;
+the native tray host remains alive in background mode. No undocumented Windows contract is used.
 
 ## Dashboard network rates
 
@@ -793,11 +812,14 @@ Processor-value application in `src/power/powercfg.rs` treats failure to query t
 
 ### Single-instance window restoration
 
+The restore listener requests restoration through the daemon without retaining a GUI HWND,
+so duplicate launches also work before the first window opens or after one is destroyed.
+
 `src/main.rs` uses `Local\Winderust.SingleInstance` and `Local\Winderust.RestoreWindow` for every build and executable location. The session-local mutex prevents debug, release, and separate portable copies from running automation together; duplicate launches signal the shared restore event. Elevation handoff and watchdog startup bypass remain unchanged. Reference: [Kernel object namespaces](https://learn.microsoft.com/en-us/windows/win32/termserv/kernel-object-namespaces).
 
 ## Tray UI wakeups
 
-src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle hidden windows need no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
+src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle windowless operation needs no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
 
 ## Accent color picker
 

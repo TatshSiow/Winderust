@@ -14,6 +14,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   catalog/list, dashboard history, update state, and shell navigation remain plain UI read models.
   Process queries, icons, monitors, Iced subscriptions, tray, dialogs, and focus remain at the
   `WinderustApp` composition boundary.
+- Closing to the tray destroys only the Iced window and renderer. The daemon, settings drafts,
+  Action Log, tray host, event subscriptions, and runtime owners remain alive. Tray restoration
+  and duplicate launches recreate the window; explicit Exit still completes restoration before
+  stopping the daemon. A failed tray registration keeps or reopens the GUI for recovery.
 
 ## Restoration and process safety
 

@@ -203,6 +203,10 @@ fn feature_info_sidebar<'a>(
 #[path = "smoke.rs"]
 pub(crate) mod smoke;
 
+#[cfg(feature = "render-smoke")]
+#[path = "window_lifecycle_smoke.rs"]
+pub(crate) mod window_lifecycle_smoke;
+
 pub(crate) fn run(
     settings: SettingsEditor,
     error: Option<String>,
@@ -217,7 +221,7 @@ pub(crate) fn run(
         restore_event,
         recovery_client,
     )));
-    iced::application(
+    iced::daemon(
         move || {
             let Some((settings, error, runtime, restore_event, recovery_client)) =
                 startup.borrow_mut().take()
@@ -228,90 +232,107 @@ pub(crate) fn run(
             let (wake, events) = ui_wake_channel();
             runtime.set_auto_exclusion_wake(wake.clone());
             tray::set_ui_wake(Some(wake));
-            (
-                WinderustApp {
-                    appearance: settings_pages::theme(&settings.general),
-                    #[cfg(feature = "render-smoke")]
-                    smoke: smoke::Run::requested(),
-                    navigation_search: String::new(),
-                    navigation_search_open: false,
-                    navigation_search_scope: SearchScope(None),
-                    navigation_search_selected: 0,
-                    navigation: navigation::Flyout::default(),
-                    side_panel_open: false,
-                    side_panel_tab: SidePanelTab::Info,
-                    preferences: settings_pages::Editor::default(),
-                    home: home::Model::default(),
-                    action_log: action_log::Editor::default(),
-                    sampler: std::sync::Arc::new(std::sync::Mutex::new(home::Sampler::default())),
-                    sampled_at: std::time::Instant::now(),
-                    sampling: false,
-                    catalog_sampled_at: std::time::Instant::now(),
-                    suspension: app_suspension::Editor::default(),
-                    trim: memory_trim::Editor::default(),
-                    watchdog: watchdog::Editor::default(),
-                    timer: timer_resolution::Editor::default(),
-                    priority_separation: win32_priority_separation::Editor::default(),
-                    power_tuning: advanced_power_plan_tuning::Editor::default(),
-                    effective_power_mode: crate::power::EffectivePowerModeMonitor::new().ok(),
-                    time_rules: power_rules::Editor::default(),
-                    cpu_rules: power_rules::Editor::default(),
-                    priority: priority_control::Editor::default(),
-                    efficiency: background_efficiency::Editor::default(),
-                    soft_allocation: cpu_allocation::Editor::default(),
-                    hard_allocation: cpu_allocation::Editor::default(),
-                    adaptive: adaptive_engine::Editor::default(),
-                    candidates: Vec::new(),
-                    unavailable_candidates: Vec::new(),
-                    catalog_loading: false,
-                    settings,
-                    runtime: std::sync::Arc::new(runtime),
-                    status: RuntimeStatusSnapshot::default(),
-                    error_message: error
-                        .or_else(crate::crash_recovery::startup_error)
-                        .unwrap_or_default(),
-                    page: Page::Home,
-                    navigation_history: navigation::History::default(),
-                    breadcrumb: vec![Page::Home],
-                    restore_event,
-                    window: None,
-                    maximized: false,
-                    auto_exclusion_generation: 0,
-                    auto_exclusion_retry: false,
-                    closing: false,
-                    hwnd: None,
-                    tray: None,
-                    tray_attempt: None,
-                    recovery_client,
-                    exiting: false,
-                    hidden: false,
-                    processes: process_list::ProcessList::default(),
-                    cpu_limiter: cpu_limiter::CpuLimiter::default(),
-                    power_source: PowerSourceProfile::PluggedIn,
-                    power_plans: Vec::new(),
-                    power_plans_loading: false,
-                    power_plans_loaded: false,
-                    foreground_plans: process_power_plans::Editor::default(),
-                    running_app_plans: process_power_plans::Editor::default(),
-                    activity_inputs: by_activity::Inputs::default(),
+            if let Some(event) = restore_event {
+                event.listen();
+            }
+            let mut app = WinderustApp {
+                appearance: settings_pages::theme(&settings.general),
+                #[cfg(feature = "render-smoke")]
+                smoke: smoke::Run::requested(),
+                #[cfg(feature = "render-smoke")]
+                lifecycle_smoke: window_lifecycle_smoke::Run::requested(),
+                navigation_search: String::new(),
+                navigation_search_open: false,
+                navigation_search_scope: SearchScope(None),
+                navigation_search_selected: 0,
+                navigation: navigation::Flyout::default(),
+                side_panel_open: false,
+                side_panel_tab: SidePanelTab::Info,
+                preferences: settings_pages::Editor::default(),
+                home: home::Model::default(),
+                action_log: action_log::Editor::default(),
+                sampler: std::sync::Arc::new(std::sync::Mutex::new(home::Sampler::default())),
+                sampled_at: std::time::Instant::now(),
+                sampling: false,
+                catalog_sampled_at: std::time::Instant::now(),
+                suspension: app_suspension::Editor::default(),
+                trim: memory_trim::Editor::default(),
+                watchdog: watchdog::Editor::default(),
+                timer: timer_resolution::Editor::default(),
+                priority_separation: win32_priority_separation::Editor::default(),
+                power_tuning: advanced_power_plan_tuning::Editor::default(),
+                effective_power_mode: crate::power::EffectivePowerModeMonitor::new().ok(),
+                time_rules: power_rules::Editor::default(),
+                cpu_rules: power_rules::Editor::default(),
+                priority: priority_control::Editor::default(),
+                efficiency: background_efficiency::Editor::default(),
+                soft_allocation: cpu_allocation::Editor::default(),
+                hard_allocation: cpu_allocation::Editor::default(),
+                adaptive: adaptive_engine::Editor::default(),
+                candidates: Vec::new(),
+                unavailable_candidates: Vec::new(),
+                catalog_loading: false,
+                settings,
+                runtime: std::sync::Arc::new(runtime),
+                status: RuntimeStatusSnapshot::default(),
+                error_message: error
+                    .or_else(crate::crash_recovery::startup_error)
+                    .unwrap_or_default(),
+                page: Page::Home,
+                navigation_history: navigation::History::default(),
+                breadcrumb: vec![Page::Home],
+                window: None,
+                window_settings: iced::window::Settings {
+                    size: iced::Size::new(1120.0, 760.0),
+                    min_size: Some(iced::Size::new(900.0, 620.0)),
+                    decorations: false,
+                    exit_on_close_request: false,
+                    ..Default::default()
                 },
-                Task::batch([
-                    iced::window::latest().map(Message::Window),
-                    Task::run(events, |_| Message::Wake),
-                ]),
+                maximized: false,
+                auto_exclusion_generation: 0,
+                auto_exclusion_retry: false,
+                closing: false,
+                hwnd: None,
+                tray: None,
+                tray_attempt: None,
+                recovery_client,
+                exiting: false,
+                hidden: false,
+                processes: process_list::ProcessList::default(),
+                cpu_limiter: cpu_limiter::CpuLimiter::default(),
+                power_source: PowerSourceProfile::PluggedIn,
+                power_plans: Vec::new(),
+                power_plans_loading: false,
+                power_plans_loaded: false,
+                foreground_plans: process_power_plans::Editor::default(),
+                running_app_plans: process_power_plans::Editor::default(),
+                activity_inputs: by_activity::Inputs::default(),
+            };
+            app.sync_tray();
+            let window = if app.settings.persisted().general.start_minimized
+                && app.tray.as_ref().is_some_and(|icon| icon.is_registered())
+            {
+                app.hidden = true;
+                tray::set_hidden_to_tray(true);
+                Task::none()
+            } else {
+                app.show_window()
+            };
+            let update = if app.settings.global().general.check_for_updates {
+                app.update(Message::Preferences(settings_pages::Message::CheckStartup))
+            } else {
+                Task::none()
+            };
+            (
+                app,
+                Task::batch([window, update, Task::run(events, |_| Message::Wake)]),
             )
         },
         WinderustApp::update,
         WinderustApp::view,
     )
     .title("Winderust")
-    .window(iced::window::Settings {
-        size: iced::Size::new(1120.0, 760.0),
-        min_size: Some(iced::Size::new(900.0, 620.0)),
-        decorations: false,
-        exit_on_close_request: false,
-        ..Default::default()
-    })
     .settings(iced::Settings {
         default_font: iced::Font {
             weight: iced::font::Weight::Normal,
@@ -320,11 +341,20 @@ pub(crate) fn run(
         default_text_size: design::typography::BODY.into(),
         ..Default::default()
     })
-    .theme(|app: &WinderustApp| app.appearance.clone())
+    .theme(|app: &WinderustApp, _| app.appearance.clone())
     .subscription(|app: &WinderustApp| {
         Subscription::batch([
             ui_tick_interval(
-                app.hidden,
+                {
+                    #[cfg(feature = "render-smoke")]
+                    {
+                        app.hidden && app.lifecycle_smoke.is_none()
+                    }
+                    #[cfg(not(feature = "render-smoke"))]
+                    {
+                        app.hidden
+                    }
+                },
                 app.auto_exclusion_retry || app.tray_retry_pending(),
             )
             .map(|interval| iced::time::every(interval).map(|_| Message::Tick))
@@ -338,7 +368,7 @@ pub(crate) fn run(
                         .map(|(_, now)| Message::Navigation(navigation::Event::Tick(now)))
                 })
                 .unwrap_or_else(Subscription::none),
-            iced::window::close_requests().map(|_| Message::WindowClose),
+            iced::window::close_requests().map(Message::WindowCloseRequested),
             iced::event::listen_raw(|event, _, _| match event {
                 iced::Event::Window(iced::window::Event::Unfocused)
                 | iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -347,9 +377,12 @@ pub(crate) fn run(
                 }) => Some(Message::DismissPickers),
                 _ => None,
             }),
-            iced::event::listen_with(|event, _, _| match event {
-                iced::Event::Window(iced::window::Event::Resized(_)) => {
-                    Some(Message::WindowResized)
+            iced::event::listen_with(|event, _, window| match event {
+                iced::Event::Window(iced::window::Event::Resized(size)) => {
+                    Some(Message::WindowResized(window, size))
+                }
+                iced::Event::Window(iced::window::Event::Moved(position)) => {
+                    Some(Message::WindowMoved(window, position))
                 }
                 _ => None,
             }),
@@ -505,6 +538,8 @@ fn navigation_search_overlay<'a>(
 struct WinderustApp {
     #[cfg(feature = "render-smoke")]
     smoke: Option<smoke::Run>,
+    #[cfg(feature = "render-smoke")]
+    lifecycle_smoke: Option<window_lifecycle_smoke::Run>,
     appearance: Theme,
     navigation_search: String,
     navigation_search_open: bool,
@@ -544,8 +579,8 @@ struct WinderustApp {
     page: Page,
     navigation_history: navigation::History,
     breadcrumb: Vec<Page>,
-    restore_event: Option<SingleInstanceRestoreEvent>,
     window: Option<iced::window::Id>,
+    window_settings: iced::window::Settings,
     maximized: bool,
     auto_exclusion_generation: u64,
     auto_exclusion_retry: bool,
@@ -613,11 +648,12 @@ enum Message {
     ExecutableChosen(Page, PowerSourceProfile, Option<PathBuf>),
     Page(Page),
     Tick,
-    Window(Option<iced::window::Id>),
+    Window(iced::window::Id),
     WindowAction(window_frame::Event),
-    WindowResized,
-    WindowMaximized(bool),
-    NativeWindow(Option<usize>),
+    WindowResized(iced::window::Id, iced::Size),
+    WindowMoved(iced::window::Id, iced::Point),
+    NativeWindow(iced::window::Id, Option<usize>),
+    WindowCloseRequested(iced::window::Id),
     WindowClose,
     Close,
     Save,
@@ -647,8 +683,8 @@ impl Message {
                         | window_frame::Event::ToggleMaximize
                         | window_frame::Event::Resize(_)
                 )
-                | Self::WindowResized
-                | Self::WindowMaximized(_)
+                | Self::WindowResized(..)
+                | Self::WindowMoved(..)
                 | Self::Sample(_)
                 | Self::Catalog(_)
                 | Self::PowerPlans(_)
@@ -1465,15 +1501,25 @@ impl WinderustApp {
                     };
                 }
             }
-            Message::WindowResized => {
-                if let Some(window) = self.window {
-                    return iced::window::is_maximized(window).map(Message::WindowMaximized);
+            Message::WindowResized(window, size) => {
+                if self.window == Some(window) {
+                    if let Some(hwnd) = self.hwnd {
+                        self.maximized = crate::platform::windows::window_dpi::is_maximized(
+                            hwnd as windows_sys::Win32::Foundation::HWND,
+                        );
+                    }
+                    if self.window_is_restored() && size.width > 0.0 && size.height > 0.0 {
+                        self.window_settings.size = size;
+                    }
                 }
             }
-            Message::WindowMaximized(value) => self.maximized = value,
+            Message::WindowMoved(window, position) => {
+                if self.window == Some(window) && self.window_is_restored() {
+                    self.window_settings.position = iced::window::Position::Specific(position);
+                }
+            }
             Message::Window(window) => {
-                self.window = window;
-                if let Some(window) = window {
+                if self.window == Some(window) {
                     return iced::window::run(window, |window| {
                         use raw_window_handle::RawWindowHandle;
                         match window.window_handle().ok()?.as_raw() {
@@ -1481,40 +1527,40 @@ impl WinderustApp {
                             _ => None,
                         }
                     })
-                    .map(Message::NativeWindow);
+                    .map(move |hwnd| Message::NativeWindow(window, hwnd));
                 }
             }
-            Message::NativeWindow(hwnd) => {
+            Message::NativeWindow(window, hwnd) => {
+                if self.window != Some(window) {
+                    return Task::none();
+                }
                 self.hwnd = hwnd;
                 if let Some(hwnd) = hwnd {
+                    let maximize = self.maximized;
                     if let Err(error) = crate::platform::windows::window_dpi::install(
                         hwnd as windows_sys::Win32::Foundation::HWND,
                     ) {
                         crate::backend::diagnostics::error(&error);
                     }
+                    if let Err(error) = crate::platform::windows::window_dpi::ensure_visible(
+                        hwnd as windows_sys::Win32::Foundation::HWND,
+                    ) {
+                        crate::backend::diagnostics::error(&error);
+                        self.error_message = error;
+                    }
+                    self.maximized = crate::platform::windows::window_dpi::is_maximized(
+                        hwnd as windows_sys::Win32::Foundation::HWND,
+                    );
                     if let Err(error) =
                         tray::set_window_icon(hwnd as windows_sys::Win32::Foundation::HWND)
                     {
                         crate::backend::diagnostics::error(&error);
                     }
-                }
-                if let (Some(event), Some(hwnd)) = (self.restore_event.take(), hwnd) {
-                    event.listen(hwnd as windows_sys::Win32::Foundation::HWND);
-                }
-                self.sync_tray();
-                let update = if self.settings.global().general.check_for_updates {
-                    self.update(Message::Preferences(settings_pages::Message::CheckStartup))
-                } else {
-                    Task::none()
-                };
-                if self.settings.persisted().general.start_minimized {
-                    if let (Some(hwnd), Some(_)) = (self.hwnd, &self.tray) {
-                        tray::hide_window(hwnd as windows_sys::Win32::Foundation::HWND);
-                    } else if let Some(window) = self.window {
-                        return Task::batch([iced::window::minimize(window, true), update]);
+                    tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
+                    if maximize {
+                        return iced::window::maximize(window, true);
                     }
                 }
-                return update;
             }
             Message::NavigateHistory(forward) => {
                 if !self.closing && self.error_message.is_empty() && !self.pending_editor() {
@@ -1600,6 +1646,10 @@ impl WinderustApp {
             }
             Message::Tick => {
                 #[cfg(feature = "render-smoke")]
+                if let Some(task) = window_lifecycle_smoke::advance(self) {
+                    return task;
+                }
+                #[cfg(feature = "render-smoke")]
                 if let Some(task) = smoke::advance(self) {
                     return task;
                 }
@@ -1650,20 +1700,9 @@ impl WinderustApp {
                     return self.update(Message::Close);
                 }
                 let restore = tray::take_restore_requested();
-                let hidden = tray::is_hidden_to_tray();
                 let mut work = Vec::new();
-                if hidden != self.hidden || restore {
-                    self.hidden = hidden;
-                    if let Some(window) = self.window {
-                        work.push(iced::window::set_mode(
-                            window,
-                            if hidden {
-                                iced::window::Mode::Hidden
-                            } else {
-                                iced::window::Mode::Windowed
-                            },
-                        ));
-                    }
+                if restore || (self.hidden && self.tray_retry_pending()) {
+                    work.push(self.show_window());
                 }
                 if let Some(status) = self.runtime.status_snapshot_since(self.status.generation) {
                     if status.appearance_change_generation
@@ -1737,17 +1776,19 @@ impl WinderustApp {
                 }
                 return Task::batch(work);
             }
+            Message::WindowCloseRequested(window) => {
+                if self.window == Some(window) {
+                    return self.update(Message::WindowClose);
+                }
+            }
             Message::WindowClose => {
                 if self.settings.global().general.hide_to_tray
                     && self.tray.as_ref().is_some_and(|icon| icon.is_registered())
+                    && !self.hwnd.is_some_and(|hwnd| {
+                        tray::close_needs_prompt(hwnd as windows_sys::Win32::Foundation::HWND)
+                    })
                 {
-                    if let Some(hwnd) = self.hwnd {
-                        tray::hide_window(hwnd as windows_sys::Win32::Foundation::HWND);
-                    }
-                    self.hidden = true;
-                    if let Some(window) = self.window {
-                        return iced::window::set_mode(window, iced::window::Mode::Hidden);
-                    }
+                    return self.close_window();
                 } else {
                     return self.update(Message::Close);
                 }
@@ -1890,11 +1931,46 @@ impl WinderustApp {
     }
     fn show_window(&mut self) -> Task<Message> {
         self.hidden = false;
+        tray::set_hidden_to_tray(false);
         if let Some(hwnd) = self.hwnd {
             tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
         }
+        if let Some(window) = self.window {
+            return iced::window::set_mode(window, iced::window::Mode::Windowed);
+        }
+        let (window, open) = iced::window::open(self.window_settings.clone());
+        // Record pending creation too, so repeated restore requests cannot open two windows.
+        self.window = Some(window);
+        open.map(Message::Window)
+    }
+
+    fn window_is_restored(&self) -> bool {
+        self.hwnd.is_some_and(|hwnd| {
+            crate::platform::windows::window_dpi::is_restored(
+                hwnd as windows_sys::Win32::Foundation::HWND,
+            )
+        })
+    }
+
+    fn close_window(&mut self) -> Task<Message> {
+        if let Some(hwnd) = self.hwnd {
+            self.maximized = crate::platform::windows::window_dpi::is_maximized(
+                hwnd as windows_sys::Win32::Foundation::HWND,
+            );
+        }
+        self.hidden = true;
+        self.hwnd = None;
+        self.navigation.dismiss();
+        self.navigation_search_open = false;
+        self.preferences.dismiss_picker();
+        self.preferences.hotkey_capture = None;
+        self.time_rules.dismiss_picker();
+        tray::set_hidden_to_tray(true);
+        // Closing the last Iced window releases its renderer/compositor, while the daemon
+        // retains settings drafts, background automation, tray actions, and wake subscriptions.
         self.window
-            .map(|window| iced::window::set_mode(window, iced::window::Mode::Windowed))
+            .take()
+            .map(iced::window::close)
             .unwrap_or_else(Task::none)
     }
     fn pending_editor(&self) -> bool {
@@ -1955,7 +2031,8 @@ impl WinderustApp {
 
     fn tray_retry_pending(&self) -> bool {
         (self.settings.global().general.hide_to_tray
-            || self.settings.persisted().general.start_minimized)
+            || self.settings.persisted().general.start_minimized
+            || watchdog_notifications_required(self.settings.persisted()))
             && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
     }
 
@@ -2010,7 +2087,6 @@ impl WinderustApp {
                 || watchdog_notifications_required(self.settings.persisted()),
         );
         if !intent.0 && !intent.1 {
-            tray::set_hide_on_close(false);
             self.tray = None;
             self.tray_attempt = None;
         } else {
@@ -2023,26 +2099,20 @@ impl WinderustApp {
             let missing = self.tray.as_ref().is_none_or(|icon| !icon.is_registered());
             let now = std::time::Instant::now();
             if missing && tray_retry_due(self.tray_attempt, intent, now) {
-                if let Some(hwnd) = self.hwnd {
-                    let first_attempt = self.tray_attempt.is_none();
-                    self.tray_attempt = Some((intent, now));
-                    let result = if let Some(icon) = &mut self.tray {
-                        icon.register()
-                    } else {
-                        tray::TrayIcon::install(hwnd as windows_sys::Win32::Foundation::HWND)
-                            .map(|icon| self.tray = Some(icon))
-                    };
-                    if let Err(error) = result {
-                        if first_attempt {
-                            self.error_message = error;
-                        }
+                let first_attempt = self.tray_attempt.is_none();
+                self.tray_attempt = Some((intent, now));
+                let result = if let Some(icon) = &mut self.tray {
+                    icon.register()
+                } else {
+                    tray::TrayIcon::install().map(|icon| self.tray = Some(icon))
+                };
+                if let Err(error) = result {
+                    if first_attempt {
+                        self.error_message = error;
                     }
                 }
             }
         }
-        tray::set_hide_on_close(
-            intent.0 && self.tray.as_ref().is_some_and(|icon| icon.is_registered()),
-        );
     }
 
     fn shutdown(&mut self) -> Task<Message> {
@@ -2068,13 +2138,12 @@ impl WinderustApp {
     }
 
     fn finish_exit(&mut self) -> Task<Message> {
-        tray::set_hide_on_close(false);
         self.tray = None;
         tray::set_ui_wake(None);
         iced::exit()
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
         let picker_open = !self.navigation_search_open
             && !self.closing
             && self.error_message.is_empty()

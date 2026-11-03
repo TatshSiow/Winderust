@@ -1,6 +1,6 @@
 # Architecture
 
-Winderust is a mechanism-centered modular monolith: one Iced application process, one optional
+Winderust is a mechanism-centered modular monolith: one Iced daemon process, one optional
 automation worker, and one typed owner for each Windows mechanism. UI and feature code express
 intent; only controllers and their narrow Windows adapters own live mutations.
 
@@ -47,6 +47,15 @@ Windows events / UI intent / persisted settings
   conversion.
 - `RecoveryClient` and the watchdog independently replay externally persistent temporary state
   after an abnormal exit.
+
+The Iced daemon outlives its window. Closing to the tray destroys the GUI window and releases
+its renderer and compositor while retaining navigation, settings drafts, and background owners.
+Reopening creates a window with the previous geometry, relocating a wholly off-screen window
+to a connected monitor before restoring maximization; widget-local focus and scroll caches
+are recreated. Start minimized can run without creating a GUI window. The tray owns a separate
+hidden native top-level window and message thread, so notifications, menu actions, Explorer
+restart recovery, and duplicate-launch restore requests work without a GUI HWND. Only explicit
+application exit shuts down automation and performs managed-state restoration.
 
 Process enumeration and presentation remain a read-side query. A query result can suggest a
 target, but every mutation reopens and revalidates the exact process or thread identity.

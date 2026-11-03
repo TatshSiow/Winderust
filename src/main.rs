@@ -41,6 +41,11 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() {
     #[cfg(feature = "render-smoke")]
+    if std::env::args().any(|argument| argument == "--window-lifecycle-smoke") {
+        ui::app::window_lifecycle_smoke::run_check();
+        return;
+    }
+    #[cfg(feature = "render-smoke")]
     if std::env::args().any(|argument| argument == "--render-smoke") {
         ui::app::smoke::render_all_pages();
         return;
@@ -161,13 +166,12 @@ impl SingleInstanceRestoreEvent {
         unsafe { WaitForSingleObject(self.handle.raw(), wait_milliseconds) == WAIT_OBJECT_0 }
     }
 
-    fn listen(self, hwnd: windows_sys::Win32::Foundation::HWND) {
-        let hwnd = hwnd as usize;
+    fn listen(self) {
         if let Err(error) = std::thread::Builder::new()
             .name("single-instance-restore".to_owned())
             .spawn(move || {
                 while self.wait(windows_sys::Win32::System::Threading::INFINITE) {
-                    tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
+                    tray::request_restore();
                 }
             })
         {

@@ -69,6 +69,23 @@ they do not establish physical input, IME, DPI-transition, tray, accessibility, 
 pixel-identical visual behavior. Exercise those interactions on Windows when relevant.
 Keep production memory and performance claims tied to measured release builds.
 
+The opt-in lifecycle probe uses disabled automation and in-memory settings, preserves an
+unsaved draft across three close/reopen cycles, and checks native window destruction and Exit
+cancellation. It also recreates a window with an off-screen remembered position while maximized,
+then restores it to verify that its normal placement is reachable. Run the same release build
+with both window lifecycles to compare resident memory
+and private commit; CSV samples are written under `target/window-lifecycle-smoke/`.
+
+```powershell
+cargo build --locked --release --features render-smoke
+.\target\release\winderust.exe --window-lifecycle-smoke --retain-window
+.\target\release\winderust.exe --window-lifecycle-smoke
+.\target\release\winderust.exe --window-lifecycle-smoke --start-minimized
+```
+
+The retained-window option models the previous hidden-window behavior inside the probe only.
+These controlled samples do not establish memory use with every production feature enabled.
+
 All scrolling uses `scrolling::scrollable`, including dialogs and dropdowns. It keeps
 native Iced input while clipping repaint sections; virtual lists use
 `scrolling::buffered` and tables use `scrolling::table_surface`. Keep native scrollable
