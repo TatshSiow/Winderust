@@ -401,7 +401,7 @@ settings:
   search_shortcut: "搜尋快捷鍵"
   search_alternate_shortcut: "備用搜尋快捷鍵"
   shortcut_record_prompt: "請按下快捷鍵…"
-  shortcut_help: "點選快捷鍵後，按下字母、數字、符號或 F1–F24，可搭配 Ctrl、Alt、Shift。Esc 取消。快捷鍵僅在 Winderust 視窗內生效，且不會攔截文字欄位的輸入。"
+  shortcut_help: "點選快捷鍵後，按下單一按鍵或組合鍵，例如 Ctrl+X、Alt+X 或 Shift+X。按 Esc 取消變更。"
   clear_shortcut: "清除"
   reset_shortcuts: "還原預設快捷鍵"
   animation_mode: "動畫"

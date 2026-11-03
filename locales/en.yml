@@ -399,7 +399,7 @@ settings:
   search_shortcut: "Search shortcut"
   search_alternate_shortcut: "Alternate search shortcut"
   shortcut_record_prompt: "Press a shortcut…"
-  shortcut_help: "Click a shortcut to record a letter, number, symbol, or F1–F24 with Ctrl, Alt, or Shift. Esc cancels. Shortcuts work inside Winderust and respect active text inputs."
+  shortcut_help: "Click a shortcut to record a key or key combination, such as Ctrl+X, Alt+X, or Shift+X. Press Esc to cancel the change."
   clear_shortcut: "Clear"
   reset_shortcuts: "Restore default shortcuts"
   animation_mode: "Animation"
