@@ -799,9 +799,12 @@ Processor-value application in `src/power/powercfg.rs` treats failure to query t
 
 src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle hidden windows need no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
 
-## Native accent color dialog
+## Accent color picker
 
-- `src/backend/file_dialog.rs::choose_color`, invoked through the shared worker task in `src/ui/app.rs` to keep the modal loop outside Iced's event loop, uses [ChooseColorW](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-choosecolorw) with a live owner, RGB initialization and expanded controls. App RGB values are converted to/from COLORREF. Cancel preserves the accent; [CommDlgExtendedError](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-commdlgextendederror) distinguishes cancellation from failure. The dialog's 16 custom slots are seeded from saved accent colors; the existing Save button owns persistent palette additions.
+- Accent color selection uses the shared in-app editor in `src/ui/pickers.rs`,
+  opened by `src/ui/settings_pages.rs`; it has no native common-dialog boundary. Cancel,
+  Escape, focus loss, and navigation discard the picker selection. Submit edits
+  the settings draft; the existing Save button owns saved palette additions.
 
 ## Adaptive plan CPU idle states
 

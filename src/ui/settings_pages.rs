@@ -13,6 +13,8 @@ pub(super) struct Editor {
     color: Option<String>,
     failure_threshold: Option<String>,
     accent_expanded: bool,
+    picker: Option<super::pickers::ColorDraft>,
+    editing_color: Option<u32>,
     pub(super) checking: bool,
     notify_on_update: bool,
     pub(super) latest: Option<String>,
@@ -65,7 +67,12 @@ pub(super) enum Message {
     AccentSource(AccentColorSource),
     AccentHex(String),
     ToggleAccent,
-    OpenColorPicker,
+    OpenColorPicker(u32),
+    PickerHue(u16),
+    PickerSv(f32, f32),
+    PickerHex(String),
+    CancelColorPicker,
+    ColorPicked(Color),
     EditColor(u32),
     ReplaceColor(u32, u32),
     Accent(u32),
@@ -95,6 +102,7 @@ impl Editor {
     }
 
     pub(super) fn reset_drafts(&mut self) {
+        self.dismiss_picker();
         self.hotkey_capture = None;
         self.color = None;
         self.failure_threshold = None;
@@ -116,6 +124,30 @@ impl Editor {
 
     pub(super) fn update_ui(&mut self, current_channel: UpdateChannel, message: Message) {
         match message {
+            Message::OpenColorPicker(color) => {
+                self.editing_color = None;
+                self.picker = Some(super::pickers::ColorDraft::new(color));
+            }
+            Message::EditColor(color) => {
+                self.editing_color = Some(color);
+                self.picker = Some(super::pickers::ColorDraft::new(color));
+            }
+            Message::PickerHue(hue) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.set_hue(hue);
+                }
+            }
+            Message::PickerSv(s, v) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.set_sv(s, v);
+                }
+            }
+            Message::PickerHex(hex) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.set_hex(hex);
+                }
+            }
+            Message::CancelColorPicker => self.dismiss_picker(),
             Message::RecordSearchHotkey(slot) => self.hotkey_capture = Some(slot),
             Message::CancelSearchHotkey => self.hotkey_capture = None,
             Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
@@ -142,6 +174,20 @@ impl Editor {
 
     pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
         match m {
+            Message::ColorPicked(color) => {
+                if self.picker.is_none() {
+                    return;
+                }
+                let [r, g, b, _] = color.into_rgba8();
+                let color = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+                let message = self
+                    .editing_color
+                    .map_or(Message::Accent(color), |original| {
+                        Message::ReplaceColor(original, color)
+                    });
+                self.dismiss_picker();
+                self.update(s, message);
+            }
             Message::SetSearchHotkey(slot, shortcut) => {
                 let binding = slot.binding_mut(&mut s.general.search_hotkeys);
                 if let Some(shortcut) = shortcut {
@@ -155,9 +201,14 @@ impl Editor {
                 s.general.search_hotkeys = SearchHotkeys::default();
                 self.hotkey_capture = None;
             }
-            Message::RecordSearchHotkey(_) | Message::CancelSearchHotkey => {
-                self.update_ui(s.general.update_channel, m)
-            }
+            Message::RecordSearchHotkey(_)
+            | Message::CancelSearchHotkey
+            | Message::OpenColorPicker(_)
+            | Message::PickerHue(_)
+            | Message::PickerSv(..)
+            | Message::PickerHex(_)
+            | Message::EditColor(_)
+            | Message::CancelColorPicker => self.update_ui(s.general.update_channel, m),
             Message::Flag(flag, value) => match flag {
                 Flag::Enabled => s.general.enabled = value,
                 Flag::Startup => s.general.startup_with_windows = value,
@@ -256,11 +307,7 @@ impl Editor {
             Message::Checked(..) | Message::DismissUpdate | Message::ToggleAccent => {
                 self.update_ui(s.general.update_channel, m);
             }
-            Message::Open(_)
-            | Message::Export
-            | Message::Import
-            | Message::OpenColorPicker
-            | Message::EditColor(_) => {}
+            Message::Open(_) | Message::Export | Message::Import => {}
         }
     }
     fn search_hotkey_row<'a>(
@@ -394,22 +441,28 @@ impl Editor {
             ]
             .spacing(super::widgets::CARD_GAP),
             Page::LanguageAndAppearance => {
-                let colors = column(ACCENT_PALETTE.chunks(8).map(|chunk| {
-                    row(chunk.iter().map(|color| {
-                        color_button(
-                            *color,
-                            s.general.accent.source == AccentColorSource::Custom
-                                && s.general.accent.custom_color == *color,
-                        )
-                        .into()
-                    }))
-                    .spacing(design::space::CONTROL)
-                    .into()
-                }))
-                .spacing(design::space::CONTROL);
-                let saved = column(s.general.accent.custom_colors.chunks(8).enumerate().map(
-                    |(chunk_index, chunk)| {
-                        row(chunk.iter().enumerate().map(|(i, color)| {
+                let colors = iced_aw::Wrap::with_elements(
+                    ACCENT_PALETTE
+                        .iter()
+                        .map(|color| {
+                            color_button(
+                                *color,
+                                s.general.accent.source == AccentColorSource::Custom
+                                    && s.general.accent.custom_color == *color,
+                            )
+                            .into()
+                        })
+                        .collect(),
+                )
+                .spacing(design::space::CONTROL)
+                .line_spacing(design::space::CONTROL);
+                let saved = iced_aw::Wrap::with_elements(
+                    s.general
+                        .accent
+                        .custom_colors
+                        .iter()
+                        .enumerate()
+                        .map(|(i, color)| {
                             super::popover::context_menu(
                                 u64::from(*color),
                                 color_button(
@@ -418,42 +471,33 @@ impl Editor {
                                         && s.general.accent.custom_color == *color,
                                 )
                                 .into(),
-                                iced::widget::container(
-                                    column![
-                                        action_button(t!("common.edit").to_string())
-                                            .width(Fill)
-                                            .style(widgets::quiet)
-                                            .on_press(Message::EditColor(*color)),
-                                        action_button(t!("common.remove").to_string())
-                                            .width(Fill)
-                                            .style(widgets::danger_button)
-                                            .on_press(Message::RemoveColor(chunk_index * 8 + i)),
-                                    ]
-                                    .spacing(design::space::TINY),
-                                )
-                                .width(140)
-                                .padding(design::space::SMALL as u16)
-                                .style(|theme: &Theme| {
-                                    let mut style = widgets::surface(theme);
-                                    let palette = theme.extended_palette();
-                                    style.border.color = palette.background.strong.color;
-                                    style.border.width = 1.0;
-                                    if palette.is_dark {
-                                        style.background =
-                                            Some(palette.background.neutral.color.into());
-                                    }
-                                    style
-                                })
-                                .into(),
+                                move || {
+                                    iced::widget::container(
+                                        column![
+                                            action_button(t!("common.edit").to_string())
+                                                .width(Fill)
+                                                .style(widgets::quiet)
+                                                .on_press(Message::EditColor(*color)),
+                                            action_button(t!("common.remove").to_string())
+                                                .width(Fill)
+                                                .style(widgets::danger_button)
+                                                .on_press(Message::RemoveColor(i)),
+                                        ]
+                                        .spacing(design::space::TINY),
+                                    )
+                                    .width(140)
+                                    .padding(design::space::SMALL as u16)
+                                    .style(widgets::tooltip_surface)
+                                    .into()
+                                },
                             )
-                        }))
-                        .spacing(design::space::CONTROL)
-                        .into()
-                    },
-                ))
-                .spacing(design::space::CONTROL);
+                        })
+                        .collect(),
+                )
+                .spacing(design::space::CONTROL)
+                .line_spacing(design::space::CONTROL);
                 let picker = color_button(s.general.accent.custom_color, false)
-                    .on_press(Message::OpenColorPicker);
+                    .on_press(Message::OpenColorPicker(s.general.accent.custom_color));
                 let custom = column![
                     text(t!("accent.color_palette").to_string()),
                     colors,
@@ -719,7 +763,30 @@ impl Editor {
             }
             _ => column![],
         };
-        scrollable(body).height(Fill).into()
+        let body = scrollable(body).height(Fill).into();
+        if page != Page::LanguageAndAppearance {
+            return body;
+        }
+        let popup = self
+            .picker
+            .as_ref()
+            .map(super::pickers::color)
+            .unwrap_or_else(|| iced::widget::Space::new().into());
+        iced_aw::DropDown::new(body, popup, self.picker.is_some())
+            .width(336)
+            .alignment(iced_aw::drop_down::Alignment::End)
+            .offset(0.0)
+            .on_dismiss(Message::CancelColorPicker)
+            .into()
+    }
+
+    pub(super) fn picker_open(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    pub(super) fn dismiss_picker(&mut self) {
+        self.picker = None;
+        self.editing_color = None;
     }
 }
 fn color_button(color: u32, selected: bool) -> super::animated_controls::Button<'static, Message> {
@@ -1002,7 +1069,7 @@ const ACCENT_PALETTE: [u32; 48] = [
     0xd96f6a, 0xb85b58, 0x8d4645, 0x633839, 0x8aa49a, 0x6f877d, 0x53665f, 0x3d4d47, 0xc1b897,
     0xa8a07d, 0x837c61, 0x625d48,
 ];
-fn parse_color(value: &str) -> Option<u32> {
+pub(super) fn parse_color(value: &str) -> Option<u32> {
     let value = value.trim().strip_prefix('#').unwrap_or(value.trim());
     (value.len() == 6)
         .then(|| u32::from_str_radix(value, 16).ok())
@@ -1076,6 +1143,33 @@ mod tests {
         editor.update(&mut settings, Message::ReplaceColor(0xabcdef, 0x112233));
         assert_eq!(settings.general.accent.custom_colors, vec![0x112233]);
         assert_eq!(settings.general.accent.custom_color, 0x112233);
+    }
+
+    #[test]
+    fn color_picker_cancel_submit_and_saved_color_edits_preserve_drafts() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        let original = settings.general.accent.custom_color;
+        editor.update(&mut settings, Message::OpenColorPicker(original));
+        assert!(editor.picker.is_some());
+        editor.update(&mut settings, Message::CancelColorPicker);
+        editor.update(&mut settings, Message::ColorPicked(rgb(0x123456)));
+        assert_eq!(settings.general.accent.custom_color, original);
+
+        editor.update(&mut settings, Message::OpenColorPicker(original));
+        editor.update(&mut settings, Message::ColorPicked(rgb(0x123456)));
+        assert_eq!(settings.general.accent.custom_color, 0x123456);
+        assert!(settings.general.accent.custom_colors.is_empty());
+        assert!(editor.picker.is_none());
+        editor.update(&mut settings, Message::SaveColor);
+        editor.update(&mut settings, Message::EditColor(0x123456));
+        editor.update(&mut settings, Message::ColorPicked(rgb(0xabcdef)));
+        assert_eq!(settings.general.accent.custom_color, 0xabcdef);
+        assert_eq!(settings.general.accent.custom_colors, vec![0xabcdef]);
+        editor.update(&mut settings, Message::EditColor(0xabcdef));
+        editor.dismiss_picker();
+        editor.update(&mut settings, Message::ColorPicked(rgb(0)));
+        assert_eq!(settings.general.accent.custom_colors, vec![0xabcdef]);
     }
 
     #[test]

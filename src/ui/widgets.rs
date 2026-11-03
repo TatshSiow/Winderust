@@ -831,6 +831,291 @@ pub(super) fn control_button(
     tertiary_button(theme, status)
 }
 
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+    use crate::ui::{power_rules, settings_pages, Page};
+    use iced::advanced::{layout, widget::Tree, Layout, Shell};
+    use iced::advanced::{renderer::Headless, Renderer as _};
+    use iced::{mouse, Event, Rectangle, Size, Vector};
+
+    fn preview<M: Clone + std::fmt::Debug>(
+        mut view: Element<'_, M>,
+        theme: &iced::Theme,
+        name: &str,
+        width: u32,
+        height: u32,
+        color: bool,
+        submit: bool,
+    ) -> Vec<M> {
+        let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut tree = Tree::new(&view);
+        let bounds = Rectangle::with_size(Size::new(width as f32, height as f32));
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, bounds.size()),
+        );
+        let mut messages = Vec::new();
+        let redraw = Event::Window(iced::window::Event::RedrawRequested(
+            iced::time::Instant::now(),
+        ));
+        view.as_widget_mut().update(
+            &mut tree,
+            &redraw,
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut Shell::new(&mut messages),
+            &bounds,
+        );
+        renderer.reset(bounds);
+        let style = iced::advanced::renderer::Style {
+            text_color: theme.palette().text,
+        };
+        view.as_widget().draw(
+            &tree,
+            &mut renderer,
+            theme,
+            &style,
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &bounds,
+        );
+        let mut overlay = view
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &bounds,
+                Vector::ZERO,
+            )
+            .expect("picker overlay");
+        let overlay = overlay.as_overlay_mut();
+        let node = overlay.layout(&renderer, bounds.size());
+        assert!(node.bounds().x >= 0.0 && node.bounds().y >= 0.0);
+        assert!(node.bounds().x + node.bounds().width <= bounds.width);
+        assert!(node.bounds().y + node.bounds().height <= bounds.height);
+        overlay.update(
+            &redraw,
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut Shell::new(&mut messages),
+        );
+        renderer.with_layer(bounds, |renderer| {
+            overlay.draw(
+                renderer,
+                theme,
+                &style,
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+            );
+        });
+        let pixels = renderer.screenshot(Size::new(width, height), 1.0, theme.palette().background);
+        std::fs::create_dir_all("target/ui-preview").unwrap();
+        image::save_buffer(
+            format!("target/ui-preview/picker-{name}-{width}.png"),
+            &pixels,
+            width,
+            height,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+        let mut panel = Layout::new(&node);
+        while panel.children().count() == 1 {
+            panel = panel.children().next().unwrap();
+        }
+        let buttons: Vec<_> = panel.children().last().unwrap().children().collect();
+        if color {
+            let square = panel
+                .children()
+                .nth(1)
+                .unwrap()
+                .children()
+                .next()
+                .unwrap()
+                .bounds();
+            let mut samples = Vec::new();
+            for frame in 0..9 {
+                let point = iced::Point::new(
+                    square.x + square.width * (0.2 + frame as f32 * 0.06),
+                    square.center_y(),
+                );
+                let cursor = mouse::Cursor::Available(point);
+                let start = std::time::Instant::now();
+                overlay.update(
+                    &Event::Mouse(if frame == 0 {
+                        mouse::Event::ButtonPressed(mouse::Button::Left)
+                    } else {
+                        mouse::Event::CursorMoved { position: point }
+                    }),
+                    Layout::new(&node),
+                    cursor,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                );
+                renderer.reset(bounds);
+                renderer.with_layer(bounds, |renderer| {
+                    overlay.draw(renderer, theme, &style, Layout::new(&node), cursor)
+                });
+                let recorded = start.elapsed();
+                let _ =
+                    renderer.screenshot(Size::new(width, height), 1.0, theme.palette().background);
+                samples.push((recorded, start.elapsed()));
+            }
+            samples.sort_by_key(|sample| sample.1);
+            println!(
+                "{name}-{width} drag median event+draw={:?}, event+draw+raster={:?}",
+                samples[4].0, samples[4].1
+            );
+            overlay.update(
+                &Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+            );
+        }
+        if color {
+            assert_eq!(
+                messages.len(),
+                9,
+                "each drag sample should publish a selection"
+            );
+            messages.clear();
+        }
+        let index = buttons.len() - if submit { 1 } else { 2 };
+        let cursor = mouse::Cursor::Available(buttons[index].bounds().center());
+        for event in [
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        ] {
+            overlay.update(
+                &Event::Mouse(event),
+                Layout::new(&node),
+                cursor,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+            );
+        }
+        assert_eq!(messages.len(), 1, "one picker result: {messages:?}");
+        messages
+    }
+
+    #[test]
+    fn picker_overlays_render_and_cancel_or_submit_at_both_widths() {
+        let mut settings = crate::config::Settings::default();
+        settings.general.accent.custom_colors = vec![0x123456, 0xabcdef];
+        for (name, theme) in [
+            (
+                "light",
+                iced::Theme::custom_with_fn(
+                    "picker",
+                    design::palette(true, None),
+                    design::extended_palette,
+                ),
+            ),
+            (
+                "dark",
+                iced::Theme::custom_with_fn(
+                    "picker",
+                    design::palette(false, None),
+                    design::extended_palette,
+                ),
+            ),
+            ("amoled", design::amoled_theme(None)),
+        ] {
+            for width in [500, 900] {
+                let submit = width == 900;
+                for (start, part) in [
+                    (true, crate::ui::pickers::TimePart::Hour),
+                    (false, crate::ui::pickers::TimePart::Minute),
+                ] {
+                    let mut editor = power_rules::Editor::default();
+                    editor.update(
+                        power_rules::Kind::Time,
+                        &mut settings,
+                        &[],
+                        power_rules::Message::Add,
+                    );
+                    editor.update(
+                        power_rules::Kind::Time,
+                        &mut settings,
+                        &[],
+                        power_rules::Message::OpenTimePicker(start),
+                    );
+                    editor.update(
+                        power_rules::Kind::Time,
+                        &mut settings,
+                        &[],
+                        power_rules::Message::PickerPart(part),
+                    );
+                    let modal = iced::widget::container(
+                        editor.modal(power_rules::Kind::Time, &[]).unwrap(),
+                    )
+                    .padding(16)
+                    .center_x(Fill)
+                    .center_y(Fill);
+                    let messages = preview(
+                        super::super::modal::picker(
+                            modal,
+                            true,
+                            power_rules::Message::CancelTimePicker,
+                        ),
+                        &theme,
+                        &format!("time-{part:?}-{name}"),
+                        width,
+                        if width == 900 { 620 } else { 740 },
+                        false,
+                        submit,
+                    );
+                    match (submit, messages.as_slice()) {
+                        (true, [power_rules::Message::TimePicked(field, _)]) => {
+                            assert_eq!(*field, start)
+                        }
+                        (false, [power_rules::Message::CancelTimePicker]) => {}
+                        _ => panic!("unexpected analog picker action: {messages:?}"),
+                    }
+                }
+                let mut editor = settings_pages::Editor::default();
+                editor.update_ui(
+                    settings.general.update_channel,
+                    settings_pages::Message::ToggleAccent,
+                );
+                editor.update_ui(
+                    settings.general.update_channel,
+                    settings_pages::Message::OpenColorPicker(settings.general.accent.custom_color),
+                );
+                let messages = preview(
+                    super::super::modal::picker(
+                        editor.view(Page::LanguageAndAppearance, &settings),
+                        true,
+                        settings_pages::Message::CancelColorPicker,
+                    ),
+                    &theme,
+                    &format!("color-{name}"),
+                    width,
+                    740,
+                    true,
+                    submit,
+                );
+                assert!(matches!(
+                    (submit, messages.as_slice()),
+                    (true, [settings_pages::Message::ColorPicked(_)])
+                        | (false, [settings_pages::Message::CancelColorPicker])
+                ));
+            }
+        }
+    }
+}
+
 pub(super) fn stepper<'a, M: Clone + 'a>(
     value: &str,
     range: std::ops::RangeInclusive<u64>,

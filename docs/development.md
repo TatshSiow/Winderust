@@ -90,6 +90,39 @@ does not expose those operations, so adopting it would still require custom
 Win32 integration. Keep the current tray owner until a replacement covers these
 behaviors and registration failure handling before hiding the window.
 
+`iced_aw` supplies picker popup placement/dismissal, HSV conversion, saved-color
+context menus, and wrapping palette layouts. `src/ui/pickers.rs` composes compact
+24-hour and opaque color editors from shared controls. The analog selector draws
+only the active hour or minute dial and retains numeric entry. The color square uses two
+gradient fills; the upstream color picker's per-pixel canvas grid is too expensive
+for interactive software rendering. Keep the time popup outside the scroll body
+and cap its responsive host to the rule dialog's dimensions so both stay centered.
+`src/ui/modal.rs` shields modal backgrounds and makes picker overlays consume
+workspace input even outside their popup bounds. Keep popup surfaces opaque for
+hit testing through Iced overlay groups; guard the workspace below the window
+chrome so caption controls and resize edges remain available. Opening a picker
+also dismisses pending navigation flyouts.
+The shared popover
+wrapper retains context-menu dismissal on focus loss, clipped hit testing, and
+item identity resets. Action Log retains its hover popover. Numeric steppers keep
+raw draft strings so empty and invalid edits remain visible to validation;
+`iced_aw::NumberInput` only publishes valid numbers. By Time and By CPU Load use
+Iced's built-in table; Process List retains its virtualized rows.
+
+Keep the shared animated button tabs. They preserve release-to-select behavior,
+distinct selected and hovered styles, wrapping, live indicators, and weekday
+multi-selection. `iced_aw::TabBar` selects on press and exposes hover styling
+without the tab's selected state; adapting it adds code without simplifying these
+controls. Keep the app picker and Select menu's keyboard navigation, unavailable
+choices, process icons, and per-option priority colors when evaluating list widgets.
+
+Process List also retains its nested context menu in `src/ui/process_list.rs`.
+In `iced_aw` 0.14.1, the public nested-menu host is a horizontal `MenuBar`, whose
+root requires a click before hover switching works. Wrapping it in `ContextMenu`
+closes the enclosing popup when a submenu heading receives a left-button release.
+Keep the current menu until an upstream replacement supports standalone nested
+context menus without extra event-routing adapters.
+
 ## Routine Chores
 
 - Dependabot version updates target `dev`; Iced and its renderer are grouped for review. GitHub reads Dependabot configuration from the default branch, so configuration changes must also reach `main` to take effect. Security updates retain GitHub's default-branch behavior.

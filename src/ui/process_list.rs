@@ -258,6 +258,10 @@ impl ProcessList {
         self.context.is_some() && self.selected.is_some()
     }
 
+    pub(super) fn modal_open(&self) -> bool {
+        self.stopping.is_some() || (self.selected.is_some() && self.context.is_none())
+    }
+
     pub(super) fn update(
         &mut self,
         message: Message,
@@ -1324,7 +1328,7 @@ impl ProcessList {
             .width(460)
             .style(super::widgets::surface);
             return iced::widget::stack![
-                body,
+                super::modal::background(body),
                 iced::widget::opaque(container(Space::new().width(Fill).height(Fill)).style(
                     |_| {
                         container::Style {
@@ -1703,7 +1707,7 @@ impl ProcessList {
                 }
             }
             return iced::widget::stack![
-                body,
+                super::modal::background(body),
                 mouse_area(container(Space::new().width(Fill).height(Fill)).style(|_| {
                     container::Style {
                         background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
@@ -2282,14 +2286,21 @@ mod tests {
             focused: Some(("app.exe".into(), false, selection.clone())),
             ..ProcessList::default()
         };
+        assert!(!list.modal_open());
         let _ = list.update(Message::DeleteFocused, &mut settings, &runtime);
+        assert!(list.modal_open());
         let (pending, tree) = list.stopping.as_ref().unwrap();
         assert_eq!(pending.processes.len(), 2);
         assert!(!tree);
         let _ = list.update(Message::CancelStop, &mut settings, &runtime);
         assert!(list.stopping.is_none());
+        assert!(!list.modal_open());
         for tree in [false, true] {
             list.selected = Some(selection.clone());
+            assert!(list.modal_open());
+            list.context = Some(iced::Point::ORIGIN);
+            assert!(!list.modal_open());
+            list.context = None;
             let _ = list.update(Message::Stop(tree), &mut settings, &runtime);
             assert_eq!(list.stopping.as_ref().unwrap().1, tree);
             let _ = list.update(Message::CancelStop, &mut settings, &runtime);

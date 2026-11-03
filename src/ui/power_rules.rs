@@ -30,6 +30,13 @@ pub(super) enum Message {
     Day(usize, WeekdaySetting, bool),
     Start(usize, String),
     End(usize, String),
+    OpenTimePicker(bool),
+    CancelTimePicker,
+    TimePicked(bool, chrono::NaiveTime),
+    PickerHour(String),
+    PickerMinute(String),
+    PickerPart(super::pickers::TimePart),
+    PickerDial(super::pickers::TimePart, u32, bool),
     Comparison(usize, CpuUsageComparison),
     Threshold(usize, String),
     Upper(usize, String),
@@ -59,8 +66,18 @@ pub(super) struct Editor {
     draft: Option<Settings>,
     editing: usize,
     creating: bool,
+    time_picker: Option<bool>,
+    picker_time: super::pickers::TimeDraft,
 }
 impl Editor {
+    pub(super) fn picker_open(&self) -> bool {
+        self.time_picker.is_some()
+    }
+
+    pub(super) fn dismiss_picker(&mut self) {
+        self.time_picker = None;
+    }
+
     pub(super) fn has_pending_editor(&self) -> bool {
         self.draft.is_some()
     }
@@ -89,7 +106,69 @@ impl Editor {
         message: Message,
     ) {
         match message {
+            Message::OpenTimePicker(start) => {
+                if kind != Kind::Time || self.draft.is_none() {
+                    return;
+                }
+                let Some(rule) = self
+                    .draft
+                    .as_ref()
+                    .and_then(|draft| draft.by_time.rules.get(self.editing))
+                else {
+                    return;
+                };
+                let value = if start {
+                    &rule.start_time
+                } else {
+                    &rule.end_time
+                };
+                self.picker_time = super::pickers::TimeDraft::new(
+                    chrono::NaiveTime::parse_from_str(value, "%H:%M")
+                        .unwrap_or(chrono::NaiveTime::MIN),
+                );
+                self.time_picker = Some(start);
+                return;
+            }
+            Message::PickerHour(value) => {
+                self.picker_time.hour = value;
+                self.picker_time.part = super::pickers::TimePart::Hour;
+                return;
+            }
+            Message::PickerMinute(value) => {
+                self.picker_time.minute = value;
+                self.picker_time.part = super::pickers::TimePart::Minute;
+                return;
+            }
+            Message::PickerPart(part) => {
+                self.picker_time.part = part;
+                return;
+            }
+            Message::PickerDial(part, value, complete) => {
+                if self.time_picker.is_some() {
+                    self.picker_time.select(part, value, complete);
+                }
+                return;
+            }
+            Message::CancelTimePicker => {
+                self.time_picker = None;
+                return;
+            }
+            Message::TimePicked(start, time) => {
+                if self.time_picker != Some(start) || self.draft.is_none() || kind != Kind::Time {
+                    return;
+                }
+                self.time_picker = None;
+                let value = time.format("%H:%M").to_string();
+                let message = if start {
+                    Message::Start(self.editing, value)
+                } else {
+                    Message::End(self.editing, value)
+                };
+                self.update(kind, s, plans, message);
+                return;
+            }
             Message::Add | Message::Edit(_) => {
+                self.time_picker = None;
                 self.inputs.clear();
                 let mut draft = s.clone();
                 self.creating = matches!(message, Message::Add);
@@ -109,6 +188,7 @@ impl Editor {
                 return;
             }
             Message::Cancel => {
+                self.time_picker = None;
                 self.draft = None;
                 self.inputs.clear();
                 return;
@@ -118,6 +198,7 @@ impl Editor {
                     return;
                 }
                 if let Some(draft) = self.draft.take() {
+                    self.time_picker = None;
                     match kind {
                         Kind::Time => {
                             if let Some(rule) = draft.by_time.rules.get(self.editing) {
@@ -223,6 +304,15 @@ impl Editor {
             }
 
             Message::Edit(_) | Message::Save | Message::Cancel => {}
+            Message::OpenTimePicker(_)
+            | Message::CancelTimePicker
+            | Message::TimePicked(..)
+            | Message::PickerHour(_)
+            | Message::PickerMinute(_)
+            | Message::PickerPart(_)
+            | Message::PickerDial(..) => {
+                unreachable!("time picker messages are handled by the rule editor")
+            }
             Message::RuleEnabled(i, v) => match kind {
                 Kind::Time => {
                     if let Some(r) = s.by_time.rules.get_mut(i) {
@@ -362,77 +452,142 @@ impl Editor {
                 .collect::<Vec<_>>(),
         };
 
-        let mut cards = Vec::new();
-        for (id, index, rule) in rules {
-            let (rule_enabled, name) = match &rule {
-                RuleRef::Time(r) => (r.enabled, &r.name),
-                RuleRef::Cpu(r) => (r.enabled, &r.name),
-            };
-            let key = rule_status(
-                rule,
-                s.general.enabled && enabled,
-                status.rule_index == Some(index),
-                status,
-            );
-            let header = row![
-                container(
-                    checkbox(rule_enabled)
-                        .on_toggle_maybe(Some(move |v| Message::RuleEnabled(index, v)))
+        let empty = rules.is_empty();
+        let header = |key| text(t!(key).to_string()).style(text::secondary);
+        let keyed = |id, content: Element<'a, Message>| iced::widget::keyed_column([(id, content)]);
+        let table = iced::widget::table(
+            [
+                iced::widget::table::column(
+                    header("common.enable"),
+                    move |(id, index, rule): (u64, usize, RuleRef<'a>)| {
+                        let enabled = match rule {
+                            RuleRef::Time(rule) => rule.enabled,
+                            RuleRef::Cpu(rule) => rule.enabled,
+                        };
+                        keyed(
+                            id,
+                            checkbox(enabled)
+                                .on_toggle(move |v| Message::RuleEnabled(index, v))
+                                .into(),
+                        )
+                    },
                 )
-                .width(48),
-                container(text(t!(key).to_string()))
-                    .padding([4, 8])
-                    .style(move |theme| widgets::rule_status_chip(theme, key))
-                    .width(140),
-                text(name.clone()).width(Fill),
-            ]
-            .spacing(design::space::MEDIUM)
-            .align_y(iced::Center);
-            let header = header.push(
-                row![
-                    super::widgets::tooltip(
-                        icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    widgets::rule_delete_button(Some(Message::Remove(index)))
-                ]
-                .width(80)
+                .width(48)
                 .align_y(iced::Center),
-            );
-            cards.push((
-                id,
-                column![
-                    container(header).padding(widgets::CARD_PADDING as u16),
-                    widgets::settings_divider()
-                ]
-                .into(),
-            ));
-        }
-        let header = row![
-            text(t!("common.enable").to_string()).width(48),
-            text(t!("common.status").to_string()).width(140),
-            text(t!("common.rule_name").to_string()).width(Fill),
-        ]
-        .spacing(design::space::MEDIUM);
-        let header = header.push(
-            text(t!("common.actions").to_string())
+                iced::widget::table::column(
+                    header("common.status"),
+                    move |(id, index, rule): (u64, usize, RuleRef<'a>)| {
+                        let key = rule_status(
+                            rule,
+                            s.general.enabled && enabled,
+                            status.rule_index == Some(index),
+                            status,
+                        );
+                        keyed(
+                            id,
+                            container(text(t!(key).to_string()))
+                                .padding([4, 8])
+                                .width(Fill)
+                                .style(move |theme| widgets::rule_status_chip(theme, key))
+                                .into(),
+                        )
+                    },
+                )
+                .width(140)
+                .align_y(iced::Center),
+                iced::widget::table::column(
+                    header("common.rule_name"),
+                    move |(id, _, rule): (u64, usize, RuleRef<'a>)| {
+                        let name = match rule {
+                            RuleRef::Time(rule) => &rule.name,
+                            RuleRef::Cpu(rule) => &rule.name,
+                        };
+                        keyed(id, text(name.clone()).into())
+                    },
+                )
+                .width(Fill)
+                .align_y(iced::Center),
+                iced::widget::table::column(
+                    header("common.actions").align_x(iced::Center),
+                    move |(id, index, _): (u64, usize, RuleRef<'a>)| {
+                        keyed(
+                            id,
+                            row![
+                                super::widgets::tooltip(
+                                    icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
+                                    text(t!("common.edit").to_string()),
+                                    iced::widget::tooltip::Position::Top
+                                ),
+                                widgets::rule_delete_button(Some(Message::Remove(index)))
+                            ]
+                            .into(),
+                        )
+                    },
+                )
                 .width(80)
-                .align_x(iced::Center),
+                .align_x(iced::Center)
+                .align_y(iced::Center),
+            ],
+            rules,
+        )
+        .width(Fill)
+        .padding_x(design::space::CONTROL as f32)
+        .padding_y(widgets::CARD_PADDING as f32)
+        .separator_x(0)
+        .separator_y(1);
+        let mut contents = column![table];
+        if empty {
+            contents = contents.push(widgets::settings_divider()).push(
+                container(text(t!("common.no_custom_rules").to_string()).style(text::secondary))
+                    .padding(widgets::CARD_PADDING as u16),
+            );
+        }
+        body = body.push(widgets::setting_title("common.rules")).push(
+            container(super::scrolling::horizontal_table(
+                container(contents)
+                    .padding([0, (widgets::CARD_PADDING - design::space::CONTROL) as u16])
+                    .width(Fill),
+                600.0,
+            ))
+            .width(Fill)
+            .clip(true)
+            .style(widgets::surface),
         );
-        let rows = if cards.is_empty() {
-            container(text(t!("common.no_custom_rules").to_string()).style(text::secondary))
-                .padding(design::space::LARGE as u16)
-                .into()
-        } else {
-            iced::widget::keyed_column(cards).into()
-        };
-        body = body
-            .push(widgets::setting_title("common.rules"))
-            .push(widgets::rules_table(header, rows));
         scrollable(body).height(Fill).into()
     }
     pub(super) fn modal<'a>(
+        &'a self,
+        kind: Kind,
+        plans: &'a [PowerPlan],
+    ) -> Option<Element<'a, Message>> {
+        if kind != Kind::Time {
+            return self.modal_content(kind, plans);
+        }
+        self.draft.as_ref()?.by_time.rules.get(self.editing)?;
+        Some(
+            container(iced::widget::responsive(move |size| {
+                // Own the popup outside the scroll body so viewport clipping cannot displace it.
+                iced_aw::DropDown::new(
+                    self.modal_content(kind, plans)
+                        .expect("Open By Time editor has a rule draft"),
+                    super::pickers::time(&self.picker_time, self.time_picker.unwrap_or(true)),
+                    self.time_picker.is_some(),
+                )
+                .width(368)
+                .alignment(iced_aw::drop_down::Alignment::End)
+                .offset([-size.width / 2.0 - 184.0, 0.0])
+                .on_dismiss(Message::CancelTimePicker)
+                .into()
+            }))
+            .width(Fill)
+            .max_width(800)
+            .height(Fill)
+            .max_height(760)
+            .into(),
+        )
+    }
+
+    fn modal_content<'a>(
         &'a self,
         kind: Kind,
         plans: &[PowerPlan],
@@ -479,12 +634,7 @@ impl Editor {
                             container(
                                 column![
                                     text(t!("by_time.start").to_string()),
-                                    text_input(
-                                        "HH:MM",
-                                        &self.input(id, Field::Start, r.start_time.clone())
-                                    )
-                                    .on_input(move |v| Message::Start(index, v))
-                                    .width(Fill)
+                                    self.time_field(index, id, true, &r.start_time)
                                 ]
                                 .spacing(design::space::SMALL)
                             )
@@ -492,12 +642,7 @@ impl Editor {
                             container(
                                 column![
                                     text(t!("by_time.end").to_string()),
-                                    text_input(
-                                        "HH:MM",
-                                        &self.input(id, Field::End, r.end_time.clone())
-                                    )
-                                    .on_input(move |v| Message::End(index, v))
-                                    .width(Fill)
+                                    self.time_field(index, id, false, &r.end_time)
                                 ]
                                 .spacing(design::space::SMALL)
                             )
@@ -651,12 +796,39 @@ impl Editor {
                 .on_press_maybe((self.valid() && !name.trim().is_empty()).then_some(Message::Save))
         ]
         .spacing(design::space::SMALL);
-        Some(widgets::modal_frame(
-            header,
-            scrollable(content).height(Fill),
-            footer,
-            (800, 760),
-        ))
+        let modal =
+            widgets::modal_frame(header, scrollable(content).height(Fill), footer, (800, 760));
+        Some(modal)
+    }
+
+    fn time_field<'a>(
+        &'a self,
+        index: usize,
+        id: u64,
+        start: bool,
+        current: &str,
+    ) -> Element<'a, Message> {
+        let label = if start {
+            "by_time.start"
+        } else {
+            "by_time.end"
+        };
+        let field = if start { Field::Start } else { Field::End };
+        let input = text_input("HH:MM", &self.input(id, field, current.to_owned()))
+            .on_input(move |value| {
+                if start {
+                    Message::Start(index, value)
+                } else {
+                    Message::End(index, value)
+                }
+            })
+            .width(Fill);
+        let clock = widgets::tooltip(
+            icon_button("icons/clock.svg").on_press(Message::OpenTimePicker(start)),
+            text(t!(label).to_string()),
+            iced::widget::tooltip::Position::Top,
+        );
+        row![input, clock].spacing(design::space::SMALL).into()
     }
 
     fn input(&self, id: u64, field: Field, current: String) -> String {
@@ -780,6 +952,303 @@ pub(super) fn power_rule_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_picker_preserves_typed_drafts_and_only_saves_submitted_times() {
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        settings.by_time.rules.clear();
+        let update = |editor: &mut Editor, settings: &mut Settings, message| {
+            editor.update(Kind::Time, settings, &[], message);
+        };
+        update(&mut editor, &mut settings, Message::Add);
+        update(&mut editor, &mut settings, Message::Start(0, "2:".into()));
+        assert!(!editor.valid());
+        update(&mut editor, &mut settings, Message::OpenTimePicker(true));
+        update(&mut editor, &mut settings, Message::CancelTimePicker);
+        assert!(!editor.valid());
+        assert_eq!(
+            editor.draft.as_ref().unwrap().by_time.rules[0].start_time,
+            "22:00"
+        );
+        let time = chrono::NaiveTime::from_hms_opt(0, 5, 0).unwrap();
+        update(&mut editor, &mut settings, Message::TimePicked(true, time));
+        assert!(
+            !editor.valid(),
+            "dismissed picker must not replace typed text"
+        );
+        update(&mut editor, &mut settings, Message::OpenTimePicker(true));
+        assert_eq!(editor.picker_time.hour, "22");
+        update(&mut editor, &mut settings, Message::TimePicked(true, time));
+        assert!(
+            editor.valid(),
+            "drafts: {:?}, ids: {:?}",
+            editor.inputs,
+            editor.ids
+        );
+        assert!(settings.by_time.rules.is_empty());
+        assert_eq!(
+            editor.draft.as_ref().unwrap().by_time.rules[0].start_time,
+            "00:05"
+        );
+        update(&mut editor, &mut settings, Message::OpenTimePicker(false));
+        let time = chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap();
+        update(&mut editor, &mut settings, Message::TimePicked(false, time));
+        update(&mut editor, &mut settings, Message::Save);
+        assert_eq!(settings.by_time.rules[0].start_time, "00:05");
+        assert_eq!(settings.by_time.rules[0].end_time, "23:59");
+        update(&mut editor, &mut settings, Message::Edit(0));
+        update(&mut editor, &mut settings, Message::OpenTimePicker(true));
+        editor.dismiss_picker();
+        update(&mut editor, &mut settings, Message::TimePicked(true, time));
+        update(&mut editor, &mut settings, Message::Cancel);
+        assert_eq!(settings.by_time.rules[0].start_time, "00:05");
+    }
+
+    #[test]
+    fn by_time_dialog_stays_centered_with_picker_open_or_closed() {
+        use iced::advanced::{layout, widget::Tree, Layout};
+        use iced::{Rectangle, Size};
+        fn find_frame(layout: Layout<'_>, size: Size) -> Option<Rectangle> {
+            if layout.bounds().size() == size {
+                return Some(layout.bounds());
+            }
+            layout.children().find_map(|child| find_frame(child, size))
+        }
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let mut editor = Editor::default();
+        let mut settings = Settings::default();
+        editor.update(Kind::Time, &mut settings, &[], Message::Edit(0));
+        for (width, height) in [(900.0f32, 620.0f32), (1400.0, 1000.0)] {
+            for open in [false, true] {
+                if open {
+                    editor.update(
+                        Kind::Time,
+                        &mut settings,
+                        &[],
+                        Message::OpenTimePicker(true),
+                    );
+                } else {
+                    editor.dismiss_picker();
+                }
+                let mut view: Element<'_, Message> =
+                    container(editor.modal(Kind::Time, &[]).unwrap())
+                        .padding(16)
+                        .center_x(Fill)
+                        .center_y(Fill)
+                        .into();
+                let mut tree = Tree::new(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, Size::new(width, height)),
+                );
+                let frame = find_frame(
+                    Layout::new(&node),
+                    Size::new((width - 32.0).min(800.0), (height - 32.0).min(760.0)),
+                )
+                .expect("visible dialog frame");
+                assert_eq!(frame.center(), iced::Point::new(width / 2.0, height / 2.0));
+            }
+        }
+    }
+
+    #[test]
+    fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
+        use iced::advanced::{
+            layout,
+            renderer::{Headless as _, Renderer as _},
+            widget::Tree,
+            Layout, Shell,
+        };
+        use iced::{mouse, Event, Rectangle, Size};
+        fn find_table(layout: Layout<'_>, count: usize) -> Option<Layout<'_>> {
+            if layout.children().len() == count {
+                Some(layout)
+            } else {
+                layout.children().find_map(|child| find_table(child, count))
+            }
+        }
+        let editor = Editor::default();
+        let mut settings = Settings::default();
+        settings.by_time.rules = vec![
+            ByTimeRule {
+                enabled: true,
+                name: "Morning profile".into(),
+                ..Default::default()
+            },
+            ByTimeRule {
+                enabled: true,
+                name: "A longer rule name that should stay inside its column".into(),
+                ..Default::default()
+            },
+        ];
+        settings.by_cpu_load.rules = ["CPU rule", "Second CPU rule"]
+            .into_iter()
+            .map(|name| ByCpuLoadRule {
+                enabled: true,
+                name: name.into(),
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: 50,
+                upper_threshold_percent: None,
+                duration_seconds: 10,
+                power_plan_guid: Some("plan".into()),
+                else_enabled: false,
+                else_power_plan_guid: None,
+            })
+            .collect();
+        let status = crate::control::power_plan::PowerPlanStatus::default();
+        for (name, theme) in [
+            (
+                "light",
+                iced::Theme::custom_with_fn(
+                    "probe",
+                    design::palette(true, None),
+                    design::extended_palette,
+                ),
+            ),
+            (
+                "dark",
+                iced::Theme::custom_with_fn(
+                    "probe",
+                    design::palette(false, None),
+                    design::extended_palette,
+                ),
+            ),
+            ("amoled", design::amoled_theme(None)),
+        ] {
+            for width in [430, 1000] {
+                for kind in [Kind::Time, Kind::CpuLoad] {
+                    for count in [0, 2] {
+                        let mut settings = settings.clone();
+                        settings.by_time.rules.truncate(count);
+                        settings.by_cpu_load.rules.truncate(count);
+                        let mut renderer =
+                            iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+                        let mut view = editor.view(kind, &settings, &status);
+                        let mut tree = Tree::new(&view);
+                        let bounds = Rectangle::with_size(Size::new(width as f32, 400.0));
+                        let node = view.as_widget_mut().layout(
+                            &mut tree,
+                            &renderer,
+                            &layout::Limits::new(Size::ZERO, bounds.size()),
+                        );
+                        assert_eq!(node.bounds().width, width as f32);
+                        let table = find_table(Layout::new(&node), 4 * (count + 1))
+                            .expect("header and rule rows");
+                        let cells: Vec<_> = table.children().collect();
+                        assert_eq!(
+                            table.bounds().width,
+                            (width as f32 - 14.0).max(600.0) - 20.0
+                        );
+                        for row in (4..cells.len()).step_by(4) {
+                            for column in 0..3 {
+                                assert_eq!(
+                                    cells[column].bounds().x,
+                                    cells[row + column].bounds().x
+                                );
+                            }
+                            assert_eq!(cells[row].bounds().width, 48.0);
+                            assert_eq!(cells[row + 1].bounds().width, 140.0);
+                            assert_eq!(cells[row + 3].bounds().width, 80.0);
+                        }
+                        view.as_widget_mut().update(
+                            &mut tree,
+                            &Event::Window(iced::window::Event::RedrawRequested(
+                                iced::time::Instant::now(),
+                            )),
+                            Layout::new(&node),
+                            mouse::Cursor::Unavailable,
+                            &renderer,
+                            &mut iced::advanced::clipboard::Null,
+                            &mut Shell::new(&mut Vec::new()),
+                            &bounds,
+                        );
+                        renderer.reset(bounds);
+                        view.as_widget().draw(
+                            &tree,
+                            &mut renderer,
+                            &theme,
+                            &iced::advanced::renderer::Style {
+                                text_color: theme.palette().text,
+                            },
+                            Layout::new(&node),
+                            mouse::Cursor::Unavailable,
+                            &bounds,
+                        );
+                        let pixels = renderer.screenshot(
+                            Size::new(width, 400),
+                            1.0,
+                            theme.palette().background,
+                        );
+                        std::fs::create_dir_all("target/ui-preview").unwrap();
+                        image::save_buffer(
+                            format!(
+                                "target/ui-preview/rule-table-{kind:?}-{name}-{width}-{count}.png"
+                            ),
+                            &pixels,
+                            width,
+                            400,
+                            image::ColorType::Rgba8,
+                        )
+                        .unwrap();
+                        if count == 0 {
+                            continue;
+                        }
+                        let toggle = cells[4].children().next().unwrap().bounds().center();
+                        let edit = cells[11]
+                            .children()
+                            .next()
+                            .unwrap()
+                            .children()
+                            .next()
+                            .unwrap()
+                            .bounds()
+                            .center();
+                        let remove = cells[7]
+                            .children()
+                            .next()
+                            .unwrap()
+                            .children()
+                            .last()
+                            .unwrap()
+                            .bounds()
+                            .center();
+                        for (cursor, action) in [(toggle, 0), (edit, 1), (remove, 2)] {
+                            if action != 0 && width == 430 {
+                                continue;
+                            }
+                            let mut messages = Vec::new();
+                            for event in [
+                                mouse::Event::ButtonPressed(mouse::Button::Left),
+                                mouse::Event::ButtonReleased(mouse::Button::Left),
+                            ] {
+                                view.as_widget_mut().update(
+                                    &mut tree,
+                                    &Event::Mouse(event),
+                                    Layout::new(&node),
+                                    mouse::Cursor::Available(cursor),
+                                    &renderer,
+                                    &mut iced::advanced::clipboard::Null,
+                                    &mut Shell::new(&mut messages),
+                                    &bounds,
+                                );
+                            }
+                            assert!(
+                                matches!(
+                                    (action, messages.as_slice()),
+                                    (0, [Message::RuleEnabled(0, false)])
+                                        | (1, [Message::Edit(1)])
+                                        | (2, [Message::Remove(0)])
+                                ),
+                                "unexpected rule action: {messages:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn cpu_rule_status_tracks_selected_else_plan_and_failed_switches() {
         use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};

@@ -18,6 +18,7 @@ chrono = { version = "0.4.44", default-features = false, features = ["clock", "s
 csv = "1.4.0"
 iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "tokio", "advanced-shaping", "image-without-codecs", "svg", "canvas", "advanced"] }
 iced_anim = { version = "0.3.1", default-features = false }
+iced_aw = { version = "0.14.1", default-features = false, features = ["color_picker", "context_menu", "drop_down", "wrap"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 icondata_core = "0.1.0"
 icondata_lu = "0.1.0"
@@ -69,7 +70,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Networking_WinSock",
     "Win32_Networking_WinHttp",
     "Win32_UI_Shell",
-    "Win32_UI_Controls_Dialogs",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Input_XboxController",
     "Win32_UI_WindowsAndMessaging",

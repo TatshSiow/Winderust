@@ -50,6 +50,10 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
 - Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
+- Centered dialogs, Search, and picker popups are modal: shield background hover,
+  pointer/touch actions, scrolling, typing, focus operations, and existing background
+  overlays. Outside presses may dismiss a popup but must never activate the content
+  behind it. Keep window chrome usable and preserve background scroll/input state.
 - Use shared 10px surface and 6px control corner radii consistently. Do not introduce large rounded marketing panels.
 - Use the shared scroll helpers and scrollbar settings for both axes. Keep a permanent gutter on each scrolling axis, including when the thumb is hidden, so page/tab changes cannot shift content; never paint tracks over cards, controls, or table cells. Use a transparent track and a slim rounded neutral thumb, with stronger hover/drag contrast and no accent-colored strip.
 
@@ -210,6 +214,15 @@ hover/press; background shading supplies feedback.
   independently expandable, and groups navigation and feature-card display settings.
   Use square color swatches and shared select widths. About groups identity and
   updates into separate surfaces; unsaved settings stay in the lower-right notice.
+- Accent palettes wrap to the available width. Time and color pickers use the
+  shared application surface, border, accent colors, and labeled Cancel / OK
+  actions. By Time keeps editable `HH:MM` fields alongside a 24-hour analog picker.
+  Show separate Hour / Minute dials with numeric entry, advance to minutes after
+  choosing an hour, and keep the rule dialog centered when the popup opens.
+  Color selection offers a gradient square, hue / saturation / brightness sliders, and hex entry,
+  with an opaque preview. Picker changes apply only on
+  submit; Cancel, Escape, focus loss, and navigation discard them. Saved-color
+  menus retain Escape/outside-click/focus-loss dismissal and reset with their item.
 - Adaptive Engine Priority Control keeps each control's advanced options in its own
   expandable row under Focus, Visible Window, and Background. Process and Memory
   Priority include detection/preservation controls. Detection falls through to the
