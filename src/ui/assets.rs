@@ -13,6 +13,7 @@ pub(super) fn logo() -> iced::widget::image::Handle {
 
 const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/app-window.svg", icondata_lu::LuAppWindow),
+    ("icons/book-open.svg", icondata_lu::LuBookOpen),
     ("icons/brain-circuit.svg", icondata_lu::LuBrainCircuit),
     ("icons/bring-to-front.svg", icondata_lu::LuBringToFront),
     ("icons/calendar-days.svg", icondata_lu::LuCalendarDays),
@@ -39,6 +40,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/drill.svg", icondata_lu::LuDrill),
     ("icons/flask-conical.svg", icondata_lu::LuFlaskConical),
     ("icons/footprints.svg", icondata_lu::LuFootprints),
+    ("icons/github.svg", icondata_lu::LuGithub),
     ("icons/gpu.svg", icondata_lu::LuGpu),
     ("icons/hourglass.svg", icondata_lu::LuHourglass),
     ("icons/house.svg", icondata_lu::LuHouse),
@@ -66,6 +68,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/plus.svg", icondata_lu::LuPlus),
     ("icons/rotate-ccw.svg", icondata_lu::LuRotateCcw),
     ("icons/rotate-3d.svg", icondata_lu::LuRotate3d),
+    ("icons/scale.svg", icondata_lu::LuScale),
     ("icons/scissors.svg", icondata_lu::LuScissors),
     ("icons/search.svg", icondata_lu::LuSearch),
     ("icons/settings.svg", icondata_lu::LuSettings),
@@ -109,7 +112,7 @@ fn push_attr(svg: &mut String, name: &str, value: Option<&str>) {
 pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
     static HANDLES: LazyLock<HashMap<&'static str, iced::widget::svg::Handle>> =
         LazyLock::new(|| {
-            ICON_ASSETS
+            let mut handles: HashMap<_, _> = ICON_ASSETS
                 .iter()
                 .map(|(path, icon)| {
                     (
@@ -117,7 +120,14 @@ pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
                         iced::widget::svg::Handle::from_memory(lucide_svg(icon).into_bytes()),
                     )
                 })
-                .collect()
+                .collect();
+            handles.insert(
+                "icons/discord.svg",
+                iced::widget::svg::Handle::from_memory(
+                    include_bytes!("../../image/discord.svg").as_slice(),
+                ),
+            );
+            handles
         });
     HANDLES.get(path).cloned()
 }
@@ -150,8 +160,12 @@ mod tests {
     #[test]
     fn icon_asset_paths_are_unique() {
         let mut paths = HashSet::new();
-        for (path, _) in ICON_ASSETS {
-            assert!(paths.insert(*path), "duplicate icon asset path: {path}");
+        for path in ICON_ASSETS
+            .iter()
+            .map(|(path, _)| *path)
+            .chain(["icons/discord.svg"])
+        {
+            assert!(paths.insert(path), "duplicate icon asset path: {path}");
             let first = iced_icon(path).unwrap();
             assert_eq!(first.id(), iced_icon(path).unwrap().id());
         }

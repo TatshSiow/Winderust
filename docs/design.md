@@ -95,6 +95,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
 
 - Reuse bundled Lucide SVGs through `src/ui/assets.rs`; page icons are mapped in
   `src/ui/navigation.rs`.
+- Bundle brand marks alongside the existing assets when a link needs its service's
+  identity; About uses the official Discord symbol from its branding page.
 - Trace all asset consumers before changing Lucide generation or dependencies.
 - Verify consumers before trimming `icondata_core` or `icondata_lu`.
 - Keep action icons at existing sizes, usually 12-18 px depending on row density.
@@ -224,6 +226,11 @@ hover/press; background shading supplies feedback.
   independently expandable, and groups navigation and feature-card display settings.
   Use square color swatches and shared select widths. About groups identity and
   updates into separate surfaces; unsaved settings stay in the lower-right notice.
+- About shows the author name without inspiration or license prose. Its external-link
+  buttons use GitHub and Discord marks, a book for Documentation, and scales for
+  License, with icon and label centered within the button. The Updates card retains
+  its controls and version rows,
+  with update status immediately below Update channel.
 - Accent palettes wrap to the available width. Time and color pickers use the
   shared application surface, border, accent colors, and labeled Cancel / OK
   actions. By Time keeps editable `HH:MM` fields alongside a 24-hour analog picker.

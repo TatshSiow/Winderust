@@ -861,8 +861,6 @@ cpu_limiter:
   no_rules: "No custom rules are configured."
 
 about:
-  inspired_by: "Inspired by"
-  inspiration_joiner: "and"
   intro_1: "Winderust is a local Windows power automation utility."
   intro_2: "Version and project details are shown below."
   github: "GitHub"
@@ -872,9 +870,12 @@ about:
   updates: "Updates"
   current_version: "Current version"
   latest_version: "Latest version"
-  old: "Old"
+  update_available: "Update available"
   automatic_check_for_updates_on_startup: "Automatically check for updates on startup"
   update_channel: "Update channel"
+  update_status: "Update status"
+  checking: "Checking for updates..."
+  not_checked: "Not checked yet"
   download_update: "Update"
   check_for_updates: "Check for updates"
   up_to_date: "Up to date"

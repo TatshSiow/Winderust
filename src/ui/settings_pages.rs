@@ -122,6 +122,20 @@ impl Editor {
         true
     }
 
+    fn update_status(&self) -> std::borrow::Cow<'_, str> {
+        if self.checking {
+            t!("about.checking")
+        } else if let Some(error) = &self.update_error {
+            error.as_str().into()
+        } else if self.download.is_some() {
+            t!("about.update_available")
+        } else if self.latest.is_some() {
+            t!("about.up_to_date")
+        } else {
+            t!("about.not_checked")
+        }
+    }
+
     pub(super) fn update_ui(&mut self, current_channel: UpdateChannel, message: Message) {
         match message {
             Message::OpenColorPicker(color) => {
@@ -651,20 +665,41 @@ impl Editor {
             .spacing(widgets::CARD_GAP),
             Page::About => {
                 let mut links = row![].spacing(design::space::SMALL);
-                for (key, url) in [
-                    ("about.github", "https://github.com/TatshSiow/Winderust"),
-                    ("about.discord", "https://discord.gg/M7nctFZUxX"),
+                for (key, icon, url) in [
+                    (
+                        "about.github",
+                        "icons/github.svg",
+                        "https://github.com/TatshSiow/Winderust",
+                    ),
+                    (
+                        "about.discord",
+                        "icons/discord.svg",
+                        "https://discord.gg/M7nctFZUxX",
+                    ),
                     (
                         "about.documentation",
+                        "icons/book-open.svg",
                         "https://github.com/TatshSiow/Winderust#readme",
                     ),
                     (
                         "about.license",
+                        "icons/scale.svg",
                         "https://github.com/TatshSiow/Winderust/blob/main/LICENSE",
                     ),
                 ] {
                     links = links.push(
-                        action_button(t!(key).to_string()).on_press(Message::Open(url.into())),
+                        button(
+                            row![
+                                super::navigation::glyph(icon),
+                                text(t!(key).to_string()).size(design::typography::BODY),
+                            ]
+                            .spacing(design::space::SMALL)
+                            .height(Fill)
+                            .align_y(iced::Center),
+                        )
+                        .height(design::BUTTON_HEIGHT)
+                        .padding([0, design::space::MEDIUM as u16])
+                        .on_press(Message::Open(url.into())),
                     );
                 }
                 let identity = widgets::settings_card(
@@ -684,12 +719,7 @@ impl Editor {
                         ]
                         .spacing(design::space::LARGE)
                         .align_y(iced::Center),
-                        text(format!(
-                            "{} Wanderlust {} Windows Derust",
-                            t!("about.inspired_by"),
-                            t!("about.inspiration_joiner")
-                        )),
-                        text("Copyright (C) 2026 Tatsh Siow / GPL-3.0-only"),
+                        text("Tatsh Siow"),
                         links
                     ]
                     .spacing(design::space::LARGE),
@@ -716,6 +746,7 @@ impl Editor {
                         .spacing(design::space::MEDIUM),
                     )
                     .into(),
+                    widgets::setting_row("about.update_status", text(self.update_status())).into(),
                     widgets::setting_row(
                         "about.latest_version",
                         text(self.latest.as_deref().unwrap_or("-")),
@@ -739,25 +770,12 @@ impl Editor {
                     updates
                 ]
                 .spacing(super::widgets::CARD_GAP);
-                if self.latest.is_some() {
-                    body = body.push(text(
-                        t!(if self.download.is_some() {
-                            "about.old"
-                        } else {
-                            "about.up_to_date"
-                        })
-                        .to_string(),
-                    ));
-                }
                 if let Some(url) = &self.download {
                     body = body.push(
                         action_button(t!("about.download_update").to_string())
                             .style(widgets::primary_button)
                             .on_press(Message::Open(url.clone())),
                     );
-                }
-                if let Some(error) = &self.update_error {
-                    body = body.push(text(error));
                 }
                 body
             }
@@ -1078,6 +1096,72 @@ pub(super) fn parse_color(value: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn about_links_center_their_contents_and_open_the_matching_destination() {
+        use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use iced::{mouse, Event, Rectangle, Size};
+
+        fn links(layout: Layout<'_>) -> Option<Layout<'_>> {
+            if layout.children().count() == 4
+                && layout
+                    .children()
+                    .all(|child| child.bounds().height == design::BUTTON_HEIGHT as f32)
+            {
+                Some(layout)
+            } else {
+                layout.children().find_map(links)
+            }
+        }
+
+        let editor = Editor::default();
+        let settings = Settings::default();
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        for width in [780.0, 1200.0] {
+            let mut view = editor.view(Page::About, &settings);
+            let mut tree = Tree::new(&view);
+            let bounds = Rectangle::with_size(Size::new(width, 540.0));
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            let links = links(Layout::new(&node)).expect("About link buttons");
+            for (button, url) in links.children().zip([
+                "https://github.com/TatshSiow/Winderust",
+                "https://discord.gg/M7nctFZUxX",
+                "https://github.com/TatshSiow/Winderust#readme",
+                "https://github.com/TatshSiow/Winderust/blob/main/LICENSE",
+            ]) {
+                let center = button.bounds().center();
+                let mut content = button;
+                while content.children().count() == 1 {
+                    content = content.children().next().unwrap();
+                }
+                assert_eq!(content.children().count(), 2, "icon and label");
+                for child in content.children() {
+                    assert!((child.bounds().center_y() - center.y).abs() < 0.01);
+                }
+                let mut messages = Vec::new();
+                for event in [
+                    mouse::Event::ButtonPressed(mouse::Button::Left),
+                    mouse::Event::ButtonReleased(mouse::Button::Left),
+                ] {
+                    view.as_widget_mut().update(
+                        &mut tree,
+                        &Event::Mouse(event),
+                        Layout::new(&node),
+                        mouse::Cursor::Available(center),
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut Shell::new(&mut messages),
+                        &bounds,
+                    );
+                }
+                assert!(matches!(messages.as_slice(), [Message::Open(actual)] if actual == url));
+            }
+        }
+    }
+
+    #[test]
     fn search_hotkey_record_clear_and_reset_keep_slots_independent() {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
@@ -1117,18 +1201,35 @@ mod tests {
         let settings = Settings::default();
         let channel = settings.general.update_channel;
         let mut editor = Editor::default();
+        assert_eq!(editor.update_status(), t!("about.not_checked"));
         editor.update_ui(channel, Message::ToggleAccent);
         assert!(editor.accent_expanded);
         assert!(editor.begin_check(true));
+        assert_eq!(editor.update_status(), t!("about.checking"));
         editor.update_ui(
             channel,
             Message::Checked(channel, Ok(("next".into(), Some("url".into())))),
         );
         assert!(!editor.checking);
         assert!(editor.show_update);
+        assert_eq!(editor.update_status(), t!("about.update_available"));
         editor.update_ui(channel, Message::DismissUpdate);
         assert!(!editor.show_update);
         assert!(editor.begin_check(false));
+        assert_eq!(editor.update_status(), t!("about.checking"));
+        editor.update_ui(
+            channel,
+            Message::Checked(channel, Err("Test failure".into())),
+        );
+        assert_eq!(editor.update_status(), "Test failure");
+        assert!(editor.download.is_some());
+        assert!(editor.begin_check(false));
+        assert_eq!(editor.update_status(), t!("about.checking"));
+        editor.update_ui(
+            channel,
+            Message::Checked(channel, Ok(("current".into(), None))),
+        );
+        assert_eq!(editor.update_status(), t!("about.up_to_date"));
     }
 
     #[test]
@@ -1362,5 +1463,6 @@ mod tests {
         );
         assert!(e.latest.is_none());
         assert!(!e.show_update);
+        assert_eq!(e.update_status(), t!("about.not_checked"));
     }
 }

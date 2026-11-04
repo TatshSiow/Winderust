@@ -864,8 +864,6 @@ cpu_limiter:
   no_rules: "尚未設定自訂規則。"
 
 about:
-  inspired_by: "靈感來自"
-  inspiration_joiner: "與"
   download_update: "更新"
   check_for_updates: "檢查更新"
   up_to_date: "已是最新版本"
@@ -879,9 +877,12 @@ about:
   updates: "更新"
   current_version: "目前版本"
   latest_version: "最新版本"
-  old: "舊版"
+  update_available: "有可用更新"
   automatic_check_for_updates_on_startup: "啟動時自動檢查更新"
   update_channel: "更新頻道"
+  update_status: "更新狀態"
+  checking: "正在檢查更新..."
+  not_checked: "尚未檢查"
 
 update_channel:
   stable: "穩定版"
