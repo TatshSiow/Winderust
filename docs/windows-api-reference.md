@@ -288,6 +288,15 @@ descriptors and access checks: [process rights](https://learn.microsoft.com/en-u
 and [thread rights](https://learn.microsoft.com/en-us/windows/win32/procthread/thread-security-and-access-rights).
 The owned-child regression in `src/backend/crash_recovery/tests.rs` denies parent
 process-setting access while preserving thread access and verifies replay.
+It runs on a dedicated test thread using a copy of its own primary token:
+[DuplicateTokenEx](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-duplicatetokenex)
+preserves user/group identity in an impersonation token;
+[AdjustTokenPrivileges](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges)
+with `DisableAllPrivileges=TRUE` disables privileges only on that copy, and
+[ImpersonateLoggedOnUser](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-impersonateloggedonuser)
+applies it only to that thread until exit. This makes the denial assertion
+independent of CI runner privileges without changing the process token or
+production access checks. Token setup failures fail the test.
 
 For App Suspension and CPU Limiter freeze intents, the watchdog opens and retains its own Job Object
 handle before acknowledging the pending freeze. This keeps the object alive if

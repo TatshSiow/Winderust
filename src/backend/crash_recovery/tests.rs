@@ -9,8 +9,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{LocalFree, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
     Security::{
-        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        SetKernelObjectSecurity, DACL_SECURITY_INFORMATION,
+        AdjustTokenPrivileges, Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        DuplicateTokenEx, ImpersonateLoggedOnUser, SecurityImpersonation, SetKernelObjectSecurity,
+        TokenImpersonation, DACL_SECURITY_INFORMATION, TOKEN_ADJUST_PRIVILEGES, TOKEN_DUPLICATE,
+        TOKEN_IMPERSONATE, TOKEN_QUERY,
     },
     System::{
         Diagnostics::ToolHelp::{
@@ -21,9 +23,9 @@ use windows_sys::Win32::{
             QueryInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
         },
         Threading::{
-            CreateEventW, CreateProcessW, ResumeThread, WaitForSingleObject,
-            BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, IDLE_PRIORITY_CLASS,
-            PROCESS_INFORMATION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            CreateEventW, CreateProcessW, GetCurrentProcess, OpenProcessToken, ResumeThread,
+            WaitForSingleObject, BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED,
+            IDLE_PRIORITY_CLASS, PROCESS_INFORMATION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
             PROCESS_QUERY_INFORMATION, STARTUPINFOW, THREAD_PRIORITY_BELOW_NORMAL,
             THREAD_PRIORITY_LOWEST,
         },
@@ -1739,6 +1741,71 @@ fn memory_priority_recovery_restores_an_explicit_process() -> Result<(), String>
 
 #[test]
 fn thread_priority_recovery_restores_without_process_set_information() -> Result<(), String> {
+    // A dedicated thread contains impersonation even on early return or panic; its exit
+    // releases the token without changing the test worker or the process-wide token.
+    match std::thread::spawn(thread_priority_recovery_without_token_privileges).join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn thread_priority_recovery_without_token_privileges() -> Result<(), String> {
+    let mut token = null_mut();
+    // SAFETY: GetCurrentProcess returns this test process's pseudo-handle; token is writable.
+    if unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_DUPLICATE | TOKEN_QUERY,
+            &mut token,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "Test token acquisition failed with error {}.",
+            last_error()
+        ));
+    }
+    let token = WinHandle::new(token);
+    let mut unprivileged = null_mut();
+    // SAFETY: token has duplicate access; no security descriptor is supplied, and
+    // unprivileged receives an owned impersonation token for the same authenticated user.
+    if unsafe {
+        DuplicateTokenEx(
+            token.raw(),
+            TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_ADJUST_PRIVILEGES,
+            null_mut(),
+            SecurityImpersonation,
+            TokenImpersonation,
+            &mut unprivileged,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "Test token duplication failed with error {}.",
+            last_error()
+        ));
+    }
+    let unprivileged = WinHandle::new(unprivileged);
+    // SAFETY: only this owned duplicate is changed; TRUE disables all its privileges,
+    // ignores NewState, and requires no previous-state buffer.
+    let disabled = unsafe {
+        AdjustTokenPrivileges(unprivileged.raw(), 1, null_mut(), 0, null_mut(), null_mut())
+    };
+    let disable_error = last_error();
+    if disabled == 0 || disable_error != 0 {
+        return Err(format!(
+            "Test token privilege disabling failed with error {disable_error}."
+        ));
+    }
+    // SAFETY: this same-user impersonation token has query/impersonate access. Only this dedicated
+    // thread impersonates it, and impersonation ends when the thread exits after this call.
+    if unsafe { ImpersonateLoggedOnUser(unprivileged.raw()) } == 0 {
+        return Err(format!(
+            "Test token impersonation failed with error {}.",
+            last_error()
+        ));
+    }
+
     let child = DisposableChild::spawn()?;
     let descriptor_text = crate::win_util::wide_null(&format!(
         "D:(D;;0x{PROCESS_SET_INFORMATION:x};;;WD)(A;;0x{PROCESS_QUERY_LIMITED_INFORMATION:x};;;WD)"
