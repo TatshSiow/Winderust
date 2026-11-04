@@ -1,4 +1,4 @@
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
+use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 
 use crate::win_util::last_error;
 
@@ -28,7 +28,6 @@ pub(crate) mod window_dpi;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcessOperationError {
     AccessDenied { operation: &'static str },
-    ProcessExited,
     Failed { operation: &'static str, code: u32 },
 }
 
@@ -40,8 +39,30 @@ impl ProcessOperationError {
     fn from_code(operation: &'static str, code: u32) -> Self {
         match code {
             ERROR_ACCESS_DENIED => Self::AccessDenied { operation },
-            ERROR_INVALID_PARAMETER => Self::ProcessExited,
             code => Self::Failed { operation, code },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+
+    #[test]
+    fn invalid_retained_handle_operation_keeps_the_native_error() {
+        assert_eq!(
+            ProcessOperationError::from_code("retained operation", ERROR_INVALID_PARAMETER),
+            ProcessOperationError::Failed {
+                operation: "retained operation",
+                code: ERROR_INVALID_PARAMETER,
+            }
+        );
+        assert_eq!(
+            ProcessOperationError::from_code("retained operation", ERROR_ACCESS_DENIED),
+            ProcessOperationError::AccessDenied {
+                operation: "retained operation",
+            }
+        );
     }
 }

@@ -35,6 +35,31 @@ window rendering and infrastructure calls are not duplicated here.
 | App Suspension | `src/features/advanced_controls/app_suspension.rs`, `src/control/suspension.rs`, `src/platform/windows/job.rs`, `src/platform/windows/suspension.rs`, and `app_suspension/wake_activity.rs` | Policy, shared App Suspension / CPU Limiter lifecycle controller, named Job Object primitives, compatibility-sensitive freeze information class, and audio/network wake detection |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs`, `src/control/timer_resolution.rs`, and `src/platform/windows/timer_resolution.rs` | Foreground-rule policy, process-lifetime ownership, and the sole raw WinMM adapter |
 | Win32 Priority Separation | `src/application/win32_priority_separation.rs`, `src/backend/win_registry.rs`, and `src/ui/win32_priority_separation.rs` | Typed persistent backup/apply/restore service, narrow registry adapter, and UI presentation for the `Win32PrioritySeparation` value |
+| Update checks | `src/backend/update_checker.rs`, `src/ui/app.rs` | Synchronous HTTPS WinHTTP requests on a background task, bounded response parsing, and typed diagnostic errors |
+
+## Update Checks
+
+`src/backend/update_checker.rs` owns WinHTTP handles and captures native errors
+immediately on failure. It requires successful timeout configuration before
+connecting, queries the numeric HTTP status after receiving headers, and accepts
+only HTTP 200 before reading a response of at most 64 KiB. The Stable endpoint
+parses one release object; the Pre-release endpoint parses a release list. Release
+tags become private, fallibly constructed semantic versions before comparison.
+The UI logs typed failure details while retaining its localized failure message.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `WinHttpSetTimeouts` | Sets five-second resolve, connect, send, and receive timeouts; failure stops the request. These are per-operation timeouts, not a total request deadline. | https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpsettimeouts |
+| `WinHttpQueryHeaders` | Reads `WINHTTP_QUERY_STATUS_CODE` with `WINHTTP_QUERY_FLAG_NUMBER` into a DWORD after `WinHttpReceiveResponse`. | https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpqueryheaders |
+
+## Process Icons
+
+`src/backend/process_icon.rs` draws extracted icons into a private DIB section.
+It calls [GdiFlush](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-gdiflush)
+and checks drawing/flush success before copying the pixels into a BMP. This
+synchronizes direct pixel access with GDI drawing as required by
+[CreateDIBSection](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-createdibsection).
+The selected object is restored before releasing the bitmap and device context.
 
 ## Power Plan Switching
 
@@ -59,8 +84,20 @@ User-facing behavior:
 - When automation decides to switch mode, Winderust calls the Windows API to set the selected scheme as active.
 - Adaptive Engine creates a temporary plan named `Winderust Adaptive`; startup recovery only recognizes that exact current Winderust name/description pair.
 - Ordinary automation and the temporary Adaptive plan are mutually exclusive typed controller owners. Window visibility changes cadence, not ownership.
-- Before each automatic mutation, the controller records a recovery intent, applies and verifies the active GUID, then commits the intent. Failures attempt compensation; an unrecovered intent remains for the crash helper.
-- If an external actor breaks Winderust's expected GUID chain, the controller rebases its clean baseline instead of overwriting that choice.
+- Before each automatic mutation, the controller records a recovery intent, applies and verifies the active GUID, then commits the intent. Failed application or verification compensates only while a fresh query still reports the attempted target, and confirms the restored GUID before canceling the intent. An observed external selection is preserved.
+- Uncertain compensation leaves the acknowledged intent pending without holding
+  the recovery mutex. A later verified observation must acknowledge its Commit,
+  Cancel, or ownership release before another mutation. A failed Commit
+  acknowledgment leaves the verified target in place for the helper; rolling it
+  back could hide an earlier restoration baseline behind a committed mismatch.
+  Power-plan retries retain the exact intent ID, so an already processed Commit
+  can be acknowledged idempotently before another transition begins.
+- If an external actor breaks Winderust's expected GUID chain, the controller
+  requires the helper to acknowledge forgetting committed and pending power-plan
+  edges before relinquishing or rebasing local ownership. Failed acknowledgment
+  keeps release pending and blocks further switches. Restoration rechecks the
+  expected managed GUID immediately before switching and skips an observed
+  external choice.
 
 ### Power Scheme APIs
 
@@ -95,7 +132,7 @@ User-facing behavior:
 
 ## By Time clock invalidation
 
-`src/backend/windows_events.rs` forwards [WM_TIMECHANGE](https://learn.microsoft.com/en-us/windows/win32/sysinfo/wm-timechange) and [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange) as `ClockChanged`. All setting-change broadcasts conservatively recheck By Time, including time-zone changes, without dereferencing the optional message string. `src/backend/automation.rs` wakes configured By Time rules in either power profile and `src/runtime/scheduler.rs` invalidates only the power-plan deadline. Policy and the next local-time boundary are recomputed; elapsed-time domains retain monotonic deadlines. Existing local-time handling selects the earliest ambiguous boundary and skips nonexistent boundaries.
+`src/backend/windows_events.rs` forwards [WM_TIMECHANGE](https://learn.microsoft.com/en-us/windows/win32/sysinfo/wm-timechange) and [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange) as `ClockChanged`. All setting-change broadcasts conservatively recheck By Time, including time-zone changes, without dereferencing the optional message string. `src/backend/automation.rs` wakes configured By Time rules in either power profile and `src/runtime/scheduler.rs` invalidates only the power-plan deadline. Policy and the next local-time boundary are recomputed; elapsed-time domains retain monotonic deadlines. Ambiguous local boundaries consider both clock occurrences and select the earliest one still in the future; nonexistent boundaries are skipped. Scheduled checks wait at most 60 seconds so local offset transitions can change rule applicability without a broadcast or a representable endpoint. Earlier rule endpoints and clock events still wake immediately when due.
 
 ## Automation Input Hook
 
@@ -192,10 +229,41 @@ closes the pipe. The watchdog also invokes the existing narrowly identified
 `Winderust Adaptive` stale-plan cleanup. No recovery journal is persisted to
 disk.
 
+The optional `recovery-smoke` feature adds isolated subprocess fixtures in
+`src/backend/crash_recovery/smoke.rs`, exercised by `tests/recovery_smoke.rs`.
+They use the same `run_watchdog_loop`, command acknowledgements, exact-process
+validation, native priority adapter, and retrying journal replay as the normal
+helper. A command gate permits only conservative Process Priority entries for
+one exact disposable `System32\ping.exe` identity; power-plan, job, thread, and
+other process-property entries are rejected before handling. The fixture injects
+no-op stale-plan cleanup and bypasses application startup. The production helper
+continues to use `restore_stale_adaptive_plans`; these tests do not establish
+machine-wide plan recovery coverage.
+
 `PowerPlanController` is the sole producer of automatic power-plan journal
-transactions. It verifies the active GUID before committing, compensates
-failed transitions, and leaves an acknowledged intent available when clean
-compensation cannot prove restoration.
+transactions. It verifies the active GUID before committing, preserves observed
+external selections during compensation, and leaves an acknowledged intent
+pending when compensation cannot prove restoration. Pending transitions retain
+their distinction from committed edges until a later observation resolves them.
+
+The shared `RecoveryIntent` boundary in `src/backend/crash_recovery.rs` blocks
+its transport after a generic Commit failure. Process Priority, Efficiency Mode,
+Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, Memory
+Priority, and CPU Allocation retain their verified target and original baseline
+on that failure. If compensation itself is uncertain, these controllers retain
+the acknowledged Begin as pending and block journal reuse until helper recovery;
+committing it could conceal an earlier baseline when Windows already restored
+the previous value but its readback failed.
+
+Power-plan journal replay in the same module rechecks the live GUID immediately
+before restoring and verifies the resulting baseline. Startup and helper stale
+Adaptive cleanup in `src/power/powercfg.rs` rechecks activation after matching the
+current name and description; it verifies restoration before deleting an active
+managed plan. An enumerated active flag cannot authorize a later switch over an
+observed external selection.
+Helper retries finish journal replay before stale Adaptive cleanup. Metadata
+contains the immediate source plan; restoring it after a failed replay could
+hide an older baseline owned by the journal.
 
 Recovery reopens a process only when its PID, creation time, and executable path
 still identify the recorded instance. It restores a property only while the
@@ -210,6 +278,16 @@ job even when the recorded root process has exited. Job descendants join by
 default and can remain frozen after their root exits, so root liveness is not a
 valid precondition for restoring a helper-owned job. If the watchdog cannot
 accept an intent, Winderust blocks the corresponding mutation.
+
+`src/backend/crash_recovery.rs::recover_thread_key` requests only
+`PROCESS_QUERY_LIMITED_INFORMATION` for the parent process, matching live Thread
+Priority acquisition. Mutation access is requested separately on the exact thread;
+a restrictive process DACL must not prevent restoration of an independently
+permitted thread change. Process and thread objects have separate security
+descriptors and access checks: [process rights](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
+and [thread rights](https://learn.microsoft.com/en-us/windows/win32/procthread/thread-security-and-access-rights).
+The owned-child regression in `src/backend/crash_recovery/tests.rs` denies parent
+process-setting access while preserving thread access and verifies replay.
 
 For App Suspension and CPU Limiter freeze intents, the watchdog opens and retains its own Job Object
 handle before acknowledging the pending freeze. This keeps the object alive if
@@ -609,10 +687,10 @@ Winderust keeps App Suspension opt-in and limited to explicitly selected apps be
 | `OpenProcess(PROCESS_SET_INFORMATION)` | Performs a non-mutating access-right probe during process discovery. Processes that expose query metadata but deny this mutation right, including protected security services, are classified as inaccessible and excluded from process-control rules. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
 | `GetProcessInformation(ProcessProtectionLevelInfo)` | Reads `PROCESS_PROTECTION_LEVEL_INFORMATION` during process discovery. Any level other than `PROTECTION_LEVEL_NONE` identifies a Protected Process Light target and makes it inaccessible to Winderust controls. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_protection_level_information |
 | `NtQueryObject(ObjectBasicInformation)` | Reads `PUBLIC_OBJECT_BASIC_INFORMATION.GrantedAccess` from Winderust's own opened process handle so kernel security callbacks that silently strip requested rights are detected. Discovery probes `PROCESS_SET_INFORMATION`; action validation probes the operation-specific mask (`PROCESS_TERMINATE`, `PROCESS_SET_INFORMATION`, or job-assignment rights) while retaining critical/PPL checks. This API is documented by Microsoft but explicitly compatibility-sensitive; failure is treated as inaccessible. | https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryobject |
-| `OpenProcessToken` | Opens each queryable process token once with `TOKEN_QUERY`; the same captured SID populates the Process List User column and App Suspension picker eligibility. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken |
+| `OpenProcessToken` | Opens each queryable process token once per enrichment with `TOKEN_QUERY` for service-account safety. Full Process List enrichment also uses the same captured SID for its User column. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken |
 | `GetTokenInformation(TokenUser)` | Reads the SID of the account associated with the process token. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation |
 | `IsWellKnownSid` | Makes App Suspension automation, Process List actions, and process-picker eligibility fail closed for LocalSystem, LocalService, and NetworkService process tokens while leaving unrelated process controls available. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-iswellknownsid |
-| `LookupAccountSidW` | Resolves the process token SID to its local account name; inaccessible or unmapped tokens use the neutral `Unavailable · S#` UI fallback rather than guessing an account. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw |
+| `LookupAccountSidW` | Full Process List enrichment resolves the process token SID to its local account name; runtime and picker enrichment skip this display-only lookup while retaining SID safety checks. Inaccessible or unmapped tokens use the neutral `Unavailable · S#` UI fallback rather than guessing an account. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw |
 | `CloseHandle` | Closes process and job handles after use. | https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle |
 | `SetLastError` / `GetLastError` | Clears the thread error slot immediately before `CreateJobObjectW`, then captures it immediately afterward so `ERROR_ALREADY_EXISTS` cannot be confused with a stale success-path value; other failures likewise capture their error before another Win32 call. | [Set](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setlasterror) / [Get](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror) |
 
@@ -859,6 +937,14 @@ src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, T
 - [System error codes](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-): ERROR_INVALID_PARAMETER (87) is an invalid parameter, not generic exit evidence.
 
 ## Exact identity and CPU Set observations
+
+`src/platform/windows.rs::ProcessOperationError` preserves invalid-parameter
+errors from retained-handle operations as failures. For example,
+[SetProcessAffinityMask](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask)
+can report `ERROR_INVALID_PARAMETER` for an unsupported mask or processor-group
+layout while the process is alive. This must retain the controller's baseline
+and recovery ownership. Missing-PID classification stays at the separate
+`OpenProcess` acquisition boundary in `src/platform/windows/process.rs`.
 
 `src/cpu.rs::PerProcessorUsageMonitor` collects valid per-processor deltas into a complete vector or returns unavailable. Shared percentage calculation uses checked cumulative-counter arithmetic. [GetSystemTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes) includes idle in kernel time. The existing NT processor collector and index domain are unchanged.
 

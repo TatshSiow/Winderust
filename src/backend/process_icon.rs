@@ -6,8 +6,8 @@ use std::{
 use iced::widget::image::Handle as Image;
 use windows_sys::Win32::{
     Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, SelectObject,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
     },
     UI::{
         Shell::SHDefExtractIconW,
@@ -107,9 +107,12 @@ fn hicon_to_bmp(icon: HICON) -> Option<Vec<u8>> {
     }
     // SAFETY: hdc has the bitmap selected, icon is live for the call, and dimensions are positive.
     let drawn = unsafe { DrawIconEx(hdc, 0, 0, icon, width, height, 0, null_mut(), DI_NORMAL) };
+    // SAFETY: Flush this thread's GDI writes before accessing the DIB section's pixels directly.
+    let flushed = unsafe { GdiFlush() };
 
-    let pixels = if drawn != 0 {
-        // SAFETY: bits references byte_len initialized bytes in the live DIB section.
+    let pixels = if drawn != 0 && flushed != 0 {
+        // SAFETY: bits references byte_len initialized bytes in the live DIB section, and
+        // GdiFlush completed the drawing before this direct read.
         Some(unsafe { slice::from_raw_parts(bits.cast::<u8>(), byte_len).to_vec() })
     } else {
         None
@@ -153,6 +156,24 @@ fn bmp_from_bgra_pixels(width: i32, height: i32, pixels: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rasterizes_a_shared_windows_icon() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION};
+
+        // SAFETY: A null instance with IDI_APPLICATION loads a predefined shared icon;
+        // Windows retains ownership, so this test must not destroy it.
+        let icon = unsafe { LoadIconW(null_mut(), IDI_APPLICATION) };
+        assert!(!icon.is_null());
+        let bytes = hicon_to_bmp(icon).expect("shared application icon should rasterize");
+        let decoded = image::load_from_memory(&bytes).expect("icon should produce a valid bitmap");
+        assert_eq!(decoded.width(), ICON_PIXELS as u32);
+        assert_eq!(decoded.height(), ICON_PIXELS as u32);
+        assert!(decoded
+            .to_rgba8()
+            .pixels()
+            .any(|pixel| pixel.0[..3] != [0, 0, 0]));
+    }
 
     #[test]
     fn bmp_header_describes_the_supplied_pixels() {

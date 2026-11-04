@@ -248,7 +248,7 @@ impl CpuLimiter {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a CpuLimiterSettings,
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
         master_enabled: bool,
         status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
     ) -> Element<'a, Message> {

@@ -1,7 +1,7 @@
-use std::{collections::BTreeSet, path::PathBuf};
-
-#[cfg(test)]
-use std::path::Path;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
@@ -95,7 +95,6 @@ pub struct BackgroundEfficiencySnapshot {
     pub unsupported: bool,
     pub scanned_processes: usize,
     pub throttled_processes: usize,
-    pub timer_resolution_ignored_processes: usize,
     pub skipped_processes: usize,
     pub access_denied_processes: usize,
     pub failed_processes: usize,
@@ -356,8 +355,6 @@ impl BackgroundEfficiencyManager {
             scanned_processes,
             throttled_processes: controller
                 .policy_managed_process_count(ControlOwner::BackgroundEfficiency),
-            timer_resolution_ignored_processes: controller
-                .policy_ignore_timer_resolution_count(ControlOwner::BackgroundEfficiency),
             skipped_processes,
             access_denied_processes,
             failed_processes: failures.count,
@@ -508,7 +505,6 @@ impl Default for BackgroundEfficiencySnapshot {
             unsupported: false,
             scanned_processes: 0,
             throttled_processes: 0,
-            timer_resolution_ignored_processes: 0,
             skipped_processes: 0,
             access_denied_processes: 0,
             failed_processes: 0,
@@ -554,13 +550,11 @@ impl BackgroundEfficiencyFailures {
 }
 
 fn background_efficiency_target_key(target: &BackgroundEfficiencyTarget) -> ProcessTargetKey {
-    ProcessControlTarget::automatic(
+    ProcessTargetKey::new(
         target.process_id,
-        target.process_name.clone(),
-        PathBuf::from(&target.executable_path),
         target.creation_time,
+        Path::new(&target.executable_path),
     )
-    .key()
 }
 
 fn process_failure_message(

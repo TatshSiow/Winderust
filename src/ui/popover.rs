@@ -10,12 +10,13 @@ use iced::{
 pub(super) fn view<'a, Message: 'a>(
     id: u64,
     anchor: Element<'a, Message>,
-    content: Element<'a, Message>,
+    content: impl Fn() -> Element<'a, Message> + 'a,
 ) -> Element<'a, Message> {
     Element::new(Popover {
         id,
         anchor,
-        content: Some(super::scrolling::repaint_popup(content)),
+        content: Some(Box::new(content)),
+        popup: None,
     })
 }
 pub(super) fn context_menu<'a, Message: Clone + 'a>(
@@ -30,19 +31,21 @@ pub(super) fn context_menu<'a, Message: Clone + 'a>(
         })
         .into(),
         content: None,
+        popup: None,
     })
 }
 struct Popover<'a, Message> {
     id: u64,
     anchor: Element<'a, Message>,
-    content: Option<Element<'a, Message>>,
+    content: Option<Box<dyn Fn() -> Element<'a, Message> + 'a>>,
+    popup: Option<Element<'a, Message>>,
 }
 #[derive(Default)]
 struct State {
     id: u64,
     open: bool,
 }
-impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
+impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> {
     fn size(&self) -> Size<Length> {
         self.anchor.as_widget().size()
     }
@@ -57,8 +60,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
     }
     fn children(&self) -> Vec<Tree> {
         let mut children = vec![Tree::new(&self.anchor)];
-        if let Some(content) = &self.content {
-            children.push(Tree::new(content));
+        if let Some(popup) = &self.popup {
+            children.push(Tree::new(popup));
         }
         children
     }
@@ -72,9 +75,6 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
             tree.children = self.children();
         }
         tree.children[0].diff(&self.anchor);
-        if let Some(content) = &self.content {
-            tree.children[1].diff(content);
-        }
     }
     fn layout(
         &mut self,
@@ -216,8 +216,18 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
             state.open = false;
             return None;
         }
+        if self.popup.is_none() {
+            let content = self.content.as_ref().expect("Hover popover has content");
+            let popup = super::scrolling::repaint_popup(content());
+            if tree.children.len() == 1 {
+                tree.children.push(Tree::new(&popup));
+            } else {
+                tree.children[1].diff(&popup);
+            }
+            self.popup = Some(popup);
+        }
         Some(overlay::Element::new(Box::new(Popup {
-            content: self.content.as_mut().expect("Hover popover has content"),
+            content: self.popup.as_mut().expect("Open hover popover was built"),
             tree: &mut tree.children[1],
             open: &mut state.open,
             anchor,
@@ -525,18 +535,27 @@ mod tests {
     }
 
     #[test]
-    fn hover_popup_uses_scrolled_anchor_for_visibility() {
+    fn hover_popup_defers_content_and_keeps_identity_and_scrolled_visibility() {
+        fn popup(id: u64, builds: &std::cell::Cell<usize>) -> Element<'_, ()> {
+            view(
+                id,
+                iced::widget::container("Process")
+                    .width(160)
+                    .height(35)
+                    .into(),
+                move || {
+                    builds.set(builds.get() + 1);
+                    iced::widget::text("Affected processes").into()
+                },
+            )
+        }
         let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let mut element: Element<'_, ()> = view(
-            1,
-            iced::widget::container("Process")
-                .width(160)
-                .height(35)
-                .into(),
-            iced::widget::text("Affected processes").into(),
-        );
+        let builds = std::cell::Cell::new(0);
+        let mut element = popup(1, &builds);
         let mut tree = Tree::new(&element);
-        let node = element
+        assert_eq!(builds.get(), 0);
+        assert_eq!(tree.children.len(), 1);
+        let mut node = element
             .as_widget_mut()
             .layout(
                 &mut tree,
@@ -546,11 +565,73 @@ mod tests {
             .move_to(iced::Point::new(20.0, 700.0));
         let viewport = Rectangle::with_size(Size::new(500.0, 300.0));
         let translation = Vector::new(0.0, -650.0);
+        for recreate_tree in [false, true] {
+            if recreate_tree {
+                tree = Tree::new(&element);
+                node = element
+                    .as_widget_mut()
+                    .layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(Size::ZERO, Size::new(500.0, 1000.0)),
+                    )
+                    .move_to(iced::Point::new(20.0, 700.0));
+            }
+            element.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::CursorMoved {
+                    position: node.bounds().center(),
+                }),
+                Layout::new(&node),
+                mouse::Cursor::Available(node.bounds().center()),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+                &(viewport - translation),
+            );
+            assert!(element
+                .as_widget_mut()
+                .overlay(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &viewport,
+                    translation,
+                )
+                .is_some());
+            assert_eq!(builds.get(), 1);
+            assert_eq!(tree.children.len(), 2);
+        }
+        element = popup(1, &builds);
+        element.as_widget().diff(&mut tree);
+        assert_eq!(builds.get(), 1);
+        assert_eq!(tree.children.len(), 2);
+        assert!(element
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                translation,
+            )
+            .is_some());
+        assert_eq!(builds.get(), 2);
+        assert!(element
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                Vector::ZERO,
+            )
+            .is_none());
+        assert_eq!(builds.get(), 2);
+        assert!(!tree.state.downcast_ref::<State>().open);
         element.as_widget_mut().update(
             &mut tree,
-            &Event::Mouse(mouse::Event::CursorMoved {
-                position: node.bounds().center(),
-            }),
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             Layout::new(&node),
             mouse::Cursor::Available(node.bounds().center()),
             &renderer,
@@ -568,16 +649,12 @@ mod tests {
                 translation,
             )
             .is_some());
-        assert!(element
-            .as_widget_mut()
-            .overlay(
-                &mut tree,
-                Layout::new(&node),
-                &renderer,
-                &viewport,
-                Vector::ZERO,
-            )
-            .is_none());
+        assert_eq!(builds.get(), 2);
+        element = popup(2, &builds);
+        element.as_widget().diff(&mut tree);
+        assert_eq!(builds.get(), 2);
+        assert_eq!(tree.children.len(), 1);
+        assert!(!tree.state.downcast_ref::<State>().open);
     }
 
     #[test]

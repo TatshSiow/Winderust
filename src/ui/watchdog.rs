@@ -236,7 +236,7 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a WatchdogSettings,
-        candidates: &[app_picker::Candidate],
+        candidates: &'a [app_picker::Candidate],
     ) -> Element<'a, Message> {
         let rules = settings
             .rules

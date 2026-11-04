@@ -632,11 +632,6 @@ fn check_scroll_damage_with_delta<M>(
         &layout::Limits::new(iced::Size::ZERO, bounds.size()),
     );
     let mut previous = Vec::new();
-    let physical_size = iced::Size::new(bounds.width as u32, bounds.height as u32);
-    let mut pixels = tiny_skia::Pixmap::new(physical_size.width, physical_size.height).unwrap();
-    let mut mask = tiny_skia::Mask::new(physical_size.width, physical_size.height).unwrap();
-    let viewport = iced::advanced::graphics::Viewport::with_physical_size(physical_size, 1.0);
-    let mut samples = Vec::new();
     for frame in 0..7 {
         let mut messages = Vec::new();
         view.as_widget_mut().update(
@@ -678,24 +673,7 @@ fn check_scroll_damage_with_delta<M>(
             damage.len()
         );
         previous = renderer.layers().to_vec();
-        let start = std::time::Instant::now();
-        renderer.draw(
-            &mut pixels.as_mut(),
-            &mut mask,
-            &viewport,
-            &damage,
-            iced::Color::BLACK,
-        );
-        samples.push(start.elapsed());
-        println!(
-            "scroll frame {frame}: {} regions, {:?}, {} messages",
-            damage.len(),
-            start.elapsed(),
-            messages.len()
-        );
     }
-    samples.sort();
-    println!("median scroll raster: {:?}", samples[3]);
 }
 
 #[cfg(test)]
@@ -1084,17 +1062,6 @@ mod tests {
                         .all(|(a, b)| a.abs_diff(*b) <= 1),
                     "scroll clipping changed pixels for {name} at scale {scale}"
                 );
-                if scale == 1.0 {
-                    std::fs::create_dir_all("target/ui-preview").unwrap();
-                    image::save_buffer(
-                        format!("target/ui-preview/scrollbar-{name}.png"),
-                        &actual,
-                        640,
-                        360,
-                        image::ColorType::Rgba8,
-                    )
-                    .unwrap();
-                }
             }
         }
     }

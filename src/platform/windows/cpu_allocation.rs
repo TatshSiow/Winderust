@@ -212,6 +212,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invalid_affinity_mask_is_a_failure_for_a_live_process() {
+        use super::super::process::{self, ProcessAccess};
+        use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+
+        let process = process::open(process::current_process_id(), ProcessAccess::SetInformation)
+            .expect("current process should open for an invalid-argument probe");
+        assert!(matches!(
+            set_affinity(&process, 0),
+            Err(ProcessOperationError::Failed {
+                code: ERROR_INVALID_PARAMETER,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn partial_cpu_set_inventory_is_rejected() {
         assert!(cpu_set_inventory_from_bytes(&[0; 3]).is_err());
         assert!(cpu_set_inventory_from_bytes(&[0; 8]).is_err());

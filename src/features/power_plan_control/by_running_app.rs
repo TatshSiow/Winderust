@@ -151,7 +151,7 @@ fn matching_rule_process(
         if !rule.enabled || rule.executable_path.trim().is_empty() {
             continue;
         }
-        let Some(target_guid) = rule.power_plan_guid.clone() else {
+        let Some(target_guid) = rule.power_plan_guid.as_ref() else {
             continue;
         };
         let Some(process) = processes
@@ -166,7 +166,7 @@ fn matching_rule_process(
             rule_name: performance_rule_name(rule),
             process_id: process.id,
             process_name: process.name.clone(),
-            target_guid,
+            target_guid: target_guid.clone(),
         });
     }
 

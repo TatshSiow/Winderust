@@ -53,9 +53,6 @@ use crate::{
     win_util::{last_error, WinHandle},
 };
 
-#[cfg(test)]
-use windows_sys::Win32::System::Threading::PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-
 const WATCHDOG_ARGUMENT: &str = "--winderust-recovery-watchdog";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROCESS_IO_PRIORITY: u32 = 33;
@@ -70,6 +67,9 @@ pub(crate) fn is_watchdog_process(process_id: u32) -> bool {
 }
 
 static STARTUP_ERROR: OnceLock<String> = OnceLock::new();
+
+#[cfg(feature = "recovery-smoke")]
+pub(crate) mod smoke;
 
 #[derive(Debug)]
 struct RecoveryRuntime {
@@ -109,6 +109,7 @@ enum RecoveryCommand {
         thread_id: u32,
         thread_creation_time: u64,
     },
+    ForgetPowerPlan,
     ForgetJob {
         name: String,
     },
@@ -200,6 +201,47 @@ pub(crate) struct RecoveryIntent {
     entry: Option<RecoveryEntry>,
 }
 
+pub(crate) struct DeferredRecoveryIntent {
+    id: u64,
+    entry: Option<RecoveryEntry>,
+}
+
+impl DeferredRecoveryIntent {
+    pub(crate) fn resolve(&mut self, applied: bool) -> Result<(), String> {
+        if self.entry.is_none() {
+            return Ok(());
+        }
+        let mut runtime = RUNTIME
+            .lock()
+            .map_err(|_| "Crash recovery state is poisoned.".to_owned())?;
+        let runtime = runtime.as_mut().ok_or_else(|| {
+            "Crash recovery stopped before deferred mutation resolution.".to_owned()
+        })?;
+        self.resolve_with_runtime(runtime, applied)
+    }
+
+    fn resolve_with_runtime(
+        &mut self,
+        runtime: &mut RecoveryRuntime,
+        applied: bool,
+    ) -> Result<(), String> {
+        let Some(entry) = self.entry.as_ref() else {
+            return Ok(());
+        };
+        let command = if applied {
+            RecoveryCommand::Commit { id: self.id }
+        } else {
+            RecoveryCommand::Cancel { id: self.id }
+        };
+        runtime.transport.send(&command)?;
+        if applied {
+            compact_or_push(&mut runtime.entries, entry.clone());
+        }
+        self.entry = None;
+        Ok(())
+    }
+}
+
 impl RecoveryIntent {
     fn noop() -> Self {
         Self {
@@ -220,11 +262,89 @@ impl RecoveryIntent {
         let runtime = runtime
             .as_mut()
             .ok_or_else(|| "Crash recovery stopped before mutation commit.".to_owned())?;
-        compact_or_push(&mut runtime.entries, entry);
+        commit_recovery_entry(runtime, self.id, entry)
+    }
+
+    pub(crate) fn defer(mut self) -> DeferredRecoveryIntent {
+        let pending = DeferredRecoveryIntent {
+            id: self.id,
+            entry: self.entry.take(),
+        };
+        // Keep the acknowledged Begin pending in the helper without holding the
+        // global mutex while the controller waits for a conclusive observation.
+        drop(self.runtime.take());
+        pending
+    }
+
+    pub(crate) fn retain_pending(mut self) -> Result<(), String> {
+        // Disable Drop's Cancel even when internal state is unexpectedly missing.
+        let entry = self.entry.take();
+        let Some(runtime) = self.runtime.as_mut() else {
+            return if entry.is_none() {
+                Ok(())
+            } else {
+                Err("Recovery intent lost its runtime before pending retention.".to_owned())
+            };
+        };
+        let runtime = runtime
+            .as_mut()
+            .ok_or_else(|| "Crash recovery stopped before pending retention.".to_owned())?;
+        retain_pending_recovery(runtime);
+        if entry.is_none() {
+            return Err(
+                "Recovery intent was already completed before pending retention.".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_or_defer(mut self) -> Result<(), (String, DeferredRecoveryIntent)> {
+        let result = self.commit_acknowledged();
+        result.map_err(|error| (error, self.defer()))
+    }
+
+    fn commit_acknowledged(&mut self) -> Result<(), String> {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return Ok(());
+        };
+        let entry = self
+            .entry
+            .as_ref()
+            .ok_or_else(|| "Recovery intent was already completed.".to_owned())?;
+        let runtime = runtime
+            .as_mut()
+            .ok_or_else(|| "Crash recovery stopped before mutation commit.".to_owned())?;
         runtime
             .transport
-            .send(&RecoveryCommand::Commit { id: self.id })
+            .send(&RecoveryCommand::Commit { id: self.id })?;
+        compact_or_push(&mut runtime.entries, entry.clone());
+        self.entry = None;
+        Ok(())
     }
+}
+
+fn commit_recovery_entry(
+    runtime: &mut RecoveryRuntime,
+    id: u64,
+    entry: RecoveryEntry,
+) -> Result<(), String> {
+    compact_or_push(&mut runtime.entries, entry);
+    if let Err(error) = runtime.transport.send(&RecoveryCommand::Commit { id }) {
+        // The applied transition must stay recoverable whether Commit reached the
+        // helper or left its exact Begin pending. Generic callers do not retain
+        // that ID, so even an explicit rejection must prevent later mutations.
+        let error = runtime.transport.failed.get_or_insert_with(|| {
+            format!("{error} Recovery commit is unconfirmed; further recovery commands are blocked and outstanding recovery ownership is retained.")
+        });
+        return Err(error.clone());
+    }
+    Ok(())
+}
+
+fn retain_pending_recovery(runtime: &mut RecoveryRuntime) {
+    runtime.transport.failed.get_or_insert_with(|| {
+        "Mutation recovery is unresolved; further recovery commands are blocked and the acknowledged intent remains pending for helper recovery.".to_owned()
+    });
 }
 
 impl Drop for RecoveryIntent {
@@ -309,11 +429,32 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
         return false;
     }
     super::diagnostics::initialize("winderust-recovery");
+    if let Err(error) = run_watchdog_loop(
+        BufReader::new(std::io::stdin()),
+        std::io::stdout(),
+        |_| Ok(()),
+        restore_stale_adaptive_plans,
+    ) {
+        super::diagnostics::error(&format!("Crash recovery failed: {error}"));
+        eprintln!("Winderust crash recovery failed: {error}");
+        super::diagnostics::finish();
+        std::process::exit(2);
+    }
+    super::diagnostics::event("Recovery helper finished restoration.");
+    super::diagnostics::finish();
+    true
+}
+
+fn run_watchdog_loop(
+    input: impl BufRead,
+    mut output: impl Write,
+    mut authorize: impl FnMut(&RecoveryCommand) -> Result<(), String>,
+    cleanup: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let mut entries = Vec::new();
     let mut pending = Vec::new();
     let mut jobs = HashMap::new();
-    let mut output = std::io::stdout();
-    for line in BufReader::new(std::io::stdin()).lines() {
+    for line in input.lines() {
         let result = line
             .map_err(|error| format!("Failed to read recovery command: {error}"))
             .and_then(|line| {
@@ -321,6 +462,7 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
                     .map_err(|error| format!("Invalid recovery command: {error}"))
             })
             .and_then(|command| {
+                authorize(&command)?;
                 apply_watchdog_command(command, &mut entries, &mut pending, &mut jobs)
             });
         let response = match result {
@@ -339,16 +481,12 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
     }
     let committed_len = append_pending_intents(&mut entries, pending);
     if !entries.is_empty() {
-        if let Err(error) = recover_with_retry(&entries, committed_len) {
-            super::diagnostics::error(&format!("Crash recovery failed: {error}"));
-            eprintln!("Winderust crash recovery failed: {error}");
-            super::diagnostics::finish();
-            std::process::exit(2);
-        }
+        recover_with_retry_using(
+            || recover_journal_with_pending(&entries, committed_len),
+            cleanup,
+        )?;
     }
-    super::diagnostics::event("Recovery helper finished restoration.");
-    super::diagnostics::finish();
-    true
+    Ok(())
 }
 
 fn apply_watchdog_command(
@@ -434,6 +572,10 @@ fn apply_watchdog_command_with_open_job(
             entries.retain(|entry| entry.key() != key);
             pending.retain(|(_, entry)| entry.key() != key);
         }
+        RecoveryCommand::ForgetPowerPlan => {
+            entries.retain(|entry| !matches!(entry, RecoveryEntry::PowerPlan { .. }));
+            pending.retain(|(_, entry)| !matches!(entry, RecoveryEntry::PowerPlan { .. }));
+        }
         RecoveryCommand::ForgetJob { name } => {
             let key = format!("job:{name}");
             entries.retain(|entry| entry.key() != key);
@@ -455,22 +597,17 @@ fn append_pending_intents(
     committed_len
 }
 
-fn recover_with_retry(entries: &[RecoveryEntry], committed_len: usize) -> Result<(), String> {
+fn recover_with_retry_using(
+    mut recover: impl FnMut() -> Result<(), String>,
+    mut cleanup: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let mut last_error = None;
     for attempt in 0..3 {
-        let recovery = recover_journal_with_pending(entries, committed_len);
-        let plan_cleanup = restore_stale_adaptive_plans();
-        match (recovery, plan_cleanup) {
-            (Ok(()), Ok(())) => return Ok(()),
-            (recovery, cleanup) => {
-                last_error = Some(
-                    [recovery.err(), cleanup.err()]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                );
-            }
+        // Metadata restores only the immediate source; the journal may own an
+        // older baseline. Cleanup must not hide that chain after failed replay.
+        match recover().and_then(|()| cleanup()) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
         }
         if attempt < 2 {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -627,6 +764,23 @@ pub(crate) fn record_power_plan_change(
         original_guid: original.to_owned(),
         expected_guid: expected.to_owned(),
     })
+}
+
+pub(crate) fn forget_power_plan_changes() -> Result<(), String> {
+    let mut runtime = RUNTIME
+        .lock()
+        .map_err(|_| "Crash recovery state is poisoned.".to_owned())?;
+    let Some(runtime) = runtime.as_mut() else {
+        #[cfg(test)]
+        return Ok(());
+        #[cfg(not(test))]
+        return Err("The external recovery watchdog is unavailable.".to_owned());
+    };
+    runtime.transport.send(&RecoveryCommand::ForgetPowerPlan)?;
+    runtime
+        .entries
+        .retain(|entry| !matches!(entry, RecoveryEntry::PowerPlan { .. }));
+    Ok(())
 }
 
 pub(crate) fn suspension_job_name(process_id: u32, creation_time: u64) -> String {
@@ -1034,7 +1188,9 @@ fn recover_thread_key(
     entries: &[RecoveryEntry],
     committed_len: usize,
 ) -> Result<(), String> {
-    let Some(process_handle) = open_matching_process(process)? else {
+    let Some(process_handle) =
+        open_matching_process_with_access(process, PROCESS_QUERY_LIMITED_INFORMATION)?
+    else {
         return Ok(());
     };
     // SAFETY: thread_id came from the recovery journal and no inherited handle is requested.
@@ -1192,10 +1348,35 @@ fn recover_power_plan_key(
     entries: &[RecoveryEntry],
     committed_len: usize,
 ) -> Result<(), String> {
-    let current = active_plan()?.guid;
+    recover_power_plan_key_with(
+        key,
+        entries,
+        committed_len,
+        || active_plan().map(|plan| plan.guid),
+        set_active,
+    )
+}
+
+fn recover_power_plan_key_with(
+    key: &str,
+    entries: &[RecoveryEntry],
+    committed_len: usize,
+    mut active_guid: impl FnMut() -> Result<String, String>,
+    mut activate: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let current = active_guid()?;
     let desired = unwind_power_plan_guid(key, &current, entries, committed_len);
     if !desired.eq_ignore_ascii_case(&current) {
-        set_active(&desired)?;
+        if !active_guid()?.eq_ignore_ascii_case(&current) {
+            return Ok(());
+        }
+        activate(&desired)?;
+        let actual = active_guid()?;
+        if !actual.eq_ignore_ascii_case(&desired) {
+            return Err(format!(
+                "Power-plan recovery expected {desired}, but Windows reported {actual}."
+            ));
+        }
     }
     Ok(())
 }
@@ -1758,1767 +1939,4 @@ unsafe extern "system" {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::platform::windows::thread_suspension;
-    use std::{
-        io::Cursor,
-        process::{Child, Command, Stdio},
-    };
-
-    use windows_sys::Win32::{
-        Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
-        System::{
-            Diagnostics::ToolHelp::{
-                CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
-                THREADENTRY32,
-            },
-            JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
-                QueryInformationJobObject, TerminateJobObject,
-                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-            },
-            Threading::{
-                CreateEventW, CreateProcessW, ResumeThread, WaitForSingleObject,
-                BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, IDLE_PRIORITY_CLASS,
-                PROCESS_INFORMATION, PROCESS_QUERY_INFORMATION, STARTUPINFOW,
-                THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_LOWEST,
-            },
-        },
-    };
-
-    #[test]
-    fn recovery_helper_is_rejected_by_every_process_control_acquisition() {
-        use crate::control::process::{self, ProcessControlError, ProcessControlTarget};
-        // Holding the journal lock also verifies protection never tries to re-lock it.
-        let _runtime = RUNTIME.lock().unwrap();
-        struct RestoreId(u32);
-        impl Drop for RestoreId {
-            fn drop(&mut self) {
-                WATCHDOG_PROCESS_ID.store(self.0, Ordering::Relaxed);
-            }
-        }
-        let _restore = RestoreId(WATCHDOG_PROCESS_ID.swap(u32::MAX, Ordering::Relaxed));
-        let target = ProcessControlTarget::automatic(
-            u32::MAX,
-            "renamed-helper.exe".into(),
-            r"C:/Apps/renamed-helper.exe".into(),
-            1,
-        );
-        assert!(is_watchdog_process(target.id));
-        assert!(!is_watchdog_process(0));
-        assert!(!is_watchdog_process(std::process::id()));
-        for acquire in [
-            process::open_process_for_set_information,
-            process::open_process_for_thread_control,
-            process::open_process_for_thread_snapshot,
-            process::open_process_for_working_set_trim,
-            process::open_process_for_termination,
-            process::open_process_for_job_assignment,
-        ] {
-            for cross_session in [false, true] {
-                assert!(matches!(
-                    acquire(&target, cross_session),
-                    Err(ProcessControlError::AccessDenied(_))
-                ));
-            }
-        }
-    }
-
-    struct FrozenJobCleanup {
-        job: WinHandle,
-    }
-
-    impl Drop for FrozenJobCleanup {
-        fn drop(&mut self) {
-            let mut thaw = JobObjectFreezeInformation::new(false);
-            // SAFETY: the test owns this live Job Object handle and thaw has the exact buffer
-            // layout required by the same contract exercised by the test.
-            let _ = unsafe {
-                SetInformationJobObject(
-                    self.job.raw(),
-                    JOB_OBJECT_FREEZE_INFORMATION_CLASS,
-                    (&mut thaw as *mut JobObjectFreezeInformation).cast(),
-                    std::mem::size_of::<JobObjectFreezeInformation>() as u32,
-                )
-            };
-            // SAFETY: the test owns this disposable Job Object and terminates only its test tree.
-            let _ = unsafe { TerminateJobObject(self.job.raw(), 1) };
-        }
-    }
-
-    fn resume_disposable_root(process: &WinHandle, thread: &WinHandle) {
-        // SAFETY: both handles belong to the suspended disposable process created by the test.
-        let _ = unsafe { ResumeThread(thread.raw()) };
-        // SAFETY: process is a live disposable handle; this bounded wait retains no pointer.
-        let _ = unsafe { WaitForSingleObject(process.raw(), 5_000) };
-    }
-
-    struct DisposableChild {
-        child: Child,
-    }
-
-    impl DisposableChild {
-        fn spawn() -> Result<Self, String> {
-            let system_root = std::env::var_os("SystemRoot")
-                .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
-            let executable = Path::new(&system_root).join("System32").join("ping.exe");
-            let child = Command::new(executable)
-                .args(["127.0.0.1", "-n", "120", "-w", "1000"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|error| format!("Failed to start disposable test process: {error}"))?;
-            Ok(Self { child })
-        }
-
-        fn process_handle(&self) -> Result<WinHandle, String> {
-            // SAFETY: child.id identifies the disposable process created by this test.
-            let handle = unsafe {
-                OpenProcess(
-                    PROCESS_QUERY_INFORMATION
-                        | PROCESS_QUERY_LIMITED_INFORMATION
-                        | PROCESS_SET_INFORMATION,
-                    0,
-                    self.child.id(),
-                )
-            };
-            (!handle.is_null())
-                .then(|| WinHandle::new(handle))
-                .ok_or_else(|| {
-                    format!(
-                        "OpenProcess(test child) failed with error {}.",
-                        last_error()
-                    )
-                })
-        }
-    }
-
-    impl Drop for DisposableChild {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-
-    fn test_runtime(mut child: Child) -> Result<RecoveryRuntime, String> {
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "The recovery helper stdin pipe is unavailable.".to_owned())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "The recovery helper stdout pipe is unavailable.".to_owned())?;
-        Ok(RecoveryRuntime {
-            child,
-            transport: RecoveryTransport::start(
-                stdin,
-                BufReader::new(stdout),
-                Duration::from_secs(2),
-            )?,
-            entries: Vec::new(),
-            next_intent_id: 1,
-        })
-    }
-
-    fn spawn_test_helper(command: &str, args: &[&str]) -> Result<Child, String> {
-        Command::new("cmd")
-            .arg("/C")
-            .arg(format!("{command} {}", args.join(" ")))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("Failed to spawn test recovery helper: {error}"))
-    }
-
-    fn test_thread_handle(process_id: u32) -> Result<WinHandle, String> {
-        // SAFETY: a thread snapshot takes no borrowed pointers and returns an owned handle.
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return Err(format!(
-                "CreateToolhelp32Snapshot failed with error {}.",
-                last_error()
-            ));
-        }
-        let snapshot = WinHandle::new(snapshot);
-        let mut entry = THREADENTRY32 {
-            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-            ..Default::default()
-        };
-        // SAFETY: snapshot is live and entry has its required initialized size.
-        let mut present = unsafe { Thread32First(snapshot.raw(), &mut entry) } != 0;
-        while present {
-            if entry.th32OwnerProcessID == process_id {
-                // SAFETY: the thread ID came from the current system snapshot.
-                let thread = unsafe {
-                    OpenThread(
-                        THREAD_QUERY_INFORMATION | THREAD_SET_INFORMATION,
-                        0,
-                        entry.th32ThreadID,
-                    )
-                };
-                if !thread.is_null() {
-                    return Ok(WinHandle::new(thread));
-                }
-            }
-            // SAFETY: snapshot remains live and entry remains writable for the next record.
-            present = unsafe { Thread32Next(snapshot.raw(), &mut entry) } != 0;
-        }
-        Err("No queryable thread was found for the disposable test process.".to_owned())
-    }
-
-    fn identity() -> ProcessIdentity {
-        ProcessIdentity {
-            id: 7,
-            creation_time: 11,
-            executable_path: "C:\\app.exe".to_owned(),
-        }
-    }
-
-    fn captured_test_thread(
-        process: &WinHandle,
-    ) -> Result<thread_suspension::CapturedThread, String> {
-        thread_suspension::capture_threads(process.raw())
-            .map_err(|error| format!("{error:?}"))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| "No thread was captured for the disposable test process.".to_owned())
-    }
-
-    #[test]
-    fn recovery_client_finish_is_idempotent_without_an_active_runtime() {
-        let mut client = RecoveryClient { active: false };
-        assert!(client.finish().is_ok());
-        assert!(client.finish().is_ok());
-    }
-
-    #[test]
-    fn recovery_runtime_finish_accepts_successful_helper_exit() -> Result<(), String> {
-        let runtime = test_runtime(spawn_test_helper("exit", &["0"])?)?;
-        finish_recovery_runtime(runtime)
-    }
-
-    #[test]
-    fn recovery_runtime_finish_reports_helper_exit_code() -> Result<(), String> {
-        let helper = spawn_test_helper("exit", &["11"])?;
-        let result = finish_recovery_runtime(test_runtime(helper)?);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Crash recovery helper exited unexpectedly with status code 11."));
-        Ok(())
-    }
-
-    #[test]
-    fn consecutive_process_changes_compact_to_the_original_baseline() {
-        let mut entries = Vec::new();
-        compact_or_push(
-            &mut entries,
-            RecoveryEntry::Process {
-                identity: identity(),
-                original: ProcessValue::PriorityClass(1),
-                expected: ProcessValue::PriorityClass(2),
-            },
-        );
-        compact_or_push(
-            &mut entries,
-            RecoveryEntry::Process {
-                identity: identity(),
-                original: ProcessValue::PriorityClass(2),
-                expected: ProcessValue::PriorityClass(3),
-            },
-        );
-        assert_eq!(entries.len(), 1);
-        assert!(matches!(
-            &entries[0],
-            RecoveryEntry::Process {
-                original: ProcessValue::PriorityClass(1),
-                expected: ProcessValue::PriorityClass(3),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn external_state_break_starts_a_new_recovery_segment() {
-        let mut entries = Vec::new();
-        compact_or_push(
-            &mut entries,
-            RecoveryEntry::Process {
-                identity: identity(),
-                original: ProcessValue::PriorityClass(1),
-                expected: ProcessValue::PriorityClass(2),
-            },
-        );
-        compact_or_push(
-            &mut entries,
-            RecoveryEntry::Process {
-                identity: identity(),
-                original: ProcessValue::PriorityClass(4),
-                expected: ProcessValue::PriorityClass(3),
-            },
-        );
-        assert_eq!(entries.len(), 2);
-        let key = entries[0].key();
-        assert_eq!(
-            unwind_process_value(
-                &key,
-                &ProcessValue::PriorityClass(3),
-                &entries,
-                entries.len()
-            ),
-            ProcessValue::PriorityClass(4)
-        );
-        assert_eq!(
-            unwind_process_value(
-                &key,
-                &ProcessValue::PriorityClass(2),
-                &entries,
-                entries.len()
-            ),
-            ProcessValue::PriorityClass(2)
-        );
-    }
-
-    #[test]
-    fn returning_to_the_baseline_removes_the_recovery_entry() {
-        let mut entries = Vec::new();
-        compact_or_push(
-            &mut entries,
-            RecoveryEntry::Process {
-                identity: identity(),
-                original: ProcessValue::PriorityClass(1),
-                expected: ProcessValue::PriorityClass(2),
-            },
-        );
-        compact_or_push(
-            &mut entries,
-            RecoveryEntry::Process {
-                identity: identity(),
-                original: ProcessValue::PriorityClass(2),
-                expected: ProcessValue::PriorityClass(1),
-            },
-        );
-        assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn every_process_value_kind_compacts_and_returns_to_its_baseline() {
-        let cases = [
-            (
-                ProcessValue::PriorityClass(1),
-                ProcessValue::PriorityClass(2),
-                ProcessValue::PriorityClass(3),
-            ),
-            (
-                ProcessValue::PowerThrottling {
-                    version: 1,
-                    control_mask: 1,
-                    state_mask: 0,
-                },
-                ProcessValue::PowerThrottling {
-                    version: 1,
-                    control_mask: 1,
-                    state_mask: 1,
-                },
-                ProcessValue::PowerThrottling {
-                    version: 1,
-                    control_mask: 3,
-                    state_mask: 1,
-                },
-            ),
-            (
-                ProcessValue::Affinity(1),
-                ProcessValue::Affinity(3),
-                ProcessValue::Affinity(7),
-            ),
-            (
-                ProcessValue::CpuSets(vec![]),
-                ProcessValue::CpuSets(vec![1]),
-                ProcessValue::CpuSets(vec![1, 2]),
-            ),
-            (
-                ProcessValue::DynamicPriorityBoostDisabled(false),
-                ProcessValue::DynamicPriorityBoostDisabled(true),
-                ProcessValue::DynamicPriorityBoostDisabled(true),
-            ),
-            (
-                ProcessValue::IoPriority(0),
-                ProcessValue::IoPriority(1),
-                ProcessValue::IoPriority(2),
-            ),
-            (
-                ProcessValue::GpuPriority(0),
-                ProcessValue::GpuPriority(1),
-                ProcessValue::GpuPriority(2),
-            ),
-            (
-                ProcessValue::MemoryPriority(1),
-                ProcessValue::MemoryPriority(2),
-                ProcessValue::MemoryPriority(3),
-            ),
-        ];
-
-        for (baseline, middle, final_value) in cases {
-            let mut entries = Vec::new();
-            compact_or_push(
-                &mut entries,
-                RecoveryEntry::Process {
-                    identity: identity(),
-                    original: baseline.clone(),
-                    expected: middle.clone(),
-                },
-            );
-            compact_or_push(
-                &mut entries,
-                RecoveryEntry::Process {
-                    identity: identity(),
-                    original: middle,
-                    expected: final_value.clone(),
-                },
-            );
-            assert_eq!(entries.len(), usize::from(baseline != final_value));
-            compact_or_push(
-                &mut entries,
-                RecoveryEntry::Process {
-                    identity: identity(),
-                    original: final_value,
-                    expected: baseline,
-                },
-            );
-            assert!(entries.is_empty());
-        }
-    }
-
-    #[test]
-    fn thread_and_power_plan_changes_compact_to_the_original_baseline() {
-        let mut thread_entries = Vec::new();
-        compact_or_push(
-            &mut thread_entries,
-            RecoveryEntry::ThreadPriority {
-                process: identity(),
-                thread_id: 13,
-                thread_creation_time: 17,
-                original: 0,
-                expected: 1,
-            },
-        );
-        compact_or_push(
-            &mut thread_entries,
-            RecoveryEntry::ThreadPriority {
-                process: identity(),
-                thread_id: 13,
-                thread_creation_time: 17,
-                original: 1,
-                expected: 2,
-            },
-        );
-        assert!(matches!(
-            thread_entries.as_slice(),
-            [RecoveryEntry::ThreadPriority {
-                original: 0,
-                expected: 2,
-                ..
-            }]
-        ));
-        compact_or_push(
-            &mut thread_entries,
-            RecoveryEntry::ThreadPriority {
-                process: identity(),
-                thread_id: 13,
-                thread_creation_time: 17,
-                original: 2,
-                expected: 0,
-            },
-        );
-        assert!(thread_entries.is_empty());
-
-        let mut plan_entries = Vec::new();
-        compact_or_push(
-            &mut plan_entries,
-            RecoveryEntry::PowerPlan {
-                original_guid: "plan-a".to_owned(),
-                expected_guid: "plan-b".to_owned(),
-            },
-        );
-        compact_or_push(
-            &mut plan_entries,
-            RecoveryEntry::PowerPlan {
-                original_guid: "PLAN-B".to_owned(),
-                expected_guid: "plan-c".to_owned(),
-            },
-        );
-        assert!(matches!(
-            plan_entries.as_slice(),
-            [RecoveryEntry::PowerPlan {
-                original_guid,
-                expected_guid,
-            }] if original_guid == "plan-a" && expected_guid == "plan-c"
-        ));
-        compact_or_push(
-            &mut plan_entries,
-            RecoveryEntry::PowerPlan {
-                original_guid: "PLAN-C".to_owned(),
-                expected_guid: "PLAN-A".to_owned(),
-            },
-        );
-        assert!(plan_entries.is_empty());
-    }
-
-    #[test]
-    fn thread_suspension_resume_gate_requires_exactly_one_owned_count() {
-        assert!(should_resume_thread_suspension(4, 5, 5));
-        assert!(!should_resume_thread_suspension(4, 5, 4));
-        assert!(!should_resume_thread_suspension(4, 5, 6));
-        assert!(!should_resume_thread_suspension(4, 6, 6));
-        assert!(!should_resume_thread_suspension(u16::MAX, 0, 0));
-    }
-
-    #[test]
-    fn thread_suspension_begin_is_pending_before_mutation_commit() {
-        let entry = RecoveryEntry::ThreadSuspension {
-            process: identity(),
-            thread_id: 13,
-            thread_creation_time: 17,
-            original_suspend_count: 0,
-            expected_suspend_count: 1,
-        };
-        let mut entries = Vec::new();
-        let mut pending = Vec::new();
-        let mut jobs = HashMap::new();
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Begin {
-                id: 1,
-                entry: entry.clone(),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("thread suspension must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert!(entries.is_empty());
-        assert_eq!(pending, vec![(1, entry.clone())]);
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Commit { id: 1 },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("commit must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert_eq!(entries, vec![entry]);
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn record_thread_suspension_rejects_suspend_count_overflow_before_handle_queries() {
-        match record_thread_suspension(std::ptr::null_mut(), std::ptr::null_mut(), u16::MAX) {
-            Ok(_) => panic!("overflow must be rejected before either handle is queried"),
-            Err(error) => assert_eq!(error, "Thread suspend count cannot exceed 65535."),
-        }
-    }
-
-    #[test]
-    fn pending_intents_preserve_committed_baselines_at_eof() {
-        for (kind, pending_value) in (0..3).flat_map(|kind| [1, 3].map(|value| (kind, value))) {
-            let mut entries = Vec::new();
-            let mut pending = Vec::new();
-            let mut jobs = HashMap::new();
-            let entry = |original: u32, expected: u32| match kind {
-                0 => RecoveryEntry::Process {
-                    identity: identity(),
-                    original: ProcessValue::PriorityClass(original),
-                    expected: ProcessValue::PriorityClass(expected),
-                },
-                1 => RecoveryEntry::ThreadPriority {
-                    process: identity(),
-                    thread_id: 7,
-                    thread_creation_time: 8,
-                    original: original as i32,
-                    expected: expected as i32,
-                },
-                _ => RecoveryEntry::PowerPlan {
-                    original_guid: original.to_string(),
-                    expected_guid: expected.to_string(),
-                },
-            };
-            for command in [
-                RecoveryCommand::Begin {
-                    id: 1,
-                    entry: entry(1, 2),
-                },
-                RecoveryCommand::Commit { id: 1 },
-                RecoveryCommand::Begin {
-                    id: 2,
-                    entry: entry(2, pending_value),
-                },
-            ] {
-                apply_watchdog_command(command, &mut entries, &mut pending, &mut jobs).unwrap();
-            }
-            let committed_len = append_pending_intents(&mut entries, pending);
-            let key = entries[0].key();
-            for (actual, expected) in [(2, 1), (pending_value, 1), (4, 4)] {
-                match kind {
-                    0 => assert_eq!(
-                        unwind_process_value(
-                            &key,
-                            &ProcessValue::PriorityClass(actual),
-                            &entries,
-                            committed_len
-                        ),
-                        ProcessValue::PriorityClass(expected)
-                    ),
-                    1 => assert_eq!(
-                        unwind_thread_priority(&key, actual as i32, &entries, committed_len),
-                        expected as i32
-                    ),
-                    _ => assert_eq!(
-                        unwind_power_plan_guid(&key, &actual.to_string(), &entries, committed_len),
-                        expected.to_string()
-                    ),
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn watchdog_commands_cover_begin_cancel_commit_replacement_and_clean_release() {
-        let entry = RecoveryEntry::Process {
-            identity: identity(),
-            original: ProcessValue::PriorityClass(1),
-            expected: ProcessValue::PriorityClass(2),
-        };
-        let mut entries = Vec::new();
-        let mut pending = Vec::new();
-        let mut jobs = HashMap::new();
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Begin {
-                id: 1,
-                entry: entry.clone(),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("process entries must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert_eq!(pending, vec![(1, entry.clone())]);
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Cancel { id: 1 },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("cancel must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert!(pending.is_empty());
-        assert!(entries.is_empty());
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Begin {
-                id: 2,
-                entry: entry.clone(),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("process entries must not open jobs".to_owned()),
-        )
-        .unwrap();
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Commit { id: 2 },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("commit must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert_eq!(entries.len(), 1);
-
-        let release = RecoveryEntry::Process {
-            identity: identity(),
-            original: ProcessValue::PriorityClass(2),
-            expected: ProcessValue::PriorityClass(1),
-        };
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Begin {
-                id: 3,
-                entry: release,
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("process entries must not open jobs".to_owned()),
-        )
-        .unwrap();
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Commit { id: 3 },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("commit must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert!(entries.is_empty());
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn suspended_job_begin_requires_a_retained_handle_before_acknowledgement() {
-        let entry = RecoveryEntry::SuspendedJob {
-            name: "Local\\Winderust.Suspend.test".to_owned(),
-            process: identity(),
-        };
-        let mut entries = Vec::new();
-        let mut pending = Vec::new();
-        let mut jobs = HashMap::new();
-
-        let error = apply_watchdog_command_with_open_job(
-            RecoveryCommand::Begin {
-                id: 1,
-                entry: entry.clone(),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("job open failed".to_owned()),
-        )
-        .unwrap_err();
-        assert_eq!(error, "job open failed");
-        assert!(pending.is_empty());
-        assert!(jobs.is_empty());
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Begin {
-                id: 2,
-                entry: entry.clone(),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| {
-                // SAFETY: null security attributes/name are allowed; the returned owned event
-                // handle is used only as a deterministic stand-in for the retained Job handle.
-                let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
-                (!handle.is_null())
-                    .then(|| WinHandle::new(handle))
-                    .ok_or_else(|| "CreateEventW failed".to_owned())
-            },
-        )
-        .unwrap();
-        assert_eq!(pending, vec![(2, entry)]);
-        assert!(jobs.contains_key("Local\\Winderust.Suspend.test"));
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::Commit { id: 2 },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("commit must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert_eq!(entries.len(), 1);
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::ForgetJob {
-                name: "Local\\Winderust.Suspend.test".to_owned(),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("forget must not open jobs".to_owned()),
-        )
-        .unwrap();
-        assert!(entries.is_empty());
-        assert!(jobs.is_empty());
-    }
-
-    #[test]
-    fn forget_process_removes_only_the_exact_instance_property() {
-        let process = identity();
-        let boost = RecoveryEntry::Process {
-            identity: process.clone(),
-            original: ProcessValue::DynamicPriorityBoostDisabled(false),
-            expected: ProcessValue::DynamicPriorityBoostDisabled(true),
-        };
-        let priority = RecoveryEntry::Process {
-            identity: process.clone(),
-            original: ProcessValue::PriorityClass(1),
-            expected: ProcessValue::PriorityClass(2),
-        };
-        let mut replacement = process.clone();
-        replacement.creation_time += 1;
-        let replacement_boost = RecoveryEntry::Process {
-            identity: replacement,
-            original: ProcessValue::DynamicPriorityBoostDisabled(false),
-            expected: ProcessValue::DynamicPriorityBoostDisabled(true),
-        };
-        let mut entries = vec![boost.clone(), priority.clone()];
-        let mut pending = vec![(7, boost), (8, replacement_boost.clone())];
-        let mut jobs = HashMap::new();
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::ForgetProcess {
-                process_id: process.id,
-                creation_time: process.creation_time,
-                value: ProcessValue::DynamicPriorityBoostDisabled(false),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("forget process must not open jobs".to_owned()),
-        )
-        .unwrap();
-
-        assert_eq!(entries, vec![priority]);
-        assert_eq!(pending, vec![(8, replacement_boost)]);
-    }
-
-    #[test]
-    fn forget_thread_priority_removes_only_the_exact_thread_instance() {
-        let process = identity();
-        let target = RecoveryEntry::ThreadPriority {
-            process: process.clone(),
-            thread_id: 13,
-            thread_creation_time: 17,
-            original: 0,
-            expected: 1,
-        };
-        let replacement_thread = RecoveryEntry::ThreadPriority {
-            process: process.clone(),
-            thread_id: 13,
-            thread_creation_time: 18,
-            original: 0,
-            expected: 1,
-        };
-        let other_thread = RecoveryEntry::ThreadPriority {
-            process: process.clone(),
-            thread_id: 14,
-            thread_creation_time: 17,
-            original: 0,
-            expected: 1,
-        };
-        let mut entries = vec![target.clone(), replacement_thread.clone()];
-        let mut pending = vec![(7, target), (8, other_thread.clone())];
-        let mut jobs = HashMap::new();
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::ForgetThreadPriority {
-                process_id: process.id,
-                process_creation_time: process.creation_time,
-                thread_id: 13,
-                thread_creation_time: 17,
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("forget thread priority must not open jobs".to_owned()),
-        )
-        .unwrap();
-
-        assert_eq!(entries, vec![replacement_thread]);
-        assert_eq!(pending, vec![(8, other_thread)]);
-    }
-
-    #[test]
-    fn forget_thread_suspension_preserves_reused_thread_and_thread_priority() {
-        let process = identity();
-        let target = RecoveryEntry::ThreadSuspension {
-            process: process.clone(),
-            thread_id: 13,
-            thread_creation_time: 17,
-            original_suspend_count: 0,
-            expected_suspend_count: 1,
-        };
-        let reused = RecoveryEntry::ThreadSuspension {
-            process: process.clone(),
-            thread_id: 13,
-            thread_creation_time: 18,
-            original_suspend_count: 0,
-            expected_suspend_count: 1,
-        };
-        let priority = RecoveryEntry::ThreadPriority {
-            process: process.clone(),
-            thread_id: 13,
-            thread_creation_time: 17,
-            original: 0,
-            expected: 1,
-        };
-        let mut entries = vec![target.clone(), reused.clone(), priority.clone()];
-        let mut pending = vec![(7, target), (8, reused.clone()), (9, priority.clone())];
-        let mut jobs = HashMap::new();
-
-        apply_watchdog_command_with_open_job(
-            RecoveryCommand::ForgetThreadSuspension {
-                process_id: process.id,
-                process_creation_time: process.creation_time,
-                thread_id: 13,
-                thread_creation_time: 17,
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-            |_, _| Err("forget thread suspension must not open jobs".to_owned()),
-        )
-        .unwrap();
-
-        assert_eq!(entries, vec![reused.clone(), priority.clone()]);
-        assert_eq!(pending, vec![(8, reused), (9, priority)]);
-    }
-
-    #[test]
-    fn live_nonreplying_watchdog_cannot_block_transport_or_shutdown() {
-        let mut child = DisposableChild {
-            child: Command::new("powershell.exe")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "Start-Sleep -Seconds 30",
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .unwrap(),
-        };
-        let mut transport = RecoveryTransport::start(
-            child.child.stdin.take().unwrap(),
-            BufReader::new(child.child.stdout.take().unwrap()),
-            Duration::from_millis(50),
-        )
-        .unwrap();
-        let started = Instant::now();
-        let command = RecoveryCommand::Cancel { id: 1 };
-        let error = transport.send(&command).unwrap_err();
-        assert!(error.contains("outcome is unknown"));
-        assert_eq!(transport.send(&command).unwrap_err(), error);
-        assert!(child.child.try_wait().unwrap().is_none());
-        drop(transport);
-        assert!(wait_for_watchdog(&mut child.child, Duration::from_millis(50)).is_err());
-        assert!(started.elapsed() < Duration::from_secs(3));
-        assert!(child.child.try_wait().unwrap().is_none());
-        // Only this disposable test helper is terminated by DisposableChild's Drop.
-    }
-
-    #[test]
-    fn blocked_write_times_out_and_late_ack_cannot_acknowledge_another_command() {
-        struct GatedWriter {
-            gate: Option<mpsc::Receiver<()>>,
-            writes: std::sync::Arc<Mutex<Vec<u8>>>,
-            dropped: mpsc::Sender<()>,
-        }
-        impl Write for GatedWriter {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                if let Some(gate) = self.gate.take() {
-                    gate.recv().map_err(std::io::Error::other)?;
-                }
-                self.writes.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        impl Drop for GatedWriter {
-            fn drop(&mut self) {
-                let _ = self.dropped.send(());
-            }
-        }
-        let (release, gate) = mpsc::channel();
-        let (dropped, closed) = mpsc::channel();
-        let writes = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let mut transport = RecoveryTransport::start(
-            GatedWriter {
-                gate: Some(gate),
-                writes: writes.clone(),
-                dropped,
-            },
-            Cursor::new(b"ok\n"),
-            Duration::from_millis(50),
-        )
-        .unwrap();
-        let command = RecoveryCommand::Cancel { id: 9 };
-        assert!(transport
-            .send(&command)
-            .unwrap_err()
-            .contains("outcome is unknown"));
-        release.send(()).unwrap();
-        assert!(transport.send(&RecoveryCommand::Cancel { id: 10 }).is_err());
-        assert!(closed.recv_timeout(Duration::from_millis(50)).is_err());
-        drop(transport);
-        closed.recv_timeout(Duration::from_secs(3)).unwrap();
-        let written = writes.lock().unwrap();
-        assert_eq!(
-            serde_json::from_slice::<RecoveryCommand>(&written).unwrap(),
-            command
-        );
-    }
-
-    #[test]
-    fn explicit_watchdog_rejection_does_not_poison_a_synchronized_transport() {
-        let mut transport = RecoveryTransport::start(
-            Vec::new(),
-            Cursor::new(b"error:rejected\nok\n"),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        assert_eq!(
-            transport
-                .send(&RecoveryCommand::Cancel { id: 1 })
-                .unwrap_err(),
-            "rejected"
-        );
-        assert!(transport.send(&RecoveryCommand::Cancel { id: 2 }).is_ok());
-    }
-
-    #[test]
-    fn recovery_transport_requires_an_acknowledgement_before_returning_success() {
-        let command = RecoveryCommand::Begin {
-            id: 9,
-            entry: RecoveryEntry::Process {
-                identity: identity(),
-                original: ProcessValue::PriorityClass(1),
-                expected: ProcessValue::PriorityClass(2),
-            },
-        };
-        let mut written = Vec::new();
-        let mut ok = Cursor::new(b"ok\n");
-        send_command(&mut written, &mut ok, &command).unwrap();
-        let encoded = String::from_utf8(written).unwrap();
-        assert!(encoded.ends_with('\n'));
-        assert_eq!(
-            serde_json::from_str::<RecoveryCommand>(encoded.trim()).unwrap(),
-            command
-        );
-
-        let mut written = Vec::new();
-        let mut rejected = Cursor::new(b"error:watchdog rejected Begin\n");
-        assert!(
-            matches!(send_command(&mut written, &mut rejected, &command), Err(RecoveryTransportError::Rejected(error)) if error == "watchdog rejected Begin")
-        );
-
-        let mut written = Vec::new();
-        let mut invalid = Cursor::new(b"maybe\n");
-        assert!(
-            matches!(send_command(&mut written, &mut invalid, &command), Err(RecoveryTransportError::Uncertain(error)) if error == "Invalid recovery watchdog response: maybe")
-        );
-    }
-
-    #[test]
-    fn failed_clean_process_release_keeps_journal_for_helper_recovery() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let original = query_process_value(process.raw(), &ProcessValue::PriorityClass(0))?;
-        let original_priority = match original {
-            ProcessValue::PriorityClass(priority) => priority,
-            _ => unreachable!("priority query must produce a priority value"),
-        };
-        let expected_priority = if original_priority != BELOW_NORMAL_PRIORITY_CLASS {
-            BELOW_NORMAL_PRIORITY_CLASS
-        } else {
-            IDLE_PRIORITY_CLASS
-        };
-        let expected = ProcessValue::PriorityClass(expected_priority);
-        let original = ProcessValue::PriorityClass(original_priority);
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        assert_eq!(
-            query_process_value(process.raw(), &expected)?,
-            expected,
-            "the disposable process must reach the journal's expected state"
-        );
-
-        let mut entries = Vec::new();
-        let mut pending = Vec::new();
-        let mut jobs = HashMap::new();
-        apply_watchdog_command(
-            RecoveryCommand::Begin {
-                id: 1,
-                entry: entry.clone(),
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-        )?;
-        apply_watchdog_command(
-            RecoveryCommand::Commit { id: 1 },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-        )?;
-
-        let failed_release = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: expected.clone(),
-            expected: original.clone(),
-        };
-        apply_watchdog_command(
-            RecoveryCommand::Begin {
-                id: 2,
-                entry: failed_release,
-            },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-        )?;
-        // A clean restore that fails drops its uncommitted intent, which sends Cancel. The
-        // earlier committed mutation must remain available to the helper when its pipe closes.
-        apply_watchdog_command(
-            RecoveryCommand::Cancel { id: 2 },
-            &mut entries,
-            &mut pending,
-            &mut jobs,
-        )?;
-        assert_eq!(entries, vec![entry]);
-        assert!(pending.is_empty());
-
-        recover_journal(&entries)?;
-        assert_eq!(
-            query_process_value(process.raw(), &expected)?,
-            original,
-            "recovery must restore the captured process baseline"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn power_throttling_recovery_restores_a_disposable_process() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let probe = ProcessValue::PowerThrottling {
-            version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            control_mask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            state_mask: 0,
-        };
-        let original = query_process_value(process.raw(), &probe)?;
-        let ProcessValue::PowerThrottling {
-            version,
-            control_mask,
-            state_mask,
-        } = original
-        else {
-            unreachable!("power-throttling query must produce a power value")
-        };
-        let expected = ProcessValue::PowerThrottling {
-            version,
-            control_mask: control_mask | PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            state_mask: state_mask ^ PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        };
-        let original = ProcessValue::PowerThrottling {
-            version,
-            control_mask,
-            state_mask,
-        };
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        assert_eq!(query_process_value(process.raw(), &expected)?, expected);
-        recover_journal(&[entry])?;
-        assert_eq!(query_process_value(process.raw(), &original)?, original);
-        Ok(())
-    }
-
-    #[test]
-    fn dynamic_priority_boost_recovery_restores_a_disposable_process() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let probe = ProcessValue::DynamicPriorityBoostDisabled(false);
-        let original = query_process_value(process.raw(), &probe)?;
-        let ProcessValue::DynamicPriorityBoostDisabled(original_disabled) = original else {
-            unreachable!("dynamic priority boost query must produce a boost value");
-        };
-        let original = ProcessValue::DynamicPriorityBoostDisabled(original_disabled);
-        let expected = ProcessValue::DynamicPriorityBoostDisabled(!original_disabled);
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        assert_eq!(query_process_value(process.raw(), &expected)?, expected);
-
-        recover_journal(&[entry])?;
-
-        assert_eq!(query_process_value(process.raw(), &original)?, original);
-        Ok(())
-    }
-
-    #[test]
-    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
-    fn affinity_recovery_restores_a_disposable_process() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let probe = ProcessValue::Affinity(0);
-        let original = query_process_value(process.raw(), &probe)?;
-        let ProcessValue::Affinity(original_mask) = original else {
-            unreachable!("affinity query must produce an affinity value");
-        };
-        if original_mask.count_ones() <= 1 {
-            return Ok(());
-        }
-        let expected = ProcessValue::Affinity(original_mask & original_mask.wrapping_neg());
-        let original = ProcessValue::Affinity(original_mask);
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        let recovery_result = recover_journal(&[entry]);
-        let observed = query_process_value(process.raw(), &original);
-        let cleanup_result = match &observed {
-            Ok(value) if value == &original => Ok(()),
-            _ => apply_process_value(process.raw(), &original),
-        };
-        recovery_result?;
-        let observed = observed?;
-        cleanup_result?;
-        if observed != original {
-            return Err(format!(
-                "Processor Affinity recovery returned {observed:?}, expected {original:?}."
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn cpu_sets_recovery_restores_a_disposable_process() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let probe = ProcessValue::CpuSets(Vec::new());
-        let original = query_process_value(process.raw(), &probe)?;
-        let ProcessValue::CpuSets(mut original_ids) = original else {
-            unreachable!("CPU Sets query must produce CPU Set IDs");
-        };
-        original_ids.sort_unstable();
-        original_ids.dedup();
-        let expected_ids = (0..64).find_map(|bit| {
-            let mut ids = crate::platform::windows::cpu_allocation::cpu_set_inventory()
-                .ok()?
-                .into_iter()
-                .filter(|(index, _)| *index == bit)
-                .map(|(_, id)| id)
-                .collect::<Vec<_>>();
-            ids.sort_unstable();
-            ids.dedup();
-            (!ids.is_empty() && ids != original_ids).then_some(ids)
-        });
-        let Some(expected_ids) = expected_ids else {
-            return Ok(());
-        };
-        let original = ProcessValue::CpuSets(original_ids);
-        let expected = ProcessValue::CpuSets(expected_ids);
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        let recovery_result = recover_journal(&[entry]);
-        let observed = query_process_value(process.raw(), &original);
-        let cleanup_result = match &observed {
-            Ok(value) if value == &original => Ok(()),
-            _ => apply_process_value(process.raw(), &original),
-        };
-        recovery_result?;
-        let observed = observed?;
-        cleanup_result?;
-        if observed != original {
-            return Err(format!(
-                "CPU Sets recovery returned {observed:?}, expected {original:?}."
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn io_priority_recovery_restores_a_disposable_process() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let probe = ProcessValue::IoPriority(0);
-        let original = query_process_value(process.raw(), &probe)?;
-        let ProcessValue::IoPriority(original_priority) = original else {
-            unreachable!("I/O priority query must produce an I/O priority value");
-        };
-        let original = ProcessValue::IoPriority(original_priority);
-        let expected = ProcessValue::IoPriority(if original_priority == 0 { 1 } else { 0 });
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        assert_eq!(query_process_value(process.raw(), &expected)?, expected);
-
-        recover_journal(&[entry])?;
-
-        assert_eq!(query_process_value(process.raw(), &original)?, original);
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "modifies and restores the explicit WINDERUST_GPU_TEST_PID target; run in integration QA"]
-    fn gpu_priority_recovery_restores_an_explicit_gpu_process() -> Result<(), String> {
-        let process_id = std::env::var("WINDERUST_GPU_TEST_PID")
-            .map_err(|_| {
-                "Set WINDERUST_GPU_TEST_PID to a disposable GPU-using process.".to_owned()
-            })?
-            .parse::<u32>()
-            .map_err(|error| format!("WINDERUST_GPU_TEST_PID is invalid: {error}"))?;
-        let executable_path = std::env::var_os("WINDERUST_GPU_TEST_PATH").ok_or_else(|| {
-            "Set WINDERUST_GPU_TEST_PATH to that process's absolute executable path.".to_owned()
-        })?;
-        let target = crate::foreground::capture_process_action_target(
-            process_id,
-            Path::new(&executable_path),
-            true,
-        )
-        .map_err(|error| error.to_string())?;
-        // SAFETY: target is an exact, validated live process instance captured for this test.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-                0,
-                target.id,
-            )
-        };
-        if handle.is_null() {
-            return Err(format!(
-                "OpenProcess(GPU test target) failed with error {}.",
-                last_error()
-            ));
-        }
-        let process = WinHandle::new(handle);
-        let probe = ProcessValue::GpuPriority(0);
-        let original = query_process_value(process.raw(), &probe)?;
-        let ProcessValue::GpuPriority(original_priority) = original else {
-            unreachable!("GPU priority query must produce a GPU priority value");
-        };
-        let original = ProcessValue::GpuPriority(original_priority);
-        let expected = ProcessValue::GpuPriority(if original_priority == 0 { 1 } else { 0 });
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        let recovery_result = recover_journal(&[entry]);
-        let observed = query_process_value(process.raw(), &original);
-        let cleanup_result = match &observed {
-            Ok(value) if value == &original => Ok(()),
-            _ => apply_process_value(process.raw(), &original),
-        };
-        recovery_result?;
-        let observed = observed?;
-        cleanup_result?;
-        if observed != original {
-            return Err(format!(
-                "GPU priority recovery returned {observed:?}, expected {original:?}."
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
-    fn memory_priority_recovery_restores_an_explicit_process() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let probe = ProcessValue::MemoryPriority(0);
-        let original = query_process_value(process.raw(), &probe)?;
-        let ProcessValue::MemoryPriority(original_priority) = original else {
-            unreachable!("Memory Priority query must produce a Memory Priority value");
-        };
-        let original = ProcessValue::MemoryPriority(original_priority);
-        let expected = ProcessValue::MemoryPriority(if original_priority == 1 { 2 } else { 1 });
-        let entry = RecoveryEntry::Process {
-            identity: process_identity(process.raw())?,
-            original: original.clone(),
-            expected: expected.clone(),
-        };
-
-        apply_process_value(process.raw(), &expected)?;
-        let recovery_result = recover_journal(&[entry]);
-        let observed = query_process_value(process.raw(), &original);
-        let cleanup_result = match &observed {
-            Ok(value) if value == &original => Ok(()),
-            _ => apply_process_value(process.raw(), &original),
-        };
-        recovery_result?;
-        let observed = observed?;
-        cleanup_result?;
-        if observed != original {
-            return Err(format!(
-                "Memory Priority recovery returned {observed:?}, expected {original:?}."
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn thread_priority_recovery_restores_a_disposable_process_thread_after_the_expected_mutation(
-    ) -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let thread = test_thread_handle(child.child.id())?;
-        // SAFETY: thread is a live, queryable thread owned by the disposable test process.
-        let original = unsafe { GetThreadPriority(thread.raw()) };
-        if original == THREAD_PRIORITY_ERROR_RETURN {
-            return Err(format!(
-                "GetThreadPriority failed with error {}.",
-                last_error()
-            ));
-        }
-        let expected = if original != THREAD_PRIORITY_BELOW_NORMAL {
-            THREAD_PRIORITY_BELOW_NORMAL
-        } else {
-            THREAD_PRIORITY_LOWEST
-        };
-        let entry = RecoveryEntry::ThreadPriority {
-            process: process_identity(process.raw())?,
-            thread_id: thread_id(thread.raw())?,
-            thread_creation_time: thread_creation_time(thread.raw())?,
-            original,
-            expected,
-        };
-
-        // SAFETY: thread is a live, queryable thread owned by the disposable test process.
-        if unsafe { SetThreadPriority(thread.raw(), expected) } == 0 {
-            return Err(format!(
-                "SetThreadPriority failed with error {}.",
-                last_error()
-            ));
-        }
-        // SAFETY: thread remains live and is still owned by the disposable process.
-        assert_eq!(unsafe { GetThreadPriority(thread.raw()) }, expected);
-        recover_journal(&[entry])?;
-        // SAFETY: thread remains live and is still owned by the disposable process.
-        assert_eq!(unsafe { GetThreadPriority(thread.raw()) }, original);
-        Ok(())
-    }
-
-    #[test]
-    fn thread_suspension_recovery_resumes_exact_owned_count_once() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let captured = captured_test_thread(&process)?;
-        let thread = thread_suspension::open_exact_thread(child.child.id(), captured)
-            .map_err(|error| format!("{error:?}"))?;
-        let original = captured.suspend_count;
-        let expected = original
-            .checked_add(1)
-            .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?;
-        assert_eq!(
-            thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?,
-            u32::from(original)
-        );
-        let entry = RecoveryEntry::ThreadSuspension {
-            process: process_identity(process.raw())?,
-            thread_id: captured.id,
-            thread_creation_time: captured.creation_time,
-            original_suspend_count: original,
-            expected_suspend_count: expected,
-        };
-
-        recover_journal(&[entry])?;
-
-        assert_eq!(
-            thread_suspension::exact_suspend_count(
-                process.raw(),
-                captured.id,
-                captured.creation_time,
-            )
-            .map_err(|error| format!("{error:?}"))?,
-            original
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn thread_suspension_recovery_leaves_identity_mismatch_unchanged() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let captured = captured_test_thread(&process)?;
-        let thread = thread_suspension::open_exact_thread(child.child.id(), captured)
-            .map_err(|error| format!("{error:?}"))?;
-        let original = captured.suspend_count;
-        let expected = original
-            .checked_add(1)
-            .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?;
-        thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?;
-
-        recover_journal(&[RecoveryEntry::ThreadSuspension {
-            process: process_identity(process.raw())?,
-            thread_id: captured.id,
-            thread_creation_time: captured.creation_time.wrapping_add(1),
-            original_suspend_count: original,
-            expected_suspend_count: expected,
-        }])?;
-        assert_eq!(
-            thread_suspension::exact_suspend_count(
-                process.raw(),
-                captured.id,
-                captured.creation_time,
-            )
-            .map_err(|error| format!("{error:?}"))?,
-            expected
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn thread_suspension_recovery_leaves_conflicting_count_unchanged() -> Result<(), String> {
-        let child = DisposableChild::spawn()?;
-        let process = child.process_handle()?;
-        let captured = captured_test_thread(&process)?;
-        let thread = thread_suspension::open_exact_thread(child.child.id(), captured)
-            .map_err(|error| format!("{error:?}"))?;
-        let original = captured.suspend_count;
-        let expected = original
-            .checked_add(1)
-            .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?;
-        let conflicting = original
-            .checked_add(2)
-            .ok_or_else(|| "Disposable thread suspend count cannot be raised twice.".to_owned())?;
-        thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?;
-        thread_suspension::suspend_once(&thread).map_err(|error| format!("{error:?}"))?;
-        recover_journal(&[RecoveryEntry::ThreadSuspension {
-            process: process_identity(process.raw())?,
-            thread_id: captured.id,
-            thread_creation_time: captured.creation_time,
-            original_suspend_count: original,
-            expected_suspend_count: expected,
-        }])?;
-        assert_eq!(
-            thread_suspension::exact_suspend_count(
-                process.raw(),
-                captured.id,
-                captured.creation_time,
-            )
-            .map_err(|error| format!("{error:?}"))?,
-            conflicting
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn thread_suspension_recovery_ignores_an_exited_process() -> Result<(), String> {
-        let entry = {
-            let child = DisposableChild::spawn()?;
-            let process = child.process_handle()?;
-            let captured = captured_test_thread(&process)?;
-            let original = captured.suspend_count;
-            RecoveryEntry::ThreadSuspension {
-                process: process_identity(process.raw())?,
-                thread_id: captured.id,
-                thread_creation_time: captured.creation_time,
-                original_suspend_count: original,
-                expected_suspend_count: original
-                    .checked_add(1)
-                    .ok_or_else(|| "Disposable thread suspend count overflowed.".to_owned())?,
-            }
-        };
-
-        recover_journal(&[entry])
-    }
-
-    #[test]
-    #[ignore = "uses the undocumented JobObjectFreezeInformation contract; run in explicit Windows integration QA"]
-    fn suspended_job_recovery_thaws_descendants_after_the_recorded_root_exits() -> Result<(), String>
-    {
-        let system_root = std::env::var_os("SystemRoot")
-            .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
-        let command = Path::new(&system_root).join("System32").join("cmd.exe");
-        let wide_command = command
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        let mut command_line = "cmd.exe /D /C start \"\" /B ping.exe 127.0.0.1 -n 15 -w 1000"
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        let startup = STARTUPINFOW {
-            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-            ..Default::default()
-        };
-        let mut process_information = PROCESS_INFORMATION::default();
-        // SAFETY: all pointers reference live, correctly sized buffers; the mutable command line
-        // is terminated UTF-16 and the returned handles are owned by this test.
-        let created = unsafe {
-            CreateProcessW(
-                wide_command.as_ptr(),
-                command_line.as_mut_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                0,
-                CREATE_SUSPENDED | CREATE_NO_WINDOW,
-                std::ptr::null(),
-                std::ptr::null(),
-                &startup,
-                &mut process_information,
-            )
-        };
-        if created == 0 {
-            return Err(format!(
-                "CreateProcessW(test root) failed with error {}.",
-                last_error()
-            ));
-        }
-        let process = WinHandle::new(process_information.hProcess);
-        let thread = WinHandle::new(process_information.hThread);
-        let identity = match process_identity(process.raw()) {
-            Ok(identity) => identity,
-            Err(error) => {
-                resume_disposable_root(&process, &thread);
-                return Err(error);
-            }
-        };
-        let name = suspension_job_name(identity.id, identity.creation_time);
-        let wide_name = name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        // SAFETY: wide_name is terminated UTF-16 and the returned handle is owned by this test.
-        let job = unsafe { CreateJobObjectW(std::ptr::null(), wide_name.as_ptr()) };
-        if job.is_null() {
-            let error = last_error();
-            resume_disposable_root(&process, &thread);
-            return Err(format!("CreateJobObjectW failed with error {error}."));
-        }
-        let job = WinHandle::new(job);
-        // SAFETY: job and process are live handles owned by this test.
-        if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
-            let error = last_error();
-            resume_disposable_root(&process, &thread);
-            return Err(format!(
-                "AssignProcessToJobObject failed with error {error}."
-            ));
-        }
-        let cleanup = FrozenJobCleanup { job };
-        // SAFETY: thread is the suspended primary thread created above and has not been resumed.
-        if unsafe { ResumeThread(thread.raw()) } == u32::MAX {
-            return Err(format!(
-                "ResumeThread(test root) failed with error {}.",
-                last_error()
-            ));
-        }
-        // SAFETY: process is a live disposable handle; this bounded wait retains no pointer.
-        if unsafe { WaitForSingleObject(process.raw(), 5_000) } != WAIT_OBJECT_0 {
-            return Err("The disposable Job Object root did not exit in time.".to_owned());
-        }
-        let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-        // SAFETY: cleanup owns the live Job Object handle and accounting is writable for the
-        // exact information-class buffer size.
-        if unsafe {
-            QueryInformationJobObject(
-                cleanup.job.raw(),
-                JobObjectBasicAccountingInformation,
-                (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(format!(
-                "QueryInformationJobObject failed with error {}.",
-                last_error()
-            ));
-        }
-        if accounting.ActiveProcesses == 0 {
-            return Err(
-                "The disposable root did not leave an inherited child in the job.".to_owned(),
-            );
-        }
-        let mut freeze = JobObjectFreezeInformation::new(true);
-        // SAFETY: job is live and freeze is writable for exactly the supplied structure size.
-        if unsafe {
-            SetInformationJobObject(
-                cleanup.job.raw(),
-                JOB_OBJECT_FREEZE_INFORMATION_CLASS,
-                (&mut freeze as *mut JobObjectFreezeInformation).cast(),
-                std::mem::size_of::<JobObjectFreezeInformation>() as u32,
-            )
-        } == 0
-        {
-            return Err(format!(
-                "SetInformationJobObject(freeze) failed with error {}.",
-                last_error()
-            ));
-        }
-
-        recover_journal(&[RecoveryEntry::SuspendedJob {
-            name,
-            process: identity,
-        }])?;
-        Ok(())
-    }
-
-    struct PowerPlanCleanup {
-        original_guid: String,
-        disposable_guid: Option<String>,
-    }
-
-    impl PowerPlanCleanup {
-        fn restore_and_delete(&mut self) -> Result<(), String> {
-            set_active(&self.original_guid)?;
-            if let Some(guid) = self.disposable_guid.as_deref() {
-                crate::power::powercfg::delete_plan(guid)?;
-                self.disposable_guid = None;
-            }
-            Ok(())
-        }
-    }
-
-    impl Drop for PowerPlanCleanup {
-        fn drop(&mut self) {
-            let _ = set_active(&self.original_guid);
-            if let Some(guid) = self.disposable_guid.take() {
-                let _ = crate::power::powercfg::delete_plan(&guid);
-            }
-        }
-    }
-
-    #[test]
-    #[ignore = "changes the machine-wide active Windows power plan; run manually on a disposable Windows session"]
-    fn power_plan_recovery_restores_the_original_plan_and_deletes_the_disposable_plan(
-    ) -> Result<(), String> {
-        let original_guid = active_plan()?.guid;
-        let disposable_guid = crate::power::powercfg::duplicate_adaptive_plan(&original_guid)?;
-        let mut cleanup = PowerPlanCleanup {
-            original_guid: original_guid.clone(),
-            disposable_guid: Some(disposable_guid.clone()),
-        };
-        crate::power::powercfg::initialize_adaptive_plan(&disposable_guid, &original_guid)?;
-
-        set_active(&disposable_guid)?;
-        recover_journal(&[RecoveryEntry::PowerPlan {
-            original_guid: original_guid.clone(),
-            expected_guid: disposable_guid,
-        }])?;
-        assert!(active_plan()?.guid.eq_ignore_ascii_case(&original_guid));
-        cleanup.restore_and_delete()?;
-        Ok(())
-    }
-}
+mod tests;

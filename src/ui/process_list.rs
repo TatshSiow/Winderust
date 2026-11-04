@@ -589,12 +589,7 @@ impl ProcessList {
             Message::TreeReady(targets) => return self.stop_targets(targets, runtime),
             Message::Result(name, result) => {
                 self.error = Some(match result {
-                    Ok(()) => t!(
-                        "process_list.quick_action_applied",
-                        action = t!("common.actions"),
-                        name = name
-                    )
-                    .to_string(),
+                    Ok(()) => t!("process_list.action_completed", name = name).to_string(),
                     Err(e) => e,
                 })
             }
@@ -854,18 +849,19 @@ impl ProcessList {
             if self.hide_inaccessible && inaccessible(p) {
                 continue;
             }
-            if !format!(
-                "{} {} {} {}",
-                p.name,
-                p.id,
-                p.image_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy())
-                    .unwrap_or_default(),
-                p.user_name.as_deref().unwrap_or("")
-            )
-            .to_lowercase()
-            .contains(&search)
+            if !search.is_empty()
+                && !format!(
+                    "{} {} {} {}",
+                    p.name,
+                    p.id,
+                    p.image_path
+                        .as_ref()
+                        .map(|p| p.to_string_lossy())
+                        .unwrap_or_default(),
+                    p.user_name.as_deref().unwrap_or("")
+                )
+                .to_lowercase()
+                .contains(&search)
             {
                 continue;
             }
@@ -896,10 +892,10 @@ impl ProcessList {
                 Sort::Memory => self.memory_total(a).cmp(&self.memory_total(b)),
                 Sort::User => self.user(a).cmp(&self.user(b)),
                 Sort::Status => self.status_key(a).cmp(self.status_key(b)),
-                Sort::Name => self.processes[a.indices[0]]
-                    .name
-                    .to_lowercase()
-                    .cmp(&self.processes[b.indices[0]].name.to_lowercase()),
+                Sort::Name => compare_process_names(
+                    &self.processes[a.indices[0]].name,
+                    &self.processes[b.indices[0]].name,
+                ),
             };
             let ord = if self.descending { ord.reverse() } else { ord };
             ord.then_with(|| a.key.cmp(&b.key))
@@ -1294,26 +1290,29 @@ impl ProcessList {
         })));
         let body = mouse_area(body).on_move(Message::PointerMoved);
         if let Some((stopping, tree)) = &self.stopping {
+            let (title, warning, action) = if *tree {
+                (
+                    "process_list.stop_tree_confirm_title",
+                    "process_list.stop_tree_confirm",
+                    "process_list.stop_process_tree",
+                )
+            } else {
+                (
+                    "process_list.stop_confirm_title",
+                    "process_list.stop_confirm",
+                    "process_list.stop_process",
+                )
+            };
             let dialog = container(
                 column![
                     super::widgets::heading(
-                        t!("process_list.kill_confirm_title", name = &stopping.name).to_string(),
+                        t!(title, name = &stopping.name).to_string(),
                         design::typography::DIALOG_TITLE,
                     ),
-                    text(
-                        t!(
-                            if *tree {
-                                "process_list.stop_tree_confirm"
-                            } else {
-                                "process_list.stop_confirm"
-                            },
-                            name = &stopping.name
-                        )
-                        .to_string()
-                    ),
+                    text(t!(warning, name = &stopping.name).to_string()),
                     row![
                         Space::new().width(Fill),
-                        action_button(t!("process_list.kill").to_string())
+                        action_button(t!(action).to_string())
                             .style(super::widgets::danger_button)
                             .on_press(Message::ConfirmStop),
                         action_button(t!("common.cancel").to_string())
@@ -1829,12 +1828,31 @@ fn status_cell(key: &str) -> Element<'static, Message> {
     ]
     .spacing(design::space::CONTROL)
     .align_y(iced::Center);
-    cell.into()
+    let help_key = match key {
+        "process_list.status_system_protected" => "process_list.protected_system_process_help",
+        "process_list.status_access_denied" => "process_list.access_denied_help",
+        _ => return cell.into(),
+    };
+    super::widgets::tooltip(
+        cell,
+        text(t!(help_key).to_string()),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
 }
 
 fn protected(p: &ProcessInfo) -> bool {
     p.is_critical == Some(true)
         || foreground::contains_process_name(foreground::CORE_BUILT_IN_PROCESS_EXCLUSIONS, &p.name)
+}
+fn compare_process_names(left: &str, right: &str) -> std::cmp::Ordering {
+    if left.is_ascii() && right.is_ascii() {
+        left.bytes()
+            .map(|byte| byte.to_ascii_lowercase())
+            .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+    } else {
+        left.to_lowercase().cmp(&right.to_lowercase())
+    }
 }
 fn inaccessible(p: &ProcessInfo) -> bool {
     p.image_path.is_none()
@@ -1899,7 +1917,10 @@ fn background<T: Send + 'static>(
 
 fn load_population() -> Result<Population, String> {
     let processes = foreground::list_processes_with_paths()?;
-    let mut samples = foreground::sample_process_resources(&processes);
+    let mut samples = foreground::sample_process_resources(
+        &processes,
+        foreground::ProcessResourceSampling::WithEfficiencyMode,
+    );
     let identities = processes
         .iter()
         .map(|p| (p.id, p.creation_time))
@@ -1915,6 +1936,139 @@ fn load_population() -> Result<Population, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_name_order_preserves_unicode_lowercase_and_key_ties() {
+        let names = [
+            "", "app.exe", "APP.exe", "aa", "İ", "i\u{307}", "Σ", "σ", "ς", "ß", "ss",
+        ];
+        for left in names {
+            for right in names {
+                assert_eq!(
+                    compare_process_names(left, right),
+                    left.to_lowercase().cmp(&right.to_lowercase()),
+                    "{left:?} compared with {right:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn search_and_name_order_preserve_large_grouped_populations() {
+        for count in [50, 500] {
+            let names = [
+                "aLpHa.exe",
+                "ALPHA.exe",
+                "İ.exe",
+                "i\u{307}.exe",
+                "Σ.exe",
+                "σ.exe",
+                "ß.exe",
+                "SS.exe",
+            ];
+            let processes = (0..count)
+                .map(|index| {
+                    let name = names[index / 2 % names.len()];
+                    let mut item = process(
+                        index as u32 + 10,
+                        index as u64 + 1,
+                        &format!(r"C:\Apps\bucket{:03}\{name}", index / 2),
+                    );
+                    item.name = name.into();
+                    item.user_name = Some(format!("User-{}", index % 3));
+                    item.can_set_information = index % 17 != 0;
+                    item
+                })
+                .collect::<Vec<_>>();
+            for grouped in [false, true] {
+                for hide_inaccessible in [false, true] {
+                    for query in ["", "  ", "alpha", "σ", "User-1", "42"] {
+                        let search = query.to_lowercase();
+                        let visible = processes
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, p)| {
+                                (!hide_inaccessible || !inaccessible(p))
+                                    && [
+                                        p.name.clone(),
+                                        p.id.to_string(),
+                                        p.image_path
+                                            .as_ref()
+                                            .unwrap()
+                                            .to_string_lossy()
+                                            .into_owned(),
+                                        p.user_name.clone().unwrap(),
+                                    ]
+                                    .join(" ")
+                                    .to_lowercase()
+                                    .contains(&search)
+                            })
+                            .map(|(index, _)| index)
+                            .collect::<Vec<_>>();
+                        let expected_ids = visible
+                            .iter()
+                            .map(|index| processes[*index].id)
+                            .collect::<std::collections::BTreeSet<_>>();
+                        for sort in Sort::ALL {
+                            for descending in [false, true] {
+                                let mut list = ProcessList {
+                                    processes: processes.clone(),
+                                    search: query.into(),
+                                    grouped,
+                                    hide_inaccessible,
+                                    sort,
+                                    descending,
+                                    column_widths: [Some(100.0); 6],
+                                    ..ProcessList::default()
+                                };
+                                list.rebuild();
+                                let actual_ids = list
+                                    .rows
+                                    .iter()
+                                    .flat_map(|row| &row.indices)
+                                    .map(|index| processes[*index].id)
+                                    .collect::<std::collections::BTreeSet<_>>();
+                                assert_eq!(actual_ids, expected_ids);
+                                if sort == Sort::Name {
+                                    let mut groups = BTreeMap::new();
+                                    for index in &visible {
+                                        let item = &processes[*index];
+                                        let key = if grouped {
+                                            foreground::executable_path_key(
+                                                item.image_path.as_ref().unwrap(),
+                                            )
+                                        } else {
+                                            format!("pid:{}", item.id)
+                                        };
+                                        groups.entry(key).or_insert(*index);
+                                    }
+                                    let mut expected = groups.into_iter().collect::<Vec<_>>();
+                                    expected.sort_by(|(left_key, left), (right_key, right)| {
+                                        let order = processes[*left]
+                                            .name
+                                            .to_lowercase()
+                                            .cmp(&processes[*right].name.to_lowercase());
+                                        (if descending { order.reverse() } else { order })
+                                            .then_with(|| left_key.cmp(right_key))
+                                    });
+                                    assert_eq!(
+                                        list.rows
+                                            .iter()
+                                            .map(|row| row.key.as_str())
+                                            .collect::<Vec<_>>(),
+                                        expected
+                                            .iter()
+                                            .map(|(key, _)| key.as_str())
+                                            .collect::<Vec<_>>()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn navigation_and_ticks_share_one_refresh_deadline() {
@@ -1973,7 +2127,6 @@ mod tests {
     fn page_process_list_transitions_keep_repaints_bounded() {
         use iced::advanced::{layout, renderer::Renderer as _, widget::Tree, Layout};
         use iced::{mouse, Rectangle, Size};
-        use std::time::Instant;
 
         let mut list = ProcessList {
             processes: (1..=500)
@@ -1985,9 +2138,7 @@ mod tests {
                 .collect(),
             ..ProcessList::default()
         };
-        let rebuild = Instant::now();
         list.rebuild();
-        eprintln!("rebuild/auto-fit: {:?}", rebuild.elapsed());
         let settings = Settings::default();
         let status = RuntimeStatusSnapshot::default();
         let mut home = super::super::home::Model::default();
@@ -2007,14 +2158,9 @@ mod tests {
             .collect();
         let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1400.0, 900.0));
-        let physical = Size::new(2100, 1350);
-        let viewport = iced::advanced::graphics::Viewport::with_physical_size(physical, 1.5);
-        let mut pixels = tiny_skia::Pixmap::new(physical.width, physical.height).unwrap();
-        let mut mask = tiny_skia::Mask::new(physical.width, physical.height).unwrap();
         let mut tree = Tree::empty();
         let mut previous = Vec::new();
         for frame in 0..16 {
-            let start = Instant::now();
             let home_page = frame < 8 && frame % 2 == 0;
             let log_page = frame >= 8 && frame % 2 == 0;
             let content = if home_page {
@@ -2059,7 +2205,6 @@ mod tests {
                 &renderer,
                 &layout::Limits::new(Size::ZERO, bounds.size()),
             );
-            let layout = start.elapsed();
             renderer.reset(bounds);
             view.as_widget().draw(
                 &tree,
@@ -2070,7 +2215,6 @@ mod tests {
                 mouse::Cursor::Unavailable,
                 &bounds,
             );
-            let recorded = start.elapsed();
             let damage = iced::advanced::graphics::damage::group(
                 iced::advanced::graphics::damage::diff(
                     &previous,
@@ -2091,14 +2235,6 @@ mod tests {
                 .map(|region| region.width * region.height)
                 .sum();
             assert!(damaged_area <= bounds.width * bounds.height * 1.25);
-            renderer.draw(
-                &mut pixels.as_mut(),
-                &mut mask,
-                &viewport,
-                &damage,
-                iced::Color::WHITE,
-            );
-            eprintln!("transition {frame} home={home_page} log={log_page}: layout={layout:?}, draw={:?}, damage/raster={:?}, total={:?}, regions={}", recorded-layout, start.elapsed()-recorded, start.elapsed(), damage.len());
         }
     }
 
@@ -2271,7 +2407,23 @@ mod tests {
     }
 
     #[test]
-    fn delete_keeps_selected_process_scope_and_cancel_clears_confirmation() {
+    fn stop_confirmation_preserves_scope_labels_and_cancel() {
+        use iced::advanced::{
+            layout,
+            widget::{Id, Operation, Tree},
+            Layout,
+        };
+
+        struct Labels(Vec<String>);
+        impl Operation for Labels {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn text(&mut self, _id: Option<&Id>, _bounds: iced::Rectangle, text: &str) {
+                self.0.push(text.to_owned());
+            }
+        }
+
         let mut settings = Settings::default();
         settings.general.enabled = false;
         let mut editor = crate::application::SettingsEditor::with_settings(settings.clone());
@@ -2303,6 +2455,39 @@ mod tests {
             list.context = None;
             let _ = list.update(Message::Stop(tree), &mut settings, &runtime);
             assert_eq!(list.stopping.as_ref().unwrap().1, tree);
+            {
+                let status = RuntimeStatusSnapshot::default();
+                let mut view = list.view(&settings, &status, PlanCatalog::Loaded(&[]));
+                let mut state = Tree::new(&view);
+                let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+                let node = view.as_widget_mut().layout(
+                    &mut state,
+                    &renderer,
+                    &layout::Limits::new(iced::Size::ZERO, iced::Size::new(900.0, 600.0)),
+                );
+                let mut labels = Labels(Vec::new());
+                view.as_widget_mut().operate(
+                    &mut state,
+                    Layout::new(&node),
+                    &renderer,
+                    &mut labels,
+                );
+                let (title, action) = if tree {
+                    ("Stop app.exe and its child processes?", "Stop process tree")
+                } else {
+                    ("Stop app.exe?", "Stop process")
+                };
+                assert!(
+                    labels.0.iter().any(|label| label == title),
+                    "{:#?}",
+                    labels.0
+                );
+                assert!(
+                    labels.0.iter().any(|label| label == action),
+                    "{:#?}",
+                    labels.0
+                );
+            }
             let _ = list.update(Message::CancelStop, &mut settings, &runtime);
             assert!(list.stopping.is_none());
         }

@@ -584,9 +584,16 @@ impl Editor {
             .push(widgets::settings_card(widgets::settings_rows(values)));
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
-            action_button(t!("common.cancel").to_string())
-                .style(widgets::tertiary_button)
-                .on_press(Message::ClosePreset)
+            action_button(
+                t!(if editable {
+                    "common.cancel"
+                } else {
+                    "common.close"
+                })
+                .to_string(),
+            )
+            .style(widgets::tertiary_button)
+            .on_press(Message::ClosePreset)
         ]
         .spacing(design::space::SMALL);
         if let PresetTarget::Custom(index) = p.target {

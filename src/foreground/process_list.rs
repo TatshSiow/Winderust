@@ -131,16 +131,45 @@ pub struct ProcessResourceSample {
     pub efficiency_mode: Option<bool>,
 }
 
-pub fn sample_process_resources(processes: &[ProcessInfo]) -> BTreeMap<u32, ProcessResourceSample> {
+#[derive(Clone, Copy)]
+pub enum ProcessResourceSampling {
+    UsageOnly,
+    WithEfficiencyMode,
+}
+
+impl ProcessResourceSampling {
+    fn efficiency_mode(
+        self,
+        query_eco_qos: impl FnOnce() -> Option<bool>,
+        query_priority_class: impl FnOnce() -> u32,
+    ) -> Option<bool> {
+        if matches!(self, Self::UsageOnly) {
+            return None;
+        }
+        if !query_eco_qos()? {
+            return Some(false);
+        }
+        let priority_class = query_priority_class();
+        (priority_class != 0).then_some(priority_class == IDLE_PRIORITY_CLASS)
+    }
+}
+
+pub fn sample_process_resources(
+    processes: &[ProcessInfo],
+    sampling: ProcessResourceSampling,
+) -> BTreeMap<u32, ProcessResourceSample> {
     processes
         .iter()
         .filter_map(|process| {
-            sample_process_resource(process.id).map(|sample| (process.id, sample))
+            sample_process_resource(process.id, sampling).map(|sample| (process.id, sample))
         })
         .collect()
 }
 
-fn sample_process_resource(process_id: u32) -> Option<ProcessResourceSample> {
+fn sample_process_resource(
+    process_id: u32,
+    sampling: ProcessResourceSampling,
+) -> Option<ProcessResourceSample> {
     // SAFETY: process_id came from the current process snapshot and the handle is not inherited.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     let handle = (!handle.is_null()).then(|| WinHandle::new(handle))?;
@@ -176,28 +205,32 @@ fn sample_process_resource(process_id: u32) -> Option<ProcessResourceSample> {
     } != 0)
         .then_some(memory.WorkingSetSize as u64);
 
-    let mut power_throttling = PROCESS_POWER_THROTTLING_STATE {
-        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        ..Default::default()
-    };
-    // SAFETY: handle is live and power_throttling is writable for the supplied structure size.
-    let eco_qos = (unsafe {
-        GetProcessInformation(
-            handle.raw(),
-            ProcessPowerThrottling,
-            (&mut power_throttling as *mut PROCESS_POWER_THROTTLING_STATE).cast(),
-            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-        )
-    } != 0)
-        .then_some(
-            power_throttling.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
-                && power_throttling.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0,
-        );
-    // SAFETY: handle is live and GetPriorityClass only reads process state.
-    let priority_class = unsafe { GetPriorityClass(handle.raw()) };
-    let efficiency_mode = eco_qos
-        .filter(|enabled| !enabled || priority_class != 0)
-        .map(|enabled| enabled && priority_class == IDLE_PRIORITY_CLASS);
+    let efficiency_mode = sampling.efficiency_mode(
+        || {
+            let mut power_throttling = PROCESS_POWER_THROTTLING_STATE {
+                Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                ..Default::default()
+            };
+            // SAFETY: handle is live and power_throttling is writable for the supplied structure size.
+            (unsafe {
+                GetProcessInformation(
+                    handle.raw(),
+                    ProcessPowerThrottling,
+                    (&mut power_throttling as *mut PROCESS_POWER_THROTTLING_STATE).cast(),
+                    std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+                )
+            } != 0)
+                .then_some(
+                    power_throttling.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
+                        && power_throttling.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+                            != 0,
+                )
+        },
+        || {
+            // SAFETY: handle is live and GetPriorityClass only reads process state.
+            unsafe { GetPriorityClass(handle.raw()) }
+        },
+    );
 
     Some(ProcessResourceSample {
         cpu: ProcessCpuSample {
@@ -587,9 +620,9 @@ pub struct ProcessCandidateInfo {
 }
 
 pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
-    Ok(process_candidates_from_processes(
-        &list_processes_with_paths()?,
-    ))
+    let mut processes = list_processes()?;
+    enrich_process_paths(&mut processes);
+    Ok(process_candidates_from_processes(&processes))
 }
 
 pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
@@ -662,18 +695,28 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
 
 pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
     let mut processes = list_processes()?;
-    enrich_process_paths(&mut processes);
+    enrich_process_metadata(&mut processes, process_identity_from_handle);
     Ok(processes)
 }
 
 pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
+    // Policy and picker scans need SID safety classification, not display names.
+    enrich_process_metadata(processes, |handle| {
+        (None, process_runs_as_service_account_from_handle(handle))
+    });
+}
+
+fn enrich_process_metadata(
+    processes: &mut [ProcessInfo],
+    identity: impl Fn(&WinHandle) -> (Option<String>, Option<bool>),
+) {
     for process in processes {
         let Some(handle) = open_process_for_query(process.id) else {
             continue;
         };
         process.image_path = process_image_path_from_handle(&handle);
         process.creation_time = handle.process_creation_time();
-        (process.user_name, process.is_service_account) = process_identity_from_handle(&handle);
+        (process.user_name, process.is_service_account) = identity(&handle);
         process.is_critical = process_critical_from_handle(&handle);
     }
 }
@@ -806,6 +849,9 @@ pub fn executable_path_key(path: &Path) -> String {
 }
 
 pub fn same_executable_path(left: &Path, right: &Path) -> bool {
+    if left.as_os_str() == right.as_os_str() {
+        return true;
+    }
     let left_key = executable_path_key(left);
     let right_key = executable_path_key(right);
     if left_key == right_key {
@@ -831,7 +877,10 @@ pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &
         return false;
     }
 
-    process_executable_path(process)
+    if let Some(actual_path) = process.image_path.as_deref() {
+        return same_executable_path(actual_path, executable_path);
+    }
+    process_image_path(process.id)
         .is_some_and(|actual_path| same_executable_path(&actual_path, executable_path))
 }
 
@@ -1130,6 +1179,60 @@ pub(crate) fn process_handle_matches_executable_path(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn usage_sampling_skips_efficiency_queries() {
+        let efficiency = ProcessResourceSampling::UsageOnly.efficiency_mode(
+            || panic!("usage-only sampling must not query EcoQoS"),
+            || panic!("usage-only sampling must not query priority"),
+        );
+        assert_eq!(efficiency, None);
+    }
+
+    #[test]
+    fn efficiency_sampling_queries_priority_only_when_eco_qos_is_enabled() {
+        use std::cell::Cell;
+        use windows_sys::Win32::System::Threading::NORMAL_PRIORITY_CLASS;
+
+        for (eco_qos, priority_class, expected, expected_priority_queries) in [
+            (None, 0, None, 0),
+            (Some(false), 0, Some(false), 0),
+            (Some(false), IDLE_PRIORITY_CLASS, Some(false), 0),
+            (Some(true), 0, None, 1),
+            (Some(true), IDLE_PRIORITY_CLASS, Some(true), 1),
+            (Some(true), NORMAL_PRIORITY_CLASS, Some(false), 1),
+        ] {
+            let eco_queries = Cell::new(0);
+            let priority_queries = Cell::new(0);
+            let efficiency = ProcessResourceSampling::WithEfficiencyMode.efficiency_mode(
+                || {
+                    eco_queries.set(eco_queries.get() + 1);
+                    eco_qos
+                },
+                || {
+                    priority_queries.set(priority_queries.get() + 1);
+                    priority_class
+                },
+            );
+            assert_eq!(efficiency, expected);
+            assert_eq!(eco_queries.get(), 1);
+            assert_eq!(priority_queries.get(), expected_priority_queries);
+        }
+    }
+
+    #[test]
+    fn usage_only_sampling_keeps_process_identity_and_cpu_observations() {
+        let process_id = std::process::id();
+        let usage = sample_process_resource(process_id, ProcessResourceSampling::UsageOnly)
+            .expect("current-process usage should be readable");
+        let full = sample_process_resource(process_id, ProcessResourceSampling::WithEfficiencyMode)
+            .expect("current-process resources should be readable");
+
+        assert_eq!(usage.creation_time, full.creation_time);
+        assert_eq!(usage.efficiency_mode, None);
+        assert!(full.cpu.cpu_time_100ns >= usage.cpu.cpu_time_100ns);
+        assert!(full.cpu.sampled_at >= usage.cpu.sampled_at);
+    }
+
+    #[test]
     fn executable_properties_rejects_unavailable_paths() {
         assert!(super::open_process_properties(std::path::Path::new("")).is_err());
         assert!(super::open_process_properties(std::path::Path::new("relative.exe")).is_err());
@@ -1315,15 +1418,34 @@ mod tests {
     }
 
     #[test]
-    fn current_process_account_name_is_available() {
-        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
-        let process_id = unsafe { GetCurrentProcessId() };
-        let process = open_process_for_query(process_id).expect("current process is queryable");
-        let user_name = process_identity_from_handle(&process)
-            .0
-            .expect("current process token resolves");
+    fn path_enrichment_keeps_safety_metadata_and_limits_account_names_to_ui() {
+        let process_id = std::process::id();
+        let mut current = list_processes()
+            .expect("process snapshot is available")
+            .into_iter()
+            .find(|process| process.id == process_id)
+            .expect("current process is present in its own snapshot");
+        enrich_process_metadata(
+            std::slice::from_mut(&mut current),
+            process_identity_from_handle,
+        );
+        assert!(current
+            .user_name
+            .as_ref()
+            .is_some_and(|name| !name.is_empty()));
+        assert!(current.creation_time.is_some());
+        assert!(current.image_path.is_some());
+        assert!(current.is_service_account.is_some());
+        assert!(current.is_critical.is_some());
 
-        assert!(!user_name.is_empty());
+        let mut expected = current.clone();
+        expected.user_name = None;
+        enrich_process_paths(std::slice::from_mut(&mut current));
+        assert!(
+            current.user_name.is_none(),
+            "runtime enrichment must omit account names"
+        );
+        assert_eq!(current, expected);
     }
 
     #[test]
@@ -1486,9 +1608,27 @@ mod tests {
     }
 
     #[test]
+    fn executable_path_comparison_preserves_normalization_and_identity() {
+        let path = Path::new(r"C:\Games\game.exe");
+        for (other, expected) in [
+            (r"C:\Games\game.exe", true),
+            (" C:/Games/game.exe ", true),
+            (r"c:\games\GAME.exe", true),
+            (r"C:\Other\game.exe", false),
+            (r"C:\Games\other.exe", false),
+        ] {
+            assert_eq!(
+                same_executable_path(path, Path::new(other)),
+                expected,
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
     fn executable_path_matching_distinguishes_same_named_binaries() {
         let process = ProcessInfo {
-            id: 42,
+            id: 0,
             creation_time: Some(1),
             parent_id: None,
             session_id: None,
@@ -1502,6 +1642,10 @@ mod tests {
 
         assert!(process_matches_executable_path(
             &process,
+            r"C:\Games\game.exe"
+        ));
+        assert!(process_matches_executable_path(
+            &process,
             "C:/Games/game.exe"
         ));
         assert!(process_matches_executable_path(
@@ -1513,6 +1657,14 @@ mod tests {
             r"C:\Other\game.exe"
         ));
         assert!(!process_matches_executable_path(&process, "game.exe"));
+        let process = ProcessInfo {
+            image_path: None,
+            ..process
+        };
+        assert!(!process_matches_executable_path(
+            &process,
+            r"C:\Games\game.exe"
+        ));
     }
 
     #[test]

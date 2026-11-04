@@ -119,11 +119,27 @@ pub fn delete_plan(guid: &str) -> Result<(), String> {
 
 pub fn restore_stale_adaptive_plans() -> Result<(), String> {
     let plans = list_plans()?;
+    restore_stale_adaptive_plans_with(
+        &plans,
+        windows_power::read_scheme_description,
+        windows_power::active_scheme_guid,
+        set_active,
+        delete_plan,
+    )
+}
+
+fn restore_stale_adaptive_plans_with(
+    plans: &[PowerPlan],
+    mut description: impl FnMut(&str) -> Result<String, String>,
+    mut active_guid: impl FnMut() -> Result<String, String>,
+    mut activate: impl FnMut(&str) -> Result<(), String>,
+    mut delete: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
     for plan in plans.iter().filter(|plan| plan.name == ADAPTIVE_PLAN_NAME) {
         if !windows_power::is_valid_guid(&plan.guid) {
             return Err("Invalid managed power plan GUID.".to_owned());
         }
-        let description = windows_power::read_scheme_description(&plan.guid)?;
+        let description = description(&plan.guid)?;
         let Some(restore_guid) = managed_adaptive_restore_guid(&plan.name, &description) else {
             continue;
         };
@@ -131,13 +147,21 @@ pub fn restore_stale_adaptive_plans() -> Result<(), String> {
             .iter()
             .any(|candidate| candidate.guid.eq_ignore_ascii_case(restore_guid));
 
-        if plan.active {
+        // Enumeration is only a snapshot; metadata reads and other actors can
+        // change the active scheme before recovery reaches this plan.
+        if active_guid()?.eq_ignore_ascii_case(&plan.guid) {
             if !restore_exists {
                 continue;
             }
-            set_active(restore_guid)?;
+            activate(restore_guid)?;
+            let actual = active_guid()?;
+            if !actual.eq_ignore_ascii_case(restore_guid) {
+                return Err(format!(
+                    "Adaptive plan recovery expected {restore_guid}, but Windows reported {actual}."
+                ));
+            }
         }
-        delete_plan(&plan.guid)?;
+        delete(&plan.guid)?;
     }
 
     Ok(())
@@ -450,9 +474,155 @@ fn managed_adaptive_restore_guid<'a>(plan_name: &str, description: &'a str) -> O
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use crate::power::{EffectivePowerMode, PowerPlanPersonality, ProcessorPowerPreset};
 
     use super::*;
+
+    const RECOVERY_ORIGINAL: &str = "381b4222-f694-41f0-9685-ff5bb260df2e";
+    const RECOVERY_MANAGED: &str = "00000000-0000-0000-0000-000000000001";
+    const RECOVERY_EXTERNAL: &str = "00000000-0000-0000-0000-000000000002";
+
+    fn stale_plan_fixture(snapshot_active: bool) -> [PowerPlan; 2] {
+        [
+            PowerPlan {
+                guid: RECOVERY_ORIGINAL.to_owned(),
+                name: "Original".to_owned(),
+                active: !snapshot_active,
+            },
+            PowerPlan {
+                guid: RECOVERY_MANAGED.to_owned(),
+                name: ADAPTIVE_PLAN_NAME.to_owned(),
+                active: snapshot_active,
+            },
+        ]
+    }
+
+    #[test]
+    fn stale_adaptive_cleanup_preserves_an_external_choice_after_enumeration() {
+        let events = RefCell::new(Vec::new());
+        restore_stale_adaptive_plans_with(
+            &stale_plan_fixture(true),
+            |_| {
+                Ok(format!(
+                    "{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{RECOVERY_ORIGINAL}"
+                ))
+            },
+            || {
+                events.borrow_mut().push("query".to_owned());
+                Ok(RECOVERY_EXTERNAL.to_owned())
+            },
+            |_| panic!("an external selection must not be overwritten"),
+            |guid| {
+                events.borrow_mut().push(format!("delete:{guid}"));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            events.into_inner(),
+            ["query", &format!("delete:{RECOVERY_MANAGED}")]
+        );
+    }
+
+    #[test]
+    fn stale_adaptive_cleanup_uses_fresh_activation_and_verifies_before_deleting() {
+        let events = RefCell::new(Vec::new());
+        let mut queries = [RECOVERY_MANAGED, RECOVERY_ORIGINAL].into_iter();
+        restore_stale_adaptive_plans_with(
+            &stale_plan_fixture(false),
+            |_| {
+                Ok(format!(
+                    "{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{RECOVERY_ORIGINAL}"
+                ))
+            },
+            || {
+                events.borrow_mut().push("query".to_owned());
+                Ok(queries.next().unwrap().to_owned())
+            },
+            |guid| {
+                events.borrow_mut().push(format!("activate:{guid}"));
+                Ok(())
+            },
+            |guid| {
+                events.borrow_mut().push(format!("delete:{guid}"));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            events.into_inner(),
+            [
+                "query",
+                &format!("activate:{RECOVERY_ORIGINAL}"),
+                "query",
+                &format!("delete:{RECOVERY_MANAGED}")
+            ]
+        );
+    }
+
+    #[test]
+    fn stale_adaptive_cleanup_retains_the_plan_when_restoration_is_unverified() {
+        for readback in [
+            Ok(RECOVERY_MANAGED.to_owned()),
+            Ok(RECOVERY_EXTERNAL.to_owned()),
+            Err("readback failed".to_owned()),
+        ] {
+            let mut queries = [Ok(RECOVERY_MANAGED.to_owned()), readback].into_iter();
+            let mut activations = Vec::new();
+            assert!(restore_stale_adaptive_plans_with(
+                &stale_plan_fixture(true),
+                |_| Ok(format!(
+                    "{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{RECOVERY_ORIGINAL}"
+                )),
+                || queries.next().unwrap(),
+                |guid| {
+                    activations.push(guid.to_owned());
+                    Ok(())
+                },
+                |_| panic!("unverified restoration must not delete the managed plan"),
+            )
+            .is_err());
+            assert_eq!(activations, [RECOVERY_ORIGINAL]);
+        }
+        assert!(restore_stale_adaptive_plans_with(
+            &stale_plan_fixture(true),
+            |_| Ok(format!(
+                "{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{RECOVERY_ORIGINAL}"
+            )),
+            || Err("active query failed".to_owned()),
+            |_| panic!("a failed ownership query must block mutation"),
+            |_| panic!("a failed ownership query must block deletion"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn stale_adaptive_cleanup_never_acts_without_the_current_name_and_description_pair() {
+        for (name, description) in [
+            (
+                "User plan",
+                format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{RECOVERY_ORIGINAL}"),
+            ),
+            (ADAPTIVE_PLAN_NAME, "User description".to_owned()),
+            (
+                ADAPTIVE_PLAN_NAME,
+                format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}invalid-guid"),
+            ),
+        ] {
+            let mut plans = stale_plan_fixture(true);
+            plans[1].name = name.to_owned();
+            restore_stale_adaptive_plans_with(
+                &plans,
+                |_| Ok(description.clone()),
+                || panic!("unrecognized plans must not be targeted"),
+                |_| panic!("unrecognized plans must not be activated"),
+                |_| panic!("unrecognized plans must not be deleted"),
+            )
+            .unwrap();
+        }
+    }
 
     #[test]
     fn scheduling_writes_preserve_unselected_policies_and_report_exact_failure_stage() {

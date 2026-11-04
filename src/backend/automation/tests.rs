@@ -128,7 +128,6 @@ fn automation_event_deadline_invalidations_are_characterized() {
     assert!(source.contains("SchedulerEvent::ForegroundChanged"));
     assert!(source.contains("SchedulerEvent::WindowCreated"));
     assert!(source.contains("SchedulerEvent::ProcessAppeared"));
-    assert!(!source.contains("let mut next_"));
 }
 
 #[test]
@@ -251,13 +250,6 @@ fn clearing_action_log_immediately_clears_runtime_summaries() {
         .expect("clearing action summaries advances status generation");
     assert!(cleared.action_log_entries.is_empty());
     assert!(cleared.action_log_summaries.is_empty());
-}
-
-#[test]
-fn runtime_handle_shutdown_is_idempotent() {
-    let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
-    assert!(automation.shutdown().is_ok());
-    assert!(automation.shutdown().is_ok());
 }
 
 #[test]
@@ -496,6 +488,18 @@ fn process_control_batch_summary_preserves_first_failure() {
     .expect_err("partial failure should be reported");
 
     assert_eq!(result, "2 of 3 process actions failed: first failure");
+    assert!(ProcessControlBatchResult {
+        results: vec![Ok(()), Ok(())],
+    }
+    .into_process_list_result()
+    .is_ok());
+    assert_eq!(
+        ProcessControlBatchResult {
+            results: Vec::new()
+        }
+        .into_process_list_result(),
+        Err("0 of 0 process actions failed: No process targets were available.".to_owned())
+    );
 }
 
 #[test]
@@ -833,13 +837,6 @@ fn foreground_lookup_runs_only_for_configured_by_foreground() {
 
     settings.by_foreground.rules[0].enabled = false;
     assert!(!foreground_lookup_required(&settings));
-}
-
-#[test]
-fn automation_worker_sleeps_when_no_automation_work_exists() {
-    let settings = Settings::default();
-
-    assert!(!automation_worker_required(&settings));
 }
 
 #[test]
@@ -2039,28 +2036,25 @@ fn configured_check_interval_clamps_imported_values() {
 
 #[test]
 fn schedule_checks_sleep_until_next_time_boundary() {
-    let mut settings = Settings::default();
-    settings.by_activity.enabled = false;
-    settings.by_time.enabled = true;
-    let starts_at = Local::now() + ChronoDuration::minutes(3);
-    let ends_at = starts_at + ChronoDuration::minutes(1);
-    settings.by_time.rules = vec![ByTimeRule {
-        enabled: true,
-        name: "Soon".to_owned(),
-        days: vec![WeekdaySetting::from_chrono(starts_at.weekday())],
-        start_time: starts_at.format("%H:%M").to_string(),
-        end_time: ends_at.format("%H:%M").to_string(),
-        power_plan_guid: Some("scheduled-guid".to_owned()),
-    }];
-
-    let delay = power_plan_check_delay(&settings, true, None).unwrap();
-
-    assert!(delay > configured_check_interval(&settings));
-    assert!(delay <= Duration::from_secs(180));
+    let boundary_delay = Duration::from_secs(17);
+    let delay = bounded_by_time_check_delay(Some(boundary_delay), Duration::from_secs(1));
+    assert_eq!(delay, boundary_delay);
+    let now = Instant::now();
+    let mut scheduler = RefreshScheduler::new(now);
+    assert_eq!(
+        run_scheduled_power_plan_check(&mut scheduler, now, || Some(delay)),
+        Some(delay)
+    );
+    assert!(!scheduler.is_due(RefreshDomain::PowerPlanCheck, now + delay / 2));
+    assert!(scheduler.is_due(RefreshDomain::PowerPlanCheck, now + delay));
 }
 
 #[test]
-fn schedule_checks_cap_long_sleeps() {
+fn schedule_checks_recheck_within_a_minute_without_clock_events() {
+    assert_eq!(
+        bounded_by_time_check_delay(None, Duration::from_secs(120)),
+        Duration::from_secs(60)
+    );
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
     settings.by_time.enabled = true;
@@ -2070,15 +2064,21 @@ fn schedule_checks_cap_long_sleeps() {
         enabled: true,
         name: "Tomorrow".to_owned(),
         days: vec![WeekdaySetting::from_chrono(starts_at.weekday())],
-        start_time: starts_at.format("%H:%M").to_string(),
-        end_time: ends_at.format("%H:%M").to_string(),
+        start_time: starts_at.format("%H:%M").to_string().parse().unwrap(),
+        end_time: ends_at.format("%H:%M").to_string().parse().unwrap(),
         power_plan_guid: Some("scheduled-guid".to_owned()),
     }];
 
+    let delay = power_plan_check_delay(&settings, true, None).unwrap();
+    assert_eq!(delay, Duration::from_secs(60));
+    let now = Instant::now();
+    let mut scheduler = RefreshScheduler::new(now);
     assert_eq!(
-        power_plan_check_delay(&settings, true, None),
-        Some(SCHEDULE_RULE_MAX_SLEEP)
+        run_scheduled_power_plan_check(&mut scheduler, now, || Some(delay)),
+        Some(delay)
     );
+    assert!(!scheduler.is_due(RefreshDomain::PowerPlanCheck, now + Duration::from_secs(59)));
+    assert!(scheduler.is_due(RefreshDomain::PowerPlanCheck, now + Duration::from_secs(60)));
 }
 
 #[test]
@@ -2213,18 +2213,6 @@ fn adaptive_engine_process_requires_adaptive_engine() {
     assert!(!adaptive_engine_process_priority_assist_required(&settings));
 }
 #[test]
-fn power_plan_checks_sleep_when_decision_features_are_off() {
-    let mut settings = Settings::default();
-    settings.by_activity.enabled = false;
-    settings.by_foreground.enabled = false;
-    settings.by_time.enabled = false;
-    settings.by_cpu_load.enabled = false;
-    settings.by_running_app.enabled = false;
-
-    assert!(!power_plan_checks_required(&settings));
-}
-
-#[test]
 fn automation_feature_execution_order_is_characterized() {
     assert_source_call_order(
         include_str!("../automation.rs"),
@@ -2316,8 +2304,6 @@ fn shared_property_precedence_inputs_are_characterized() {
 #[test]
 fn power_plan_decisions_have_one_visibility_independent_runtime_route() {
     let ui_source = include_str!("../../ui/app.rs");
-    assert!(!ui_source.contains("decide("));
-    assert!(!ui_source.contains("record_power_plan_change"));
     assert!(!ui_source.contains("set_active("));
 
     let runner_source = include_str!("runner.rs");

@@ -750,7 +750,9 @@ mod tests {
 
         let usage = process_cpu_usage_percent(previous, current).unwrap();
 
-        assert!(usage > 0.0);
-        assert!(usage <= 100.0);
+        let processors = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        assert!((usage - 100.0 / processors as f32).abs() < 0.0001);
     }
 }

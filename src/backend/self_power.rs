@@ -1,4 +1,11 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        mpsc::{self, Receiver, RecvTimeoutError},
+        Arc, Condvar, Mutex, MutexGuard,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
 
 use crate::platform::windows::self_power::{
     self as windows_self_power, PowerThrottlingState, SelfPowerState, POWER_CURRENT_VERSION,
@@ -6,6 +13,206 @@ use crate::platform::windows::self_power::{
 };
 
 const SELF_POWER_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+const SELF_POWER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+type SelfPowerReporter = Arc<dyn Fn(Result<(), String>) + Send + Sync>;
+
+#[derive(Default)]
+struct RetryWakeState {
+    generation: u64,
+    stopped: bool,
+}
+
+struct SelfPowerRetryShared<P: SelfPowerPlatform> {
+    controller: Mutex<SelfPowerController<P>>,
+    wake: Mutex<RetryWakeState>,
+    changed: Condvar,
+    report: SelfPowerReporter,
+}
+
+pub(crate) struct SelfPowerRequest<P: SelfPowerPlatform = WindowsSelfPowerPlatform> {
+    shared: Arc<SelfPowerRetryShared<P>>,
+}
+
+impl<P: SelfPowerPlatform> SelfPowerRequest<P> {
+    pub(crate) fn set_hidden_mode(&self, hidden: bool) {
+        if lock_unpoisoned(&self.shared.wake).stopped {
+            return;
+        }
+        {
+            let mut controller = lock_unpoisoned(&self.shared.controller);
+            if lock_unpoisoned(&self.shared.wake).stopped {
+                return;
+            }
+            let result = controller.set_hidden_mode(hidden);
+            (self.shared.report)(result);
+        }
+        let mut wake = lock_unpoisoned(&self.shared.wake);
+        wake.generation = wake.generation.wrapping_add(1);
+        self.shared.changed.notify_one();
+    }
+}
+
+pub(crate) struct SelfPowerRetryWatcher<
+    P: SelfPowerPlatform + Send + 'static = WindowsSelfPowerPlatform,
+> {
+    request: SelfPowerRequest<P>,
+    thread: Option<JoinHandle<()>>,
+    completion: Receiver<Result<(), String>>,
+    shutdown_timeout: Duration,
+    shutdown_result: Option<Result<(), String>>,
+}
+
+impl SelfPowerRetryWatcher {
+    pub(crate) fn start(report: SelfPowerReporter) -> Result<Self, String> {
+        Self::with_controller(
+            SelfPowerController::default(),
+            report,
+            SELF_POWER_SHUTDOWN_TIMEOUT,
+        )
+    }
+}
+
+impl<P: SelfPowerPlatform + Send + 'static> SelfPowerRetryWatcher<P> {
+    fn with_controller(
+        controller: SelfPowerController<P>,
+        report: SelfPowerReporter,
+        shutdown_timeout: Duration,
+    ) -> Result<Self, String> {
+        let shared = Arc::new(SelfPowerRetryShared {
+            controller: Mutex::new(controller),
+            wake: Mutex::new(RetryWakeState::default()),
+            changed: Condvar::new(),
+            report,
+        });
+        let worker_shared = Arc::clone(&shared);
+        let (completed, completion) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("winderust-self-power".to_owned())
+            .spawn(move || {
+                let result = run_self_power_retries(&worker_shared);
+                let _ = completed.send(result);
+            })
+            .map_err(|error| {
+                format!("Winderust self-power retry worker failed to start: {error}")
+            })?;
+        Ok(Self {
+            request: SelfPowerRequest { shared },
+            thread: Some(thread),
+            completion,
+            shutdown_timeout,
+            shutdown_result: None,
+        })
+    }
+
+    pub(crate) fn request(&self) -> SelfPowerRequest<P> {
+        SelfPowerRequest {
+            shared: Arc::clone(&self.request.shared),
+        }
+    }
+
+    pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        if let Some(result) = &self.shutdown_result {
+            return result.clone();
+        }
+        {
+            let mut wake = lock_unpoisoned(&self.request.shared.wake);
+            wake.stopped = true;
+            self.request.shared.changed.notify_one();
+        }
+        let deadline = Instant::now() + self.shutdown_timeout;
+        let mut result = match self.completion.recv_timeout(self.shutdown_timeout) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(
+                "Winderust self-power restoration timed out; completion is unconfirmed.".to_owned(),
+            ),
+            Err(RecvTimeoutError::Disconnected) => Err(
+                "Winderust self-power retry worker stopped without confirming restoration."
+                    .to_owned(),
+            ),
+        };
+        if let Some(thread) = self.thread.take() {
+            // Completion is sent immediately before return; join only after the thread has exited.
+            while !thread.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            if thread.is_finished() && thread.join().is_err() {
+                result = Err(
+                    "Winderust self-power retry worker panicked; restoration is unconfirmed."
+                        .to_owned(),
+                );
+            }
+            // A stalled native call keeps the controller/baseline alive on its detached thread.
+        }
+        self.shutdown_result = Some(result.clone());
+        result
+    }
+}
+
+impl<P: SelfPowerPlatform + Send + 'static> Drop for SelfPowerRetryWatcher<P> {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+fn run_self_power_retries<P: SelfPowerPlatform>(
+    shared: &SelfPowerRetryShared<P>,
+) -> Result<(), String> {
+    loop {
+        let generation = {
+            let wake = lock_unpoisoned(&shared.wake);
+            if wake.stopped {
+                break;
+            }
+            wake.generation
+        };
+        let retry_delay = {
+            let mut controller = lock_unpoisoned(&shared.controller);
+            let now = Instant::now();
+            if controller.retry_at.is_some_and(|deadline| now >= deadline)
+                && !lock_unpoisoned(&shared.wake).stopped
+            {
+                let result = controller.reconcile();
+                (shared.report)(result);
+            }
+            controller
+                .retry_at
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+        };
+        let wake = lock_unpoisoned(&shared.wake);
+        if wake.stopped {
+            break;
+        }
+        if wake.generation != generation {
+            continue;
+        }
+        if let Some(delay) = retry_delay {
+            drop(
+                shared
+                    .changed
+                    .wait_timeout(wake, delay)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        } else {
+            drop(
+                shared
+                    .changed
+                    .wait(wake)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        }
+    }
+    let mut controller = lock_unpoisoned(&shared.controller);
+    let result = controller.shutdown();
+    (shared.report)(result.clone());
+    result
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[derive(Clone, Copy)]
 struct ManagedSelfPowerState {
@@ -41,8 +248,8 @@ pub(crate) struct SelfPowerController<P: SelfPowerPlatform = WindowsSelfPowerPla
     platform: P,
     state: Option<ManagedSelfPowerState>,
     hidden_mode: bool,
-    failed_request: Option<bool>,
     retry_at: Option<Instant>,
+    retry_interval: Duration,
     shutdown: bool,
 }
 
@@ -58,8 +265,8 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
             platform,
             state: None,
             hidden_mode: false,
-            failed_request: None,
             retry_at: None,
+            retry_interval: SELF_POWER_RETRY_INTERVAL,
             shutdown: false,
         }
     }
@@ -69,7 +276,7 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
             return Ok(());
         }
         self.hidden_mode = enabled;
-        self.reconcile(false)
+        self.reconcile()
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
@@ -77,30 +284,19 @@ impl<P: SelfPowerPlatform> SelfPowerController<P> {
             return Ok(());
         }
         self.hidden_mode = false;
-        let result = self.reconcile(true);
+        let result = self.reconcile();
         if result.is_ok() {
             self.shutdown = true;
         }
         result
     }
 
-    fn reconcile(&mut self, force: bool) -> Result<(), String> {
-        let request = self.hidden_mode;
-        let now = Instant::now();
-        if !force
-            && self.failed_request == Some(request)
-            && self.retry_at.is_some_and(|retry_at| now < retry_at)
-        {
-            return Ok(());
-        }
-
+    fn reconcile(&mut self) -> Result<(), String> {
         let result = self.reconcile_now();
         if result.is_ok() {
-            self.failed_request = None;
             self.retry_at = None;
         } else {
-            self.failed_request = Some(request);
-            self.retry_at = Some(now + SELF_POWER_RETRY_INTERVAL);
+            self.retry_at = Some(Instant::now() + self.retry_interval);
         }
         result
     }
@@ -267,165 +463,4 @@ fn power_throttling_enabled_state(previous: PowerThrottlingState) -> PowerThrott
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::platform::windows::priority_efficiency::{
-        POWER_IGNORE_TIMER_RESOLUTION, PRIORITY_NORMAL,
-    };
-
-    struct FakePlatform {
-        snapshot: SelfPowerState,
-        query_error: bool,
-        query_error_at: Option<usize>,
-        query_count: usize,
-        priority_error: bool,
-        power_writes: usize,
-        priority_writes: usize,
-    }
-
-    impl FakePlatform {
-        fn new() -> Self {
-            Self {
-                snapshot: SelfPowerState {
-                    power_throttling: power_throttling_disabled_state(),
-                    priority_class: PRIORITY_NORMAL,
-                },
-                query_error: false,
-                query_error_at: None,
-                query_count: 0,
-                priority_error: false,
-                power_writes: 0,
-                priority_writes: 0,
-            }
-        }
-    }
-
-    impl SelfPowerPlatform for FakePlatform {
-        fn query(&mut self) -> Result<SelfPowerState, String> {
-            self.query_count += 1;
-            if self.query_error || self.query_error_at == Some(self.query_count) {
-                Err("injected baseline read failure".to_owned())
-            } else {
-                Ok(self.snapshot)
-            }
-        }
-
-        fn set_power_throttling(&mut self, state: PowerThrottlingState) -> Result<(), String> {
-            self.power_writes += 1;
-            self.snapshot.power_throttling = state;
-            Ok(())
-        }
-
-        fn set_priority_class(&mut self, priority_class: u32) -> Result<(), String> {
-            self.priority_writes += 1;
-            if self.priority_error {
-                self.priority_error = false;
-                Err("injected priority failure".to_owned())
-            } else {
-                self.snapshot.priority_class = priority_class;
-                Ok(())
-            }
-        }
-    }
-
-    #[test]
-    fn visible_window_leaves_process_power_state_untouched() {
-        let mut controller = SelfPowerController::with_platform(FakePlatform::new());
-        let baseline = controller.platform.snapshot;
-        controller.set_hidden_mode(false).unwrap();
-        assert!(same_snapshot(controller.platform.snapshot, baseline));
-        assert_eq!(controller.platform.power_writes, 0);
-        assert_eq!(controller.platform.priority_writes, 0);
-        assert!(controller.state.is_none());
-    }
-
-    #[test]
-    fn baseline_read_failure_blocks_every_mutation() {
-        let mut platform = FakePlatform::new();
-        platform.query_error = true;
-        let mut controller = SelfPowerController::with_platform(platform);
-
-        assert!(controller.set_hidden_mode(true).is_err());
-        assert_eq!(controller.platform.power_writes, 0);
-        assert_eq!(controller.platform.priority_writes, 0);
-    }
-
-    #[test]
-    fn showing_window_restores_priority_and_throttling_without_changing_timer_resolution() {
-        let mut controller = SelfPowerController::with_platform(FakePlatform::new());
-        let baseline = controller.platform.snapshot;
-
-        controller.set_hidden_mode(true).unwrap();
-        assert_eq!(controller.platform.snapshot.priority_class, PRIORITY_IDLE);
-        assert_ne!(
-            controller.platform.snapshot.power_throttling.state_mask & POWER_EXECUTION_SPEED,
-            0
-        );
-
-        assert_eq!(
-            controller.platform.snapshot.power_throttling.state_mask
-                & POWER_IGNORE_TIMER_RESOLUTION,
-            0
-        );
-        controller.set_hidden_mode(false).unwrap();
-        assert_eq!(
-            controller.platform.snapshot.priority_class,
-            baseline.priority_class
-        );
-
-        assert!(same_snapshot(controller.platform.snapshot, baseline));
-        assert!(controller.state.is_none());
-    }
-
-    #[test]
-    fn hidden_startup_applies_one_verified_transition() {
-        let mut controller = SelfPowerController::with_platform(FakePlatform::new());
-
-        controller.set_hidden_mode(true).unwrap();
-
-        assert_eq!(controller.platform.power_writes, 1);
-        assert_eq!(controller.platform.priority_writes, 1);
-        assert_eq!(controller.platform.snapshot.priority_class, PRIORITY_IDLE);
-        assert_eq!(
-            controller.platform.snapshot.power_throttling.state_mask
-                & POWER_IGNORE_TIMER_RESOLUTION,
-            0
-        );
-    }
-
-    #[test]
-    fn failed_second_step_compensates_power_throttling() {
-        let mut platform = FakePlatform::new();
-        let baseline = platform.snapshot;
-        platform.priority_error = true;
-        let mut controller = SelfPowerController::with_platform(platform);
-
-        assert!(controller.set_hidden_mode(true).is_err());
-        assert!(same_snapshot(controller.platform.snapshot, baseline));
-    }
-
-    #[test]
-    fn verification_query_failure_compensates_every_completed_write() {
-        let mut platform = FakePlatform::new();
-        let baseline = platform.snapshot;
-        platform.query_error_at = Some(2);
-        let mut controller = SelfPowerController::with_platform(platform);
-
-        assert!(controller.set_hidden_mode(true).is_err());
-
-        assert!(same_snapshot(controller.platform.snapshot, baseline));
-    }
-
-    #[test]
-    fn shutdown_releases_process_lifetime_state_once() {
-        let mut controller = SelfPowerController::with_platform(FakePlatform::new());
-        let baseline = controller.platform.snapshot;
-        controller.set_hidden_mode(true).unwrap();
-
-        controller.shutdown().unwrap();
-        controller.shutdown().unwrap();
-
-        assert!(same_snapshot(controller.platform.snapshot, baseline));
-        assert!(controller.shutdown);
-    }
-}
+mod tests;

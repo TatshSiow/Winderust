@@ -50,9 +50,6 @@ pub(super) fn should_skip_process(
         )
 }
 
-#[cfg(test)]
-pub(super) use crate::runtime::observations::foreground_process_group_ids;
-
 pub(super) fn cpu_pressure_restraint_should_run(
     settings: &AdaptiveEngineProcessSettings,
     foreground_cpu_usage_percent: Option<f32>,

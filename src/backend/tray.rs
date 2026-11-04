@@ -361,17 +361,17 @@ fn start_tray_window() -> Result<(HWND, JoinHandle<()>), String> {
         .name("tray-window".into())
         .spawn(move || tray_window_thread(sender))
         .map_err(|error| format!("Failed to start the tray window thread: {error}"))?;
-    match receiver.recv() {
-        Ok(Ok(hwnd)) => Ok((hwnd as HWND, thread)),
-        result => {
+    match receiver
+        .recv()
+        .map_err(|error| format!("Tray window did not start: {error}"))
+        .and_then(std::convert::identity)
+    {
+        Ok(hwnd) => Ok((hwnd as HWND, thread)),
+        Err(error) => {
             if thread.join().is_err() {
                 eprintln!("Tray window thread panicked during startup.");
             }
-            Err(match result {
-                Ok(Err(error)) => error,
-                Err(error) => format!("Tray window did not start: {error}"),
-                Ok(Ok(_)) => unreachable!("successful tray startup returned above"),
-            })
+            Err(error)
         }
     }
 }

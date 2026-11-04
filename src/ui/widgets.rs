@@ -267,11 +267,10 @@ pub(super) fn tab_style(
     status: iced::widget::button::Status,
     active: bool,
 ) -> iced::widget::button::Style {
-    let mut style = if active {
-        selected(theme, status)
-    } else {
-        quiet(theme, status)
-    };
+    let mut style = quiet(theme, status);
+    if active {
+        style.background = selected(theme, status).background;
+    }
     style.border.width = 1.0;
     style.border.color = if active {
         theme.palette().primary.scale_alpha(0.6)
@@ -507,12 +506,12 @@ pub(super) fn pick_list<'a, T, L, V, M>(
 ) -> super::select::Select<'a, T, M>
 where
     T: ToString + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
+    L: Into<Vec<T>> + 'a,
     V: std::borrow::Borrow<T> + 'a,
     M: Clone + 'a,
 {
     super::select::Select::new(
-        options.borrow().to_vec(),
+        options.into(),
         selected.map(|value| value.borrow().clone()),
         on_selected,
     )
@@ -843,13 +842,12 @@ mod picker_tests {
     use super::*;
     use crate::ui::{power_rules, settings_pages, Page};
     use iced::advanced::{layout, widget::Tree, Layout, Shell};
-    use iced::advanced::{renderer::Headless, Renderer as _};
+    use iced::advanced::{renderer::Headless as _, Renderer as _};
     use iced::{mouse, Event, Rectangle, Size, Vector};
 
     fn preview<M: Clone + std::fmt::Debug>(
         mut view: Element<'_, M>,
         theme: &iced::Theme,
-        name: &str,
         width: u32,
         height: u32,
         color: bool,
@@ -922,16 +920,11 @@ mod picker_tests {
                 mouse::Cursor::Unavailable,
             );
         });
-        let pixels = renderer.screenshot(Size::new(width, height), 1.0, theme.palette().background);
-        std::fs::create_dir_all("target/ui-preview").unwrap();
-        image::save_buffer(
-            format!("target/ui-preview/picker-{name}-{width}.png"),
-            &pixels,
-            width,
-            height,
-            image::ColorType::Rgba8,
-        )
-        .unwrap();
+        if width == 900 && !theme.extended_palette().is_dark {
+            // Exercise the hour, minute, and color canvases through the rasterizer once each.
+            // The remaining theme/size cases check layout and input without repeated rasters.
+            let _ = renderer.screenshot(Size::new(width, height), 1.0, theme.palette().background);
+        }
         let mut panel = Layout::new(&node);
         while panel.children().count() == 1 {
             panel = panel.children().next().unwrap();
@@ -946,14 +939,12 @@ mod picker_tests {
                 .next()
                 .unwrap()
                 .bounds();
-            let mut samples = Vec::new();
             for frame in 0..9 {
                 let point = iced::Point::new(
                     square.x + square.width * (0.2 + frame as f32 * 0.06),
                     square.center_y(),
                 );
                 let cursor = mouse::Cursor::Available(point);
-                let start = std::time::Instant::now();
                 overlay.update(
                     &Event::Mouse(if frame == 0 {
                         mouse::Event::ButtonPressed(mouse::Button::Left)
@@ -970,16 +961,7 @@ mod picker_tests {
                 renderer.with_layer(bounds, |renderer| {
                     overlay.draw(renderer, theme, &style, Layout::new(&node), cursor)
                 });
-                let recorded = start.elapsed();
-                let _ =
-                    renderer.screenshot(Size::new(width, height), 1.0, theme.palette().background);
-                samples.push((recorded, start.elapsed()));
             }
-            samples.sort_by_key(|sample| sample.1);
-            println!(
-                "{name}-{width} drag median event+draw={:?}, event+draw+raster={:?}",
-                samples[4].0, samples[4].1
-            );
             overlay.update(
                 &Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
                 Layout::new(&node),
@@ -1020,24 +1002,18 @@ mod picker_tests {
     fn picker_overlays_render_and_cancel_or_submit_at_both_widths() {
         let mut settings = crate::config::Settings::default();
         settings.general.accent.custom_colors = vec![0x123456, 0xabcdef];
-        for (name, theme) in [
-            (
-                "light",
-                iced::Theme::custom_with_fn(
-                    "picker",
-                    design::palette(true, None),
-                    design::extended_palette,
-                ),
+        for theme in [
+            iced::Theme::custom_with_fn(
+                "picker",
+                design::palette(true, None),
+                design::extended_palette,
             ),
-            (
-                "dark",
-                iced::Theme::custom_with_fn(
-                    "picker",
-                    design::palette(false, None),
-                    design::extended_palette,
-                ),
+            iced::Theme::custom_with_fn(
+                "picker",
+                design::palette(false, None),
+                design::extended_palette,
             ),
-            ("amoled", design::amoled_theme(None)),
+            design::amoled_theme(None),
         ] {
             for width in [500, 900] {
                 let submit = width == 900;
@@ -1077,7 +1053,6 @@ mod picker_tests {
                             power_rules::Message::CancelTimePicker,
                         ),
                         &theme,
-                        &format!("time-{part:?}-{name}"),
                         width,
                         if width == 900 { 620 } else { 740 },
                         false,
@@ -1107,7 +1082,6 @@ mod picker_tests {
                         settings_pages::Message::CancelColorPicker,
                     ),
                     &theme,
-                    &format!("color-{name}"),
                     width,
                     740,
                     true,
@@ -1558,7 +1532,7 @@ impl<T> std::fmt::Display for Choice<T> {
 }
 
 pub(super) fn plan<M: Clone + 'static>(
-    guid: Option<String>,
+    guid: Option<&str>,
     plans: &[PowerPlan],
     action: impl Fn(Option<String>) -> M + 'static,
 ) -> Element<'static, M> {
@@ -1570,9 +1544,9 @@ pub(super) fn plan<M: Clone + 'static>(
     );
     let selected = choices
         .iter()
-        .find(|choice| choice.0 == guid)
+        .find(|choice| choice.0.as_deref() == guid)
         .cloned()
-        .unwrap_or_else(|| Choice(guid.clone(), guid.unwrap_or_default()));
+        .unwrap_or_else(|| Choice(guid.map(str::to_owned), guid.unwrap_or_default().to_owned()));
     pick_list(choices, Some(selected), move |choice| action(choice.0))
         .width(Fill)
         .into()
@@ -1712,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_tints_and_control_marks_follow_accent_in_all_themes() {
+    fn surfaces_and_controls_keep_accent_marks_and_neutral_tab_text() {
         use crate::config::AppThemeMode;
         for mode in [
             AppThemeMode::Light,
@@ -1774,6 +1748,22 @@ mod tests {
             );
             assert_ne!(toggle(&themes[0]).background, toggle(&themes[1]).background);
             for theme in &themes {
+                for status in [
+                    Status::Active,
+                    Status::Hovered,
+                    Status::Pressed,
+                    Status::Disabled,
+                ] {
+                    let inactive = tab_style(theme, status, false);
+                    let active = tab_style(theme, status, true);
+                    assert_eq!(inactive.text_color, quiet(theme, status).text_color);
+                    assert_eq!(active.text_color, inactive.text_color);
+                    assert_eq!(active.background, selected(theme, status).background);
+                    assert_eq!(
+                        active.border.color,
+                        theme.palette().primary.scale_alpha(0.6)
+                    );
+                }
                 let field = select_field(theme, iced::widget::pick_list::Status::Active);
                 let hover = select_field(theme, iced::widget::pick_list::Status::Hovered);
                 assert_eq!(

@@ -105,11 +105,16 @@ struct ManagedThreadPriority {
 
 pub(crate) trait ThreadPriorityRecoveryIntent {
     fn commit(self) -> Result<(), String>;
+    fn retain_pending(self) -> Result<(), String>;
 }
 
 impl ThreadPriorityRecoveryIntent for RecoveryIntent {
     fn commit(self) -> Result<(), String> {
         RecoveryIntent::commit(self)
+    }
+
+    fn retain_pending(self) -> Result<(), String> {
+        RecoveryIntent::retain_pending(self)
     }
 }
 
@@ -478,7 +483,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             thread,
             current,
             desired,
-            CommitFailureBehavior::Compensate,
+            CommitFailureBehavior::RetainOwnership,
         ) {
             Ok(()) => {
                 self.pending_releases.remove(&identity);
@@ -630,6 +635,9 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         &mut self,
         active_targets: &BTreeSet<ProcessTargetKey>,
     ) -> ThreadPriorityReleaseSummary {
+        if self.pending_releases.is_empty() {
+            self.next_release_retry = None;
+        }
         let identities = self
             .managed
             .iter()
@@ -641,8 +649,12 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         self.pending_releases
             .extend(identities.iter().map(|(_, identity)| identity.clone()));
         let summary = self.release_identities(identities);
-        self.next_release_retry =
-            (!self.pending_releases.is_empty()).then(|| Instant::now() + Duration::from_secs(1));
+        if self.pending_releases.is_empty() {
+            self.next_release_retry = None;
+        } else {
+            self.next_release_retry
+                .get_or_insert_with(|| Instant::now() + Duration::from_secs(1));
+        }
         summary
     }
 
@@ -757,7 +769,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             &thread,
             current,
             baseline,
-            CommitFailureBehavior::KeepExpected,
+            CommitFailureBehavior::RelinquishRestored,
         ) {
             Ok(()) => Ok(true),
             // Preserve a confirmed exit; otherwise recheck for exit during restoration.
@@ -807,13 +819,6 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
             .len()
     }
 
-    pub(crate) fn policy_managed_thread_count(&self) -> usize {
-        self.managed
-            .values()
-            .filter(|managed| managed.owner.is_automatic())
-            .count()
-    }
-
     pub(crate) fn has_managed_state(&self) -> bool {
         !self.managed.is_empty()
     }
@@ -841,8 +846,8 @@ struct TransitionFailure {
 
 #[derive(Clone, Copy)]
 enum CommitFailureBehavior {
-    Compensate,
-    KeepExpected,
+    RetainOwnership,
+    RelinquishRestored,
 }
 
 fn apply_transition<P: ThreadPriorityPlatform>(
@@ -889,11 +894,16 @@ fn apply_transition<P: ThreadPriorityPlatform>(
     }
     if let Err(error) = intent.commit() {
         let message = format!("Crash recovery commit failed: {error}");
+        // The helper may have compacted this transition into an earlier baseline.
+        // Keep the verified target so both pending and committed journals can unwind it.
         return match commit_failure_behavior {
-            CommitFailureBehavior::Compensate => Err(compensate_without_intent(
-                platform, thread, original, message,
-            )),
-            CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
+            CommitFailureBehavior::RetainOwnership => Err(TransitionFailure {
+                error: ProcessControlError::Failed(message),
+                uncertain: true,
+                relinquish_recovery: false,
+                expected_preserved: true,
+            }),
+            CommitFailureBehavior::RelinquishRestored => Err(TransitionFailure {
                 error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
@@ -919,7 +929,7 @@ fn compensate_with_intent<P: ThreadPriorityPlatform>(
             expected_preserved: false,
         },
         Err(compensation_error) => {
-            let recovery_error = intent.commit().err();
+            let recovery_error = intent.retain_pending().err();
             TransitionFailure {
                 error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
@@ -927,32 +937,6 @@ fn compensate_with_intent<P: ThreadPriorityPlatform>(
                 expected_preserved: false,
             }
         }
-    }
-}
-
-fn compensate_without_intent<P: ThreadPriorityPlatform>(
-    platform: &mut P,
-    thread: &P::Thread,
-    original: i32,
-    primary_error: String,
-) -> TransitionFailure {
-    match restore_and_verify(platform, thread, original) {
-        Ok(()) => TransitionFailure {
-            error: ProcessControlError::Failed(primary_error),
-            uncertain: false,
-            relinquish_recovery: true,
-            expected_preserved: false,
-        },
-        Err(compensation_error) => TransitionFailure {
-            error: transition_failure_error(
-                ProcessControlError::Failed(primary_error),
-                compensation_error,
-                None,
-            ),
-            uncertain: true,
-            relinquish_recovery: false,
-            expected_preserved: false,
-        },
     }
 }
 
@@ -1150,6 +1134,14 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+
+        fn retain_pending(self) -> Result<(), String> {
+            self.events
+                .lock()
+                .unwrap()
+                .push("retain_pending".to_owned());
+            Ok(())
         }
     }
 
@@ -1402,6 +1394,7 @@ mod tests {
             .platform
             .fail_next(FakeFailure::IdentityUnavailable);
         assert_eq!(controller.release_all_policy().failures.len(), 2);
+        let due = controller.next_release_retry.unwrap();
         for failure in [FakeFailure::IdentityUnavailable, FakeFailure::Inventory] {
             controller.platform.fail_next(failure);
             assert!(controller
@@ -1413,6 +1406,13 @@ mod tests {
                 .is_err());
             assert_eq!(controller.pending_releases.len(), 2);
             assert!(controller.release_retry_delay(Instant::now()).is_some());
+            for _ in 0..8 {
+                assert!(controller
+                    .release_policy_except(&BTreeSet::from([target(7).key()]))
+                    .failures
+                    .is_empty());
+                assert_eq!(controller.next_release_retry, Some(due));
+            }
         }
         // The first thread fails; the second accepts the replacement.
         controller.platform.fail_next(FakeFailure::QueryDenied);
@@ -1431,14 +1431,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![100]
         );
-        let now = Instant::now();
+        let now = due - Duration::from_millis(1);
         assert_eq!(controller.retry_pending_releases(now).restored_threads, 0);
-        assert_eq!(
-            controller
-                .retry_pending_releases(now + Duration::from_secs(2))
-                .restored_threads,
-            1
-        );
+        assert_eq!(controller.retry_pending_releases(due).restored_threads, 1);
         assert_eq!(controller.platform.process.threads[&100].priority, 0);
         assert_eq!(
             controller.platform.process.threads[&101].priority,
@@ -2158,28 +2153,131 @@ mod tests {
     }
 
     #[test]
-    fn begin_and_commit_failures_do_not_leave_untracked_mutations() {
-        for failure in [FakeFailure::Begin, FakeFailure::Commit] {
-            let mut platform = FakePlatform::new(&[THREAD_PRIORITY_NORMAL]);
-            platform.fail_next(failure);
-            let mut controller = ThreadPriorityController::with_platform(platform);
-            assert!(controller
+    fn begin_failure_does_not_leave_untracked_mutations() {
+        let mut platform = FakePlatform::new(&[THREAD_PRIORITY_NORMAL]);
+        platform.fail_next(FakeFailure::Begin);
+        let mut controller = ThreadPriorityController::with_platform(platform);
+        assert!(controller
+            .apply_policy_claim(
+                &mut ThreadInventory::default(),
+                claim(
+                    ControlOwner::ThreadPriority,
+                    ProcessThreadPrioritySetting::BelowNormal,
+                    ThreadPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .is_err());
+        assert_eq!(
+            controller.platform.process.threads[&100].priority,
+            THREAD_PRIORITY_NORMAL
+        );
+        assert!(!controller.has_managed_state());
+    }
+
+    #[test]
+    fn commit_failure_retains_verified_target_and_the_first_baseline() {
+        for replacing in [false, true] {
+            let mut controller = ThreadPriorityController::with_platform(FakePlatform::new(&[
+                THREAD_PRIORITY_NORMAL,
+            ]));
+            if replacing {
+                controller
+                    .apply_policy_claim(
+                        &mut ThreadInventory::default(),
+                        claim(
+                            ControlOwner::ThreadPriority,
+                            ProcessThreadPrioritySetting::BelowNormal,
+                            ThreadPriorityPreservation::Exact,
+                        ),
+                        true,
+                    )
+                    .unwrap();
+            }
+            controller.platform.fail_next(FakeFailure::Commit);
+            let error = controller
                 .apply_policy_claim(
                     &mut ThreadInventory::default(),
                     claim(
                         ControlOwner::ThreadPriority,
-                        ProcessThreadPrioritySetting::BelowNormal,
+                        ProcessThreadPrioritySetting::AboveNormal,
                         ThreadPriorityPreservation::Exact,
                     ),
                     true,
                 )
-                .is_err());
+                .unwrap_err();
+            assert!(error.to_string().contains("commit failed"));
+            assert_eq!(
+                controller.platform.process.threads[&100].priority,
+                THREAD_PRIORITY_ABOVE_NORMAL
+            );
+            let managed = controller.managed.values().next().unwrap();
+            assert_eq!(
+                (managed.baseline, managed.expected),
+                (THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_ABOVE_NORMAL)
+            );
+            let events = controller.platform.events.lock().unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.starts_with("apply:"))
+                    .count(),
+                if replacing { 2 } else { 1 }
+            );
+            assert!(!events.iter().any(|event| event.starts_with("relinquish:")));
+            drop(events);
+            controller.shutdown().unwrap();
             assert_eq!(
                 controller.platform.process.threads[&100].priority,
                 THREAD_PRIORITY_NORMAL
             );
             assert!(!controller.has_managed_state());
         }
+    }
+
+    #[test]
+    fn unverified_compensation_retains_a_pending_edge_to_the_first_baseline() {
+        let mut controller =
+            ThreadPriorityController::with_platform(FakePlatform::new(&[THREAD_PRIORITY_NORMAL]));
+        controller
+            .apply_policy_claim(
+                &mut ThreadInventory::default(),
+                claim(
+                    ControlOwner::ThreadPriority,
+                    ProcessThreadPrioritySetting::BelowNormal,
+                    ThreadPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.events.lock().unwrap().clear();
+        controller.platform.fail_next(FakeFailure::Apply);
+        controller.platform.fail_next(FakeFailure::Verify);
+        assert!(controller
+            .apply_policy_claim(
+                &mut ThreadInventory::default(),
+                claim(
+                    ControlOwner::ThreadPriority,
+                    ProcessThreadPrioritySetting::AboveNormal,
+                    ThreadPriorityPreservation::Exact
+                ),
+                true,
+            )
+            .is_err());
+        assert_eq!(
+            controller.platform.process.threads[&100].priority,
+            THREAD_PRIORITY_BELOW_NORMAL
+        );
+        let managed = controller.managed.values().next().unwrap();
+        assert_eq!(
+            (managed.baseline, managed.expected),
+            (THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_ABOVE_NORMAL)
+        );
+        let events = controller.platform.events.lock().unwrap();
+        assert!(events.iter().any(|event| event == "retain_pending"));
+        assert!(!events
+            .iter()
+            .any(|event| event == "commit" || event.starts_with("relinquish:")));
     }
 
     #[test]

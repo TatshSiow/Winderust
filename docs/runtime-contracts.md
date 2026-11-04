@@ -5,6 +5,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 ## Application boundaries
 
 - Automation worker lifetime uses the complete AC/Battery configuration; policy application still uses only the active profile. An idle profile waits for events when the other profile requires automation.
+- Settings contain Plugged In policies and at most one On Battery profile. Nested
+  On Battery profiles fail load, import, save, and export before normalization or
+  writing can discard their settings.
 - Update checks support Stable and Pre-release channels. Automatic checks are optional; manual checks remain available on About.
 - `SettingsEditor` is the application settings boundary. It privately owns draft/revision state,
   save/cancel/import/export/auto-patch merge, runtime publication, and persisted startup intent.
@@ -35,12 +38,28 @@ Read the relevant section before changing feature policy, ownership, restoration
   restores Winderust self-power. Manual reversible Process List actions remain
   owned by `RuntimeCore`.
 
-- Thread Priority and I/O Priority pending automatic releases retain exact identities and retry independently of feature enablement. Cancel pending cleanup only when that exact target accepts replacement ownership or completes restoration/relinquishment; failed or partially successful requests retain unresolved cleanup.
+- Thread Priority, I/O Priority, GPU Priority, Memory Priority, and Dynamic
+  Priority Boost retain exact identities for failed automatic releases and retry
+  once per second independently of feature enablement. Repeated release requests
+  preserve the earliest pending deadline. Cancel cleanup only when that exact
+  target accepts replacement ownership or completes restoration/relinquishment;
+  failed or uncertain replacements retain unresolved cleanup. Memory Priority
+  retries reconcile surviving claims before restoring a baseline.
 - Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
+- Retained-handle operation errors preserve their native failure code. In
+  particular, `ERROR_INVALID_PARAMETER` from a setter is not process-exit
+  evidence and must not discard restoration state.
 - The live recovery helper PID is protected at the shared process-control acquisition boundary, including manual actions, priority changes, CPU allocation, suspension, termination, and trimming. The PID is published when the helper starts and read without the recovery-journal mutex; acquiring protection must not deadlock a caller holding a recovery intent. Keep this protection through shutdown, including unconfirmed helper completion. Restoration and helper-owned recovery remain independent of new-mutation eligibility.
 - At watchdog EOF, unresolved intents remain separate from committed transitions. Recovery unwinds an expected value, or skips an unapplied pending edge only when the current value equals its original value. Committed mismatches and unrelated external values stop the chain; never compact pending intents into committed baselines.
 
-- Watchdog pipe I/O runs on one dedicated transport thread. Recovery callers wait at most two seconds for a reply; uncertain delivery/acknowledgment disables further commands on that connection, while an explicit rejection preserves protocol synchronization. Keep the connection and helper journal alive until runtime shutdown so a late reply cannot trigger premature recovery or acknowledge another command. Shutdown waits at most five seconds and reports unconfirmed recovery without killing the helper. A stalled I/O thread is not joined; parent process exit closes its remaining pipe handles. This bounds caller/shutdown waits, not recovery completion by a hung helper.
+- Watchdog pipe I/O runs on one dedicated transport thread. Recovery callers wait at most two seconds for a reply; uncertain delivery/acknowledgment disables further commands on that connection, while an ordinary explicit rejection preserves protocol synchronization. Generic Commit failures also block the connection: they must not permit a later mutation to overtake an unresolved transition. Power-plan Commit retries retain the exact intent ID and require acknowledgment before reuse. Keep the connection and helper journal alive until runtime shutdown so a late reply cannot trigger premature recovery or acknowledge another command. Shutdown waits at most five seconds and reports unconfirmed recovery without killing the helper. A stalled I/O thread is not joined; parent process exit closes its remaining pipe handles. This bounds caller/shutdown waits, not recovery completion by a hung helper.
+
+- Process-property controllers retain a verified target and its restoration
+  baseline when Commit acknowledgment fails. Rolling back to an intermediate
+  value could hide the original baseline behind an already compacted journal
+  entry. Uncertain compensation keeps its acknowledged Begin pending and blocks
+  further journal commands until helper recovery; it must not become a committed
+  edge while its actual outcome is unknown.
 
 - Failed Process Priority and Efficiency policy releases remain queued independently of active claims. The runtime retries reconciliation once per second while pending, including with feature/master toggles disabled. Each retry resolves current claims and uses existing identity and restoration checks; it must not blindly restore over a new owner.
 
@@ -71,6 +90,10 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 ## Watchdog
 
+- Resource sampling in `src/foreground/process_list.rs` requests CPU, creation
+  time, and working set for Watchdog. Process List additionally requests
+  Efficiency Mode; its priority-class query is needed only when EcoQoS is enabled.
+
 - `src/features/winderust_features/watchdog.rs` owns per-app CPU/memory sampling and exact process-instance targets, sustained thresholds, escalation, and rearming. Watchdog is global across power sources: each app rule can enable CPU and memory together, with independent thresholds, incident timers, and actions. The main Watchdog settings own one shared sustained duration and one shared Windows notification switch for every app and both monitors. Sampling remains one second in visible and tray modes; only configured paths are resource-sampled. Each rule sums eligible processes running its exact configured executable. CPU deltas are calculated per exact instance and summed against total processor capacity (capped at 100%); memory sums working sets in decimal MB (1 MB = 1,000,000 bytes) or percent of physical RAM, including possible shared-page double counting. One response fires per app/resource incident and captures all matching eligible instances for that sample. Child executables with different paths are excluded.
 - Warning and critical each own an optional termination or restart action; the shared notification switch applies to both severities. Both default to notification only; the feature itself defaults off. Critical subsumes a simultaneous warning for the same resource only while that critical response is enabled. Each response fires once per incident and rearms below 95% of its threshold. Missing samples break only the affected resource’s sustained interval. Collection gaps, complete app-instance replacement, shared-setting or rule changes, and disable cannot carry a stale sustained timer into an action. Membership changes keep the app incident while any exact instance survives; new members require a fresh CPU baseline and a missing member resource value breaks that resource's sustained interval. Power-source changes leave Watchdog rules and incident state unchanged.
 - `RuntimeCore` executes automatic termination through the existing `ProcessTerminationController`, preserving exact identity, protected-process and helper exclusions, current cross-session policy, and Windows access checks. Termination batches all captured matching process identities through the existing preflight, records partial failures, and deduplicates successful targets by PID and creation time across simultaneous CPU/memory events. It has no baseline, recovery entry, or restore path. Failures remain visible in Action Log and status.
@@ -81,8 +104,24 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans. Ownership starts immediately after duplication, before metadata or idle-state initialization. A never-activated clone whose source remains active preserves the ordinary restoration chain; genuine external plan changes still invalidate it.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global power-plan fallback or load-time mapping migration. The `power_plans` field on `ByActivitySettings` owns the visible Idle/Active selections.
+- By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
+  Invalid clock values fail settings load or import; raw incomplete edits stay in the UI editor.
+  Repeated local clock boundaries retain both occurrences. A maximum 60-second
+  scheduled recheck also covers local offset changes between rule endpoints.
+- By CPU Load thresholds use bounded percentages from 0% to 100%. Between ranges
+  include both bounds and require the threshold to be no greater than the upper
+  threshold. Invalid values fail load, import, and save; incomplete or reversed
+  range edits stay in the rule editor until corrected.
+- By CPU Load requires finite observations from 0% to 100%. Missing or invalid
+  observations, settings invalidation, and power-profile changes restart sustained
+  duration timers; time in an inactive profile cannot satisfy a rule's duration.
+- By CPU Load durations range from zero through `i64::MAX` seconds, matching TOML
+  integer storage. Larger edits remain invalid drafts and fail persistence preflight.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
+  Startup cleanup rechecks the live active GUID after matching metadata and
+  verifies restoration before deleting an active managed plan. It preserves
+  externally selected plans that differ from the managed GUID.
 - `PowerPlanController` owns all automatic active-plan and temporary Adaptive-plan lifecycle state.
   `src/power/powercfg.rs` owns typed plan/domain semantics, while raw GUID, power-scheme,
   processor-setting, and effective-power-mode APIs live only in
@@ -92,7 +131,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   built-in presets preserve current policies, and custom presets can select optional overrides.
 - `src/backend/self_power.rs` owns Winderust's hidden-to-tray priority and Power
   Throttling lifecycle, including strict baseline capture, verification, compensation, retry, and
-  clean shutdown. Showing the window restores its baseline even when Adaptive Engine is enabled,
+  clean shutdown. Visibility changes apply synchronously; a process-lifetime
+  worker retries failures every five seconds even when automation is disabled,
+  and sleeps without polling while settled. Shutdown waits at most two seconds
+  for self-power restoration and reports unconfirmed completion without waiting
+  indefinitely on a stalled native call. Showing the window restores its baseline even when Adaptive Engine is enabled,
   so foreground rendering is not throttled by Winderust. Raw current-process query/set calls live only in
   `src/platform/windows/self_power.rs`. This process-lifetime state does not use crash recovery.
 
@@ -106,6 +149,11 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Exclusion-list features append `ProcessExclusionRule`.
 
 ## App Suspension and CPU Limiter
+
+- App Suspension delay and temporary-thaw interval settings accept 1–86,400
+  seconds; thaw, network-wake, and audio-wake durations accept 1–3,600 seconds.
+  Load, import, Save, and export validate both power profiles before normalization
+  or file replacement, using the same limits as the UI.
 
 - App Suspension rejects Session 0, LocalSystem, LocalService, and NetworkService processes plus
   curated Windows shell/shared-host processes. Process List and the App Suspension picker keep
@@ -168,6 +216,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   Visible Window, and Background masks with Focus > Visible Window > Background precedence.
   Selecting a preset copies its current mask into that tier; later preset edits or deletion do not
   silently rewrite configured rules.
+- CPU-selection rule and preset masks serialize as quoted, fixed-width 64-bit
+  hexadecimal strings, such as `"0x8000000000000000"`. All 64 bits round-trip,
+  including logical processor 63. Parsing requires `0x` and 16 hexadecimal digits;
+  serialization uses lowercase. Numeric masks and malformed strings fail settings
+  load or import before any file is rewritten.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 

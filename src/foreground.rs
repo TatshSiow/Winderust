@@ -13,7 +13,8 @@ pub use process_list::{
     process_tree_action_targets, same_executable_path, same_process_name, sample_process_resources,
     should_ignore_foreground_process, unique_app_names, ProcessActionTarget,
     ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
-    ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+    ProcessResourceSampling, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+    EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 pub(crate) use process_list::{
     ensure_process_action_target_access_on_handle, process_handle_matches_executable_path,

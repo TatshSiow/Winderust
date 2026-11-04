@@ -30,6 +30,11 @@ graphify update .
 When reviewing or committing an existing index, also run
 `git diff --cached --check`.
 
+Keep large unit-test modules in adjacent `<module>/tests.rs` files so production
+ownership and failure paths remain easy to read. Preserve module names when
+moving tests. Settings load, import, Save, and export share `Settings::validate`;
+add persistence constraints there and reuse their limits in editors.
+
 For release builds:
 
 ```powershell
@@ -41,6 +46,24 @@ If `target\release\winderust.exe` is locked because the app is running:
 ```powershell
 .\scripts\build_release.cmd -TargetDir target-next
 ```
+
+## Recovery subprocess tests
+
+The optional recovery harness launches the actual executable as a fixture parent
+and helper, then verifies native Process Priority restoration after pipe EOF or
+forced parent termination:
+
+```powershell
+cargo test --locked --features recovery-smoke --test recovery_smoke
+```
+
+It owns a disposable `System32\ping.exe` process and permits only Normal,
+Below Normal, and Idle priority journal entries for that exact process identity.
+The helper shares the production protocol and replay loop, with stale Adaptive
+plan cleanup replaced by a no-op. These tests cover committed and pending
+process intents; they do not exercise machine-wide power-plan cleanup, jobs,
+threads, or GUI startup. Fixture modes are absent from default builds. If a
+running app locks the debug executable, add `--target-dir target/recovery-smoke`.
 
 ## Rendering and performance
 
@@ -168,6 +191,20 @@ CI runs on pushes to `main` and `dev`, and on every pull request. Release automa
 
 ## Rust Engineering Practices
 
+Apply [Parse, don't validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/)
+and the [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/guidelines/index.html)
+at the boundaries that benefit from them:
+
+- Parse external values into domain types before side effects. Types carrying
+  invariants keep their representation private and offer fallible construction,
+  including through Serde; downstream code consumes the parsed result.
+- Keep incomplete UI text in editor drafts rather than weakening runtime types
+  or silently replacing malformed input with defaults.
+- Preserve typed external failures and test malformed input, unavailable
+  observations, ownership changes, and restoration through the existing adapters.
+- Apply library-specific or performance advice only where it fits this desktop
+  application; measure allocator, CPU-target, and hot-path changes before adopting them.
+
 - Trace every caller before changing a shared helper, enum, setting, or error
   contract. Fix a defect once at the shared boundary when all affected callers
   route through it.
@@ -223,6 +260,9 @@ to typed controllers and their narrow Windows adapters.
 - If a setting is edited through the UI, update the relevant page module and
   editor reset and message handling in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
+- CPU-selection masks use quoted `0x` plus 16 hexadecimal digits in TOML. Keep
+  the complete 64-bit value through rule, preset, and power-profile round trips;
+  TOML signed integers cannot represent a mask containing processor 63.
 
 ## Naming
 

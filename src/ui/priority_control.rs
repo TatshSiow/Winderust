@@ -122,41 +122,28 @@ impl Kind {
         }
     }
     pub(super) fn detection(self, settings: &Settings, tier: Tier) -> bool {
-        match self {
-            Self::Process => match tier {
-                Tier::Focus => settings.process_priority.foreground_detection_enabled,
-                Tier::VisibleWindow => settings.process_priority.visible_window_detection_enabled,
-                Tier::Background => true,
+        match tier {
+            Tier::Focus => match self {
+                Self::Process => settings.process_priority.foreground_detection_enabled,
+                Self::Thread => settings.thread_priority.foreground_detection_enabled,
+                Self::Io => settings.io_priority.foreground_detection_enabled,
+                Self::Gpu => settings.gpu_priority.foreground_detection_enabled,
+                Self::Memory => settings.memory_priority.foreground_detection_enabled,
+                Self::DynamicBoost => settings.dynamic_priority_boost.foreground_detection_enabled,
             },
-            Self::Thread => match tier {
-                Tier::Focus => settings.thread_priority.foreground_detection_enabled,
-                Tier::VisibleWindow => settings.thread_priority.visible_window_detection_enabled,
-                Tier::Background => true,
-            },
-            Self::Io => match tier {
-                Tier::Focus => settings.io_priority.foreground_detection_enabled,
-                Tier::VisibleWindow => settings.io_priority.visible_window_detection_enabled,
-                Tier::Background => true,
-            },
-            Self::Gpu => match tier {
-                Tier::Focus => settings.gpu_priority.foreground_detection_enabled,
-                Tier::VisibleWindow => settings.gpu_priority.visible_window_detection_enabled,
-                Tier::Background => true,
-            },
-            Self::Memory => match tier {
-                Tier::Focus => settings.memory_priority.foreground_detection_enabled,
-                Tier::VisibleWindow => settings.memory_priority.visible_window_detection_enabled,
-                Tier::Background => true,
-            },
-            Self::DynamicBoost => match tier {
-                Tier::Focus => settings.dynamic_priority_boost.foreground_detection_enabled,
-                Tier::VisibleWindow => {
+            Tier::VisibleWindow => match self {
+                Self::Process => settings.process_priority.visible_window_detection_enabled,
+                Self::Thread => settings.thread_priority.visible_window_detection_enabled,
+                Self::Io => settings.io_priority.visible_window_detection_enabled,
+                Self::Gpu => settings.gpu_priority.visible_window_detection_enabled,
+                Self::Memory => settings.memory_priority.visible_window_detection_enabled,
+                Self::DynamicBoost => {
                     settings
                         .dynamic_priority_boost
                         .visible_window_detection_enabled
                 }
-                Tier::Background => true,
             },
+            Tier::Background => true,
         }
     }
     pub(super) fn preserve(self, settings: &Settings, tier: Tier) -> Option<bool> {
@@ -439,53 +426,36 @@ impl Editor {
                 Kind::Memory => settings.memory_priority.enabled = value,
                 Kind::DynamicBoost => settings.dynamic_priority_boost.enabled = value,
             },
-            Message::Detection(tier, value) => match kind {
-                Kind::Process => match tier {
-                    Tier::Focus => settings.process_priority.foreground_detection_enabled = value,
-                    Tier::VisibleWindow => {
-                        settings.process_priority.visible_window_detection_enabled = value
-                    }
-                    Tier::Background => {}
-                },
-                Kind::Thread => match tier {
-                    Tier::Focus => settings.thread_priority.foreground_detection_enabled = value,
-                    Tier::VisibleWindow => {
-                        settings.thread_priority.visible_window_detection_enabled = value
-                    }
-                    Tier::Background => {}
-                },
-                Kind::Io => match tier {
-                    Tier::Focus => settings.io_priority.foreground_detection_enabled = value,
-                    Tier::VisibleWindow => {
-                        settings.io_priority.visible_window_detection_enabled = value
-                    }
-                    Tier::Background => {}
-                },
-                Kind::Gpu => match tier {
-                    Tier::Focus => settings.gpu_priority.foreground_detection_enabled = value,
-                    Tier::VisibleWindow => {
-                        settings.gpu_priority.visible_window_detection_enabled = value
-                    }
-                    Tier::Background => {}
-                },
-                Kind::Memory => match tier {
-                    Tier::Focus => settings.memory_priority.foreground_detection_enabled = value,
-                    Tier::VisibleWindow => {
-                        settings.memory_priority.visible_window_detection_enabled = value
-                    }
-                    Tier::Background => {}
-                },
-                Kind::DynamicBoost => match tier {
-                    Tier::Focus => {
+            Message::Detection(tier, value) => match tier {
+                Tier::Focus => match kind {
+                    Kind::Process => settings.process_priority.foreground_detection_enabled = value,
+                    Kind::Thread => settings.thread_priority.foreground_detection_enabled = value,
+                    Kind::Io => settings.io_priority.foreground_detection_enabled = value,
+                    Kind::Gpu => settings.gpu_priority.foreground_detection_enabled = value,
+                    Kind::Memory => settings.memory_priority.foreground_detection_enabled = value,
+                    Kind::DynamicBoost => {
                         settings.dynamic_priority_boost.foreground_detection_enabled = value
                     }
-                    Tier::VisibleWindow => {
+                },
+                Tier::VisibleWindow => match kind {
+                    Kind::Process => {
+                        settings.process_priority.visible_window_detection_enabled = value
+                    }
+                    Kind::Thread => {
+                        settings.thread_priority.visible_window_detection_enabled = value
+                    }
+                    Kind::Io => settings.io_priority.visible_window_detection_enabled = value,
+                    Kind::Gpu => settings.gpu_priority.visible_window_detection_enabled = value,
+                    Kind::Memory => {
+                        settings.memory_priority.visible_window_detection_enabled = value
+                    }
+                    Kind::DynamicBoost => {
                         settings
                             .dynamic_priority_boost
                             .visible_window_detection_enabled = value
                     }
-                    Tier::Background => {}
                 },
+                Tier::Background => {}
             },
             Message::Preserve(tier, value) => match kind {
                 Kind::Process => {
@@ -547,7 +517,7 @@ impl Editor {
         &'a self,
         settings: &'a Settings,
         kind: Kind,
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let key = kind.key();
         let enabled = kind.enabled(settings);
@@ -936,12 +906,25 @@ mod tests {
                 kind.rule_value(&kind.rules(&settings)[0], Tier::VisibleWindow),
                 kind.choices(false)[0]
             );
+            for (tier, other_tier) in [
+                (Tier::Focus, Tier::VisibleWindow),
+                (Tier::VisibleWindow, Tier::Focus),
+            ] {
+                let other_detection = kind.detection(&settings, other_tier);
+                for value in [false, true] {
+                    editor.update(&mut settings, kind, Message::Detection(tier, value));
+                    assert_eq!(kind.detection(&settings, tier), value);
+                    assert_eq!(kind.detection(&settings, other_tier), other_detection);
+                }
+            }
+            let before_background_detection = settings.clone();
             editor.update(
                 &mut settings,
                 kind,
-                Message::Detection(Tier::VisibleWindow, true),
+                Message::Detection(Tier::Background, false),
             );
-            assert!(kind.detection(&settings, Tier::VisibleWindow));
+            assert!(kind.detection(&settings, Tier::Background));
+            assert_eq!(settings, before_background_detection);
             if kind != Kind::DynamicBoost {
                 editor.update(
                     &mut settings,

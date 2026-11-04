@@ -11,6 +11,7 @@ build = "build.rs"
 [features]
 render-smoke = []
 runtime-benchmark = []
+recovery-smoke = []
 
 [dependencies]
 atomic-write-file = "0.3.0"
@@ -19,6 +20,7 @@ csv = "1.4.0"
 iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia", "tokio", "advanced-shaping", "image-without-codecs", "svg", "canvas", "advanced"] }
 iced_anim = { version = "0.3.1", default-features = false }
 iced_aw = { version = "0.14.1", default-features = false, features = ["color_picker", "context_menu", "drop_down", "wrap"] }
+# Enable native BMP icons and PNG assets in Iced's shared image dependency.
 image = { version = "0.25", default-features = false, features = ["bmp", "png"] }
 icondata_core = "0.1.0"
 icondata_lu = "0.1.0"

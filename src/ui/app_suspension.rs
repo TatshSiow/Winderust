@@ -63,8 +63,10 @@ impl Editor {
             }
             Message::Delay(field, v) => {
                 let max = match field {
-                    Delay::Background | Delay::ThawInterval => 86_400,
-                    _ => 3600,
+                    Delay::Background | Delay::ThawInterval => {
+                        AppSuspensionSettings::MAX_DELAY_SECONDS
+                    }
+                    _ => AppSuspensionSettings::MAX_WAKE_DURATION_SECONDS,
                 };
                 if let Ok(v) = v.parse::<u64>() {
                     if (1..=max).contains(&v) {
@@ -158,7 +160,7 @@ impl Editor {
         s: &'a AppSuspensionSettings,
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![
             super::widgets::heading(
@@ -182,18 +184,18 @@ impl Editor {
         for (i, key, enabled, toggle, rows) in [
             (
                 0,
-                "app_suspension.temporary_thaw",
+                "app_suspension.temporary_resume",
                 s.temporary_thaw_enabled,
                 Message::Thaw as fn(bool) -> Message,
                 vec![
                     (
                         Delay::ThawInterval,
-                        "app_suspension.thaw_every",
+                        "app_suspension.resume_every",
                         s.temporary_thaw_interval_seconds,
                     ),
                     (
                         Delay::ThawDuration,
-                        "app_suspension.thaw_duration",
+                        "app_suspension.resume_duration",
                         s.temporary_thaw_duration_seconds,
                     ),
                 ],
@@ -205,7 +207,7 @@ impl Editor {
                 Message::Audio,
                 vec![(
                     Delay::Audio,
-                    "app_suspension.audio_refreeze",
+                    "app_suspension.suspend_after_audio",
                     s.audio_wake_duration_seconds,
                 )],
             ),
@@ -216,7 +218,7 @@ impl Editor {
                 Message::Network,
                 vec![(
                     Delay::Network,
-                    "app_suspension.network_refreeze",
+                    "app_suspension.network_suspension_delay",
                     s.network_wake_duration_seconds,
                 )],
             ),
@@ -263,9 +265,9 @@ impl Editor {
                 text(indicator(status, &r.executable_path, blocked)),
                 action_button(
                     t!(if frozen {
-                        "app_suspension.thaw"
+                        "app_suspension.resume_temporarily"
                     } else {
-                        "app_suspension.freeze"
+                        "app_suspension.suspend"
                     })
                     .to_string()
                 )
@@ -383,9 +385,9 @@ fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
     } else if app_suspension::contains_process(&s.audio_wake_apps, p) {
         "audio"
     } else if app_suspension::contains_process(&s.suspended_apps, p) {
-        "frozen"
+        "suspended"
     } else if app_suspension::contains_process(&s.temporary_thawed_apps, p) {
-        "thawed"
+        "temporarily_resumed"
     } else if app_suspension::contains_process(&s.background_grace_apps, p) {
         "waiting"
     } else if s.status_unknown {

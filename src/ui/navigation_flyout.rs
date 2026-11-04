@@ -725,12 +725,6 @@ mod tests {
                         &[bounds],
                         theme.palette().background,
                     );
-                    if frame == 4 && scale == 1.25 {
-                        std::fs::create_dir_all("target/ui-preview").unwrap();
-                        pixels
-                            .save_png(format!("target/ui-preview/flyout-hover-{name}.png"))
-                            .unwrap();
-                    }
                     assert!(
                         pixels.data() == full.data(),
                         "Flyout left stale pixels in frame {frame}, theme {name}, scale {scale}"

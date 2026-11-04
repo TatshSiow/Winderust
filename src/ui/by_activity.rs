@@ -100,7 +100,7 @@ pub(super) fn view<'a>(
 ) -> Element<'a, Message> {
     let activity = &settings.by_activity;
     let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
-        super::widgets::plan(guid.clone(), plans, action)
+        super::widgets::plan(guid.as_deref(), plans, action)
     };
     let flag = |key: &str, value, action: fn(bool) -> Message| {
         widgets::setting_row(key, widgets::switch(value, Some(action)))

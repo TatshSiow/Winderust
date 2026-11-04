@@ -220,17 +220,9 @@ impl IoPriorityManager {
         self.failure_suppression.retain_keys(&active_target_names);
         let active_targets = target_processes
             .iter()
-            .map(
-                |(process_id, (process_name, executable_path, _, _, creation_time))| {
-                    ProcessControlTarget::automatic(
-                        *process_id,
-                        process_name.clone(),
-                        executable_path.clone(),
-                        *creation_time,
-                    )
-                    .key()
-                },
-            )
+            .map(|(process_id, (_, executable_path, _, _, creation_time))| {
+                ProcessTargetKey::new(*process_id, *creation_time, executable_path)
+            })
             .collect::<BTreeSet<ProcessTargetKey>>();
 
         let mut skipped_processes = 0;

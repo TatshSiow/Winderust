@@ -6,7 +6,7 @@ use crate::config::{ByCpuLoadRule, ByCpuLoadSettings};
 pub struct ByCpuLoadDecision {
     pub rule_index: usize,
     pub rule_name: String,
-    pub power_plan_guid: Option<String>,
+    pub power_plan_guid: String,
     pub usage_percent: f32,
 }
 
@@ -17,20 +17,34 @@ pub struct ByCpuLoadScheduler {
 }
 
 impl ByCpuLoadScheduler {
+    pub(crate) fn reset(&mut self) {
+        self.matched_since.clear();
+        self.last_rules.clear();
+    }
+
     pub fn current_decision(
         &mut self,
         settings: &ByCpuLoadSettings,
         usage_percent: Option<f32>,
     ) -> Option<ByCpuLoadDecision> {
+        self.current_decision_at(settings, usage_percent, Instant::now())
+    }
+
+    pub(crate) fn current_decision_at(
+        &mut self,
+        settings: &ByCpuLoadSettings,
+        usage_percent: Option<f32>,
+        now: Instant,
+    ) -> Option<ByCpuLoadDecision> {
         if !settings.enabled || settings.rules.is_empty() {
-            self.matched_since.clear();
-            self.last_rules.clear();
+            self.reset();
             return None;
         }
 
-        let Some(usage_percent) = usage_percent else {
-            self.matched_since.clear();
-            self.last_rules.clear();
+        let Some(usage_percent) =
+            usage_percent.filter(|usage| usage.is_finite() && (0.0..=100.0).contains(usage))
+        else {
+            self.reset();
             return None;
         };
         if self.last_rules != settings.rules {
@@ -38,7 +52,6 @@ impl ByCpuLoadScheduler {
             self.last_rules.clone_from(&settings.rules);
         }
         self.matched_since.resize(settings.rules.len(), None);
-        let now = Instant::now();
         let mut else_decision = None;
         let mut matching_decision = None;
 
@@ -63,14 +76,14 @@ impl ByCpuLoadScheduler {
             }
 
             let matched_since = self.matched_since[index].get_or_insert(now);
-            if matched_since.elapsed().as_secs() >= rule.duration_seconds
+            if now.saturating_duration_since(*matched_since).as_secs() >= rule.duration_seconds
                 && matching_decision.is_none()
             {
                 if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
                     matching_decision = Some(ByCpuLoadDecision {
                         rule_index: index,
                         rule_name: rule.name.clone(),
-                        power_plan_guid: Some(power_plan_guid),
+                        power_plan_guid,
                         usage_percent,
                     });
                 }
@@ -82,7 +95,7 @@ impl ByCpuLoadScheduler {
                 |(rule_index, (rule_name, power_plan_guid))| ByCpuLoadDecision {
                     rule_index,
                     rule_name,
-                    power_plan_guid: Some(power_plan_guid),
+                    power_plan_guid,
                     usage_percent,
                 },
             )
@@ -108,7 +121,103 @@ fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ByCpuLoadRule, CpuUsageComparison};
+    use crate::config::{ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison};
+
+    fn rule_with_else(comparison: CpuUsageComparison) -> ByCpuLoadRule {
+        ByCpuLoadRule {
+            enabled: true,
+            name: "CPU load".into(),
+            comparison,
+            threshold_percent: CpuLoadPercent::new(75).unwrap(),
+            upper_threshold_percent: Some(CpuLoadPercent::new(90).unwrap()),
+            duration_seconds: 0,
+            power_plan_guid: Some("matched-plan".into()),
+            else_enabled: true,
+            else_power_plan_guid: Some("else-plan".into()),
+        }
+    }
+
+    #[test]
+    fn unavailable_cpu_observations_cannot_select_a_condition_or_else_plan() {
+        for comparison in [
+            CpuUsageComparison::AtOrAbove,
+            CpuUsageComparison::AtOrBelow,
+            CpuUsageComparison::Between,
+            CpuUsageComparison::Else,
+        ] {
+            let settings = ByCpuLoadSettings {
+                enabled: true,
+                rules: vec![rule_with_else(comparison)],
+            };
+            let mut scheduler = ByCpuLoadScheduler::default();
+            for usage in [
+                None,
+                Some(f32::NAN),
+                Some(f32::INFINITY),
+                Some(f32::NEG_INFINITY),
+                Some(-0.01),
+                Some(100.01),
+            ] {
+                assert!(scheduler.current_decision(&settings, usage).is_none());
+                assert!(scheduler.matched_since.is_empty());
+                assert!(scheduler.last_rules.is_empty());
+            }
+            for usage in [0.0, 100.0] {
+                let decision = scheduler.current_decision(&settings, Some(usage)).unwrap();
+                assert_eq!(decision.usage_percent, usage);
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_cpu_observations_restart_the_sustained_condition_interval() {
+        let mut rule = rule_with_else(CpuUsageComparison::AtOrAbove);
+        rule.duration_seconds = 30;
+        let settings = ByCpuLoadSettings {
+            enabled: true,
+            rules: vec![rule],
+        };
+        for unavailable in [None, Some(f32::NAN), Some(101.0)] {
+            let mut scheduler = ByCpuLoadScheduler::default();
+            let start = Instant::now();
+            assert_eq!(
+                scheduler
+                    .current_decision_at(&settings, Some(80.0), start)
+                    .unwrap()
+                    .power_plan_guid,
+                "else-plan"
+            );
+            assert_eq!(
+                scheduler
+                    .current_decision_at(
+                        &settings,
+                        Some(80.0),
+                        start + std::time::Duration::from_secs(30),
+                    )
+                    .unwrap()
+                    .power_plan_guid,
+                "matched-plan"
+            );
+            assert!(scheduler
+                .current_decision_at(
+                    &settings,
+                    unavailable,
+                    start + std::time::Duration::from_secs(31),
+                )
+                .is_none());
+            assert_eq!(
+                scheduler
+                    .current_decision_at(
+                        &settings,
+                        Some(80.0),
+                        start + std::time::Duration::from_secs(60),
+                    )
+                    .unwrap()
+                    .power_plan_guid,
+                "else-plan"
+            );
+        }
+    }
 
     #[test]
     fn selected_rule_index_survives_else_branch_and_arbitration() {
@@ -122,7 +231,7 @@ mod tests {
                 enabled: true,
                 name: "Second".into(),
                 comparison: CpuUsageComparison::AtOrAbove,
-                threshold_percent: 75,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
                 duration_seconds: 0,
                 power_plan_guid: Some("main".into()),
                 else_enabled: true,
@@ -162,7 +271,7 @@ mod tests {
                 enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
-                threshold_percent: 75,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 0,
                 power_plan_guid: Some("high-cpu-guid".to_owned()),
@@ -174,7 +283,7 @@ mod tests {
         let decision = scheduler.current_decision(&settings, Some(80.0)).unwrap();
 
         assert_eq!(decision.rule_name, "High CPU");
-        assert_eq!(decision.power_plan_guid.as_deref(), Some("high-cpu-guid"));
+        assert_eq!(decision.power_plan_guid, "high-cpu-guid");
     }
 
     #[test]
@@ -186,7 +295,7 @@ mod tests {
                 enabled: true,
                 name: "Low CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrBelow,
-                threshold_percent: 20,
+                threshold_percent: CpuLoadPercent::new(20).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 0,
                 power_plan_guid: Some("low-cpu-guid".to_owned()),
@@ -207,7 +316,7 @@ mod tests {
                 enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
-                threshold_percent: 75,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 0,
                 power_plan_guid: None,
@@ -228,8 +337,8 @@ mod tests {
                 enabled: true,
                 name: "Medium CPU".to_owned(),
                 comparison: CpuUsageComparison::Between,
-                threshold_percent: 30,
-                upper_threshold_percent: Some(60),
+                threshold_percent: CpuLoadPercent::new(30).unwrap(),
+                upper_threshold_percent: Some(CpuLoadPercent::new(60).unwrap()),
                 duration_seconds: 0,
                 power_plan_guid: Some("medium-cpu-guid".to_owned()),
                 else_enabled: false,
@@ -240,7 +349,7 @@ mod tests {
         let decision = scheduler.current_decision(&settings, Some(45.0)).unwrap();
 
         assert_eq!(decision.rule_name, "Medium CPU");
-        assert_eq!(decision.power_plan_guid.as_deref(), Some("medium-cpu-guid"));
+        assert_eq!(decision.power_plan_guid, "medium-cpu-guid");
     }
 
     #[test]
@@ -252,7 +361,7 @@ mod tests {
                 enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
-                threshold_percent: 75,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 30,
                 power_plan_guid: Some("high-cpu-guid".to_owned()),
@@ -262,15 +371,12 @@ mod tests {
         };
 
         let waiting_decision = scheduler.current_decision(&settings, Some(80.0)).unwrap();
-        assert_eq!(
-            waiting_decision.power_plan_guid.as_deref(),
-            Some("else-guid")
-        );
+        assert_eq!(waiting_decision.power_plan_guid, "else-guid");
 
         let decision = scheduler.current_decision(&settings, Some(40.0)).unwrap();
 
         assert_eq!(decision.rule_name, "High CPU else");
-        assert_eq!(decision.power_plan_guid.as_deref(), Some("else-guid"));
+        assert_eq!(decision.power_plan_guid, "else-guid");
     }
 
     #[test]
@@ -282,7 +388,7 @@ mod tests {
                 enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
-                threshold_percent: 75,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 30,
                 power_plan_guid: Some("high-cpu-guid".to_owned()),
@@ -308,7 +414,7 @@ mod tests {
                     enabled: true,
                     name: "High CPU".to_owned(),
                     comparison: CpuUsageComparison::AtOrAbove,
-                    threshold_percent: 75,
+                    threshold_percent: CpuLoadPercent::new(75).unwrap(),
                     upper_threshold_percent: None,
                     duration_seconds: 0,
                     power_plan_guid: Some("high-cpu-guid".to_owned()),
@@ -319,7 +425,7 @@ mod tests {
                     enabled: true,
                     name: "Low CPU".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
-                    threshold_percent: 20,
+                    threshold_percent: CpuLoadPercent::new(20).unwrap(),
                     upper_threshold_percent: None,
                     duration_seconds: 30,
                     power_plan_guid: Some("low-cpu-guid".to_owned()),
@@ -348,7 +454,7 @@ mod tests {
                 enabled: false,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
-                threshold_percent: 75,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 0,
                 power_plan_guid: Some("high-cpu-guid".to_owned()),

@@ -199,7 +199,12 @@ Assert-NoSourceMatch `
 Assert-NoUnexpectedWriter `
     -Mechanism 'thread priority' `
     -ApiPattern 'SetThreadPriority' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\thread_priority)\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\thread_priority)\.rs:'
+
+$recoverySource = Get-Content -LiteralPath 'src/backend/crash_recovery.rs' -Raw
+if ($recoverySource -notmatch '(?m)^#\[cfg\(test\)\]\r?\nmod tests;\r?$') {
+    throw 'Crash recovery native fixtures must remain in a cfg(test) module.'
+}
 
 Assert-SourceMatchCount `
     -Boundary 'single Thread Priority production adapter' `
@@ -369,7 +374,7 @@ Assert-NoSourceMatch `
 Assert-NoUnexpectedWriter `
     -Mechanism 'Job Object information' `
     -ApiPattern 'SetInformationJobObject' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\(?:job|suspension))\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:job|suspension))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'single App Suspension production adapter call' `
@@ -423,7 +428,7 @@ Assert-NoUnexpectedWriter `
 Assert-NoUnexpectedWriter `
     -Mechanism 'thread resumption' `
     -ApiPattern 'ResumeThread\s*(?:,|\()' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery|platform\\windows\\(?:thread_suspension|process_restart))\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:thread_suspension|process_restart))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'restart resumes only its prepared primary thread' `
@@ -685,7 +690,12 @@ Assert-NoSourceMatch `
 Assert-NoUnexpectedWriter `
     -Mechanism 'persisted settings I/O' `
     -ApiPattern 'config::storage::(load|save|import_toml_from|export_toml_to)' `
-    -AllowedLocationPattern '^src\\application\\settings\.rs:'
+    -AllowedLocationPattern '^src\\application\\settings(?:\\tests)?\.rs:'
+
+$settingsCoordinatorSource = Get-Content -LiteralPath 'src/application/settings.rs' -Raw
+if ($settingsCoordinatorSource -notmatch '(?m)^#\[cfg\(test\)\]\r?\nmod tests;\r?$') {
+    throw 'Settings coordinator fixtures must remain in a cfg(test) module.'
+}
 
 $runtimeObservationConsumers = @(
     'src/backend/automation.rs',

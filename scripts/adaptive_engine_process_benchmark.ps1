@@ -23,7 +23,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$powerShellPath = Join-Path $PSHOME 'powershell.exe'
 $cscriptPath = Join-Path $env:SystemRoot 'System32\cscript.exe'
 $workerScriptPath = Join-Path ([IO.Path]::GetTempPath()) "winderust-benchmark-worker-$PID.js"
 $logicalProcessors = [Environment]::ProcessorCount
@@ -35,10 +34,8 @@ $workerCount = if ($BackgroundWorkers -gt 0) {
 $lowImpactTargetCount = [Math]::Min(6, $workerCount)
 $foregroundFirstTargetCount = [Math]::Min(8, $workerCount)
 $maxForegroundTargetCount = [Math]::Min(12, $workerCount)
-$lowImpactAllPCorePercent = 0.65
 $foregroundFirstAllPCorePercent = 0.50
 $maxForegroundCorePercent = 0.10
-$lowImpactCoreCount = 0
 $foregroundFirstCoreCount = 0
 $maxForegroundCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $maxForegroundCorePercent))
 
@@ -65,10 +62,8 @@ function Test-LikelyHybridTopology {
 
 $hasHybridTopology = Test-LikelyHybridTopology
 if (-not $hasHybridTopology) {
-    $lowImpactCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $lowImpactAllPCorePercent))
     $foregroundFirstCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $foregroundFirstAllPCorePercent))
 }
-$lowImpactMask = New-Mask $lowImpactCoreCount
 $foregroundFirstMask = New-Mask $foregroundFirstCoreCount
 $maxForegroundMask = New-Mask $maxForegroundCoreCount
 $script:resolvedPowerCounterPath = ''
@@ -1949,7 +1944,7 @@ $assistCoverage = [pscustomobject][ordered]@{
     process_priority = 'applied to generated background workers'
     measured_tier_process_priority = 'applied to the benchmark process from the selected Focus, Visible Window, or Background tier'
     background_efficiency = 'EcoQoS applied to the preset-selected generated background workers'
-    affinity = 'applied as hard affinity for Max Foreground, and for adaptive presets on standard/all-P CPUs to approximate runtime CPU Sets (Soft)'
+    affinity = 'applied as hard affinity for Maximum Foreground, and for Foreground First on standard/all-P CPUs to approximate runtime CPU Sets (Soft); Low Impact leaves affinity unchanged'
     foreground_priority_boost = 'applied to the benchmark process when preset enables it'
     foreground_thread_priority = 'applied to the benchmark thread when preset enables it'
     foreground_memory_priority = 'applied to the benchmark process when preset enables it'
@@ -1990,7 +1985,7 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     score_data_kb = $ScoreDataKb
     score_rounds = $ScoreRounds
     topology_class = if ($hasHybridTopology) { 'hybrid_or_asymmetric' } else { 'standard_all_p' }
-    low_impact_affinity_limited_processors = $lowImpactCoreCount
+    low_impact_affinity_limited_processors = 0
     low_impact_max_targeted_processes = $lowImpactTargetCount
     foreground_iterations_per_round = $Iterations
     foreground_io_operations_per_round = $IoOperations * 2

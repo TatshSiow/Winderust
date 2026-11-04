@@ -1099,7 +1099,12 @@ impl WinderustApp {
                 return tasks::run(move || {
                     crate::update_checker::check(channel)
                         .map(|r| (r.latest_version, r.available_update.map(|u| u.url)))
-                        .map_err(|_| t!("about.update_check_failed").to_string())
+                        .map_err(|error| {
+                            crate::backend::diagnostics::error(&format!(
+                                "Update check failed: {error}"
+                            ));
+                            t!("about.update_check_failed").to_string()
+                        })
                 })
                 .map(move |r| {
                     Message::Preferences(settings_pages::Message::Checked(
@@ -2376,7 +2381,7 @@ impl WinderustApp {
             return (container(
                 column![
                     text(t!("about.updates").to_string()).size(design::typography::DIALOG_TITLE),
-                    text(self.preferences.latest.clone().unwrap_or_default()),
+                    text(self.preferences.latest.as_deref().unwrap_or_default()),
                     row![
                         iced::widget::Space::new().width(Fill),
                         action_button(t!("about.download_update").to_string())

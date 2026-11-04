@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 type OptionColor<T> = fn(&T, &Theme) -> Option<iced::Color>;
 
-type Field<'a, T, M> = PickList<'a, T, Vec<T>, T, M>;
+type Field<'a, T, M> = PickList<'a, T, Rc<[T]>, T, M>;
 
 struct State {
     chevron: iced_anim::Transition<f32>,
@@ -35,7 +35,7 @@ impl Default for State {
 pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
     field: Field<'a, T, M>,
     width: Length,
-    options: Vec<T>,
+    options: Rc<[T]>,
     option_color: Option<OptionColor<T>>,
     selected: Option<usize>,
     choose: Rc<dyn Fn(T) -> M + 'a>,
@@ -44,13 +44,14 @@ pub(super) struct Select<'a, T: ToString + PartialEq + Clone, M> {
 
 impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a> Select<'a, T, M> {
     pub(super) fn new(options: Vec<T>, selected: Option<T>, choose: impl Fn(T) -> M + 'a) -> Self {
+        let options: Rc<[T]> = options.into();
         let index = selected
             .as_ref()
             .and_then(|value| options.iter().position(|option| option == value));
         let choose: Rc<dyn Fn(T) -> M> = Rc::new(choose);
         let callback = choose.clone();
         let field =
-            iced::widget::pick_list(options.clone(), selected, move |value| callback(value))
+            iced::widget::pick_list(Rc::clone(&options), selected, move |value| callback(value))
                 .text_size(design::typography::BODY)
                 .padding(iced::Padding {
                     right: (design::SELECT_PADDING[1] as u32
@@ -586,6 +587,34 @@ impl<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>
 mod tests {
     use super::*;
     use iced::advanced::Overlay;
+
+    #[test]
+    fn owned_options_are_not_cloned_when_building_a_select() {
+        #[derive(PartialEq)]
+        struct OptionValue(Rc<std::cell::Cell<usize>>);
+
+        impl Clone for OptionValue {
+            fn clone(&self) -> Self {
+                self.0.set(self.0.get() + 1);
+                Self(Rc::clone(&self.0))
+            }
+        }
+
+        impl std::fmt::Display for OptionValue {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("option")
+            }
+        }
+
+        let clones = Rc::new(std::cell::Cell::new(0));
+        let options = vec![
+            OptionValue(Rc::clone(&clones)),
+            OptionValue(Rc::clone(&clones)),
+        ];
+        let _select = widgets::pick_list(options, None::<OptionValue>, |_| ());
+
+        assert_eq!(clones.get(), 0);
+    }
 
     #[test]
     fn priority_colors_are_rendered_in_fields_and_menu_options() {

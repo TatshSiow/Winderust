@@ -8,7 +8,7 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         process_matches_executable_path, sample_process_resources, ProcessActionTarget,
-        ProcessInfo, ProcessResourceSample,
+        ProcessInfo, ProcessResourceSample, ProcessResourceSampling,
     },
     runtime::observations::CycleObservations,
 };
@@ -119,7 +119,7 @@ impl WatchdogManager {
             })
             .cloned()
             .collect();
-        let samples = sample_process_resources(&matched);
+        let samples = sample_process_resources(&matched, ProcessResourceSampling::UsageOnly);
         let total_memory = settings
             .rules
             .iter()
@@ -847,14 +847,14 @@ mod tests {
             rules: vec![rule],
         };
         let mut manager = WatchdogManager::default();
-        let samples = sample_process_resources(&processes);
+        let samples = sample_process_resources(&processes, ProcessResourceSampling::UsageOnly);
         let now = Instant::now();
         assert!(manager
             .evaluate(&settings, &processes, &samples, None, now)
             .1
             .is_empty());
         std::thread::sleep(Duration::from_millis(1100));
-        let samples = sample_process_resources(&processes);
+        let samples = sample_process_resources(&processes, ProcessResourceSampling::UsageOnly);
         let (_, events) = manager.evaluate(&settings, &processes, &samples, None, Instant::now());
         assert_eq!(events.len(), 1);
         let event = events.into_iter().next().unwrap();

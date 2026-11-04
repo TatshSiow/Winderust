@@ -94,7 +94,7 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a Settings,
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let settings = &settings.background_efficiency;
         let enabled = settings.enabled;

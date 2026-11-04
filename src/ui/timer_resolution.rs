@@ -86,7 +86,7 @@ impl Editor {
         &'a self,
         s: &'a TimerResolutionSettings,
         status: &TimerResolutionSnapshot,
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![
             super::widgets::toggle_card(

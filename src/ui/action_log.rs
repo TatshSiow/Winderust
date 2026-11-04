@@ -231,7 +231,12 @@ impl Editor {
                 .padding(design::space::LARGE as u16),
             );
         }
-        for (index, group) in groups[range.clone()].iter().enumerate() {
+        for (index, group) in groups
+            .into_iter()
+            .skip(range.start)
+            .take(range.len())
+            .enumerate()
+        {
             let entry = group[0];
             let level = entry.result.level();
             entries_table = entries_table.push(
@@ -273,7 +278,7 @@ impl Editor {
                                 if truncated {
                                     super::widgets::tooltip(
                                         content,
-                                        text(entry.reason.clone()),
+                                        text(entry.reason.as_str()),
                                         iced::widget::tooltip::Position::Top,
                                     )
                                     .into()
@@ -376,8 +381,8 @@ fn process_icon<'a>(
 }
 
 fn process_group<'a>(
-    entries: &[&ActionLogEntry],
-    candidates: &[super::app_picker::Candidate],
+    entries: Vec<&'a ActionLogEntry>,
+    candidates: &'a [super::app_picker::Candidate],
 ) -> Element<'a, Message> {
     if entries.len() == 1 && entries[0].process_id.is_none() && entries[0].process_name.is_empty() {
         return container(text("\u{2014}").style(text::secondary))
@@ -410,23 +415,21 @@ fn process_group<'a>(
     if !names_hidden {
         return anchor;
     }
-    let mut details = column![text(
-        t!("action_log.affected_processes", count = entries.len()).to_string()
-    )]
-    .spacing(8);
-    for entry in entries {
-        details = details.push(
-            row![
-                process_icon(&entry.process_name, candidates),
-                text(action_log_process_label(entry))
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-        );
-    }
-    popover::view(
-        entries[0].sequence,
-        anchor,
+    popover::view(entries[0].sequence, anchor, move || {
+        let mut details = column![text(
+            t!("action_log.affected_processes", count = entries.len()).to_string()
+        )]
+        .spacing(8);
+        for entry in &entries {
+            details = details.push(
+                row![
+                    process_icon(&entry.process_name, candidates),
+                    text(action_log_process_label(entry))
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+            );
+        }
         container(
             super::scrolling::popup_scrollable(details)
                 .width(iced::Length::Shrink)
@@ -443,8 +446,8 @@ fn process_group<'a>(
                 ..Default::default()
             }
         })
-        .into(),
-    )
+        .into()
+    })
 }
 
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
@@ -733,7 +736,7 @@ mod tests {
             }
             let entries = log.entries();
             let refs: Vec<_> = entries.iter().collect();
-            let mut element = process_group(&refs, &[]);
+            let mut element = process_group(refs, &[]);
             let mut tree = Tree::new(&element);
             let size = iced::Size::new(500.0, 500.0);
             let node = element.as_widget_mut().layout(

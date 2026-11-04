@@ -1,6 +1,8 @@
-use chrono::{NaiveTime, Weekday};
+use chrono::Weekday;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+use super::RuleTime;
 
 use crate::foreground::same_executable_path;
 use crate::power::plan::{
@@ -11,6 +13,8 @@ use crate::rules::{
     normalize_execution_failure_suppression_threshold,
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };
+
+mod validation;
 
 pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
 pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
@@ -64,8 +68,29 @@ pub struct Settings {
     pub watchdog: super::WatchdogSettings,
     #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_battery_profile"
+    )]
     pub on_battery: Option<Box<Settings>>,
+}
+
+const NESTED_BATTERY_PROFILE_ERROR: &str =
+    "On Battery settings cannot contain another on_battery profile.";
+
+fn deserialize_battery_profile<'de, D>(deserializer: D) -> Result<Option<Box<Settings>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let battery = Option::<Box<Settings>>::deserialize(deserializer)?;
+    if battery
+        .as_deref()
+        .is_some_and(|profile| profile.on_battery.is_some())
+    {
+        return Err(serde::de::Error::custom(NESTED_BATTERY_PROFILE_ERROR));
+    }
+    Ok(battery)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -76,35 +101,6 @@ pub enum PowerSourceProfile {
 }
 
 impl Settings {
-    pub fn validate_watchdog(&self) -> Result<(), String> {
-        self.watchdog.validate()?;
-        if let Some(battery) = &self.on_battery {
-            battery.validate_watchdog()?;
-        }
-        Ok(())
-    }
-
-    pub fn validate_dynamic_resource_zones(&self) -> Result<(), String> {
-        let process = &self.adaptive_engine_process;
-        process
-            .dynamic_resource_zone_settings
-            .validate(process.dynamic_resource_zones_enabled)?;
-        for preset in &self.adaptive_engine_presets {
-            preset
-                .adaptive_engine_process
-                .dynamic_resource_zone_settings
-                .validate(
-                    preset
-                        .adaptive_engine_process
-                        .dynamic_resource_zones_enabled,
-                )
-                .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
-        }
-        if let Some(battery) = &self.on_battery {
-            battery.validate_dynamic_resource_zones()?;
-        }
-        Ok(())
-    }
     pub fn battery_profile(&self) -> &Self {
         self.on_battery.as_deref().unwrap_or(self)
     }
@@ -367,16 +363,29 @@ pub struct ByTimeSettings {
     pub rules: Vec<ByTimeRule>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByTimeRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub name: String,
     pub days: Vec<WeekdaySetting>,
-    pub start_time: String,
-    pub end_time: String,
+    pub start_time: RuleTime,
+    pub end_time: RuleTime,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
+}
+
+impl Default for ByTimeRule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            name: String::new(),
+            days: Vec::new(),
+            start_time: const { RuleTime::from_hm(22, 0).unwrap() },
+            end_time: const { RuleTime::from_hm(8, 0).unwrap() },
+            power_plan_guid: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -597,6 +606,7 @@ pub struct CpuAllocationSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuAllocationPreset {
     pub name: String,
+    #[serde(with = "super::cpu_allocation_mask")]
     pub core_mask: u64,
 }
 
@@ -909,8 +919,11 @@ pub struct CpuAllocationRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
+    #[serde(with = "super::cpu_allocation_mask")]
     pub focus_core_mask: u64,
+    #[serde(with = "super::cpu_allocation_mask")]
     pub visible_window_core_mask: u64,
+    #[serde(with = "super::cpu_allocation_mask")]
     pub background_core_mask: u64,
 }
 
@@ -1716,15 +1729,55 @@ pub enum NetworkThresholdUnit {
     Gigabytes,
 }
 
+/// A By CPU Load threshold in the inclusive range 0% to 100%.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct CpuLoadPercent(u8);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("By CPU Load percentage must be between 0 and 100")]
+pub struct CpuLoadPercentError;
+
+impl CpuLoadPercent {
+    pub const MAX: Self = Self(100);
+
+    pub const fn new(value: u8) -> Result<Self, CpuLoadPercentError> {
+        if value <= 100 {
+            Ok(Self(value))
+        } else {
+            Err(CpuLoadPercentError)
+        }
+    }
+
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for CpuLoadPercent {
+    type Error = CpuLoadPercentError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<CpuLoadPercent> for u8 {
+    fn from(value: CpuLoadPercent) -> Self {
+        value.get()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ByCpuLoadRuleWire")]
 pub struct ByCpuLoadRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub name: String,
     pub comparison: CpuUsageComparison,
-    pub threshold_percent: u8,
+    pub threshold_percent: CpuLoadPercent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upper_threshold_percent: Option<u8>,
+    pub upper_threshold_percent: Option<CpuLoadPercent>,
     pub duration_seconds: u64,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
@@ -1732,6 +1785,60 @@ pub struct ByCpuLoadRule {
     pub else_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub else_power_plan_guid: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ByCpuLoadRuleWire {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    name: String,
+    comparison: CpuUsageComparison,
+    threshold_percent: CpuLoadPercent,
+    #[serde(default)]
+    upper_threshold_percent: Option<CpuLoadPercent>,
+    duration_seconds: u64,
+    #[serde(default)]
+    power_plan_guid: Option<String>,
+    #[serde(default)]
+    else_enabled: bool,
+    #[serde(default)]
+    else_power_plan_guid: Option<String>,
+}
+
+impl TryFrom<ByCpuLoadRuleWire> for ByCpuLoadRule {
+    type Error = String;
+
+    fn try_from(wire: ByCpuLoadRuleWire) -> Result<Self, Self::Error> {
+        let rule = Self {
+            enabled: wire.enabled,
+            name: wire.name,
+            comparison: wire.comparison,
+            threshold_percent: wire.threshold_percent,
+            upper_threshold_percent: wire.upper_threshold_percent,
+            duration_seconds: wire.duration_seconds,
+            power_plan_guid: wire.power_plan_guid,
+            else_enabled: wire.else_enabled,
+            else_power_plan_guid: wire.else_power_plan_guid,
+        };
+        rule.validate()?;
+        Ok(rule)
+    }
+}
+
+impl Default for ByCpuLoadRule {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: String::new(),
+            comparison: CpuUsageComparison::AtOrBelow,
+            threshold_percent: CpuLoadPercent(20),
+            upper_threshold_percent: None,
+            duration_seconds: 30,
+            power_plan_guid: None,
+            else_enabled: false,
+            else_power_plan_guid: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1793,9 +1900,8 @@ impl Default for Settings {
                     enabled: true,
                     name: "Night Idle Plan".to_owned(),
                     days: WeekdaySetting::all().to_vec(),
-                    start_time: "22:00".to_owned(),
-                    end_time: "08:00".to_owned(),
                     power_plan_guid: None,
+                    ..ByTimeRule::default()
                 }],
             },
             by_cpu_load: ByCpuLoadSettings::default(),
@@ -1861,7 +1967,7 @@ impl Default for ByCpuLoadSettings {
                     enabled: true,
                     name: "Low CPU Idle".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
-                    threshold_percent: 15,
+                    threshold_percent: CpuLoadPercent(15),
                     upper_threshold_percent: None,
                     duration_seconds: 60,
                     power_plan_guid: None,
@@ -1872,7 +1978,7 @@ impl Default for ByCpuLoadSettings {
                     enabled: true,
                     name: "High CPU Active".to_owned(),
                     comparison: CpuUsageComparison::AtOrAbove,
-                    threshold_percent: 50,
+                    threshold_percent: CpuLoadPercent(50),
                     upper_threshold_percent: None,
                     duration_seconds: 10,
                     power_plan_guid: None,
@@ -2612,25 +2718,19 @@ impl WeekdaySetting {
     }
 }
 
-impl ByTimeRule {
-    pub fn parsed_times(&self) -> Option<(NaiveTime, NaiveTime)> {
-        let start = NaiveTime::parse_from_str(&self.start_time, "%H:%M").ok()?;
-        let end = NaiveTime::parse_from_str(&self.end_time, "%H:%M").ok()?;
-        Some((start, end))
-    }
-}
-
 impl ByCpuLoadRule {
     pub fn matches_usage(&self, cpu_usage_percent: f32) -> bool {
-        let threshold = f32::from(self.threshold_percent.min(100));
+        let threshold = f32::from(self.threshold_percent.get());
         match self.comparison {
             CpuUsageComparison::AtOrAbove => cpu_usage_percent >= threshold,
             CpuUsageComparison::AtOrBelow => cpu_usage_percent <= threshold,
             CpuUsageComparison::Between => {
-                let upper = f32::from(self.upper_threshold_percent.unwrap_or(100).min(100));
-                let lower = threshold.min(upper);
-                let upper = threshold.max(upper);
-                cpu_usage_percent >= lower && cpu_usage_percent <= upper
+                let upper = f32::from(
+                    self.upper_threshold_percent
+                        .unwrap_or(CpuLoadPercent::MAX)
+                        .get(),
+                );
+                cpu_usage_percent >= threshold && cpu_usage_percent <= upper
             }
             CpuUsageComparison::Else => false,
         }
@@ -2642,501 +2742,4 @@ impl ByCpuLoadRule {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn visible_window_default_remains_independent_from_background() {
-        let mut rule = ProcessExclusionRule {
-            process_background_priority: Some(ProcessPrioritySetting::BelowNormal),
-            thread_background_priority: Some(ProcessThreadPrioritySetting::Lowest),
-            dynamic_priority_boost_background: Some(ProcessDynamicPriorityBoostSetting::Disabled),
-            io_background_priority: Some(ProcessIoPrioritySetting::VeryLow),
-            gpu_background_priority: Some(ProcessGpuPrioritySetting::Idle),
-            memory_background_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
-            ..Default::default()
-        };
-
-        rule.set_process_priority_override(false, true, ProcessPrioritySetting::Default);
-        rule.set_thread_priority_override(false, true, ProcessThreadPrioritySetting::Default);
-        rule.set_dynamic_priority_boost_override(
-            false,
-            true,
-            ProcessDynamicPriorityBoostSetting::Default,
-        );
-        rule.set_io_priority_override(false, true, ProcessIoPrioritySetting::Default);
-        rule.set_gpu_priority_override(false, true, ProcessGpuPrioritySetting::Default);
-        rule.set_memory_priority_override(false, true, ProcessMemoryPrioritySetting::Default);
-
-        assert_eq!(
-            rule.process_priority_override(false, true),
-            ProcessPrioritySetting::Default
-        );
-        assert_eq!(
-            rule.thread_priority_override(false, true),
-            ProcessThreadPrioritySetting::Default
-        );
-        assert_eq!(
-            rule.dynamic_priority_boost_override(false, true),
-            ProcessDynamicPriorityBoostSetting::Default
-        );
-        assert_eq!(
-            rule.io_priority_override(false, true),
-            ProcessIoPrioritySetting::Default
-        );
-        assert_eq!(
-            rule.gpu_priority_override(false, true),
-            ProcessGpuPrioritySetting::Default
-        );
-        assert_eq!(
-            rule.memory_priority_override(false, true),
-            ProcessMemoryPrioritySetting::Default
-        );
-    }
-
-    #[test]
-    fn visible_window_priority_override_is_not_an_exclusion() {
-        let path = r"C:\Apps\editor.exe";
-        let rule = ProcessExclusionRule {
-            executable_path: path.to_owned(),
-            io_visible_window_priority: Some(ProcessIoPrioritySetting::Low),
-            gpu_visible_window_priority: Some(ProcessGpuPrioritySetting::BelowNormal),
-            memory_visible_window_priority: Some(ProcessMemoryPrioritySetting::Low),
-            ..Default::default()
-        };
-        let mut settings = Settings::default();
-        settings.io_priority.exclusions.push(rule.clone());
-        settings.gpu_priority.exclusions.push(rule.clone());
-        settings.memory_priority.exclusions.push(rule);
-
-        assert_eq!(
-            settings.io_priority.override_for(path, false, true),
-            Some(Some(ProcessIoPrioritySetting::Low))
-        );
-        assert_eq!(
-            settings.io_priority.override_for(path, true, false),
-            Some(None)
-        );
-        assert_eq!(
-            settings.gpu_priority.override_for(path, false, true),
-            Some(Some(ProcessGpuPrioritySetting::BelowNormal))
-        );
-        assert_eq!(
-            settings.gpu_priority.override_for(path, true, false),
-            Some(None)
-        );
-        assert_eq!(
-            settings.memory_priority.override_for(path, false, true),
-            Some(Some(ProcessMemoryPrioritySetting::Low))
-        );
-        assert_eq!(
-            settings.memory_priority.override_for(path, true, false),
-            Some(None)
-        );
-    }
-
-    #[test]
-    fn first_run_rule_modules_are_disabled() {
-        let settings = Settings::default();
-
-        assert!(![
-            settings.adaptive_engine.enabled,
-            settings.by_activity.enabled,
-            settings.by_foreground.enabled,
-            settings.by_time.enabled,
-            settings.by_cpu_load.enabled,
-            settings.background_efficiency.enabled,
-            settings.app_suspension.enabled,
-            settings.cpu_sets_soft.enabled,
-            settings.processor_affinity_hard.enabled,
-            settings.cpu_limiter.enabled,
-            settings.by_running_app.enabled,
-            settings.process_priority.enabled,
-            settings.thread_priority.enabled,
-            settings.dynamic_priority_boost.enabled,
-            settings.io_priority.enabled,
-            settings.gpu_priority.enabled,
-            settings.memory_priority.enabled,
-            settings.memory_trim.enabled,
-            settings.watchdog.enabled,
-            settings.timer_resolution.enabled,
-        ]
-        .into_iter()
-        .any(|enabled| enabled));
-    }
-
-    #[test]
-    fn cross_session_process_control_is_enabled_by_default() {
-        assert!(
-            Settings::default()
-                .general
-                .allow_cross_session_process_control
-        );
-    }
-
-    #[test]
-    fn appearance_indicators_are_enabled_by_default() {
-        let general = Settings::default().general;
-
-        assert!(general.show_enabled_feature_counts_in_sidebar);
-        assert!(general.show_feature_status_on_cards);
-    }
-
-    #[test]
-    fn network_threshold_units_convert_to_canonical_bytes() {
-        assert_eq!(
-            NetworkThresholdUnit::Bytes.threshold_bytes_from_value(42.0),
-            42
-        );
-        assert_eq!(
-            NetworkThresholdUnit::Kilobytes.threshold_bytes_from_value(1.5),
-            1_500
-        );
-        assert_eq!(
-            NetworkThresholdUnit::Megabytes.threshold_bytes_from_value(1.25),
-            1_250_000
-        );
-        assert_eq!(
-            NetworkThresholdUnit::Gigabytes.threshold_bytes_from_value(1.25),
-            1_250_000_000
-        );
-        assert_eq!(
-            NetworkThresholdUnit::Megabytes.threshold_value_from_bytes(1_250_000),
-            1.25
-        );
-        assert_eq!(
-            NetworkThresholdUnit::Bytes.threshold_bytes_from_value(1.1),
-            2
-        );
-        for unit in NetworkThresholdUnit::ALL {
-            let raw = 1_250_000_000;
-            assert_eq!(
-                unit.threshold_bytes_from_value(unit.threshold_value_from_bytes(raw)),
-                raw
-            );
-            for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
-                assert_eq!(unit.threshold_bytes_from_value(invalid), 0);
-            }
-        }
-    }
-
-    #[test]
-    fn custom_rules_match_only_the_configured_executable_path() {
-        let settings = AdaptiveEngineProcessSettings {
-            custom_rules: vec![
-                ProcessExclusionRule {
-                    enabled: true,
-                    executable_path: "C:\\Games\\game.exe".to_owned(),
-                    ..Default::default()
-                },
-                ProcessExclusionRule {
-                    enabled: false,
-                    executable_path: "C:\\Apps\\disabled.exe".to_owned(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-
-        assert!(settings.custom_rule_enabled_for("c:/games/GAME.exe"));
-        assert!(!settings.custom_rule_enabled_for("C:\\Other\\game.exe"));
-        assert!(!settings.custom_rule_enabled_for("C:\\Games\\game*.exe"));
-        assert!(!settings.custom_rule_enabled_for("C:\\Apps\\disabled.exe"));
-    }
-
-    #[test]
-    fn high_process_priorities_downgrade_when_advanced_is_hidden() {
-        assert_eq!(
-            ProcessPrioritySetting::Realtime.safe_when_advanced_disabled(),
-            ProcessPrioritySetting::AboveNormal
-        );
-        assert_eq!(
-            ProcessPrioritySetting::High.safe_when_advanced_disabled(),
-            ProcessPrioritySetting::AboveNormal
-        );
-        assert_eq!(
-            ProcessPrioritySetting::BelowNormal.safe_when_advanced_disabled(),
-            ProcessPrioritySetting::BelowNormal
-        );
-    }
-
-    #[test]
-    fn time_critical_thread_priority_downgrades_when_advanced_is_hidden() {
-        assert_eq!(
-            ProcessThreadPrioritySetting::TimeCritical.safe_when_advanced_disabled(),
-            ProcessThreadPrioritySetting::Highest
-        );
-        assert_eq!(
-            ProcessThreadPrioritySetting::BelowNormal.safe_when_advanced_disabled(),
-            ProcessThreadPrioritySetting::BelowNormal
-        );
-    }
-
-    #[test]
-    fn high_io_priority_downgrades_when_advanced_is_hidden() {
-        assert_eq!(
-            ProcessIoPrioritySetting::Critical.safe_when_advanced_disabled(),
-            ProcessIoPrioritySetting::Normal
-        );
-        assert_eq!(
-            ProcessIoPrioritySetting::High.safe_when_advanced_disabled(),
-            ProcessIoPrioritySetting::Normal
-        );
-        assert_eq!(
-            ProcessIoPrioritySetting::Low.safe_when_advanced_disabled(),
-            ProcessIoPrioritySetting::Low
-        );
-    }
-
-    #[test]
-    fn high_gpu_priority_downgrades_when_advanced_is_hidden() {
-        assert_eq!(
-            ProcessGpuPrioritySetting::Realtime.safe_when_advanced_disabled(),
-            ProcessGpuPrioritySetting::AboveNormal
-        );
-        assert_eq!(
-            ProcessGpuPrioritySetting::High.safe_when_advanced_disabled(),
-            ProcessGpuPrioritySetting::AboveNormal
-        );
-        assert_eq!(
-            ProcessGpuPrioritySetting::BelowNormal.safe_when_advanced_disabled(),
-            ProcessGpuPrioritySetting::BelowNormal
-        );
-    }
-
-    #[test]
-    fn timer_resolution_rules_match_only_the_foreground_executable_path() {
-        let settings = TimerResolutionSettings {
-            enabled: true,
-            desired_100ns: 10_000,
-            rules: vec![
-                TimerResolutionRule {
-                    enabled: true,
-                    executable_path: "C:\\Games\\game.exe".to_owned(),
-                    desired_100ns: 20_000,
-                },
-                TimerResolutionRule {
-                    enabled: false,
-                    executable_path: "C:\\Apps\\disabled.exe".to_owned(),
-                    desired_100ns: 10_000,
-                },
-            ],
-        };
-
-        assert_eq!(
-            settings.desired_resolution_for_foreground("c:/games/GAME.exe"),
-            Some(("C:\\Games\\game.exe".to_owned(), 20_000))
-        );
-        assert_eq!(
-            settings.desired_resolution_for_foreground("C:\\Other\\game.exe"),
-            None
-        );
-        assert_eq!(
-            settings.desired_resolution_for_foreground("C:\\Apps\\disabled.exe"),
-            None
-        );
-    }
-
-    #[test]
-    fn disabled_suspendable_apps_remain_configured_but_do_not_match() {
-        let settings = AppSuspensionSettings {
-            enabled: true,
-            background_delay_seconds: 60,
-            temporary_thaw_enabled: false,
-            temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
-            temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
-            network_wake_enabled: true,
-            network_wake_duration_seconds: default_network_wake_duration_seconds(),
-            audio_wake_enabled: true,
-            audio_wake_duration_seconds: default_audio_wake_duration_seconds(),
-            suspendable_apps: vec![AppSuspensionRule {
-                enabled: false,
-                executable_path: "chat.exe".to_owned(),
-                network_wake_enabled: true,
-                audio_wake_enabled: true,
-                network_download_threshold_bytes: 1,
-                network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-                network_upload_threshold_bytes: 0,
-                network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-            }],
-        };
-
-        assert!(settings.contains_suspendable_app("CHAT.EXE"));
-        assert!(!settings.suspendable_app_enabled_for("chat.exe"));
-        assert!(!settings.network_wake_enabled_for("chat.exe"));
-        assert!(!settings.audio_wake_enabled_for("chat.exe"));
-        assert_eq!(settings.network_wake_thresholds_for("chat.exe"), None);
-    }
-
-    #[test]
-    fn process_custom_rules_use_first_enabled_exact_path_override_for_every_priority_property() {
-        let disabled = ProcessExclusionRule {
-            enabled: false,
-            executable_path: r"C:\Apps\worker.exe".to_owned(),
-            process_foreground_priority: Some(ProcessPrioritySetting::Idle),
-            thread_foreground_priority: Some(ProcessThreadPrioritySetting::Idle),
-            dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Disabled),
-            io_foreground_priority: Some(ProcessIoPrioritySetting::VeryLow),
-            gpu_foreground_priority: Some(ProcessGpuPrioritySetting::Idle),
-            memory_foreground_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
-            ..Default::default()
-        };
-        let expected = ProcessExclusionRule {
-            enabled: true,
-            executable_path: r"C:\Apps\worker.exe".to_owned(),
-            process_foreground_priority: Some(ProcessPrioritySetting::AboveNormal),
-            process_visible_window_priority: Some(ProcessPrioritySetting::Normal),
-            process_background_priority: Some(ProcessPrioritySetting::BelowNormal),
-            thread_foreground_priority: Some(ProcessThreadPrioritySetting::Highest),
-            thread_background_priority: Some(ProcessThreadPrioritySetting::Lowest),
-            dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Enabled),
-            dynamic_priority_boost_background: Some(ProcessDynamicPriorityBoostSetting::Disabled),
-            io_foreground_priority: Some(ProcessIoPrioritySetting::Normal),
-            io_background_priority: Some(ProcessIoPrioritySetting::VeryLow),
-            gpu_foreground_priority: Some(ProcessGpuPrioritySetting::AboveNormal),
-            gpu_background_priority: Some(ProcessGpuPrioritySetting::Idle),
-            memory_foreground_priority: Some(ProcessMemoryPrioritySetting::Normal),
-            memory_background_priority: Some(ProcessMemoryPrioritySetting::VeryLow),
-            ..Default::default()
-        };
-        let later_duplicate = ProcessExclusionRule {
-            enabled: true,
-            executable_path: r"C:\Apps\worker.exe".to_owned(),
-            process_foreground_priority: Some(ProcessPrioritySetting::High),
-            thread_foreground_priority: Some(ProcessThreadPrioritySetting::TimeCritical),
-            dynamic_priority_boost_foreground: Some(ProcessDynamicPriorityBoostSetting::Disabled),
-            io_foreground_priority: Some(ProcessIoPrioritySetting::Low),
-            gpu_foreground_priority: Some(ProcessGpuPrioritySetting::Normal),
-            memory_foreground_priority: Some(ProcessMemoryPrioritySetting::Medium),
-            ..Default::default()
-        };
-        let exclusion = ProcessExclusionRule {
-            enabled: true,
-            executable_path: r"C:\Apps\excluded.exe".to_owned(),
-            ..Default::default()
-        };
-        let rules = vec![disabled, expected, later_duplicate, exclusion];
-
-        let process = ProcessPrioritySettings {
-            exclusions: rules.clone(),
-            ..Default::default()
-        };
-        let thread = ThreadPrioritySettings {
-            exclusions: rules.clone(),
-            ..Default::default()
-        };
-        let boost = DynamicPriorityBoostSettings {
-            exclusions: rules.clone(),
-            ..Default::default()
-        };
-        let io = IoPrioritySettings {
-            exclusions: rules.clone(),
-            ..Default::default()
-        };
-        let gpu = GpuPrioritySettings {
-            exclusions: rules.clone(),
-            ..Default::default()
-        };
-        let memory = MemoryPrioritySettings {
-            exclusions: rules,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            process.override_for(r"c:/apps/WORKER.exe", true, false),
-            Some(Some(ProcessPrioritySetting::AboveNormal))
-        );
-        assert_eq!(
-            process.override_for(r"c:/apps/WORKER.exe", false, true),
-            Some(Some(ProcessPrioritySetting::Normal))
-        );
-        assert_eq!(
-            process.override_for(r"c:/apps/WORKER.exe", false, false),
-            Some(Some(ProcessPrioritySetting::BelowNormal))
-        );
-        assert_eq!(
-            thread.override_for(r"c:/apps/WORKER.exe", true, false),
-            Some(Some(ProcessThreadPrioritySetting::Highest))
-        );
-        assert_eq!(
-            thread.override_for(r"c:/apps/WORKER.exe", false, false),
-            Some(Some(ProcessThreadPrioritySetting::Lowest))
-        );
-        assert_eq!(
-            boost.override_for(r"c:/apps/WORKER.exe", true, false),
-            Some(Some(ProcessDynamicPriorityBoostSetting::Enabled))
-        );
-        assert_eq!(
-            boost.override_for(r"c:/apps/WORKER.exe", false, false),
-            Some(Some(ProcessDynamicPriorityBoostSetting::Disabled))
-        );
-        assert_eq!(
-            io.override_for(r"c:/apps/WORKER.exe", true, false),
-            Some(Some(ProcessIoPrioritySetting::Normal))
-        );
-        assert_eq!(
-            io.override_for(r"c:/apps/WORKER.exe", false, false),
-            Some(Some(ProcessIoPrioritySetting::VeryLow))
-        );
-        assert_eq!(
-            gpu.override_for(r"c:/apps/WORKER.exe", true, false),
-            Some(Some(ProcessGpuPrioritySetting::AboveNormal))
-        );
-        assert_eq!(
-            gpu.override_for(r"c:/apps/WORKER.exe", false, false),
-            Some(Some(ProcessGpuPrioritySetting::Idle))
-        );
-        assert_eq!(
-            memory.override_for(r"c:/apps/WORKER.exe", true, false),
-            Some(Some(ProcessMemoryPrioritySetting::Normal))
-        );
-        assert_eq!(
-            memory.override_for(r"c:/apps/WORKER.exe", false, false),
-            Some(Some(ProcessMemoryPrioritySetting::VeryLow))
-        );
-
-        assert_eq!(
-            process.override_for(r"C:\Apps\excluded.exe", true, false),
-            Some(None)
-        );
-        assert_eq!(
-            thread.override_for(r"C:\Apps\excluded.exe", true, false),
-            Some(None)
-        );
-        assert_eq!(
-            boost.override_for(r"C:\Apps\excluded.exe", true, false),
-            Some(None)
-        );
-        assert_eq!(
-            io.override_for(r"C:\Apps\excluded.exe", true, false),
-            Some(None)
-        );
-        assert_eq!(
-            gpu.override_for(r"C:\Apps\excluded.exe", true, false),
-            Some(None)
-        );
-        assert_eq!(
-            memory.override_for(r"C:\Apps\excluded.exe", true, false),
-            Some(None)
-        );
-
-        assert_eq!(
-            process.override_for(r"C:\Other\worker.exe", true, false),
-            None
-        );
-        assert_eq!(
-            thread.override_for(r"C:\Other\worker.exe", true, false),
-            None
-        );
-        assert_eq!(
-            boost.override_for(r"C:\Other\worker.exe", true, false),
-            None
-        );
-        assert_eq!(io.override_for(r"C:\Other\worker.exe", true, false), None);
-        assert_eq!(gpu.override_for(r"C:\Other\worker.exe", true, false), None);
-        assert_eq!(
-            memory.override_for(r"C:\Other\worker.exe", true, false),
-            None
-        );
-    }
-}
+mod tests;

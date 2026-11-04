@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
@@ -10,7 +13,7 @@ use crate::{
             MemoryPriorityApplyOutcome, MemoryPriorityClaim, MemoryPriorityController,
             MemoryPriorityPreservation, MemoryPriorityReleaseSummary,
         },
-        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     foreground::{
         contains_process_name, is_foreground_process, process_count_label, process_executable_path,
@@ -559,16 +562,12 @@ impl MemoryPriorityFailures {
     }
 }
 
-fn memory_priority_target_key(
-    target: &MemoryPriorityTarget,
-) -> crate::control::process::ProcessTargetKey {
-    ProcessControlTarget::automatic(
+fn memory_priority_target_key(target: &MemoryPriorityTarget) -> ProcessTargetKey {
+    ProcessTargetKey::new(
         target.process_id,
-        target.process_name.clone(),
-        PathBuf::from(&target.executable_path),
         target.creation_time,
+        Path::new(&target.executable_path),
     )
-    .key()
 }
 
 fn memory_priority_preservation(

@@ -120,13 +120,16 @@ remain available in Git history rather than in the active documentation set.
   to bundled icons. `process_list.rs` owns table sorting, grouping, and pending actions.
 - `src/ui/process_rules.rs`: shared process eligibility and rule-construction helpers.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
-- `src/config/settings.rs`: persisted settings structs and defaults.
+- `src/config/settings.rs`: persisted settings structs and defaults;
+  `src/config/settings/validation.rs` owns shared persistence preflight and UI limits.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
 - `src/application/settings.rs`: `SettingsEditor`, the sole settings draft/revision/persistence and
   startup-intent application boundary. `src/application/win32_priority_separation.rs` and
   `src/application/advanced_power_plan_tuning.rs` own their explicit persistent Windows
   operations and typed staged errors; neither is temporary managed or crash-recovery state.
 - `src/backend/automation.rs`: `RuntimeHandle`, event-source lifecycle, and worker scheduling loop. Runtime feature execution and power-plan policy state live in `src/backend/automation/runner.rs`; wake/event decisions live in `wake.rs`; status fan-out lives in `status.rs`; activation predicates and refresh timing live in `requirements.rs`.
+- `src/backend/self_power.rs`: process-lifetime self-power controller and retry
+  watcher, independent of the automation worker and GUI lifetime.
 - `src/control/power_plan.rs`: sole automatic power-plan mutation owner, including ordinary and temporary Adaptive plan baselines, verification, recovery sequencing, compensation, and release.
 - `src/control/process.rs`: exact process-instance identity and shared
   process-control safety boundary. `src/control/dynamic_priority_boost.rs`,
@@ -172,7 +175,7 @@ remain available in Git history rather than in the active documentation set.
   Drop backstop; foreground matching and Action Log policy stay in the Timer Resolution feature.
 - `src/control/suspension.rs`: shared App Suspension and CPU Limiter process/job handle,
   freeze/thaw transaction, retry, owner-phase arbitration, and clean-release boundary. Automatic rules,
-  App-page Freeze, and Process List Suspend/Resume share its typed RuntimeCore
+  App-page Suspend, and Process List Suspend/Resume share its typed RuntimeCore
   routes. Pending compensation and journal cleanup reconcile on later feature
   passes; feature records retain exact creation time and are pruned when the
   controller no longer owns a frozen exact instance. The feature manager owns

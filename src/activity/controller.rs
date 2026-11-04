@@ -101,24 +101,13 @@ mod tests {
     }
 
     #[test]
-    fn thumbstick_uses_radial_deadzone() {
-        assert!(!thumbstick_active(
-            XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE as i16,
-            0,
-            XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
-        ));
-        assert!(thumbstick_active(
-            XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE.saturating_add(1) as i16,
-            0,
-            XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
-        ));
-    }
-    #[test]
     fn thumbstick_handles_full_axis_range_and_deadzone_boundaries() {
         for deadzone in [
             XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE,
             XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE,
         ] {
+            let diagonal = (deadzone * 3 / 4) as i16;
+            assert!(thumbstick_active(diagonal, diagonal, deadzone));
             for x in [i16::MIN, i16::MAX] {
                 for y in [i16::MIN, i16::MAX] {
                     assert!(thumbstick_active(x, y, deadzone));

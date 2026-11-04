@@ -211,11 +211,16 @@ struct ManagedValue<T> {
 
 pub(crate) trait PriorityEfficiencyRecoveryIntent {
     fn commit(self) -> Result<(), String>;
+    fn retain_pending(self) -> Result<(), String>;
 }
 
 impl PriorityEfficiencyRecoveryIntent for RecoveryIntent {
     fn commit(self) -> Result<(), String> {
         RecoveryIntent::commit(self)
+    }
+
+    fn retain_pending(self) -> Result<(), String> {
+        RecoveryIntent::retain_pending(self)
     }
 }
 
@@ -670,7 +675,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 &process,
                 current_power,
                 desired_power,
-                CommitFailureBehavior::Compensate,
+                CommitFailureBehavior::KeepManagedTarget,
             ) {
                 Ok(()) => {
                     self.managed_power.insert(
@@ -684,7 +689,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                     );
                 }
                 Err(failure) => {
-                    self.finish_power_failure(
+                    return Err(self.finish_power_failure(
                         identity,
                         power_baseline,
                         desired_power,
@@ -692,8 +697,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                         sequence,
                         previous_power_managed,
                         failure,
-                    )?;
-                    unreachable!("finish_power_failure always returns an error")
+                    ));
                 }
             }
         } else if let Some(mut managed) = previous_power_managed.clone() {
@@ -703,6 +707,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         }
 
         let priority_changed = current_priority != desired_priority;
+        let mut keep_managed_compound = false;
         let priority_result = if priority_changed {
             let sequence = self.next_sequence();
             match apply_priority_transition(
@@ -710,7 +715,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 &process,
                 current_priority,
                 desired_priority,
-                CommitFailureBehavior::Compensate,
+                CommitFailureBehavior::KeepManagedTarget,
             ) {
                 Ok(()) => {
                     self.managed_priorities.insert(
@@ -724,15 +729,18 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                     );
                     Ok(())
                 }
-                Err(failure) => self.finish_priority_failure(
-                    identity.clone(),
-                    priority_baseline,
-                    desired_priority,
-                    owner,
-                    sequence,
-                    previous_priority_managed.clone(),
-                    failure,
-                ),
+                Err(failure) => {
+                    keep_managed_compound = failure.uncertain;
+                    Err(self.finish_priority_failure(
+                        identity.clone(),
+                        priority_baseline,
+                        desired_priority,
+                        owner,
+                        sequence,
+                        previous_priority_managed.clone(),
+                        failure,
+                    ))
+                }
             }
         } else {
             if let Some(mut managed) = previous_priority_managed.clone() {
@@ -744,13 +752,20 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         };
 
         if let Err(priority_error) = priority_result {
+            if keep_managed_compound {
+                // A committed or pending transition still owns either property's
+                // baseline. Leave both ledgers intact until recovery resolves it.
+                return Err(priority_error);
+            }
             if power_changed {
+                let rollback_previous = self.managed_power.get(&identity).cloned();
+                let rollback_sequence = self.next_sequence();
                 let rollback = apply_power_transition(
                     &mut self.platform,
                     &process,
                     desired_power,
                     current_power,
-                    CommitFailureBehavior::Compensate,
+                    CommitFailureBehavior::KeepManagedTarget,
                 );
                 match rollback {
                     Ok(()) => restore_managed_snapshot(
@@ -759,9 +774,18 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                         previous_power_managed,
                     ),
                     Err(failure) => {
+                        let error = self.finish_power_failure(
+                            identity,
+                            power_baseline,
+                            current_power,
+                            owner,
+                            rollback_sequence,
+                            rollback_previous,
+                            failure,
+                        );
                         return Err(ProcessControlError::Failed(format!(
                             "{priority_error} Efficiency Mode rollback also failed: {}",
-                            failure.error
+                            error
                         )));
                     }
                 }
@@ -817,7 +841,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             &process,
             current,
             desired,
-            CommitFailureBehavior::Compensate,
+            CommitFailureBehavior::KeepManagedTarget,
         ) {
             Ok(()) => {
                 self.managed_priorities.insert(
@@ -831,17 +855,15 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 );
                 Ok(ProcessPropertyApplyOutcome::Applied)
             }
-            Err(failure) => self
-                .finish_priority_failure(
-                    identity,
-                    baseline,
-                    desired,
-                    claim.owner,
-                    sequence,
-                    managed,
-                    failure,
-                )
-                .map(|_| ProcessPropertyApplyOutcome::Applied),
+            Err(failure) => Err(self.finish_priority_failure(
+                identity,
+                baseline,
+                desired,
+                claim.owner,
+                sequence,
+                managed,
+                failure,
+            )),
         }
     }
 
@@ -876,7 +898,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             &process,
             current,
             desired,
-            CommitFailureBehavior::Compensate,
+            CommitFailureBehavior::KeepManagedTarget,
         ) {
             Ok(()) => {
                 self.managed_power.insert(
@@ -890,17 +912,15 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 );
                 Ok(ProcessPropertyApplyOutcome::Applied)
             }
-            Err(failure) => self
-                .finish_power_failure(
-                    identity,
-                    baseline,
-                    desired,
-                    claim.owner,
-                    sequence,
-                    managed,
-                    failure,
-                )
-                .map(|_| ProcessPropertyApplyOutcome::Applied),
+            Err(failure) => Err(self.finish_power_failure(
+                identity,
+                baseline,
+                desired,
+                claim.owner,
+                sequence,
+                managed,
+                failure,
+            )),
         }
     }
 
@@ -917,7 +937,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         sequence: u64,
         previous: Option<ManagedValue<u32>>,
         mut failure: TransitionFailure,
-    ) -> Result<(), ProcessControlError> {
+    ) -> ProcessControlError {
         if failure.relinquish_recovery {
             if let Err(error) = self.platform.relinquish_priority(&identity) {
                 failure.error = ProcessControlError::Failed(format!(
@@ -940,7 +960,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         } else if let Some(previous) = previous {
             self.managed_priorities.insert(identity, previous);
         }
-        Err(failure.error)
+        failure.error
     }
 
     #[expect(
@@ -956,7 +976,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         sequence: u64,
         previous: Option<ManagedValue<PowerThrottlingState>>,
         mut failure: TransitionFailure,
-    ) -> Result<(), ProcessControlError> {
+    ) -> ProcessControlError {
         if failure.relinquish_recovery {
             if let Err(error) = self.platform.relinquish_power(&identity) {
                 failure.error = ProcessControlError::Failed(format!(
@@ -979,7 +999,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
         } else if let Some(previous) = previous {
             self.managed_power.insert(identity, previous);
         }
-        Err(failure.error)
+        failure.error
     }
 
     fn rebase_broken_priority(
@@ -1277,7 +1297,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             &process,
             current,
             managed.baseline,
-            CommitFailureBehavior::KeepExpected,
+            CommitFailureBehavior::KeepRestoredBaseline,
         ) {
             Ok(()) => Ok(true),
             // Preserve a confirmed exit; otherwise recheck for exit during restoration.
@@ -1326,7 +1346,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             &process,
             current,
             managed.baseline,
-            CommitFailureBehavior::KeepExpected,
+            CommitFailureBehavior::KeepRestoredBaseline,
         ) {
             Ok(()) => Ok(true),
             // Preserve a confirmed exit; otherwise recheck for exit during restoration.
@@ -1444,15 +1464,6 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
             )
             .collect::<BTreeSet<_>>()
             .len()
-    }
-
-    pub(crate) fn policy_ignore_timer_resolution_count(&self, owner: ControlOwner) -> usize {
-        self.power_claims
-            .get(&owner)
-            .into_iter()
-            .flat_map(BTreeMap::values)
-            .filter(|claim| claim.ignore_timer_resolution)
-            .count()
     }
 
     pub(crate) fn release_retry_delay(&self, now: Instant) -> Option<Duration> {
@@ -1585,8 +1596,8 @@ struct TransitionFailure {
 
 #[derive(Clone, Copy)]
 enum CommitFailureBehavior {
-    Compensate,
-    KeepExpected,
+    KeepManagedTarget,
+    KeepRestoredBaseline,
 }
 
 fn apply_priority_transition<P: PriorityEfficiencyPlatform>(
@@ -1623,9 +1634,7 @@ fn apply_priority_transition<P: PriorityEfficiencyPlatform>(
             ));
         }
     }
-    finish_transition_commit(intent, commit_failure_behavior, || {
-        restore_and_verify_priority(platform, process, original)
-    })
+    finish_transition_commit(intent, commit_failure_behavior)
 }
 
 fn apply_power_transition<P: PriorityEfficiencyPlatform>(
@@ -1662,38 +1671,25 @@ fn apply_power_transition<P: PriorityEfficiencyPlatform>(
             ));
         }
     }
-    finish_transition_commit(intent, commit_failure_behavior, || {
-        restore_and_verify_power(platform, process, original)
-    })
+    finish_transition_commit(intent, commit_failure_behavior)
 }
 
 fn finish_transition_commit<I: PriorityEfficiencyRecoveryIntent>(
     intent: I,
     behavior: CommitFailureBehavior,
-    compensate: impl FnOnce() -> Result<(), ProcessControlError>,
 ) -> Result<(), TransitionFailure> {
     if let Err(error) = intent.commit() {
         let message = format!("Crash recovery commit failed: {error}");
+        // The helper may already have compacted an older baseline into this
+        // verified target. Retain it rather than create an unjournaled rollback.
         return match behavior {
-            CommitFailureBehavior::Compensate => match compensate() {
-                Ok(()) => Err(TransitionFailure {
-                    error: ProcessControlError::Failed(message),
-                    uncertain: false,
-                    relinquish_recovery: true,
-                    expected_preserved: false,
-                }),
-                Err(compensation_error) => Err(TransitionFailure {
-                    error: transition_failure_error(
-                        ProcessControlError::Failed(message),
-                        compensation_error,
-                        None,
-                    ),
-                    uncertain: true,
-                    relinquish_recovery: false,
-                    expected_preserved: false,
-                }),
-            },
-            CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
+            CommitFailureBehavior::KeepManagedTarget => Err(TransitionFailure {
+                error: ProcessControlError::Failed(message),
+                uncertain: true,
+                relinquish_recovery: false,
+                expected_preserved: true,
+            }),
+            CommitFailureBehavior::KeepRestoredBaseline => Err(TransitionFailure {
                 error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
@@ -1719,7 +1715,7 @@ fn compensate_priority_with_intent<P: PriorityEfficiencyPlatform>(
             expected_preserved: false,
         },
         Err(compensation_error) => {
-            let recovery_error = intent.commit().err();
+            let recovery_error = intent.retain_pending().err();
             TransitionFailure {
                 error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
@@ -1745,7 +1741,7 @@ fn compensate_power_with_intent<P: PriorityEfficiencyPlatform>(
             expected_preserved: false,
         },
         Err(compensation_error) => {
-            let recovery_error = intent.commit().err();
+            let recovery_error = intent.retain_pending().err();
             TransitionFailure {
                 error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
@@ -2015,948 +2011,7 @@ pub(crate) fn current_efficiency_mode(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        path::PathBuf,
-        process::{Child, Command},
-        time::{Duration, Instant},
-    };
-
-    use super::*;
-    use crate::platform::windows::priority_efficiency::{
-        POWER_CURRENT_VERSION as PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        POWER_EXECUTION_SPEED as PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        POWER_IGNORE_TIMER_RESOLUTION as PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-        PRIORITY_ABOVE_NORMAL as ABOVE_NORMAL_PRIORITY_CLASS,
-        PRIORITY_BELOW_NORMAL as BELOW_NORMAL_PRIORITY_CLASS, PRIORITY_HIGH as HIGH_PRIORITY_CLASS,
-        PRIORITY_IDLE as IDLE_PRIORITY_CLASS, PRIORITY_NORMAL as NORMAL_PRIORITY_CLASS,
-    };
-
-    #[derive(Clone)]
-    struct FakeProcess {
-        identity: ProcessIdentity,
-        priority: u32,
-        power: PowerThrottlingState,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum FakeEvent {
-        Priority(u32, u32),
-        Power(u32, PowerThrottlingState),
-        RelinquishPriority(u32, u64),
-        RelinquishPower(u32, u64),
-    }
-
-    #[derive(Default)]
-    struct FakePlatform {
-        exit_on_apply: bool,
-        deny_open: bool,
-        processes: BTreeMap<u32, FakeProcess>,
-        events: Vec<FakeEvent>,
-        fail_next_priority_begin: bool,
-        fail_next_power_begin: bool,
-        fail_next_priority_apply: bool,
-        fail_next_power_apply: bool,
-        fail_next_priority_commit: bool,
-        fail_next_power_commit: bool,
-        fail_priority_relinquish: bool,
-        fail_power_relinquish: bool,
-        power_unavailable: bool,
-    }
-
-    struct FakeIntent {
-        fail: bool,
-    }
-
-    impl PriorityEfficiencyRecoveryIntent for FakeIntent {
-        fn commit(self) -> Result<(), String> {
-            if self.fail {
-                Err("injected commit failure".to_owned())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    impl PriorityEfficiencyPlatform for FakePlatform {
-        type Process = u32;
-        type RecoveryIntent = FakeIntent;
-
-        fn open(
-            &mut self,
-            target: &ProcessControlTarget,
-            _allow_cross_session_process_control: bool,
-        ) -> Result<(ProcessIdentity, Self::Process), ProcessControlError> {
-            if self.deny_open {
-                return Err(ProcessControlError::AccessDenied("open denied".into()));
-            }
-            let process = self
-                .processes
-                .get(&target.id)
-                .ok_or(ProcessControlError::ProcessExited)?;
-            if process.identity.key() != target.key() {
-                return Err(ProcessControlError::ProcessExited);
-            }
-            Ok((process.identity.clone(), target.id))
-        }
-
-        fn query_priority(&mut self, process: &Self::Process) -> Result<u32, ProcessControlError> {
-            self.processes
-                .get(process)
-                .map(|process| process.priority)
-                .ok_or(ProcessControlError::ProcessExited)
-        }
-
-        fn query_power(
-            &mut self,
-            process: &Self::Process,
-        ) -> Result<PowerThrottlingState, ProcessControlError> {
-            if self.power_unavailable {
-                return Err(ProcessControlError::Unavailable(
-                    "injected unavailable power state".to_owned(),
-                ));
-            }
-            self.processes
-                .get(process)
-                .map(|process| process.power)
-                .ok_or(ProcessControlError::ProcessExited)
-        }
-
-        fn begin_priority_change(
-            &mut self,
-            _process: &Self::Process,
-            _original: u32,
-            _expected: u32,
-        ) -> Result<Self::RecoveryIntent, ProcessControlError> {
-            if std::mem::take(&mut self.fail_next_priority_begin) {
-                return Err(ProcessControlError::Failed(
-                    "injected priority begin failure".to_owned(),
-                ));
-            }
-            Ok(FakeIntent {
-                fail: std::mem::take(&mut self.fail_next_priority_commit),
-            })
-        }
-
-        fn begin_power_change(
-            &mut self,
-            _process: &Self::Process,
-            _original: PowerThrottlingState,
-            _expected: PowerThrottlingState,
-        ) -> Result<Self::RecoveryIntent, ProcessControlError> {
-            if std::mem::take(&mut self.fail_next_power_begin) {
-                return Err(ProcessControlError::Failed(
-                    "injected power begin failure".to_owned(),
-                ));
-            }
-            Ok(FakeIntent {
-                fail: std::mem::take(&mut self.fail_next_power_commit),
-            })
-        }
-
-        fn apply_priority(
-            &mut self,
-            process: &Self::Process,
-            priority: u32,
-        ) -> Result<(), ProcessControlError> {
-            if std::mem::take(&mut self.exit_on_apply) {
-                self.processes.remove(process);
-                self.deny_open = true;
-                return Err(ProcessControlError::ProcessExited);
-            }
-
-            if std::mem::take(&mut self.fail_next_priority_apply) {
-                return Err(ProcessControlError::Failed(
-                    "injected priority apply failure".to_owned(),
-                ));
-            }
-            let state = self
-                .processes
-                .get_mut(process)
-                .ok_or(ProcessControlError::ProcessExited)?;
-            state.priority = priority;
-            self.events.push(FakeEvent::Priority(*process, priority));
-            Ok(())
-        }
-
-        fn apply_power(
-            &mut self,
-            process: &Self::Process,
-            power: PowerThrottlingState,
-        ) -> Result<(), ProcessControlError> {
-            if std::mem::take(&mut self.exit_on_apply) {
-                self.processes.remove(process);
-                self.deny_open = true;
-                return Err(ProcessControlError::ProcessExited);
-            }
-
-            if std::mem::take(&mut self.fail_next_power_apply) {
-                return Err(ProcessControlError::Failed(
-                    "injected power apply failure".to_owned(),
-                ));
-            }
-            let state = self
-                .processes
-                .get_mut(process)
-                .ok_or(ProcessControlError::ProcessExited)?;
-            state.power = power;
-            self.events.push(FakeEvent::Power(*process, power));
-            Ok(())
-        }
-
-        fn relinquish_priority(
-            &mut self,
-            identity: &ProcessIdentity,
-        ) -> Result<(), ProcessControlError> {
-            if self.fail_priority_relinquish {
-                return Err(ProcessControlError::Failed(
-                    "injected priority relinquish failure".to_owned(),
-                ));
-            }
-            self.events.push(FakeEvent::RelinquishPriority(
-                identity.id,
-                identity.creation_time,
-            ));
-            Ok(())
-        }
-
-        fn relinquish_power(
-            &mut self,
-            identity: &ProcessIdentity,
-        ) -> Result<(), ProcessControlError> {
-            if self.fail_power_relinquish {
-                return Err(ProcessControlError::Failed(
-                    "injected power relinquish failure".to_owned(),
-                ));
-            }
-            self.events.push(FakeEvent::RelinquishPower(
-                identity.id,
-                identity.creation_time,
-            ));
-            Ok(())
-        }
-    }
-
-    fn identity(id: u32, creation_time: u64) -> ProcessIdentity {
-        ProcessIdentity::new(
-            id,
-            format!("app{id}.exe"),
-            PathBuf::from(format!(r"C:\Apps\app{id}.exe")),
-            creation_time,
-            Some(1),
-        )
-    }
-
-    fn target(id: u32, creation_time: u64) -> ProcessControlTarget {
-        identity(id, creation_time).target()
-    }
-
-    fn action_target(id: u32, creation_time: u64) -> ProcessActionTarget {
-        let identity = identity(id, creation_time);
-        ProcessActionTarget {
-            id,
-            name: identity.name,
-            executable_path: identity.executable_path,
-            creation_time,
-            session_id: Some(1),
-            is_service_account: Some(false),
-        }
-    }
-
-    fn baseline_power() -> PowerThrottlingState {
-        PowerThrottlingState {
-            version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            control_mask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            state_mask: 0,
-        }
-    }
-
-    fn platform_with(id: u32, creation_time: u64, priority: u32) -> FakePlatform {
-        let mut platform = FakePlatform::default();
-        platform.processes.insert(
-            id,
-            FakeProcess {
-                identity: identity(id, creation_time),
-                priority,
-                power: baseline_power(),
-            },
-        );
-        platform
-    }
-
-    fn priority_claim(
-        id: u32,
-        creation_time: u64,
-        owner: ControlOwner,
-        priority: PriorityClassValue,
-    ) -> PriorityClassClaim {
-        PriorityClassClaim {
-            target: target(id, creation_time),
-            owner,
-            priority,
-            preservation: PriorityClassPreservation::Exact,
-        }
-    }
-
-    fn power_claim(
-        id: u32,
-        creation_time: u64,
-        owner: ControlOwner,
-        ignore_timer_resolution: bool,
-    ) -> PowerThrottlingClaim {
-        PowerThrottlingClaim {
-            target: target(id, creation_time),
-            owner,
-            ignore_timer_resolution,
-        }
-    }
-
-    fn efficiency_claim(id: u32, creation_time: u64) -> EfficiencyModeClaim {
-        EfficiencyModeClaim {
-            target: target(id, creation_time),
-            owner: ControlOwner::BackgroundEfficiency,
-            ignore_timer_resolution: false,
-        }
-    }
-
-    #[test]
-    fn adaptive_priority_temporarily_overrides_static_without_losing_the_baseline() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::ProcessPriority,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        controller
-            .apply_priority_claim(
-                priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle),
-                true,
-            )
-            .unwrap();
-
-        controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            BELOW_NORMAL_PRIORITY_CLASS
-        );
-        controller.release_all_priority_policy(ControlOwner::ProcessPriority);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-    }
-
-    #[test]
-    fn background_efficiency_overrides_then_reveals_adaptive_claims() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::AdaptiveEngine,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        controller
-            .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, true), true)
-            .unwrap();
-        controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .unwrap();
-
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            IDLE_PRIORITY_CLASS
-        );
-        assert!(controller.platform.processes[&7]
-            .power
-            .execution_speed_enabled());
-        let summary = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
-        assert!(summary.failures.is_empty());
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            BELOW_NORMAL_PRIORITY_CLASS
-        );
-        assert!(controller.platform.processes[&7]
-            .power
-            .ignore_timer_resolution_enabled());
-
-        controller.release_all_priority_policy(ControlOwner::AdaptiveEngine);
-        controller.release_all_power_policy(ControlOwner::AdaptiveEngine);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-        assert_eq!(controller.platform.processes[&7].power, baseline_power());
-    }
-
-    #[test]
-    fn foreground_boost_outranks_adaptive_but_not_background_efficiency() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_priority_claim(
-                priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle),
-                true,
-            )
-            .unwrap();
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::AdaptiveEngineProcessFocusPriority,
-                    PriorityClassValue::AboveNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            ABOVE_NORMAL_PRIORITY_CLASS
-        );
-
-        controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .unwrap();
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            IDLE_PRIORITY_CLASS
-        );
-        controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            ABOVE_NORMAL_PRIORITY_CLASS
-        );
-        controller.release_all_priority_policy(ControlOwner::AdaptiveEngineProcessFocusPriority);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            IDLE_PRIORITY_CLASS
-        );
-    }
-
-    #[test]
-    fn process_list_action_is_immediate_then_automatic_policy_supersedes_it() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        let automatic =
-            priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle);
-        controller
-            .apply_priority_claim(automatic.clone(), true)
-            .unwrap();
-        controller
-            .apply_process_list_priority(
-                &action_target(7, 1),
-                ProcessPrioritySetting::AboveNormal,
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            ABOVE_NORMAL_PRIORITY_CLASS
-        );
-
-        controller.apply_priority_claim(automatic, true).unwrap();
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            IDLE_PRIORITY_CLASS
-        );
-        controller.shutdown().unwrap();
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-    }
-
-    #[test]
-    fn unavailable_power_state_does_not_block_an_independent_priority_claim() {
-        let mut platform = platform_with(7, 1, NORMAL_PRIORITY_CLASS);
-        platform.power_unavailable = true;
-        let mut controller = PriorityEfficiencyController::with_platform(platform);
-
-        assert!(matches!(
-            controller
-                .apply_power_claim(power_claim(7, 1, ControlOwner::AdaptiveEngine, false), true,),
-            Err(ProcessControlError::Unavailable(_))
-        ));
-        assert_eq!(
-            controller
-                .apply_priority_claim(
-                    priority_claim(
-                        7,
-                        1,
-                        ControlOwner::AdaptiveEngine,
-                        PriorityClassValue::BelowNormal,
-                    ),
-                    true,
-                )
-                .unwrap(),
-            ProcessPropertyApplyOutcome::Applied
-        );
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            BELOW_NORMAL_PRIORITY_CLASS
-        );
-    }
-
-    #[test]
-    fn compound_priority_failure_rolls_power_back_and_leaves_no_owner() {
-        let mut platform = platform_with(7, 1, NORMAL_PRIORITY_CLASS);
-        platform.fail_next_priority_apply = true;
-        let mut controller = PriorityEfficiencyController::with_platform(platform);
-
-        assert!(controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .is_err());
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-        assert_eq!(controller.platform.processes[&7].power, baseline_power());
-        assert!(!controller.has_managed_state());
-        assert!(controller
-            .priority_claims
-            .get(&ControlOwner::BackgroundEfficiency)
-            .is_none_or(BTreeMap::is_empty));
-        assert!(controller
-            .power_claims
-            .get(&ControlOwner::BackgroundEfficiency)
-            .is_none_or(BTreeMap::is_empty));
-    }
-
-    #[test]
-    fn compound_commit_failure_compensates_both_properties_and_relinquishes() {
-        let mut platform = platform_with(7, 1, NORMAL_PRIORITY_CLASS);
-        platform.fail_next_priority_commit = true;
-        let mut controller = PriorityEfficiencyController::with_platform(platform);
-
-        assert!(controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .is_err());
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-        assert_eq!(controller.platform.processes[&7].power, baseline_power());
-        assert!(controller
-            .platform
-            .events
-            .contains(&FakeEvent::RelinquishPriority(7, 1)));
-        assert!(!controller.has_managed_state());
-    }
-
-    #[test]
-    fn external_break_is_relinquished_without_overwriting_either_property() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .unwrap();
-        let external_power = PowerThrottlingState {
-            version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            control_mask: PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-            state_mask: PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-        };
-        let process = controller.platform.processes.get_mut(&7).unwrap();
-        process.priority = ABOVE_NORMAL_PRIORITY_CLASS;
-        process.power = external_power;
-
-        controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            ABOVE_NORMAL_PRIORITY_CLASS
-        );
-        assert_eq!(controller.platform.processes[&7].power, external_power);
-        assert!(controller
-            .platform
-            .events
-            .contains(&FakeEvent::RelinquishPriority(7, 1)));
-        assert!(controller
-            .platform
-            .events
-            .contains(&FakeEvent::RelinquishPower(7, 1)));
-        assert!(!controller.has_managed_state());
-    }
-
-    #[test]
-    fn pid_reuse_relinquishes_the_old_identity_before_mutating_the_new_process() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .unwrap();
-        controller.platform.processes.insert(
-            7,
-            FakeProcess {
-                identity: identity(7, 2),
-                priority: NORMAL_PRIORITY_CLASS,
-                power: baseline_power(),
-            },
-        );
-
-        controller
-            .apply_efficiency_claim(efficiency_claim(7, 2), true)
-            .unwrap();
-        assert!(controller
-            .platform
-            .events
-            .contains(&FakeEvent::RelinquishPriority(7, 1)));
-        assert!(controller
-            .platform
-            .events
-            .contains(&FakeEvent::RelinquishPower(7, 1)));
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            IDLE_PRIORITY_CLASS
-        );
-    }
-
-    #[test]
-    fn session_metadata_drift_does_not_create_a_second_process_identity() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::ProcessPriority,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        controller
-            .platform
-            .processes
-            .get_mut(&7)
-            .unwrap()
-            .identity
-            .session_id = None;
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::ProcessPriority,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-
-        assert_eq!(controller.managed_priorities.len(), 1);
-        assert!(!controller
-            .platform
-            .events
-            .contains(&FakeEvent::RelinquishPriority(7, 1)));
-    }
-
-    #[test]
-    fn high_or_realtime_preservation_uses_the_original_baseline() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, HIGH_PRIORITY_CLASS));
-        let mut claim =
-            priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle);
-        claim.preservation = PriorityClassPreservation::PreserveHighOrRealtime;
-
-        assert_eq!(
-            controller.apply_priority_claim(claim, true).unwrap(),
-            ProcessPropertyApplyOutcome::Preserved
-        );
-        assert!(!controller.has_managed_state());
-        assert!(controller.platform.events.is_empty());
-    }
-
-    #[test]
-    fn shutdown_keeps_confirmed_exit_when_reopening_is_denied() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::ProcessPriority,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        controller.platform.exit_on_apply = true;
-        assert!(controller.shutdown().is_ok());
-        assert!(!controller.has_managed_state());
-    }
-
-    #[test]
-    fn release_commit_failure_keeps_the_verified_baseline_and_relinquishes() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::ProcessPriority,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        controller.platform.fail_next_priority_commit = true;
-
-        let summary = controller.release_all_priority_policy(ControlOwner::ProcessPriority);
-        assert!(summary.failures.is_empty());
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-        assert!(controller
-            .platform
-            .events
-            .contains(&FakeEvent::RelinquishPriority(7, 1)));
-        assert!(!controller.has_managed_state());
-    }
-
-    #[test]
-    fn shutdown_restores_priority_and_power_in_reverse_application_order() {
-        let mut platform = platform_with(7, 1, NORMAL_PRIORITY_CLASS);
-        platform.processes.insert(
-            8,
-            FakeProcess {
-                identity: identity(8, 1),
-                priority: NORMAL_PRIORITY_CLASS,
-                power: baseline_power(),
-            },
-        );
-        let mut controller = PriorityEfficiencyController::with_platform(platform);
-        controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .unwrap();
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    8,
-                    1,
-                    ControlOwner::ProcessPriority,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        controller.shutdown().unwrap();
-
-        let tail = &controller.platform.events[controller.platform.events.len() - 3..];
-        assert_eq!(
-            tail,
-            &[
-                FakeEvent::Priority(8, NORMAL_PRIORITY_CLASS),
-                FakeEvent::Priority(7, NORMAL_PRIORITY_CLASS),
-                FakeEvent::Power(7, baseline_power()),
-            ]
-        );
-    }
-
-    #[test]
-    #[ignore = "modifies and restores a disposable Windows process; run in explicit integration QA"]
-    fn priority_efficiency_live_apply_and_clean_release() -> Result<(), String> {
-        struct DisposableProcess(Child);
-
-        impl Drop for DisposableProcess {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-
-        let mut executable_path = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
-        executable_path.push(r"System32\PING.EXE");
-        let child = Command::new(&executable_path)
-            .args(["-t", "127.0.0.1"])
-            .spawn()
-            .map_err(|error| format!("Could not start disposable process: {error}"))?;
-        let child = DisposableProcess(child);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let target = loop {
-            match crate::foreground::capture_process_action_target(
-                child.0.id(),
-                &executable_path,
-                true,
-            ) {
-                Ok(target) => break target,
-                Err(_) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err(error) => return Err(error.to_string()),
-            }
-        };
-        let baseline_priority =
-            current_process_priority(&target, true).map_err(|error| error.to_string())?;
-        let baseline_efficiency =
-            current_efficiency_mode(&target, true).map_err(|error| error.to_string())?;
-        let expected_efficiency = !baseline_efficiency;
-        let mut controller = PriorityEfficiencyController::default();
-
-        controller
-            .apply_process_list_efficiency_mode(&target, expected_efficiency, true)
-            .map_err(|error| error.to_string())?;
-        assert_eq!(
-            current_efficiency_mode(&target, true).map_err(|error| error.to_string())?,
-            expected_efficiency
-        );
-        controller.shutdown()?;
-        assert_eq!(
-            current_process_priority(&target, true).map_err(|error| error.to_string())?,
-            baseline_priority
-        );
-        assert_eq!(
-            current_efficiency_mode(&target, true).map_err(|error| error.to_string())?,
-            baseline_efficiency
-        );
-        Ok(())
-    }
-    #[test]
-    fn failed_policy_releases_retry_without_claims_or_another_policy_update() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_efficiency_claim(efficiency_claim(7, 1), true)
-            .unwrap();
-        controller.platform.fail_next_priority_apply = true;
-        controller.platform.fail_next_power_apply = true;
-        let failed = controller.release_all_efficiency_policy(ControlOwner::BackgroundEfficiency);
-        assert_eq!(failed.failures.len(), 2);
-        assert!(controller.priority_claims.is_empty());
-        assert!(controller.power_claims.is_empty());
-        let due = controller.release_retry_at.unwrap();
-        assert_eq!(
-            controller
-                .retry_pending_releases(due - Duration::from_millis(1))
-                .restored_processes,
-            0
-        );
-        // A second transient failure must preserve the queue and its bounded retry deadline.
-        controller.platform.fail_next_priority_apply = true;
-        assert_eq!(controller.retry_pending_releases(due).failures.len(), 1);
-        assert_eq!(
-            controller.release_retry_delay(due),
-            Some(Duration::from_secs(1))
-        );
-        let restored = controller.retry_pending_releases(due + Duration::from_secs(1));
-        assert!(restored.failures.is_empty());
-        assert_eq!(restored.restored_processes, 1);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-        assert_eq!(controller.platform.processes[&7].power, baseline_power());
-        assert!(!controller.has_managed_state());
-        assert_eq!(controller.release_retry_delay(due), None);
-    }
-
-    #[test]
-    fn pending_release_reconciles_the_current_claim_instead_of_restoring_over_it() {
-        let mut controller =
-            PriorityEfficiencyController::with_platform(platform_with(7, 1, NORMAL_PRIORITY_CLASS));
-        controller
-            .apply_priority_claim(
-                priority_claim(
-                    7,
-                    1,
-                    ControlOwner::ProcessPriority,
-                    PriorityClassValue::BelowNormal,
-                ),
-                true,
-            )
-            .unwrap();
-        controller
-            .apply_priority_claim(
-                priority_claim(7, 1, ControlOwner::AdaptiveEngine, PriorityClassValue::Idle),
-                true,
-            )
-            .unwrap();
-        controller.platform.fail_next_priority_apply = true;
-        assert_eq!(
-            controller
-                .release_all_priority_policy(ControlOwner::AdaptiveEngine)
-                .failures
-                .len(),
-            1
-        );
-        let due = controller.release_retry_at.unwrap();
-        assert!(controller.retry_pending_releases(due).failures.is_empty());
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            BELOW_NORMAL_PRIORITY_CLASS
-        );
-        assert_eq!(controller.release_retry_delay(due), None);
-        controller.release_all_priority_policy(ControlOwner::ProcessPriority);
-        assert_eq!(
-            controller.platform.processes[&7].priority,
-            NORMAL_PRIORITY_CLASS
-        );
-    }
-}
+mod tests;
 
 #[cfg(test)]
-mod adaptive_preservation_tests {
-    use super::*;
-
-    #[test]
-    fn adaptive_preservation_keeps_direction_and_high_priority_protection() {
-        for policy in [
-            PriorityClassPreservation::PreserveHighOrRealtime,
-            PriorityClassPreservation::PreserveHigherOrHighOrRealtime,
-            PriorityClassPreservation::PreserveLowerOrHighOrRealtime,
-        ] {
-            for baseline in [PriorityClassValue::High, PriorityClassValue::Realtime] {
-                assert!(priority_is_preserved(
-                    policy,
-                    baseline.raw(),
-                    PriorityClassValue::Realtime.raw()
-                ));
-            }
-        }
-        for (policy, kept, changed) in [
-            (
-                PriorityClassPreservation::PreserveHigherOrHighOrRealtime,
-                PriorityClassValue::AboveNormal,
-                PriorityClassValue::BelowNormal,
-            ),
-            (
-                PriorityClassPreservation::PreserveLowerOrHighOrRealtime,
-                PriorityClassValue::BelowNormal,
-                PriorityClassValue::AboveNormal,
-            ),
-        ] {
-            assert!(priority_is_preserved(
-                policy,
-                kept.raw(),
-                PriorityClassValue::Normal.raw()
-            ));
-            assert!(priority_is_preserved(
-                policy,
-                PriorityClassValue::Normal.raw(),
-                PriorityClassValue::Normal.raw()
-            ));
-            assert!(!priority_is_preserved(
-                policy,
-                changed.raw(),
-                PriorityClassValue::Normal.raw()
-            ));
-        }
-    }
-}
+mod adaptive_preservation_tests;

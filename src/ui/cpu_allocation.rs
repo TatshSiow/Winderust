@@ -89,13 +89,14 @@ pub(super) enum Message {
 impl Editor {
     pub(super) fn update(&mut self, s: &mut Settings, k: Kind, m: Message) {
         let available =
-            cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
+            || cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
         match m {
             Message::Enabled(v) => settings_mut(s, k).enabled = v,
             Message::Path(v) => self.path = v,
             Message::Browse => {}
             Message::Add => {
                 if can_add(s, &self.path) {
+                    let available = available();
                     settings_mut(s, k).rules.push(CpuAllocationRule {
                         enabled: true,
                         executable_path: executable_path_key(Path::new(&self.path)),
@@ -113,7 +114,7 @@ impl Editor {
             }
             Message::Mask(i, tier, choice) => {
                 if let Some(r) = settings_mut(s, k).rules.get_mut(i) {
-                    tier.set(r, choice.0 & available);
+                    tier.set(r, choice.0 & available());
                     self.selected_presets
                         .insert((r.executable_path.clone(), tier as usize), choice);
                 }
@@ -131,14 +132,14 @@ impl Editor {
                 self.preset_open = true;
                 self.preset_read_only = true;
                 self.preset_name = name;
-                self.preset_mask = mask & available;
+                self.preset_mask = mask & available();
             }
             Message::NewPreset => {
                 self.preset_read_only = false;
                 self.preset_open = true;
                 self.editing_preset = None;
                 self.preset_name.clear();
-                self.preset_mask = available;
+                self.preset_mask = available();
             }
             Message::EditPreset(i) => {
                 self.preset_read_only = false;
@@ -146,11 +147,11 @@ impl Editor {
                     self.preset_open = true;
                     self.editing_preset = Some(i);
                     self.preset_name = p.name.clone();
-                    self.preset_mask = p.core_mask & available;
+                    self.preset_mask = p.core_mask & available();
                 }
             }
             Message::PresetName(v) if !self.preset_read_only => self.preset_name = v,
-            Message::PresetMask(v) if !self.preset_read_only => self.preset_mask = v & available,
+            Message::PresetMask(v) if !self.preset_read_only => self.preset_mask = v & available(),
             Message::PresetName(_) | Message::PresetMask(_) => {}
             Message::SavePreset => {
                 let name = self.preset_name.trim();
@@ -214,8 +215,12 @@ impl Editor {
         k: Kind,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let processors = cpu_allocation::logical_processors();
         let feature = settings(s, k);
+        let processors = if feature.rules.is_empty() {
+            Vec::new()
+        } else {
+            cpu_allocation::logical_processors()
+        };
         let mut body = column![
             super::widgets::toggle_card(
                 match k {
@@ -391,9 +396,16 @@ impl Editor {
         }
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
-            action_button(t!("common.cancel").to_string())
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::ClosePreset)
+            action_button(
+                t!(if self.preset_read_only {
+                    "common.close"
+                } else {
+                    "common.cancel"
+                })
+                .to_string(),
+            )
+            .style(super::widgets::tertiary_button)
+            .on_press(Message::ClosePreset)
         ]
         .spacing(design::space::SMALL);
         if !self.preset_read_only {

@@ -415,7 +415,7 @@ pub(super) fn view<'a>(
         }
         controls = controls.push(widgets::tooltip(
             icon_button("icons/rotate-ccw.svg").on_press(Message::ResetPriority(kind)),
-            text(t!("common.default").to_string()),
+            text(t!("process_list.use_page_defaults").to_string()),
             iced::widget::tooltip::Position::Top,
         ));
         priorities = priorities
@@ -456,6 +456,7 @@ pub(super) fn view<'a>(
         )]
         .spacing(widgets::CARD_GAP);
         if let Some(rule) = rule {
+            let processors = crate::cpu_allocation::logical_processors();
             for tier in Tier::ALL {
                 let mask = match tier {
                     Tier::Focus => rule.focus_core_mask,
@@ -467,7 +468,7 @@ pub(super) fn view<'a>(
                     .push(text(tier.label()))
                     .push(cpu_allocation::mask_selector(
                         mask,
-                        &crate::cpu_allocation::logical_processors(),
+                        &processors,
                         &s.cpu_allocation_presets,
                         move |v| Message::CpuMask(soft, tier, v),
                     ));

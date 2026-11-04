@@ -40,7 +40,7 @@ pub(super) fn load(cached: Vec<Candidate>) -> Result<Vec<Candidate>, String> {
 
 pub(super) fn view<'a, M: Clone + 'static>(
     query: &str,
-    candidates: &[Candidate],
+    candidates: &'a [Candidate],
     enabled: bool,
     select: fn(String) -> M,
     browse: M,
@@ -52,18 +52,19 @@ pub(super) fn view<'a, M: Clone + 'static>(
         .iter()
         .filter_map(|candidate| {
             let path = candidate.info.image_path.to_string_lossy();
-            if !path.to_lowercase().contains(&filter)
+            if !filter.is_empty()
+                && !path.to_lowercase().contains(&filter)
                 && !candidate.info.name.to_lowercase().contains(&filter)
             {
                 return None;
             }
-            allowed(&path).map(|available| (candidate.clone(), available))
+            allowed(&path).map(|available| (candidate, available))
         })
         .collect();
-    choices.sort_by_cached_key(|(candidate, _)| {
+    choices.sort_by_cached_key(|&(candidate, _)| {
         (
             candidate.info.name.to_lowercase(),
-            candidate.info.image_path.clone(),
+            candidate.info.image_path.as_path(),
         )
     });
     let input = widgets::text_input(&t!("common.search_running_apps"), query)
@@ -154,7 +155,7 @@ struct State {
 
 struct Picker<'a, M> {
     input: Element<'a, M>,
-    choices: Vec<(Candidate, bool)>,
+    choices: Vec<(&'a Candidate, bool)>,
     select: fn(String) -> M,
     browse: M,
     enabled: bool,
@@ -434,7 +435,7 @@ struct Menu<'a, M> {
     tree: &'a mut Tree,
     state: &'a mut State,
     anchor: Rectangle,
-    choices: &'a [(Candidate, bool)],
+    choices: &'a [(&'a Candidate, bool)],
     select: fn(String) -> M,
     browse: M,
 }
@@ -655,6 +656,61 @@ mod tests {
     }
 
     #[test]
+    fn search_keeps_trimmed_unicode_matches_and_permission_callbacks() {
+        for count in [50, 500] {
+            let names = ["aLpHa.exe", "İ.exe", "Σ.exe", "ß.exe"];
+            let candidates = (0..count)
+                .map(|index| Candidate {
+                    info: crate::foreground::ProcessCandidateInfo {
+                        name: names[index % names.len()].into(),
+                        image_path: format!(
+                            r"C:\Apps\bucket{index:03}\{}",
+                            names[index % names.len()]
+                        )
+                        .into(),
+                        has_suspendable_instance: true,
+                    },
+                    icon: None,
+                })
+                .collect::<Vec<_>>();
+            for query in ["", "   ", "alpha", "  Σ  ", "i\u{307}", "missing"] {
+                let filter = query.trim().to_lowercase();
+                let expected = candidates
+                    .iter()
+                    .filter(|candidate| {
+                        candidate
+                            .info
+                            .image_path
+                            .to_string_lossy()
+                            .to_lowercase()
+                            .contains(&filter)
+                            || candidate.info.name.to_lowercase().contains(&filter)
+                    })
+                    .map(|candidate| candidate.info.image_path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                let checked = std::cell::RefCell::new(Vec::new());
+                let _view = view(
+                    query,
+                    &candidates,
+                    true,
+                    Message::Select,
+                    Message::Browse,
+                    None,
+                    |path| {
+                        checked.borrow_mut().push(path.to_owned());
+                        if path.contains("bucket000") {
+                            None
+                        } else {
+                            Some(!path.contains("bucket001"))
+                        }
+                    },
+                );
+                assert_eq!(checked.into_inner(), expected, "query {query:?}");
+            }
+        }
+    }
+
+    #[test]
     fn menu_stays_in_bounds_and_skips_unavailable_apps_on_keyboard_selection() {
         let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         let candidate = |name: &str| Candidate {
@@ -665,12 +721,10 @@ mod tests {
             },
             icon: None,
         };
+        let candidates = [candidate("blocked.exe"), candidate("allowed.exe")];
         let mut picker = Picker {
             input: widgets::text_input("", "").into(),
-            choices: vec![
-                (candidate("blocked.exe"), false),
-                (candidate("allowed.exe"), true),
-            ],
+            choices: vec![(&candidates[0], false), (&candidates[1], true)],
             select: Message::Select,
             browse: Message::Browse,
             enabled: true,

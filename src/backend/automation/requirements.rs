@@ -188,14 +188,13 @@ pub(super) fn effective_io_priority_settings(
     settings: &Settings,
     cpu_pressure_restraint_active: bool,
 ) -> crate::config::IoPrioritySettings {
-    let mut io_priority = settings.io_priority.clone();
-    if adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
-        let auto_io_priority = io_priority_settings(settings);
-        io_priority = auto_io_priority;
-        io_priority
-            .exclusions
-            .extend(settings.adaptive_engine_process.custom_rules.clone());
+    if !adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
+        return settings.io_priority.clone();
     }
+    let mut io_priority = io_priority_settings(settings);
+    io_priority
+        .exclusions
+        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
     io_priority
 }
 
@@ -228,18 +227,18 @@ pub(super) fn effective_thread_priority_settings(
     settings: &Settings,
     cpu_pressure_restraint_active: bool,
 ) -> crate::config::ThreadPrioritySettings {
-    let mut thread_priority = settings.thread_priority.clone();
-    if adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
-        thread_priority = settings.adaptive_engine_process.thread_priority.clone();
-        thread_priority.foreground_detection_enabled = true;
-        thread_priority.visible_window_detection_enabled = true;
-        thread_priority.preserve_foreground_priority = true;
-        thread_priority.preserve_visible_window_priority = true;
-        thread_priority.preserve_background_priority = true;
-        thread_priority
-            .exclusions
-            .extend(settings.adaptive_engine_process.custom_rules.clone());
+    if !adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
+        return settings.thread_priority.clone();
     }
+    let mut thread_priority = settings.adaptive_engine_process.thread_priority.clone();
+    thread_priority.foreground_detection_enabled = true;
+    thread_priority.visible_window_detection_enabled = true;
+    thread_priority.preserve_foreground_priority = true;
+    thread_priority.preserve_visible_window_priority = true;
+    thread_priority.preserve_background_priority = true;
+    thread_priority
+        .exclusions
+        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
     thread_priority
 }
 
@@ -267,18 +266,18 @@ pub(super) fn effective_dynamic_priority_boost_settings(
     settings: &Settings,
     cpu_pressure_restraint_active: bool,
 ) -> crate::config::DynamicPriorityBoostSettings {
-    let mut dynamic_priority_boost = settings.dynamic_priority_boost.clone();
-    if adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
-        dynamic_priority_boost = settings
-            .adaptive_engine_process
-            .dynamic_priority_boost
-            .clone();
-        dynamic_priority_boost.foreground_detection_enabled = true;
-        dynamic_priority_boost.visible_window_detection_enabled = true;
-        dynamic_priority_boost
-            .exclusions
-            .extend(settings.adaptive_engine_process.custom_rules.clone());
+    if !adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
+        return settings.dynamic_priority_boost.clone();
     }
+    let mut dynamic_priority_boost = settings
+        .adaptive_engine_process
+        .dynamic_priority_boost
+        .clone();
+    dynamic_priority_boost.foreground_detection_enabled = true;
+    dynamic_priority_boost.visible_window_detection_enabled = true;
+    dynamic_priority_boost
+        .exclusions
+        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
     dynamic_priority_boost
 }
 
@@ -309,18 +308,18 @@ pub(super) fn effective_gpu_priority_settings(
     settings: &Settings,
     cpu_pressure_restraint_active: bool,
 ) -> crate::config::GpuPrioritySettings {
-    let mut gpu_priority = settings.gpu_priority.clone();
-    if adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
-        gpu_priority = settings.adaptive_engine_process.gpu_priority.clone();
-        gpu_priority.foreground_detection_enabled = true;
-        gpu_priority.visible_window_detection_enabled = true;
-        gpu_priority.preserve_foreground_priority = true;
-        gpu_priority.preserve_visible_window_priority = true;
-        gpu_priority.preserve_background_priority = true;
-        gpu_priority
-            .exclusions
-            .extend(settings.adaptive_engine_process.custom_rules.clone());
+    if !adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
+        return settings.gpu_priority.clone();
     }
+    let mut gpu_priority = settings.adaptive_engine_process.gpu_priority.clone();
+    gpu_priority.foreground_detection_enabled = true;
+    gpu_priority.visible_window_detection_enabled = true;
+    gpu_priority.preserve_foreground_priority = true;
+    gpu_priority.preserve_visible_window_priority = true;
+    gpu_priority.preserve_background_priority = true;
+    gpu_priority
+        .exclusions
+        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
     gpu_priority
 }
 
@@ -543,9 +542,10 @@ pub(super) fn power_plan_check_delay(
         delay = Some(min_worker_wait(delay, CPU_USAGE_REFRESH_INTERVAL));
     }
     if by_time_rules_required(settings) {
-        let schedule_delay = next_by_time_change_delay(&settings.by_time)
-            .map(|delay| delay.min(SCHEDULE_RULE_MAX_SLEEP))
-            .unwrap_or_else(|| configured_check_interval(settings));
+        let schedule_delay = bounded_by_time_check_delay(
+            next_by_time_change_delay(&settings.by_time),
+            configured_check_interval(settings),
+        );
         delay = Some(min_worker_wait(delay, schedule_delay));
     }
     if by_running_app_required(settings) {
@@ -555,6 +555,15 @@ pub(super) fn power_plan_check_delay(
         delay = Some(min_worker_wait(delay, activity_delay));
     }
     delay
+}
+
+pub(super) fn bounded_by_time_check_delay(
+    next_change_delay: Option<Duration>,
+    fallback: Duration,
+) -> Duration {
+    next_change_delay
+        .unwrap_or(fallback)
+        .min(SCHEDULE_RULE_MAX_SLEEP)
 }
 
 pub(super) fn activity_idle_check_delay(

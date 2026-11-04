@@ -79,7 +79,7 @@ use crate::{
         observations::CycleObservations,
         scheduler::{RefreshDomain, RefreshScheduler, SchedulerEvent},
     },
-    self_power::SelfPowerController,
+    self_power::SelfPowerRetryWatcher,
     thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
     tray::{self, TrayVisibilityWatcher},
@@ -121,7 +121,8 @@ const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
-const SCHEDULE_RULE_MAX_SLEEP: Duration = Duration::from_secs(60 * 60);
+// Local UTC-offset transitions can change By Time applicability without a clock notification.
+const SCHEDULE_RULE_MAX_SLEEP: Duration = Duration::from_secs(60);
 const AUTO_EXCLUSION_PATCH_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 const PROCESS_CONTROL_COMMAND_QUEUE_CAPACITY: usize = 32;
 
@@ -132,7 +133,7 @@ pub struct RuntimeHandle {
     thread: Mutex<Option<JoinHandle<Result<(), String>>>>,
     event_watcher: Mutex<Option<WindowsEventWatcher>>,
     input_hook: Mutex<Option<InputHook>>,
-    self_power: Arc<Mutex<SelfPowerController>>,
+    self_power: Mutex<Option<SelfPowerRetryWatcher>>,
     tray_visibility_watcher: Mutex<Option<TrayVisibilityWatcher>>,
 }
 
@@ -167,21 +168,17 @@ pub(crate) type AppSuspensionPathActionReceiver =
 impl ProcessControlBatchResult {
     pub(crate) fn into_process_list_result(self) -> Result<(), String> {
         let target_count = self.results.len();
-        let failures = self
-            .results
-            .into_iter()
-            .filter_map(Result::err)
-            .collect::<Vec<_>>();
-        if failures.is_empty() && target_count > 0 {
+        let mut failures = self.results.into_iter().filter_map(Result::err);
+        let first_failure = failures.next();
+        let failure_count = usize::from(first_failure.is_some()) + failures.count();
+        if failure_count == 0 && target_count > 0 {
             Ok(())
         } else {
             Err(format!(
-                "{} of {target_count} process actions failed: {}",
-                failures.len(),
-                failures
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "No process targets were available.".to_owned())
+                "{failure_count} of {target_count} process actions failed: {}",
+                first_failure
+                    .as_deref()
+                    .unwrap_or("No process targets were available.")
             ))
         }
     }
@@ -401,18 +398,26 @@ impl RuntimeHandle {
             pending_auto_exclusions_generation: AtomicU64::new(0),
             auto_exclusion_wake: Mutex::new(None),
         });
-        let self_power = Arc::new(Mutex::new(SelfPowerController::default()));
-        let self_power_error = {
-            let mut controller = lock_unpoisoned(&self_power);
-            controller.set_hidden_mode(tray::is_hidden_to_tray()).err()
-        };
-        let visibility_self_power = Arc::clone(&self_power);
-        let visibility_shared = Arc::clone(&shared);
-        let tray_visibility_watcher = TrayVisibilityWatcher::start(Arc::new(move |hidden| {
-            if let Err(error) = lock_unpoisoned(&visibility_self_power).set_hidden_mode(hidden) {
-                update_worker_error(&visibility_shared, Some(error));
-            }
-        }));
+        let self_power_shared = Arc::clone(&shared);
+        let self_power_error = Mutex::new(None);
+        let (self_power, tray_visibility_watcher) =
+            match SelfPowerRetryWatcher::start(Arc::new(move |result| {
+                report_self_power_result(&self_power_shared, &self_power_error, result)
+            })) {
+                Ok(watcher) => {
+                    watcher.request().set_hidden_mode(tray::is_hidden_to_tray());
+                    let visibility_self_power = watcher.request();
+                    let visibility_watcher =
+                        TrayVisibilityWatcher::start(Arc::new(move |hidden| {
+                            visibility_self_power.set_hidden_mode(hidden);
+                        }));
+                    (Some(watcher), Some(visibility_watcher))
+                }
+                Err(error) => {
+                    update_worker_error(&shared, Some(error));
+                    (None, None)
+                }
+            };
         let automation = Self {
             shared,
             lifecycle: Mutex::new(()),
@@ -420,12 +425,9 @@ impl RuntimeHandle {
             thread: Mutex::new(None),
             event_watcher: Mutex::new(None),
             input_hook: Mutex::new(None),
-            self_power,
-            tray_visibility_watcher: Mutex::new(Some(tray_visibility_watcher)),
+            self_power: Mutex::new(self_power),
+            tray_visibility_watcher: Mutex::new(tray_visibility_watcher),
         };
-        if let Some(error) = self_power_error {
-            update_worker_error(&automation.shared, Some(error));
-        }
         automation.sync_worker(settings, false);
         automation.sync_windows_event_watcher(settings);
         automation.sync_input_hook(settings);
@@ -462,7 +464,6 @@ impl RuntimeHandle {
             self.sync_windows_event_watcher(settings);
             self.sync_input_hook(settings);
         }
-        self.sync_self_power();
     }
 
     pub fn shutdown(&self) -> Result<(), String> {
@@ -515,8 +516,10 @@ impl RuntimeHandle {
                 }
             }
         }
-        if let Err(error) = lock_unpoisoned(&self.self_power).shutdown() {
-            errors.push(format!("Winderust self-power restoration failed: {error}"));
+        if let Some(watcher) = lock_unpoisoned(&self.self_power).as_mut() {
+            if let Err(error) = watcher.shutdown() {
+                errors.push(format!("Winderust self-power restoration failed: {error}"));
+            }
         }
         let outcome = if errors.is_empty() {
             Ok(())
@@ -893,17 +896,28 @@ impl RuntimeHandle {
             Err(error) => update_worker_error(&self.shared, Some(error)),
         }
     }
+}
 
-    fn sync_self_power(&self) {
-        if lock_unpoisoned(&self.shared.state).stop_requested {
-            return;
-        }
-        if let Err(error) =
-            lock_unpoisoned(&self.self_power).set_hidden_mode(tray::is_hidden_to_tray())
-        {
-            update_worker_error(&self.shared, Some(error));
+fn report_self_power_result(
+    shared: &SharedAutomationState,
+    previous_error: &Mutex<Option<String>>,
+    result: Result<(), String>,
+) {
+    let error = result.err();
+    let mut previous = lock_unpoisoned(previous_error);
+    if error != *previous {
+        if let Some(error) = &error {
+            crate::backend::diagnostics::error(error);
         }
     }
+    let mut state = lock_unpoisoned(&shared.state);
+    if (state.status.worker_error.is_none() || state.status.worker_error == *previous)
+        && state.status.worker_error != error
+    {
+        state.status.worker_error = error.clone();
+        bump_status_generation(shared, &mut state);
+    }
+    *previous = error;
 }
 
 impl Drop for RuntimeHandle {
@@ -1682,3 +1696,6 @@ fn min_worker_wait(current: Option<Duration>, candidate: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod self_power_tests;

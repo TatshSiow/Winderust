@@ -406,9 +406,16 @@ impl Editor {
             );
         }
         footer = footer.push(
-            action_button(t!("common.cancel").to_string())
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::Cancel),
+            action_button(
+                t!(if self.read_only {
+                    "common.close"
+                } else {
+                    "common.cancel"
+                })
+                .to_string(),
+            )
+            .style(super::widgets::tertiary_button)
+            .on_press(Message::Cancel),
         );
         if !self.read_only {
             footer = footer.push(
@@ -2274,10 +2281,6 @@ mod tests {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
         let bounds = iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0));
-        let mut pixels = tiny_skia::Pixmap::new(1040, 700).unwrap();
-        let mut mask = tiny_skia::Mask::new(1040, 700).unwrap();
-        let viewport =
-            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(1040, 700), 1.0);
         for tab in TuningTab::ALL {
             editor.update(&mut settings, Message::TuningTab(tab));
             let mut tree = Tree::empty();
@@ -2321,15 +2324,6 @@ mod tests {
                     damage.len()
                 );
                 previous = renderer.layers().to_vec();
-                let start = std::time::Instant::now();
-                renderer.draw(
-                    &mut pixels.as_mut(),
-                    &mut mask,
-                    &viewport,
-                    &damage,
-                    iced::Color::BLACK,
-                );
-                println!("raster {:?}, regions {}", start.elapsed(), damage.len());
             }
         }
     }

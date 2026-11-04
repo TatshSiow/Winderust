@@ -15,6 +15,10 @@ use rust_i18n::t;
 use std::collections::VecDeque;
 
 const HISTORY_LEN: usize = 61;
+const HISTORY_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs((HISTORY_LEN - 1) as u64);
+// One-second sampling is dispatched on 250ms UI ticks; allow dispatch and worker jitter.
+const MAX_SAMPLE_GAP: std::time::Duration = std::time::Duration::from_millis(1500);
 const CHART_AXIS_WIDTH: f32 = 64.0;
 
 struct DashboardLayout {
@@ -129,15 +133,8 @@ impl Sampler {
 #[derive(Default)]
 pub(super) struct Model {
     latest: Sample,
-    cpu: VecDeque<Timed<CpuUsageSnapshot>>,
-    memory: VecDeque<Timed<MemoryUsageSnapshot>>,
-    io: VecDeque<Timed<IoUsageSnapshot>>,
-    network: VecDeque<Timed<NetworkUsageSnapshot>>,
+    history: VecDeque<Sample>,
     hovered: [Option<usize>; 4],
-}
-struct Timed<T> {
-    value: T,
-    captured_at: Option<std::time::SystemTime>,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -164,7 +161,6 @@ impl Model {
                     percent: Some(44.0 + wave as f32),
                     used_physical_bytes: Some(7 * 1024 * 1024 * 1024),
                     total_physical_bytes: Some(16 * 1024 * 1024 * 1024),
-                    ..Default::default()
                 },
                 io: IoUsageSnapshot {
                     bytes_per_second: Some(30_000_000.0 + wave * 10_000_000.0),
@@ -181,43 +177,29 @@ impl Model {
         }
     }
     pub(super) fn record(&mut self, sample: Sample) {
+        if let Some(now) = sample.captured_at {
+            if self
+                .latest
+                .captured_at
+                .is_some_and(|previous| now < previous)
+            {
+                self.history.clear();
+            } else if self
+                .history
+                .back()
+                .is_some_and(|previous| previous.captured_at == Some(now))
+            {
+                self.history.pop_back();
+            }
+            self.history.retain(|previous| {
+                previous.captured_at.is_none_or(|captured_at| {
+                    now.duration_since(captured_at)
+                        .is_ok_and(|age| age <= HISTORY_WINDOW)
+                })
+            });
+        }
         self.latest = sample;
-        if sample.cpu.percent.is_some() {
-            push_bounded(
-                &mut self.cpu,
-                Timed {
-                    value: sample.cpu,
-                    captured_at: sample.captured_at,
-                },
-            );
-        }
-        if sample.memory.percent.is_some() {
-            push_bounded(
-                &mut self.memory,
-                Timed {
-                    value: sample.memory,
-                    captured_at: sample.captured_at,
-                },
-            );
-        }
-        if sample.io.bytes_per_second.is_some() {
-            push_bounded(
-                &mut self.io,
-                Timed {
-                    value: sample.io,
-                    captured_at: sample.captured_at,
-                },
-            );
-        }
-        if sample.network.bytes_per_second.is_some() {
-            push_bounded(
-                &mut self.network,
-                Timed {
-                    value: sample.network,
-                    captured_at: sample.captured_at,
-                },
-            );
-        }
+        push_bounded(&mut self.history, sample);
     }
     pub(super) fn hover_chart(&mut self, kind: ChartKind, slot: Option<usize>) {
         self.hovered[kind as usize] = slot;
@@ -250,7 +232,7 @@ impl Model {
                 body = body.push(charts);
             }
             let entries = enabled_features(settings, status, &self.latest);
-            let count = entries.iter().filter(|(_, active, _)| *active).count();
+            let count = entries.len();
             let title = row![
                 super::widgets::heading(
                     t!("home.enabled_features").to_string(),
@@ -284,36 +266,34 @@ impl Model {
                 column![title, master].spacing(design::space::TIGHT).into()
             };
             let mut features = column![];
-            for (page, active, detail) in entries {
-                if active {
-                    features = features.push(
-                        button(
-                            row![
-                                container(iced::widget::Space::new())
-                                    .width(8)
-                                    .height(8)
-                                    .style(|theme: &Theme| container::Style {
-                                        background: Some(theme.palette().success.into()),
-                                        border: iced::border::rounded(4),
-                                        ..Default::default()
-                                    }),
-                                text(page.label())
-                                    .size(design::typography::SECONDARY)
-                                    .width(Fill),
-                                text(detail)
-                                    .size(design::typography::CAPTION)
-                                    .style(text::secondary),
-                            ]
-                            .spacing(design::space::SMALL)
-                            .align_y(iced::Center),
-                        )
-                        .width(Fill)
-                        .padding([6, 4])
-                        .style(super::widgets::quiet)
-                        .on_press(Message::Navigate(page)),
-                    );
-                    features = features.push(iced::widget::rule::horizontal(1));
-                }
+            for (page, detail) in entries {
+                features = features.push(
+                    button(
+                        row![
+                            container(iced::widget::Space::new())
+                                .width(8)
+                                .height(8)
+                                .style(|theme: &Theme| container::Style {
+                                    background: Some(theme.palette().success.into()),
+                                    border: iced::border::rounded(4),
+                                    ..Default::default()
+                                }),
+                            text(page.label())
+                                .size(design::typography::SECONDARY)
+                                .width(Fill),
+                            text(detail)
+                                .size(design::typography::CAPTION)
+                                .style(text::secondary),
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                    )
+                    .width(Fill)
+                    .padding([6, 4])
+                    .style(super::widgets::quiet)
+                    .on_press(Message::Navigate(page)),
+                );
+                features = features.push(iced::widget::rule::horizontal(1));
             }
             let feature_content: Element<'_, Message> = if count == 0 {
                 container(
@@ -514,90 +494,95 @@ impl Model {
         .into()
     }
     fn chart(&self, kind: ChartKind) -> Chart {
-        let samples: Vec<ChartSample> = match kind {
-            ChartKind::Cpu => {
-                let base = self
-                    .latest
-                    .cpu
-                    .base_frequency_mhz
-                    .or_else(|| self.cpu.iter().filter_map(|s| s.value.frequency_mhz).min())
-                    .unwrap_or(0);
-                let peak = self
-                    .cpu
+        let mut timeline: [Option<&Sample>; HISTORY_LEN] = [None; HISTORY_LEN];
+        for (slot, sample) in timeline.iter_mut().rev().zip(self.history.iter().rev()) {
+            *slot = Some(sample);
+        }
+        let (base, peak) = if kind == ChartKind::Cpu {
+            let frequencies = || {
+                timeline
                     .iter()
-                    .filter_map(|s| s.value.frequency_mhz)
-                    .max()
-                    .filter(|peak| *peak > base);
-                self.cpu
-                    .iter()
-                    .map(|sample| {
-                        let s = sample.value;
-                        ChartSample {
-                            captured_at: sample.captured_at,
-                            values: [
-                                s.percent.unwrap_or(0.0) as f64,
-                                normalize_cpu_frequency_percent(s.frequency_mhz, base, peak) as f64,
-                            ],
-                            labels: [
-                                cpu_usage_label(s.percent),
-                                cpu_frequency_label(s.frequency_mhz),
-                            ],
-                        }
-                    })
-                    .collect()
-            }
-            ChartKind::Memory => self
-                .memory
-                .iter()
-                .map(|sample| {
-                    let s = sample.value;
-                    ChartSample {
-                        captured_at: sample.captured_at,
-                        values: [s.percent.unwrap_or(0.0) as f64, 0.0],
-                        labels: [memory_usage_label(s.percent), String::new()],
-                    }
-                })
-                .collect(),
-            ChartKind::Io => self
-                .io
-                .iter()
-                .map(|sample| {
-                    let s = sample.value;
-                    ChartSample {
-                        captured_at: sample.captured_at,
-                        values: [
-                            s.read_bytes_per_second.unwrap_or(0.0),
-                            s.write_bytes_per_second.unwrap_or(0.0),
-                        ],
-                        labels: [
-                            io_usage_label(s.read_bytes_per_second),
-                            io_usage_label(s.write_bytes_per_second),
-                        ],
-                    }
-                })
-                .collect(),
-            ChartKind::Network => self
-                .network
-                .iter()
-                .map(|sample| {
-                    let s = sample.value;
-                    ChartSample {
-                        captured_at: sample.captured_at,
-                        values: [
-                            s.download_bytes_per_second.unwrap_or(0.0),
-                            s.upload_bytes_per_second.unwrap_or(0.0),
-                        ],
-                        labels: [
-                            network_usage_label(s.download_bytes_per_second),
-                            network_usage_label(s.upload_bytes_per_second),
-                        ],
-                    }
-                })
-                .collect(),
+                    .flatten()
+                    .filter(|sample| sample.cpu.percent.is_some())
+                    .filter_map(|sample| sample.cpu.frequency_mhz)
+            };
+            let base = self
+                .latest
+                .cpu
+                .base_frequency_mhz
+                .or_else(|| frequencies().min())
+                .unwrap_or(0);
+            (base, frequencies().max().filter(|peak| *peak > base))
+        } else {
+            (0, None)
         };
+        let samples: [Option<ChartSample>; HISTORY_LEN] = std::array::from_fn(|index| {
+            let sample = timeline[index]?;
+            let seconds_ago = match (self.latest.captured_at, sample.captured_at) {
+                (Some(now), Some(captured_at)) => {
+                    now.duration_since(captured_at).ok()?.as_secs_f64()
+                }
+                _ => (HISTORY_LEN - index - 1) as f64,
+            };
+            let values_and_labels = match kind {
+                ChartKind::Cpu => sample.cpu.percent.map(|percent| {
+                    (
+                        [
+                            percent as f64,
+                            normalize_cpu_frequency_percent(sample.cpu.frequency_mhz, base, peak)
+                                as f64,
+                        ],
+                        [
+                            cpu_usage_label(sample.cpu.percent),
+                            cpu_frequency_label(sample.cpu.frequency_mhz),
+                        ],
+                    )
+                }),
+                ChartKind::Memory => sample.memory.percent.map(|percent| {
+                    (
+                        [percent as f64, 0.0],
+                        [memory_usage_label(sample.memory.percent), String::new()],
+                    )
+                }),
+                ChartKind::Io => sample.io.bytes_per_second.map(|_| {
+                    (
+                        [
+                            sample.io.read_bytes_per_second.unwrap_or(0.0),
+                            sample.io.write_bytes_per_second.unwrap_or(0.0),
+                        ],
+                        [
+                            io_usage_label(sample.io.read_bytes_per_second),
+                            io_usage_label(sample.io.write_bytes_per_second),
+                        ],
+                    )
+                }),
+                ChartKind::Network => sample.network.bytes_per_second.map(|_| {
+                    (
+                        [
+                            sample.network.download_bytes_per_second.unwrap_or(0.0),
+                            sample.network.upload_bytes_per_second.unwrap_or(0.0),
+                        ],
+                        [
+                            network_usage_label(sample.network.download_bytes_per_second),
+                            network_usage_label(sample.network.upload_bytes_per_second),
+                        ],
+                    )
+                }),
+            };
+            Some(ChartSample {
+                captured_at: sample.captured_at,
+                seconds_ago,
+                reading: values_and_labels.map(|(values, labels)| ChartReading { values, labels }),
+            })
+        });
         let maximum = match kind {
             ChartKind::Cpu | ChartKind::Memory => 100.0,
-            _ => samples.iter().flat_map(|s| s.values).fold(1.0, f64::max),
+            _ => samples
+                .iter()
+                .flatten()
+                .filter_map(|sample| sample.reading.as_ref())
+                .flat_map(|reading| reading.values)
+                .fold(1.0, f64::max),
         };
         Chart {
             samples,
@@ -725,12 +710,43 @@ pub(super) enum ChartKind {
 #[derive(Clone, PartialEq)]
 struct ChartSample {
     captured_at: Option<std::time::SystemTime>,
+    seconds_ago: f64,
+    reading: Option<ChartReading>,
+}
+#[derive(Clone, PartialEq)]
+struct ChartReading {
     values: [f64; 2],
     labels: [String; 2],
 }
+impl ChartSample {
+    fn connects_to(&self, next: &Self) -> bool {
+        self.reading.is_some()
+            && next.reading.is_some()
+            && match (self.captured_at, next.captured_at) {
+                (Some(previous), Some(next)) => next
+                    .duration_since(previous)
+                    .is_ok_and(|gap| gap <= MAX_SAMPLE_GAP),
+                _ => (0.0..=MAX_SAMPLE_GAP.as_secs_f64())
+                    .contains(&(self.seconds_ago - next.seconds_ago)),
+            }
+    }
+
+    fn x(&self, width: f32) -> f32 {
+        (1.0 - self.seconds_ago / HISTORY_WINDOW.as_secs_f64()) as f32 * width
+    }
+
+    fn point(&self, series: usize, width: f32, height: f32, maximum: f64) -> Option<Point> {
+        self.reading.as_ref().map(|reading| {
+            Point::new(
+                self.x(width),
+                height * (1.0 - (reading.values[series] / maximum).clamp(0.0, 1.0) as f32),
+            )
+        })
+    }
+}
 #[derive(Clone, PartialEq)]
 struct Chart {
-    samples: Vec<ChartSample>,
+    samples: [Option<ChartSample>; HISTORY_LEN],
     maximum: f64,
     kind: ChartKind,
 }
@@ -750,12 +766,30 @@ fn chart_colors(theme: &Theme) -> [iced::Color; 2] {
 impl Chart {
     fn sample_at(&self, slot: usize) -> Option<&ChartSample> {
         self.samples
-            .get(slot.checked_sub(HISTORY_LEN - self.samples.len())?)
+            .get(slot)
+            .and_then(Option::as_ref)
+            .filter(|sample| sample.reading.is_some())
+    }
+
+    fn sample_near(&self, seconds_ago: f64) -> Option<usize> {
+        self.samples
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, sample)| {
+                let sample = sample.as_ref()?;
+                Some((slot, sample, (sample.seconds_ago - seconds_ago).abs()))
+            })
+            .min_by(|left, right| left.2.total_cmp(&right.2))
+            .filter(|(_, sample, distance)| {
+                sample.reading.is_some() && *distance <= MAX_SAMPLE_GAP.as_secs_f64() / 2.0
+            })
+            .map(|(slot, _, _)| slot)
     }
 
     fn tooltip_content(&self, slot: Option<usize>) -> Option<Element<'static, Message>> {
         let slot = slot?;
         let sample = self.sample_at(slot)?;
+        let reading = sample.reading.as_ref()?;
         let time = sample
             .captured_at
             .map(|time| {
@@ -764,7 +798,11 @@ impl Chart {
                     .to_string()
             })
             .unwrap_or_else(|| {
-                t!("common.seconds_ago", count = HISTORY_LEN - slot - 1).to_string()
+                t!(
+                    "common.seconds_ago",
+                    count = sample.seconds_ago.round() as u64
+                )
+                .to_string()
             });
         let names = match self.kind {
             ChartKind::Cpu => [t!("home.by_cpu_load"), t!("home.cpu_frequency")],
@@ -788,7 +826,7 @@ impl Chart {
                                 border: iced::border::rounded(3),
                                 ..Default::default()
                             }),
-                        text(format!("{name}: {}", sample.labels[series]))
+                        text(format!("{name}: {}", reading.labels[series]))
                             .size(design::typography::SECONDARY),
                     ]
                     .spacing(design::space::SMALL)
@@ -828,12 +866,12 @@ impl canvas::Program<Message> for Chart {
                     point.y <= (bounds.height - 28.0).max(0.0)
                         && point.x <= (bounds.width - CHART_AXIS_WIDTH).max(1.0)
                 })
-                .map(|point| {
-                    ((point.x / (bounds.width - CHART_AXIS_WIDTH).max(1.0)).clamp(0.0, 1.0)
-                        * (HISTORY_LEN - 1) as f32)
-                        .round() as usize
+                .and_then(|point| {
+                    self.sample_near(
+                        (1.0 - (point.x / (bounds.width - CHART_AXIS_WIDTH).max(1.0)) as f64)
+                            * HISTORY_WINDOW.as_secs_f64(),
+                    )
                 })
-                .filter(|slot| *slot >= HISTORY_LEN - self.samples.len())
         };
         if *hovered == next {
             return None;
@@ -929,46 +967,55 @@ impl Chart {
         }
         let series_count = if self.kind == ChartKind::Memory { 1 } else { 2 };
         for series in 0..series_count {
-            let area = canvas::Path::new(|path| {
-                let start = (HISTORY_LEN - self.samples.len()).min(HISTORY_LEN - 1);
-                path.move_to(Point::new(
-                    start as f32 / (HISTORY_LEN - 1) as f32 * width,
-                    height,
-                ));
-                for (index, sample) in self.samples.iter().enumerate() {
-                    let slot = HISTORY_LEN - self.samples.len() + index;
-                    let x = slot as f32 / (HISTORY_LEN - 1) as f32 * width;
-                    let y = height
-                        * (1.0 - (sample.values[series] / self.maximum).clamp(0.0, 1.0) as f32);
-                    path.line_to(Point::new(x, y));
-                }
-                path.line_to(Point::new(width, height));
-                path.close();
-            });
-            frame.fill(&area, chart_colors(theme)[series].scale_alpha(0.08));
-            let path = canvas::Path::new(|path| {
-                for (index, sample) in self.samples.iter().enumerate() {
-                    let slot = HISTORY_LEN - self.samples.len() + index;
-                    let x = slot as f32 / (HISTORY_LEN - 1) as f32 * width;
-                    let value = sample.values[series];
-                    let y = height * (1.0 - (value / self.maximum).clamp(0.0, 1.0) as f32);
-                    if index == 0 {
-                        path.move_to(Point::new(x, y));
-                    } else {
-                        path.line_to(Point::new(x, y));
+            for run in self
+                .samples
+                .chunk_by(|previous, next| match (previous, next) {
+                    (Some(previous), Some(next)) => previous.connects_to(next),
+                    _ => false,
+                })
+            {
+                let points = || {
+                    run.iter()
+                        .flatten()
+                        .filter_map(|sample| sample.point(series, width, height, self.maximum))
+                };
+                let mut line = points();
+                let Some(first) = line.next() else {
+                    continue;
+                };
+                let Some(last) = line.next_back() else {
+                    frame.fill(
+                        &canvas::Path::circle(first, 2.0),
+                        chart_colors(theme)[series],
+                    );
+                    continue;
+                };
+                let area = canvas::Path::new(|path| {
+                    path.move_to(Point::new(first.x, height));
+                    for point in points() {
+                        path.line_to(point);
                     }
-                }
-            });
-            frame.stroke(
-                &path,
-                canvas::Stroke::default()
-                    .with_width(1.8)
-                    .with_color(chart_colors(theme)[series]),
-            );
+                    path.line_to(Point::new(last.x, height));
+                    path.close();
+                });
+                frame.fill(&area, chart_colors(theme)[series].scale_alpha(0.08));
+                let path = canvas::Path::new(|path| {
+                    path.move_to(first);
+                    for point in points().skip(1) {
+                        path.line_to(point);
+                    }
+                });
+                frame.stroke(
+                    &path,
+                    canvas::Stroke::default()
+                        .with_width(1.8)
+                        .with_color(chart_colors(theme)[series]),
+                );
+            }
         }
         if let Some(slot) = hovered {
             if let Some(sample) = self.sample_at(slot) {
-                let x = slot as f32 / (HISTORY_LEN - 1) as f32 * width;
+                let x = sample.x(width);
                 frame.stroke(
                     &canvas::Path::line(Point::new(x, 0.0), Point::new(x, height)),
                     canvas::Stroke {
@@ -980,9 +1027,10 @@ impl Chart {
                     },
                 );
                 for series in 0..series_count {
-                    let y = height
-                        * (1.0 - (sample.values[series] / self.maximum).clamp(0.0, 1.0) as f32);
-                    let marker = canvas::Path::circle(Point::new(x, y), 4.0);
+                    let Some(point) = sample.point(series, width, height, self.maximum) else {
+                        continue;
+                    };
+                    let marker = canvas::Path::circle(point, 4.0);
                     frame.fill(&marker, chart_colors(theme)[series]);
                     frame.stroke(
                         &marker,
@@ -1159,197 +1207,196 @@ fn enabled_features(
     settings: &Settings,
     status: &RuntimeFeatureStatus,
     sample: &Sample,
-) -> Vec<(Page, bool, String)> {
-    vec![
-        (
-            Page::ByForeground,
-            settings.by_foreground.enabled,
-            t!(
-                "common.rule_count",
-                count = settings.by_foreground.rules.len()
-            )
-            .to_string(),
-        ),
-        (
-            Page::ByRunningApp,
-            settings.by_running_app.enabled,
-            status
-                .by_running_app
-                .active_process
-                .clone()
-                .unwrap_or_else(|| {
-                    t!(
-                        "common.rule_count",
-                        count = settings.by_running_app.rules.len()
-                    )
-                    .to_string()
-                }),
-        ),
-        (
-            Page::ByCpuLoad,
-            settings.by_cpu_load.enabled,
-            cpu_usage_label(sample.cpu.percent),
-        ),
-        (
-            Page::ByActivity,
-            settings.by_activity.enabled,
-            activity_label(settings, sample),
-        ),
-        (
-            Page::ByTime,
-            settings.by_time.enabled,
-            crate::features::power_plan_control::by_time::next_switch_label(&settings.by_time),
-        ),
-        (
-            Page::CpuLimiter,
-            settings.cpu_limiter.enabled,
-            t!(
-                "home.limited_count",
-                count = status.cpu_limiter.limited_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::CpuSetsSoft,
-            settings.cpu_sets_soft.enabled,
-            t!(
-                "home.adjusted_count",
-                count = status.cpu_sets_soft.adjusted_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::ProcessorAffinityHard,
-            settings.processor_affinity_hard.enabled,
-            t!(
-                "home.adjusted_count",
-                count = status.processor_affinity_hard.adjusted_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::BackgroundEfficiency,
-            settings.background_efficiency.enabled,
-            t!(
-                "home.throttled_count",
-                count = status.background_efficiency.throttled_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::AppSuspension,
-            settings.app_suspension.enabled,
-            t!(
-                "home.suspended_count",
-                count = status.app_suspension.suspended_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::AdaptiveEngine,
-            settings.adaptive_engine.enabled,
-            if status
-                .adaptive_engine_process
-                .focus_and_launch_profile_active
-            {
-                t!("home.focus_and_launch_profile").to_string()
-            } else if !settings
-                .adaptive_engine_process
-                .cpu_pressure_restraint_enabled
-                && !settings
-                    .adaptive_engine_process
-                    .limit_background_processors_enabled
-                && !settings
-                    .adaptive_engine_process
-                    .dynamic_resource_zones_enabled
-            {
-                t!("common.enabled").to_string()
-            } else {
+) -> Vec<(Page, String)> {
+    let mut entries = Vec::new();
+    macro_rules! feature {
+        ($page:ident, $field:ident, $detail:expr) => {
+            if settings.$field.enabled {
+                entries.push((Page::$page, $detail));
+            }
+        };
+    }
+    feature!(
+        ByForeground,
+        by_foreground,
+        t!(
+            "common.rule_count",
+            count = settings.by_foreground.rules.len()
+        )
+        .to_string()
+    );
+    feature!(
+        ByRunningApp,
+        by_running_app,
+        status
+            .by_running_app
+            .active_process
+            .clone()
+            .unwrap_or_else(|| {
                 t!(
-                    "home.adjusted_count",
-                    count = status.adaptive_engine_process.adjusted_processes
+                    "common.rule_count",
+                    count = settings.by_running_app.rules.len()
                 )
                 .to_string()
-            },
-        ),
-        (
-            Page::ProcessPriority,
-            settings.process_priority.enabled,
+            })
+    );
+    feature!(ByCpuLoad, by_cpu_load, cpu_usage_label(sample.cpu.percent));
+    feature!(ByActivity, by_activity, activity_label(settings, sample));
+    feature!(
+        ByTime,
+        by_time,
+        crate::features::power_plan_control::by_time::next_switch_label(&settings.by_time)
+    );
+    feature!(
+        CpuLimiter,
+        cpu_limiter,
+        t!(
+            "home.limited_count",
+            count = status.cpu_limiter.limited_processes
+        )
+        .to_string()
+    );
+    feature!(
+        CpuSetsSoft,
+        cpu_sets_soft,
+        t!(
+            "home.adjusted_count",
+            count = status.cpu_sets_soft.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        ProcessorAffinityHard,
+        processor_affinity_hard,
+        t!(
+            "home.adjusted_count",
+            count = status.processor_affinity_hard.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        BackgroundEfficiency,
+        background_efficiency,
+        t!(
+            "home.throttled_count",
+            count = status.background_efficiency.throttled_processes
+        )
+        .to_string()
+    );
+    feature!(
+        AppSuspension,
+        app_suspension,
+        t!(
+            "home.suspended_count",
+            count = status.app_suspension.suspended_processes
+        )
+        .to_string()
+    );
+    feature!(
+        AdaptiveEngine,
+        adaptive_engine,
+        if status
+            .adaptive_engine_process
+            .focus_and_launch_profile_active
+        {
+            t!("home.focus_and_launch_profile").to_string()
+        } else if !settings
+            .adaptive_engine_process
+            .cpu_pressure_restraint_enabled
+            && !settings
+                .adaptive_engine_process
+                .limit_background_processors_enabled
+            && !settings
+                .adaptive_engine_process
+                .dynamic_resource_zones_enabled
+        {
+            t!("common.enabled").to_string()
+        } else {
             t!(
                 "home.adjusted_count",
-                count = status.process_priority.adjusted_processes
+                count = status.adaptive_engine_process.adjusted_processes
             )
-            .to_string(),
-        ),
-        (
-            Page::ThreadPriority,
-            settings.thread_priority.enabled,
-            t!(
-                "home.adjusted_count",
-                count = status.thread_priority.adjusted_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::DynamicPriorityBoost,
-            settings.dynamic_priority_boost.enabled,
-            t!(
-                "home.adjusted_count",
-                count = status.dynamic_priority_boost.adjusted_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::IoPriority,
-            settings.io_priority.enabled,
-            t!(
-                "home.adjusted_count",
-                count = status.io_priority.adjusted_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::GpuPriority,
-            settings.gpu_priority.enabled,
-            t!(
-                "home.adjusted_count",
-                count = status.gpu_priority.adjusted_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::MemoryPriority,
-            settings.memory_priority.enabled,
-            t!(
-                "home.adjusted_count",
-                count = status.memory_priority.adjusted_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::Watchdog,
-            settings.watchdog.enabled,
-            t!("common.rule_count", count = settings.watchdog.rules.len()).to_string(),
-        ),
-        (
-            Page::MemoryTrim,
-            settings.memory_trim.enabled,
-            t!(
-                "home.trimmed_count",
-                count = status.memory_trim.trimmed_processes
-            )
-            .to_string(),
-        ),
-        (
-            Page::TimerResolution,
-            settings.timer_resolution.enabled,
-            t!(
-                "common.rule_count",
-                count = settings.timer_resolution.rules.len()
-            )
-            .to_string(),
-        ),
-    ]
+            .to_string()
+        }
+    );
+    feature!(
+        ProcessPriority,
+        process_priority,
+        t!(
+            "home.adjusted_count",
+            count = status.process_priority.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        ThreadPriority,
+        thread_priority,
+        t!(
+            "home.adjusted_count",
+            count = status.thread_priority.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        DynamicPriorityBoost,
+        dynamic_priority_boost,
+        t!(
+            "home.adjusted_count",
+            count = status.dynamic_priority_boost.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        IoPriority,
+        io_priority,
+        t!(
+            "home.adjusted_count",
+            count = status.io_priority.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        GpuPriority,
+        gpu_priority,
+        t!(
+            "home.adjusted_count",
+            count = status.gpu_priority.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        MemoryPriority,
+        memory_priority,
+        t!(
+            "home.adjusted_count",
+            count = status.memory_priority.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        Watchdog,
+        watchdog,
+        t!("common.rule_count", count = settings.watchdog.rules.len()).to_string()
+    );
+    feature!(
+        MemoryTrim,
+        memory_trim,
+        t!(
+            "home.trimmed_count",
+            count = status.memory_trim.trimmed_processes
+        )
+        .to_string()
+    );
+    feature!(
+        TimerResolution,
+        timer_resolution,
+        t!(
+            "common.rule_count",
+            count = settings.timer_resolution.rules.len()
+        )
+        .to_string()
+    );
+    entries
 }
 fn activity_label(settings: &Settings, sample: &Sample) -> String {
     let idle = match (
@@ -1377,6 +1424,93 @@ fn activity_label(settings: &Settings, sample: &Sample) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabled_features_keep_order_details_and_independent_toggles() {
+        use crate::ui::navigation::feature_toggle;
+
+        let pages = [
+            Page::ByForeground,
+            Page::ByRunningApp,
+            Page::ByCpuLoad,
+            Page::ByActivity,
+            Page::ByTime,
+            Page::CpuLimiter,
+            Page::CpuSetsSoft,
+            Page::ProcessorAffinityHard,
+            Page::BackgroundEfficiency,
+            Page::AppSuspension,
+            Page::AdaptiveEngine,
+            Page::ProcessPriority,
+            Page::ThreadPriority,
+            Page::DynamicPriorityBoost,
+            Page::IoPriority,
+            Page::GpuPriority,
+            Page::MemoryPriority,
+            Page::Watchdog,
+            Page::MemoryTrim,
+            Page::TimerResolution,
+        ];
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.advanced.show_advanced_controls = true;
+        settings.by_time.rules.clear();
+        for page in pages {
+            *feature_toggle(page).unwrap()(&mut settings) = true;
+        }
+        let mut status = RuntimeFeatureStatus::default();
+        status.by_running_app.active_process = Some("example.exe".into());
+        status.cpu_sets_soft.adjusted_processes = 7;
+        status.app_suspension.suspended_processes = 3;
+        let sample = Sample {
+            cpu: CpuUsageSnapshot {
+                percent: Some(42.5),
+                ..Default::default()
+            },
+            input_idle: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        };
+        let visible = |settings: &Settings| enabled_features(settings, &status, &sample);
+        let expected = visible(&settings);
+        assert_eq!(
+            expected.iter().map(|(page, _)| *page).collect::<Vec<_>>(),
+            pages
+        );
+        for entry in [
+            (Page::ByRunningApp, "example.exe".into()),
+            (Page::ByCpuLoad, "42.5%".into()),
+            (
+                Page::CpuSetsSoft,
+                t!("home.adjusted_count", count = 7).to_string(),
+            ),
+            (
+                Page::AppSuspension,
+                t!("home.suspended_count", count = 3).to_string(),
+            ),
+        ] {
+            assert!(expected.contains(&entry));
+        }
+        settings.general.enabled = false;
+        settings.advanced.show_advanced_controls = false;
+        assert_eq!(visible(&settings), expected);
+        for page in pages {
+            *feature_toggle(page).unwrap()(&mut settings) = false;
+            assert_eq!(
+                visible(&settings),
+                expected
+                    .iter()
+                    .filter(|(listed, _)| *listed != page)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            );
+            *feature_toggle(page).unwrap()(&mut settings) = true;
+        }
+        for page in pages {
+            *feature_toggle(page).unwrap()(&mut settings) = false;
+        }
+        assert!(visible(&settings).is_empty());
+    }
+
     #[test]
     fn recent_log_tooltip_tracks_truncation_and_preserves_navigation() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
@@ -1460,7 +1594,6 @@ mod tests {
                     percent: Some(84.0),
                     used_physical_bytes: Some(13_200_000_000),
                     total_physical_bytes: Some(15_600_000_000),
-                    ..Default::default()
                 },
                 io: IoUsageSnapshot {
                     bytes_per_second: Some(45_700_000.0),
@@ -1489,14 +1622,13 @@ mod tests {
                     .find_map(|child| plot_bounds(child, origin, height))
             }
         }
-        std::fs::create_dir_all("target/ui-preview").unwrap();
-        for (kind, light, height, fraction, name) in [
-            (ChartKind::Cpu, true, 244.0, 0.55, "light"),
-            (ChartKind::Cpu, false, 244.0, 0.55, "dark"),
-            (ChartKind::Cpu, false, 200.0, 0.98, "edge"),
-            (ChartKind::Memory, false, 244.0, 0.55, "memory"),
-            (ChartKind::Io, false, 244.0, 0.55, "disk"),
-            (ChartKind::Network, false, 244.0, 0.55, "network"),
+        for (kind, light, height, fraction) in [
+            (ChartKind::Cpu, true, 244.0, 0.55),
+            (ChartKind::Cpu, false, 244.0, 0.55),
+            (ChartKind::Cpu, false, 200.0, 0.98),
+            (ChartKind::Memory, false, 244.0, 0.55),
+            (ChartKind::Io, false, 244.0, 0.55),
+            (ChartKind::Network, false, 244.0, 0.55),
         ] {
             let theme = Theme::custom_with_fn(
                 "preview",
@@ -1575,30 +1707,6 @@ mod tests {
                     overlay.draw(renderer, &theme, &style, Layout::new(&tip), cursor);
                 });
             }
-            let mut pixels = tiny_skia::Pixmap::new(640, 280).unwrap();
-            let mut mask = tiny_skia::Mask::new(640, 280).unwrap();
-            renderer.draw(
-                &mut pixels.as_mut(),
-                &mut mask,
-                &iced::advanced::graphics::Viewport::with_physical_size(
-                    iced::Size::new(640, 280),
-                    1.0,
-                ),
-                &[viewport],
-                theme.palette().background,
-            );
-            // The software renderer writes BGRA pixels for the window surface.
-            for pixel in pixels.data_mut().as_chunks_mut::<4>().0 {
-                pixel.swap(0, 2);
-            }
-            image::save_buffer(
-                format!("target/ui-preview/chart-tooltip-{name}.png"),
-                pixels.data(),
-                640,
-                280,
-                image::ColorType::Rgba8,
-            )
-            .unwrap();
             view.as_widget_mut().update(
                 &mut tree,
                 &iced::Event::Mouse(mouse::Event::CursorLeft),
@@ -1627,19 +1735,32 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_timestamps_follow_available_channel_samples() {
+    fn chart_timestamps_preserve_missing_intervals_and_expire_paused_history() {
         let mut model = Model::default();
-        let captured_at =
-            Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_770_000_000));
-        model.record(Sample {
-            captured_at,
+        let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_770_000_000);
+        let at = |seconds| Some(start + std::time::Duration::from_secs(seconds));
+        let first = Sample {
+            captured_at: at(0),
             cpu: CpuUsageSnapshot {
                 percent: Some(32.5),
-                ..Default::default()
+                frequency_mhz: Some(9000),
+                base_frequency_mhz: Some(2000),
+            },
+            io: IoUsageSnapshot {
+                bytes_per_second: Some(1_000_000.0),
+                read_bytes_per_second: Some(900_000.0),
+                write_bytes_per_second: Some(100_000.0),
+            },
+            network: NetworkUsageSnapshot {
+                bytes_per_second: Some(1_000_000.0),
+                download_bytes_per_second: Some(900_000.0),
+                upload_bytes_per_second: Some(100_000.0),
             },
             ..Default::default()
-        });
+        };
+        model.record(first);
         model.record(Sample {
+            captured_at: at(2),
             memory: MemoryUsageSnapshot {
                 percent: Some(44.0),
                 ..Default::default()
@@ -1648,13 +1769,370 @@ mod tests {
         });
         let chart = model.chart(ChartKind::Cpu);
         assert_eq!(
-            chart.sample_at(HISTORY_LEN - 1).unwrap().captured_at,
-            captured_at
+            chart
+                .sample_at(HISTORY_LEN - 2)
+                .map(|sample| sample.captured_at),
+            Some(at(0)),
+            "the CPU observation must stay two seconds old when that channel is unavailable"
         );
-        assert_eq!(chart.sample_at(HISTORY_LEN - 1).unwrap().labels[0], "32.5%");
-        assert!(chart.sample_at(HISTORY_LEN - 2).is_none());
-        assert!(chart.tooltip_content(Some(HISTORY_LEN - 2)).is_none());
+        assert_eq!(
+            chart
+                .sample_at(HISTORY_LEN - 2)
+                .unwrap()
+                .reading
+                .as_ref()
+                .unwrap()
+                .labels[0],
+            "32.5%"
+        );
+        assert_eq!(chart.sample_at(HISTORY_LEN - 2).unwrap().seconds_ago, 2.0);
+        assert!(chart.sample_at(HISTORY_LEN - 1).is_none());
+        assert!(chart.sample_at(HISTORY_LEN - 3).is_none());
+        assert!(chart.tooltip_content(Some(HISTORY_LEN - 3)).is_none());
+        assert_eq!(
+            model
+                .chart(ChartKind::Memory)
+                .sample_at(HISTORY_LEN - 1)
+                .unwrap()
+                .captured_at,
+            at(2)
+        );
+        for kind in [ChartKind::Io, ChartKind::Network] {
+            assert_eq!(
+                model
+                    .chart(kind)
+                    .sample_at(HISTORY_LEN - 2)
+                    .unwrap()
+                    .captured_at,
+                at(0)
+            );
+            assert!(model.chart(kind).sample_at(HISTORY_LEN - 1).is_none());
+        }
+
+        model.record(Sample {
+            captured_at: at(600),
+            ..Default::default()
+        });
+        for kind in [
+            ChartKind::Cpu,
+            ChartKind::Memory,
+            ChartKind::Io,
+            ChartKind::Network,
+        ] {
+            assert!(
+                (0..HISTORY_LEN).all(|slot| model.chart(kind).sample_at(slot).is_none()),
+                "a long pause must expire every channel even without a fresh valid value"
+            );
+        }
+        model.record(Sample {
+            captured_at: at(601),
+            cpu: CpuUsageSnapshot {
+                frequency_mhz: Some(3000),
+                ..first.cpu
+            },
+            io: IoUsageSnapshot {
+                bytes_per_second: Some(30.0),
+                read_bytes_per_second: Some(20.0),
+                write_bytes_per_second: Some(10.0),
+            },
+            network: NetworkUsageSnapshot {
+                bytes_per_second: Some(150.0),
+                download_bytes_per_second: Some(100.0),
+                upload_bytes_per_second: Some(50.0),
+            },
+            ..first
+        });
+        assert_eq!(
+            model
+                .chart(ChartKind::Cpu)
+                .sample_at(HISTORY_LEN - 1)
+                .unwrap()
+                .reading
+                .as_ref()
+                .unwrap()
+                .values[1],
+            100.0
+        );
+        assert_eq!(model.chart(ChartKind::Io).maximum, 20.0);
+        assert_eq!(model.chart(ChartKind::Network).maximum, 100.0);
+        model.record(Sample {
+            captured_at: at(661),
+            ..Default::default()
+        });
+        assert_eq!(
+            model
+                .chart(ChartKind::Cpu)
+                .sample_at(HISTORY_LEN - 2)
+                .unwrap()
+                .captured_at,
+            at(601)
+        );
+        assert_eq!(
+            model
+                .chart(ChartKind::Cpu)
+                .sample_at(HISTORY_LEN - 2)
+                .unwrap()
+                .x(60.0),
+            0.0,
+            "an observation exactly 60 seconds old remains at the left edge"
+        );
+        model.record(Sample {
+            captured_at: Some(start + std::time::Duration::from_millis(661_001)),
+            ..Default::default()
+        });
+        assert!(model
+            .chart(ChartKind::Cpu)
+            .samples
+            .iter()
+            .flatten()
+            .all(|sample| sample.reading.is_none()));
+
+        model.record(Sample {
+            captured_at: at(663),
+            cpu: CpuUsageSnapshot {
+                frequency_mhz: Some(3000),
+                ..first.cpu
+            },
+            ..first
+        });
+        model.record(Sample {
+            captured_at: at(665),
+            ..first
+        });
+        model.record(Sample {
+            captured_at: Some(start + std::time::Duration::from_millis(665_200)),
+            cpu: CpuUsageSnapshot {
+                frequency_mhz: Some(60_000),
+                ..first.cpu
+            },
+            ..Default::default()
+        });
+        let chart = model.chart(ChartKind::Cpu);
+        assert_eq!(
+            chart
+                .samples
+                .iter()
+                .flatten()
+                .filter(|sample| sample.reading.is_some())
+                .count(),
+            3
+        );
+        assert_eq!(
+            chart.sample_at(HISTORY_LEN - 2).unwrap().captured_at,
+            at(665),
+            "distinct subsecond observations must not overwrite each other"
+        );
+        let count = model.history.len();
+        model.record(Sample {
+            captured_at: Some(start + std::time::Duration::from_millis(665_200)),
+            cpu: CpuUsageSnapshot {
+                base_frequency_mhz: Some(2000),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert_eq!(model.history.len(), count);
+        assert!(
+            model
+                .chart(ChartKind::Cpu)
+                .sample_at(HISTORY_LEN - 1)
+                .is_none(),
+            "a newer unavailable reading must replace an observation at the exact same timestamp"
+        );
+        assert_eq!(
+            model
+                .chart(ChartKind::Cpu)
+                .sample_at(HISTORY_LEN - 2)
+                .unwrap()
+                .reading
+                .as_ref()
+                .unwrap()
+                .values[1],
+            100.0,
+            "an overwritten exact-timestamp frequency must not set the visible chart scale"
+        );
+        model.record(Sample {
+            captured_at: at(664),
+            ..first
+        });
+        assert_eq!(
+            model.history.len(),
+            1,
+            "backward clock changes reset the history"
+        );
+        assert_eq!(
+            model
+                .chart(ChartKind::Cpu)
+                .sample_at(HISTORY_LEN - 1)
+                .unwrap()
+                .captured_at,
+            at(664)
+        );
     }
+    #[test]
+    fn chart_jitter_preserves_real_timestamps_without_false_gaps() {
+        use canvas::Program;
+        use iced::advanced::{graphics::geometry::Renderer as _, renderer::Renderer as _};
+
+        let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_770_000_000);
+        let valid = Sample {
+            cpu: CpuUsageSnapshot {
+                percent: Some(30.0),
+                frequency_mhz: Some(3000),
+                base_frequency_mhz: Some(2000),
+            },
+            memory: MemoryUsageSnapshot {
+                percent: Some(75.0),
+                ..Default::default()
+            },
+            io: IoUsageSnapshot {
+                bytes_per_second: Some(30.0),
+                read_bytes_per_second: Some(20.0),
+                write_bytes_per_second: Some(10.0),
+            },
+            network: NetworkUsageSnapshot {
+                bytes_per_second: Some(150.0),
+                download_bytes_per_second: Some(100.0),
+                upload_bytes_per_second: Some(50.0),
+            },
+            ..Default::default()
+        };
+        let at = |millis| Sample {
+            captured_at: Some(start + std::time::Duration::from_millis(millis)),
+            ..valid
+        };
+        let render = |chart: Chart| {
+            let mut renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+            let bounds = Rectangle::with_size(iced::Size::new(664.0, 128.0));
+            let viewport = iced::advanced::graphics::Viewport::with_physical_size(
+                iced::Size::new(664, 128),
+                1.0,
+            );
+            renderer.reset(bounds);
+            for geometry in chart.draw(
+                &ChartState::default(),
+                &renderer,
+                &Theme::Dark,
+                bounds,
+                mouse::Cursor::Unavailable,
+            ) {
+                renderer.draw_geometry(geometry);
+            }
+            let mut pixels = tiny_skia::Pixmap::new(664, 128).unwrap();
+            let mut mask = tiny_skia::Mask::new(664, 128).unwrap();
+            renderer.draw(
+                &mut pixels.as_mut(),
+                &mut mask,
+                &viewport,
+                &[bounds],
+                iced::Color::BLACK,
+            );
+            pixels
+        };
+        let blank = render(Model::default().chart(ChartKind::Memory));
+        for cadence in [&[1200][..], &[1250][..], &[1000, 1400][..]] {
+            let mut model = Model::default();
+            let mut millis = 0;
+            let mut count = 0;
+            while millis <= 60_000 {
+                model.record(at(millis));
+                millis += cadence[count % cadence.len()];
+                count += 1;
+            }
+            for kind in [
+                ChartKind::Cpu,
+                ChartKind::Memory,
+                ChartKind::Io,
+                ChartKind::Network,
+            ] {
+                let chart = model.chart(kind);
+                assert_eq!(chart.samples.iter().flatten().count(), count);
+                for sample in chart.samples.iter().flatten() {
+                    let index = chart.sample_near(sample.seconds_ago).unwrap();
+                    assert_eq!(
+                        chart.sample_at(index).unwrap().captured_at,
+                        sample.captured_at
+                    );
+                }
+            }
+            let chart = model.chart(ChartKind::Memory);
+            let left = chart
+                .samples
+                .iter()
+                .flatten()
+                .next()
+                .unwrap()
+                .x(600.0)
+                .ceil() as u32;
+            let pixels = render(chart);
+            for x in left + 3..598 {
+                if (3..148).contains(&(x % 150)) {
+                    for y in [25, 75] {
+                        assert_ne!(
+                            pixels.pixel(x, y), blank.pixel(x, y),
+                            "ordinary {cadence:?}ms sampling left a false stroke/fill gap at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+
+        let mut model = Model::default();
+        for millis in [0, 1250, 2500, 7500, 8750, 10_000] {
+            model.record(at(millis));
+        }
+        let chart = model.chart(ChartKind::Memory);
+        assert_eq!(chart.sample_at(HISTORY_LEN - 2).unwrap().x(600.0), 587.5);
+        assert_eq!(chart.sample_near(1.25), Some(HISTORY_LEN - 2));
+        assert_eq!(chart.sample_near(5.0), None);
+        let pixels = render(chart);
+        for y in [25, 75] {
+            assert_eq!(
+                pixels.pixel(550, y),
+                blank.pixel(550, y),
+                "a real five-second pause must stay blank"
+            );
+        }
+
+        let mut model = Model::default();
+        model.record(at(0));
+        model.record(Sample {
+            memory: MemoryUsageSnapshot::default(),
+            ..at(600)
+        });
+        model.record(at(1200));
+        let chart = model.chart(ChartKind::Memory);
+        assert_eq!(
+            chart.sample_near(0.6),
+            None,
+            "an unavailable reading must not borrow a nearby valid tooltip"
+        );
+        assert_eq!(chart.sample_near(0.0), Some(HISTORY_LEN - 1));
+        let pixels = render(chart);
+        for y in [25, 75] {
+            assert_eq!(
+                pixels.pixel(594, y),
+                blank.pixel(594, y),
+                "explicit unavailability must break stroke and fill"
+            );
+        }
+
+        for (millis, connected) in [(1500, true), (1501, false)] {
+            let mut model = Model::default();
+            model.record(at(0));
+            model.record(at(millis));
+            model.record(at(2700));
+            let pixels = render(model.chart(ChartKind::Memory));
+            for y in [25, 75] {
+                assert_eq!(
+                    pixels.pixel(580, y) != blank.pixel(580, y),
+                    connected,
+                    "continuity boundary at {millis}ms"
+                );
+            }
+        }
+    }
+
     #[test]
     fn dashboard_fits_short_and_tall_workspaces_without_shrinking_text() {
         for (width, height, columns) in [
@@ -1702,7 +2180,12 @@ mod tests {
             ..Default::default()
         });
         let chart = model.chart(ChartKind::Network);
-        let sample = chart.sample_at(HISTORY_LEN - 1).unwrap();
+        let sample = chart
+            .sample_at(HISTORY_LEN - 1)
+            .unwrap()
+            .reading
+            .as_ref()
+            .unwrap();
         assert_eq!(chart.maximum, 1_000_000.0);
         assert_eq!(sample.values, [1_000_000.0, 500_000.0]);
         assert_eq!(sample.labels, ["1.0 MB/s", "500.0 KB/s"]);
@@ -1745,17 +2228,32 @@ mod tests {
             iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(320, 110), 1.0);
         let mut mask = tiny_skia::Mask::new(320, 110).unwrap();
         let mut images = Vec::new();
-        for count in [0, 2] {
+        let point = |slot, value| {
+            Some(ChartSample {
+                captured_at: None,
+                seconds_ago: (HISTORY_LEN - slot - 1) as f64,
+                reading: Some(ChartReading {
+                    values: [value, 0.0],
+                    labels: [String::new(), String::new()],
+                }),
+            })
+        };
+        let empty = std::array::from_fn(|_| None);
+        let zeros = std::array::from_fn(|slot| {
+            if slot >= HISTORY_LEN - 2 {
+                point(slot, 0.0)
+            } else {
+                None
+            }
+        });
+        let mut gaps = std::array::from_fn(|_| None);
+        gaps[15] = point(15, 0.0);
+        gaps[45] = point(45, 75.0);
+        for samples in [empty, zeros, gaps] {
             let chart = Chart {
                 kind: ChartKind::Memory,
                 maximum: 100.0,
-                samples: (0..count)
-                    .map(|_| ChartSample {
-                        captured_at: None,
-                        values: [0.0; 2],
-                        labels: [String::new(), String::new()],
-                    })
-                    .collect(),
+                samples,
             };
             renderer.reset(bounds);
             for geometry in chart.draw(
@@ -1787,6 +2285,20 @@ mod tests {
             images[1].pixel(254, 81),
             "Actual zero samples must draw a line"
         );
+        for (x, y) in [(128, 51), (128, 65)] {
+            assert_eq!(
+                images[0].pixel(x, y),
+                images[2].pixel(x, y),
+                "Missing intervals must not acquire a connecting stroke or area fill"
+            );
+        }
+        for (x, y) in [(64, 81), (192, 20)] {
+            assert_ne!(
+                images[0].pixel(x, y),
+                images[2].pixel(x, y),
+                "Isolated real observations, including zero, must remain visible"
+            );
+        }
         assert_eq!(
             memory_usage_value_label(MemoryUsageSnapshot {
                 used_physical_bytes: Some(7 * 1024 * 1024 * 1024),
@@ -1845,13 +2357,16 @@ mod tests {
         {
             state.hovered = hovered;
             let chart = Chart {
-                samples: (0..HISTORY_LEN)
-                    .map(|_| ChartSample {
+                samples: std::array::from_fn(|slot| {
+                    Some(ChartSample {
                         captured_at: None,
-                        values: [value, 18.0],
-                        labels: ["RAM".into(), "Cache".into()],
+                        seconds_ago: (HISTORY_LEN - slot - 1) as f64,
+                        reading: Some(ChartReading {
+                            values: [value, 18.0],
+                            labels: ["RAM".into(), "Cache".into()],
+                        }),
                     })
-                    .collect(),
+                }),
                 maximum,
                 kind,
             };
@@ -1910,16 +2425,19 @@ mod tests {
     }
 
     #[test]
-    fn chart_hover_stays_on_the_same_sample_and_clears_outside_the_plot() {
+    fn chart_hover_stays_on_occupied_samples_and_clears_over_gaps_or_outside_plot() {
         use canvas::Program;
         let chart = Chart {
-            samples: (0..HISTORY_LEN)
-                .map(|_| ChartSample {
+            samples: std::array::from_fn(|slot| {
+                (slot != 35).then(|| ChartSample {
                     captured_at: None,
-                    values: [1.0, 2.0],
-                    labels: [String::new(), String::new()],
+                    seconds_ago: (HISTORY_LEN - slot - 1) as f64,
+                    reading: Some(ChartReading {
+                        values: [1.0, 2.0],
+                        labels: [String::new(), String::new()],
+                    }),
                 })
-                .collect(),
+            }),
             maximum: 100.0,
             kind: ChartKind::Cpu,
         };
@@ -1938,6 +2456,8 @@ mod tests {
         };
         assert!(move_to(300.0, 20.0));
         assert!(!move_to(300.1, 21.0));
+        assert!(move_to(307.0, 21.0));
+        assert!(!move_to(307.1, 21.0));
         assert!(move_to(320.0, 20.0));
         assert!(move_to(320.0, 100.0));
         assert!(!move_to(320.0, 100.0));
@@ -1949,10 +2469,15 @@ mod tests {
     }
 
     #[test]
-    fn histories_bound_real_samples_and_do_not_insert_unavailable_data() {
+    fn history_stays_bounded_without_plotting_unavailable_values() {
         let mut model = Model::default();
         model.record(Sample::default());
-        assert!(model.cpu.is_empty());
+        assert!(model
+            .chart(ChartKind::Cpu)
+            .samples
+            .iter()
+            .flatten()
+            .all(|sample| sample.reading.is_none()));
         for n in 0..HISTORY_LEN + 3 {
             model.record(Sample {
                 cpu: CpuUsageSnapshot {
@@ -1962,9 +2487,14 @@ mod tests {
                 ..Default::default()
             });
         }
-        assert_eq!(model.cpu.len(), HISTORY_LEN);
-        assert_eq!(model.cpu.front().unwrap().value.percent, Some(3.0));
-        assert!(model.memory.is_empty());
+        assert_eq!(model.history.len(), HISTORY_LEN);
+        assert_eq!(model.history.front().unwrap().cpu.percent, Some(3.0));
+        assert!(model
+            .chart(ChartKind::Memory)
+            .samples
+            .iter()
+            .flatten()
+            .all(|sample| sample.reading.is_none()));
         assert_eq!(
             normalize_cpu_frequency_percent(Some(4000), 2000, Some(4000)),
             100.0

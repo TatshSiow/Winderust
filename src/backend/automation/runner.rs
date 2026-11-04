@@ -446,6 +446,7 @@ impl RuntimeCore {
             self.power_plan_controller.clear_failures();
         }
         if changed || explicitly_changed {
+            self.by_cpu_load_scheduler.reset();
             self.adaptive_engine_process_manager
                 .invalidate_allocation_selection();
         }
@@ -515,10 +516,9 @@ impl RuntimeCore {
         observations: &mut CycleObservations,
     ) -> BackgroundEfficiencySnapshot {
         let foreground_process_id = observations.foreground_process_id();
-        let background_efficiency = settings.background_efficiency.clone();
         self.background_efficiency_manager.update(
             &mut self.priority_efficiency_controller,
-            &background_efficiency,
+            &settings.background_efficiency,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
@@ -1256,6 +1256,9 @@ impl RuntimeCore {
     }
 
     pub(super) fn retry_control_releases(&mut self, now: Instant) -> Option<String> {
+        let process_failure = |property, process_name, process_id, error| {
+            format!("{property} restoration failed for {process_name} ({process_id}): {error}")
+        };
         let mut errors = self
             .priority_efficiency_controller
             .retry_pending_releases(now)
@@ -1286,9 +1289,53 @@ impl RuntimeCore {
                 .failures
                 .into_iter()
                 .map(|failure| {
-                    format!(
-                        "I/O Priority restoration failed for {} ({}): {}",
-                        failure.process_name, failure.process_id, failure.error
+                    process_failure(
+                        "I/O Priority",
+                        failure.process_name,
+                        failure.process_id,
+                        failure.error,
+                    )
+                }),
+        );
+        errors.extend(
+            self.gpu_priority_controller
+                .retry_pending_releases(now)
+                .failures
+                .into_iter()
+                .map(|failure| {
+                    process_failure(
+                        "GPU Priority",
+                        failure.process_name,
+                        failure.process_id,
+                        failure.error,
+                    )
+                }),
+        );
+        errors.extend(
+            self.memory_priority_controller
+                .retry_pending_releases(now)
+                .failures
+                .into_iter()
+                .map(|failure| {
+                    process_failure(
+                        "Memory Priority",
+                        failure.process_name,
+                        failure.process_id,
+                        failure.error,
+                    )
+                }),
+        );
+        errors.extend(
+            self.dynamic_priority_boost_controller
+                .retry_pending_releases(now)
+                .failures
+                .into_iter()
+                .map(|failure| {
+                    process_failure(
+                        "Dynamic Priority Boost",
+                        failure.process_name,
+                        failure.process_id,
+                        failure.error,
                     )
                 }),
         );
@@ -1303,6 +1350,10 @@ impl RuntimeCore {
             self.priority_efficiency_controller.release_retry_delay(now),
             self.thread_priority_controller.release_retry_delay(now),
             self.io_priority_controller.release_retry_delay(now),
+            self.gpu_priority_controller.release_retry_delay(now),
+            self.memory_priority_controller.release_retry_delay(now),
+            self.dynamic_priority_boost_controller
+                .release_retry_delay(now),
             self.power_plan_controller.cleanup_retry_delay(now),
         ]
         .into_iter()
@@ -1577,6 +1628,61 @@ impl Drop for RuntimeCore {
 #[cfg(test)]
 mod settings_tests {
     use super::*;
+
+    #[test]
+    fn cpu_load_duration_restarts_after_an_inactive_power_profile() {
+        use crate::config::{ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison};
+
+        let mut settings = Settings::default();
+        settings.by_activity.enabled = false;
+        settings.by_time.enabled = false;
+        settings.by_foreground.enabled = false;
+        settings.by_running_app.enabled = false;
+        settings.by_cpu_load.enabled = true;
+        settings.by_cpu_load.rules = vec![ByCpuLoadRule {
+            enabled: true,
+            name: "Sustained load".into(),
+            comparison: CpuUsageComparison::AtOrAbove,
+            threshold_percent: CpuLoadPercent::new(75).unwrap(),
+            upper_threshold_percent: None,
+            duration_seconds: 30,
+            power_plan_guid: Some("high-load-plan".into()),
+            else_enabled: false,
+            else_power_plan_guid: None,
+        }];
+        settings.battery_profile_mut().by_cpu_load.enabled = false;
+        assert!(automation_worker_required(&settings));
+        assert!(!power_plan_checks_required(settings.battery_profile()));
+
+        let mut runner = RuntimeCore::default();
+        let start = Instant::now();
+        runner.note_settings(&settings, false);
+        assert!(runner
+            .by_cpu_load_scheduler
+            .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
+            .is_none());
+        runner.note_settings(settings.battery_profile(), true);
+        // The idle Battery profile keeps the worker alive without calling the scheduler.
+        runner.note_settings(&settings, true);
+        assert!(runner
+            .by_cpu_load_scheduler
+            .current_decision_at(
+                &settings.by_cpu_load,
+                Some(80.0),
+                start + Duration::from_secs(60),
+            )
+            .is_none());
+        assert!(!runner.note_settings(&settings, false));
+        let decision = runner
+            .by_cpu_load_scheduler
+            .current_decision_at(
+                &settings.by_cpu_load,
+                Some(80.0),
+                start + Duration::from_secs(90),
+            )
+            .unwrap();
+        assert_eq!(decision.power_plan_guid, "high-load-plan");
+    }
 
     #[test]
     fn explicit_settings_events_do_not_skip_bookkeeping() {

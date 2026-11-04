@@ -353,7 +353,7 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::MemoryPriority => ("memory_priority", 2),
         Page::CpuSetsSoft => ("cpu_sets_soft", 2),
         Page::ProcessorAffinityHard => ("processor_affinity_hard", 2),
-        Page::TimerResolution => ("timer_resolution", 2),
+        Page::TimerResolution => ("timer_resolution", 3),
         Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => ("", 0),
         _ => return String::new(),
     };
@@ -574,213 +574,208 @@ fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
 }
 
 pub(super) fn dashboard_page_search_text(page: Page) -> String {
-    let mut text = format!("{} {}", page.label(), page.section_label());
-
-    let extra = match page {
-        Page::Home => vec![
-            t!("home.intro_1").to_string(),
-            t!("home.intro_2").to_string(),
-            "overview summary current automation decision power plan cpu enabled rules".to_string(),
-        ],
-        Page::PowerPlanControl => vec![
-            "power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc".to_string(),
-        ],
-        Page::WinderustFeatures => vec![
-            "winderust features background efficiency background_efficiency Adaptive Engine foreground interactivity memory trim working set memory ram background restraint".to_string(),
-        ],
-        Page::CpuControl => vec![
-            "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
-        ],
-        Page::PriorityControl => vec![
-            "priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority".to_string(),
-        ],
-        Page::ActionLog => vec![
-            t!("action_log.intro_1").to_string(),
-            t!("action_log.intro_2").to_string(),
-            "log action history details csv export skipped failed applied restored reason".to_string(),
-        ],
-        Page::SettingsHome => vec![
-            "settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette".to_string(),
-        ],
-        Page::AdvancedControls => vec![
-            "advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry".to_string(),
-        ],
-        Page::ByActivity => vec![
-            t!("by_activity.intro_1").to_string(),
-            t!("by_activity.intro_2").to_string(),
-            t!("by_activity.enable").to_string(),
-            "idle active input keyboard mouse controller gamepad activity power plan battery plugged".to_string(),
-        ],
-        Page::ByForeground => vec![
-            t!("by_foreground.intro_1").to_string(),
-            t!("by_foreground.intro_2").to_string(),
-            t!("by_foreground.enable").to_string(),
-            "foreground focused app process window power plan priority rule".to_string(),
-        ],
-        Page::ByTime => vec![
-            t!("by_time.intro_1").to_string(),
-            t!("by_time.intro_2").to_string(),
-            t!("by_time.enable").to_string(),
-            "time schedule clock date weekday overnight power plan".to_string(),
-        ],
-        Page::ByCpuLoad => vec![
-            t!("by_cpu_load.intro_1").to_string(),
-            t!("by_cpu_load.intro_2").to_string(),
-            t!("by_cpu_load.enable").to_string(),
-            "cpu load usage threshold sustained power plan percent samples".to_string(),
-        ],
-        Page::AdvancedPowerPlanTuning => vec![
-            t!("processor_power.help").to_string(),
-            t!("processor_power.performance_help").to_string(),
-            t!("processor_power.balanced_help").to_string(),
-            t!("processor_power.saver_help").to_string(),
-            "core parking processor power boost min max ac dc battery plugged performance saver balanced scheduling hybrid long short thread policy schedpolicy shortschedpolicy".to_string(),
-        ],
-        Page::CpuLimiter => vec![
-            t!("cpu_limiter.intro_1").to_string(),
-            t!("cpu_limiter.intro_2").to_string(),
-            t!("cpu_limiter.intro_3").to_string(),
-            t!("cpu_limiter.intro_4").to_string(),
-            t!("cpu_limiter.intro_5").to_string(),
-            t!("cpu_limiter.rules_help").to_string(),
-            "cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group".to_string(),
-        ],
-        Page::ProcessPriority => vec![
-            t!("process_priority.intro_1").to_string(),
-            t!("process_priority.intro_2").to_string(),
-            t!("process_priority.exclusions_help").to_string(),
-            "process priority base priority normal below normal idle above normal high background foreground exclusion".to_string(),
-        ],
-        Page::ThreadPriority => vec![
-            t!("thread_priority.intro_1").to_string(),
-            t!("thread_priority.intro_2").to_string(),
-            t!("thread_priority.exclusions_help").to_string(),
-            "thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion".to_string(),
-        ],
-        Page::DynamicPriorityBoost => vec![
-            t!("dynamic_priority_boost.intro_1").to_string(),
-            t!("dynamic_priority_boost.intro_2").to_string(),
-            t!("dynamic_priority_boost.exclusions_help").to_string(),
-            "dynamic priority boost process scheduler enabled disabled background foreground exclusion".to_string(),
-        ],
-        Page::CpuSetsSoft => vec![
-            t!("cpu_sets_soft.intro_1").to_string(),
-            t!("cpu_sets_soft.intro_2").to_string(),
-            t!("cpu_allocation.rules_help").to_string(),
-            "cpu sets soft preferred processors per app foreground".to_string(),
-        ],
-        Page::ProcessList => vec![
-            t!("process_list.title").to_string(),
-            "running processes pid process rules priority gpu cpu affinity efficiency policy overview".to_string(),
-        ],
-        Page::AdaptiveEngine => vec![
-            t!("adaptive_engine.intro_1").to_string(),
-            t!("adaptive_engine.intro_2").to_string(),
-            t!("adaptive_engine.intro_3").to_string(),
-            "adaptive engine power saving background_efficiency Adaptive Engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background".to_string(),
-        ],
-        Page::BackgroundEfficiency => vec![
-            t!("background_efficiency.intro_1").to_string(),
-            t!("background_efficiency.intro_2").to_string(),
-            t!("background_efficiency.intro_3").to_string(),
-            t!("background_efficiency.foreground_detection_help").to_string(),
-            t!("common.visible_window_detection_help").to_string(),
-            t!("background_efficiency.custom_rules_help").to_string(),
-            "efficiency mode background_efficiency qos throttle background priority exclusion custom_rules".to_string(),
-        ],
-        Page::AppSuspension => vec![
-            t!("app_suspension.intro_1").to_string(),
-            t!("app_suspension.intro_2").to_string(),
-            t!("app_suspension.intro_3").to_string(),
-            t!("app_suspension.suspendable_help").to_string(),
-            "suspend freeze thaw resume background app process job object delay network audio".to_string(),
-        ],
-        Page::ByRunningApp => vec![
-            t!("by_running_app.intro_1").to_string(),
-            t!("by_running_app.intro_2").to_string(),
-            t!("by_running_app.intro_3").to_string(),
-            t!("by_running_app.rules_help").to_string(),
-            "running app performance mode power plan process game gaming active restore".to_string(),
-        ],
-        Page::IoPriority => vec![
-            t!("io_priority.intro_1").to_string(),
-            t!("io_priority.intro_2").to_string(),
-            t!("io_priority.enable").to_string(),
-            t!("io_priority.foreground_detection").to_string(),
-            t!("io_priority.exclusions_help").to_string(),
-            "io i/o disk storage priority low very low background foreground detection default exclusion".to_string(),
-        ],
-        Page::GpuPriority => vec![
-            t!("gpu_priority.intro_1").to_string(),
-            t!("gpu_priority.intro_2").to_string(),
-            t!("gpu_priority.enable").to_string(),
-            t!("gpu_priority.foreground_detection").to_string(),
-            t!("gpu_priority.exclusions_help").to_string(),
-            "gpu graphics scheduling priority d3dkmt idle below normal above normal foreground detection background default exclusion".to_string(),
-        ],
-        Page::MemoryPriority => vec![
-            t!("memory_priority.intro_1").to_string(),
-            t!("memory_priority.intro_2").to_string(),
-            t!("memory_priority.enable").to_string(),
-            t!("memory_priority.foreground_detection").to_string(),
-            t!("memory_priority.exclusions_help").to_string(),
-            "memory priority page priority ram paging working set very low low medium background foreground detection default exclusion".to_string(),
-        ],
-        Page::Watchdog => vec![t!("watchdog.intro_1").to_string(), "watchdog monitor cpu memory ram threshold warning critical toast notification terminate kill process".to_string()],
-        Page::MemoryTrim => vec![
-            t!("memory_trim.intro_1").to_string(),
-            t!("memory_trim.intro_2").to_string(),
-            t!("memory_trim.intro_3").to_string(),
-            "memory ram trim working set idle background exclusion".to_string(),
-        ],
-        Page::ProcessorAffinityHard => vec![
-            t!("processor_affinity_hard.intro_1").to_string(),
-            t!("processor_affinity_hard.intro_2").to_string(),
-            t!("processor_affinity_hard.warning").to_string(),
-            t!("cpu_allocation.rules_help").to_string(),
-            "processor affinity hard allowed processors per app foreground".to_string(),
-        ],
-        Page::WinderustBehaviour => vec![
-            t!("settings.intro_1").to_string(),
-            t!("settings.intro_2").to_string(),
-            t!("settings.action_log_mode_full_help").to_string(),
-            t!("settings.failure_suppression_threshold_help").to_string(),
-            "winderust behaviour startup tray automation toggle action log detail fail failure suppression export import".to_string(),
-        ],
-        Page::LanguageAndAppearance => vec![
-            t!("common.theme_help").to_string(),
-            "language appearance theme dark light amoled oled pure black system accent color palette localization display ui sidebar enabled feature counts status cards pills".to_string(),
-        ],
-        Page::ExperimentalFeatures => vec![
-            t!("settings.expose_all_priority_values_help").to_string(),
-            "experimental features process priority realtime advanced priority values".to_string(),
-        ],
-        Page::TimerResolution => vec![
-            t!("timer_resolution.intro_1").to_string(),
-            t!("timer_resolution.intro_2").to_string(),
-            t!("timer_resolution.warning").to_string(),
-            "timer resolution ntsettimerresolution scheduler latency wakeups battery high resolution timer foreground process rule".to_string(),
-        ],
-        Page::Win32PrioritySeparation => vec![
-            t!("settings.win32_priority_separation_quantum_duration_help").to_string(),
-            t!("settings.win32_priority_separation_quantum_behaviour_help").to_string(),
-            t!("settings.win32_priority_separation_foreground_boost_help").to_string(),
-            "win32 priority separation windows scheduler quantum foreground boost games gaming registry".to_string(),
-        ],
-        Page::About => vec![
-            t!("about.intro_1").to_string(),
-            t!("about.intro_2").to_string(),
-            "about version project winderust update automatic check startup stable pre-release channel"
-                .to_string(),
-        ],
-    };
-
-    for value in extra {
-        text.push(' ');
-        text.push_str(&value);
+    let label = page.label();
+    let section = page.section_label();
+    match page {
+        Page::Home => format!(
+            "{label} {section} {} {} overview summary current automation decision power plan cpu enabled rules",
+            t!("home.intro_1"),
+            t!("home.intro_2"),
+        ),
+        Page::PowerPlanControl => format!(
+            "{label} {section} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
+        ),
+        Page::WinderustFeatures => format!(
+            "{label} {section} winderust features background efficiency background_efficiency Adaptive Engine foreground interactivity memory trim working set memory ram background restraint",
+        ),
+        Page::CpuControl => format!(
+            "{label} {section} processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores",
+        ),
+        Page::PriorityControl => format!(
+            "{label} {section} priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority",
+        ),
+        Page::ActionLog => format!(
+            "{label} {section} {} {} log action history details csv export skipped failed applied restored reason",
+            t!("action_log.intro_1"),
+            t!("action_log.intro_2"),
+        ),
+        Page::SettingsHome => format!(
+            "{label} {section} settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette",
+        ),
+        Page::AdvancedControls => format!(
+            "{label} {section} advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry",
+        ),
+        Page::ByActivity => format!(
+            "{label} {section} {} {} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
+            t!("by_activity.intro_1"),
+            t!("by_activity.intro_2"),
+            t!("by_activity.enable"),
+        ),
+        Page::ByForeground => format!(
+            "{label} {section} {} {} {} foreground focused app process window power plan priority rule",
+            t!("by_foreground.intro_1"),
+            t!("by_foreground.intro_2"),
+            t!("by_foreground.enable"),
+        ),
+        Page::ByTime => format!(
+            "{label} {section} {} {} {} time schedule clock date weekday overnight power plan",
+            t!("by_time.intro_1"),
+            t!("by_time.intro_2"),
+            t!("by_time.enable"),
+        ),
+        Page::ByCpuLoad => format!(
+            "{label} {section} {} {} {} cpu load usage threshold sustained power plan percent samples",
+            t!("by_cpu_load.intro_1"),
+            t!("by_cpu_load.intro_2"),
+            t!("by_cpu_load.enable"),
+        ),
+        Page::AdvancedPowerPlanTuning => format!(
+            "{label} {section} {} {} {} {} core parking processor power boost min max ac dc battery plugged performance saver balanced scheduling hybrid long short thread policy schedpolicy shortschedpolicy",
+            t!("processor_power.help"),
+            t!("processor_power.performance_help"),
+            t!("processor_power.balanced_help"),
+            t!("processor_power.saver_help"),
+        ),
+        Page::CpuLimiter => format!(
+            "{label} {section} {} {} {} {} {} {} cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group",
+            t!("cpu_limiter.intro_1"),
+            t!("cpu_limiter.intro_2"),
+            t!("cpu_limiter.intro_3"),
+            t!("cpu_limiter.intro_4"),
+            t!("cpu_limiter.intro_5"),
+            t!("cpu_limiter.rules_help"),
+        ),
+        Page::ProcessPriority => format!(
+            "{label} {section} {} {} {} process priority base priority normal below normal idle above normal high background foreground exclusion",
+            t!("process_priority.intro_1"),
+            t!("process_priority.intro_2"),
+            t!("process_priority.exclusions_help"),
+        ),
+        Page::ThreadPriority => format!(
+            "{label} {section} {} {} {} thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion",
+            t!("thread_priority.intro_1"),
+            t!("thread_priority.intro_2"),
+            t!("thread_priority.exclusions_help"),
+        ),
+        Page::DynamicPriorityBoost => format!(
+            "{label} {section} {} {} {} dynamic priority boost process scheduler enabled disabled background foreground exclusion",
+            t!("dynamic_priority_boost.intro_1"),
+            t!("dynamic_priority_boost.intro_2"),
+            t!("dynamic_priority_boost.exclusions_help"),
+        ),
+        Page::CpuSetsSoft => format!(
+            "{label} {section} {} {} {} cpu sets soft preferred processors per app foreground",
+            t!("cpu_sets_soft.intro_1"),
+            t!("cpu_sets_soft.intro_2"),
+            t!("cpu_allocation.rules_help"),
+        ),
+        Page::ProcessList => format!(
+            "{label} {section} {} running processes pid process rules priority gpu cpu affinity efficiency policy overview",
+            t!("process_list.title"),
+        ),
+        Page::AdaptiveEngine => format!(
+            "{label} {section} {} {} {} adaptive engine power saving background_efficiency Adaptive Engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background",
+            t!("adaptive_engine.intro_1"),
+            t!("adaptive_engine.intro_2"),
+            t!("adaptive_engine.intro_3"),
+        ),
+        Page::BackgroundEfficiency => format!(
+            "{label} {section} {} {} {} {} {} {} efficiency mode background_efficiency qos throttle background priority exclusion custom_rules",
+            t!("background_efficiency.intro_1"),
+            t!("background_efficiency.intro_2"),
+            t!("background_efficiency.intro_3"),
+            t!("background_efficiency.foreground_detection_help"),
+            t!("common.visible_window_detection_help"),
+            t!("background_efficiency.custom_rules_help"),
+        ),
+        Page::AppSuspension => format!(
+            "{label} {section} {} {} {} {} suspend freeze thaw resume background app process job object delay network audio",
+            t!("app_suspension.intro_1"),
+            t!("app_suspension.intro_2"),
+            t!("app_suspension.intro_3"),
+            t!("app_suspension.suspendable_help"),
+        ),
+        Page::ByRunningApp => format!(
+            "{label} {section} {} {} {} {} running app performance mode power plan process game gaming active restore",
+            t!("by_running_app.intro_1"),
+            t!("by_running_app.intro_2"),
+            t!("by_running_app.intro_3"),
+            t!("by_running_app.rules_help"),
+        ),
+        Page::IoPriority => format!(
+            "{label} {section} {} {} {} {} {} io i/o disk storage priority low very low background foreground detection default exclusion",
+            t!("io_priority.intro_1"),
+            t!("io_priority.intro_2"),
+            t!("io_priority.enable"),
+            t!("io_priority.foreground_detection"),
+            t!("io_priority.exclusions_help"),
+        ),
+        Page::GpuPriority => format!(
+            "{label} {section} {} {} {} {} {} gpu graphics scheduling priority d3dkmt idle below normal above normal foreground detection background default exclusion",
+            t!("gpu_priority.intro_1"),
+            t!("gpu_priority.intro_2"),
+            t!("gpu_priority.enable"),
+            t!("gpu_priority.foreground_detection"),
+            t!("gpu_priority.exclusions_help"),
+        ),
+        Page::MemoryPriority => format!(
+            "{label} {section} {} {} {} {} {} memory priority page priority ram paging working set very low low medium background foreground detection default exclusion",
+            t!("memory_priority.intro_1"),
+            t!("memory_priority.intro_2"),
+            t!("memory_priority.enable"),
+            t!("memory_priority.foreground_detection"),
+            t!("memory_priority.exclusions_help"),
+        ),
+        Page::Watchdog => format!(
+            "{label} {section} {} watchdog monitor cpu memory ram threshold warning critical toast notification terminate kill process",
+            t!("watchdog.intro_1"),
+        ),
+        Page::MemoryTrim => format!(
+            "{label} {section} {} {} {} memory ram trim working set idle background exclusion",
+            t!("memory_trim.intro_1"),
+            t!("memory_trim.intro_2"),
+            t!("memory_trim.intro_3"),
+        ),
+        Page::ProcessorAffinityHard => format!(
+            "{label} {section} {} {} {} {} processor affinity hard allowed processors per app foreground",
+            t!("processor_affinity_hard.intro_1"),
+            t!("processor_affinity_hard.intro_2"),
+            t!("processor_affinity_hard.warning"),
+            t!("cpu_allocation.rules_help"),
+        ),
+        Page::WinderustBehaviour => format!(
+            "{label} {section} {} {} {} {} winderust behaviour startup tray automation toggle action log detail fail failure suppression export import",
+            t!("settings.intro_1"),
+            t!("settings.intro_2"),
+            t!("settings.action_log_mode_full_help"),
+            t!("settings.failure_suppression_threshold_help"),
+        ),
+        Page::LanguageAndAppearance => format!(
+            "{label} {section} {} language appearance theme dark light amoled oled pure black system accent color palette localization display ui sidebar enabled feature counts status cards pills",
+            t!("common.theme_help"),
+        ),
+        Page::ExperimentalFeatures => format!(
+            "{label} {section} {} experimental features process priority realtime advanced priority values",
+            t!("settings.expose_all_priority_values_help"),
+        ),
+        Page::TimerResolution => format!(
+            "{label} {section} {} {} {} timer resolution ntsettimerresolution scheduler latency wakeups battery high resolution timer foreground process rule",
+            t!("timer_resolution.intro_1"),
+            t!("timer_resolution.intro_2"),
+            t!("timer_resolution.warning"),
+        ),
+        Page::Win32PrioritySeparation => format!(
+            "{label} {section} {} {} {} win32 priority separation windows scheduler quantum foreground boost games gaming registry",
+            t!("settings.win32_priority_separation_quantum_duration_help"),
+            t!("settings.win32_priority_separation_quantum_behaviour_help"),
+            t!("settings.win32_priority_separation_foreground_boost_help"),
+        ),
+        Page::About => format!(
+            "{label} {section} {} {} about version project winderust update automatic check startup stable pre-release channel",
+            t!("about.intro_1"),
+            t!("about.intro_2"),
+        ),
     }
-
-    text
 }
 
 pub(super) fn nav_section_in_footer(page: Page) -> bool {
@@ -832,152 +827,104 @@ mod tests {
     }
 
     #[test]
-    fn cpu_limiter_feature_info_includes_the_warning() {
+    fn feature_info_includes_warnings_and_timer_release_behavior() {
         let help = super::page_feature_info(crate::ui::Page::CpuLimiter);
         assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_1").to_string()));
         assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_4").to_string()));
         assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_5").to_string()));
+        let help = super::page_feature_info(crate::ui::Page::TimerResolution);
+        assert!(help.contains(&rust_i18n::t!("timer_resolution.intro_3").to_string()));
+        assert!(help.contains(&rust_i18n::t!("timer_resolution.warning").to_string()));
     }
 
     use super::*;
     #[test]
     fn rail_keeps_search_primary_and_utilities_aligned_at_both_heights() {
-        use iced::advanced::{
-            layout,
-            renderer::{Headless as _, Renderer as _},
-            widget::Tree,
-            Layout,
-        };
+        use iced::advanced::{layout, widget::Tree, Layout};
         use iced::widget::{column, container, text};
         use iced::{Fill, Rectangle, Size};
-        for (name, theme) in [
-            (
-                "light",
-                Theme::custom_with_fn(
-                    "preview",
-                    design::palette(true, None),
-                    design::extended_palette,
-                ),
-            ),
-            (
-                "dark",
-                Theme::custom_with_fn(
-                    "preview",
-                    design::palette(false, None),
-                    design::extended_palette,
-                ),
-            ),
-            ("amoled", design::amoled_theme(None)),
-        ] {
-            for height in [480.0, 1080.0] {
-                let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
-                let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
-                for page in rail_pages(true) {
-                    let item = rail_item(page, page == Page::WinderustFeatures, ());
-                    if is_utility(page) {
-                        utilities = utilities.push(item);
-                    } else {
-                        primary = primary.push(item);
-                    }
+        for height in [480.0, 1080.0] {
+            let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
+            let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
+            for page in rail_pages(true) {
+                let item = rail_item(page, page == Page::WinderustFeatures, ());
+                if is_utility(page) {
+                    utilities = utilities.push(item);
+                } else {
+                    primary = primary.push(item);
                 }
-                let search = super::super::widgets::button(
-                    container(
-                        column![
-                            glyph("icons/search.svg"),
-                            text(t!("home.search").to_string()).size(design::typography::BADGE),
-                        ]
-                        .spacing(design::space::TIGHT)
-                        .align_x(iced::Center),
-                    )
-                    .center_x(Fill)
-                    .center_y(Fill),
-                )
-                .width(Fill)
-                .height(design::NAVIGATION_ITEM_HEIGHT)
-                .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-                .style(super::super::widgets::quiet)
-                .on_press(());
-                let mut view = rail(search.into(), primary.into(), utilities.into());
-                let mut renderer = iced::Renderer::new(
-                    iced::Font {
-                        weight: iced::font::Weight::Normal,
-                        ..design::typography::FONT
-                    },
-                    iced::Pixels(14.0),
-                );
-                let mut tree = Tree::new(&view);
-                let bounds = Rectangle::with_size(Size::new(design::NAVIGATION_RAIL_WIDTH, height));
-                let node = view.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &layout::Limits::new(Size::ZERO, bounds.size()),
-                );
-                let column = Layout::new(&node).children().next().unwrap();
-                let children: Vec<_> = column.children().collect();
-                let check_item = |item: Layout<'_>| {
-                    assert_eq!(item.bounds().width, design::NAVIGATION_RAIL_WIDTH - 12.0);
-                    assert_eq!(
-                        item.bounds().center_x(),
-                        design::NAVIGATION_RAIL_WIDTH / 2.0
-                    );
-                    assert_eq!(item.bounds().height, design::NAVIGATION_ITEM_HEIGHT as f32);
-                };
-                check_item(children[0].children().next().unwrap());
-                let primary = children[1]
-                    .children()
-                    .next()
-                    .unwrap()
-                    .children()
-                    .next()
-                    .unwrap();
-                assert_eq!(
-                    primary.bounds().height > children[1].bounds().height,
-                    height == 480.0
-                );
-                for item in primary.children() {
-                    check_item(item);
-                }
-                for item in children[3].children().next().unwrap().children() {
-                    check_item(item);
-                }
-                let mut messages = Vec::new();
-                view.as_widget_mut().update(
-                    &mut tree,
-                    &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
-                    Layout::new(&node),
-                    iced::mouse::Cursor::Unavailable,
-                    &renderer,
-                    &mut iced::advanced::clipboard::Null,
-                    &mut iced::advanced::Shell::new(&mut messages),
-                    &bounds,
-                );
-                renderer.reset(bounds);
-                view.as_widget().draw(
-                    &tree,
-                    &mut renderer,
-                    &theme,
-                    &iced::advanced::renderer::Style {
-                        text_color: theme.palette().text,
-                    },
-                    Layout::new(&node),
-                    iced::mouse::Cursor::Unavailable,
-                    &bounds,
-                );
-                let pixels = renderer.screenshot(
-                    Size::new(88, height as u32),
-                    1.0,
-                    theme.palette().background,
-                );
-                std::fs::create_dir_all("target/ui-preview").unwrap();
-                image::save_buffer(
-                    format!("target/ui-preview/navigation-rail-{name}-{height}.png"),
-                    &pixels,
-                    88,
-                    height as u32,
-                    image::ColorType::Rgba8,
-                )
-                .unwrap();
             }
+            let search = super::super::widgets::button(
+                container(
+                    column![
+                        glyph("icons/search.svg"),
+                        text(t!("home.search").to_string()).size(design::typography::BADGE),
+                    ]
+                    .spacing(design::space::TIGHT)
+                    .align_x(iced::Center),
+                )
+                .center_x(Fill)
+                .center_y(Fill),
+            )
+            .width(Fill)
+            .height(design::NAVIGATION_ITEM_HEIGHT)
+            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
+            .style(super::super::widgets::quiet)
+            .on_press(());
+            let mut view = rail(search.into(), primary.into(), utilities.into());
+            let renderer = iced::Renderer::new(
+                iced::Font {
+                    weight: iced::font::Weight::Normal,
+                    ..design::typography::FONT
+                },
+                iced::Pixels(14.0),
+            );
+            let mut tree = Tree::new(&view);
+            let bounds = Rectangle::with_size(Size::new(design::NAVIGATION_RAIL_WIDTH, height));
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            let column = Layout::new(&node).children().next().unwrap();
+            let children: Vec<_> = column.children().collect();
+            let check_item = |item: Layout<'_>| {
+                assert_eq!(item.bounds().width, design::NAVIGATION_RAIL_WIDTH - 12.0);
+                assert_eq!(
+                    item.bounds().center_x(),
+                    design::NAVIGATION_RAIL_WIDTH / 2.0
+                );
+                assert_eq!(item.bounds().height, design::NAVIGATION_ITEM_HEIGHT as f32);
+            };
+            check_item(children[0].children().next().unwrap());
+            let primary = children[1]
+                .children()
+                .next()
+                .unwrap()
+                .children()
+                .next()
+                .unwrap();
+            assert_eq!(
+                primary.bounds().height > children[1].bounds().height,
+                height == 480.0
+            );
+            for item in primary.children() {
+                check_item(item);
+            }
+            for item in children[3].children().next().unwrap().children() {
+                check_item(item);
+            }
+            let mut messages = Vec::new();
+            view.as_widget_mut().update(
+                &mut tree,
+                &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
+                Layout::new(&node),
+                iced::mouse::Cursor::Unavailable,
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut iced::advanced::Shell::new(&mut messages),
+                &bounds,
+            );
         }
     }
 

@@ -81,7 +81,7 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a MemoryTrimSettings,
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![super::widgets::toggle_card(
             "memory_trim.enable",

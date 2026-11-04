@@ -339,15 +339,6 @@ mod tests {
                 .color
                 .into_rgba8();
             assert_eq!(&pixels[(18 * 900 + 450) * 4..][..4], &expected, "{name}");
-            std::fs::create_dir_all("target/window-frame").unwrap();
-            image::save_buffer(
-                format!("target/window-frame/{name}.png"),
-                &pixels,
-                900,
-                140,
-                image::ColorType::Rgba8,
-            )
-            .unwrap();
         }
     }
 }
