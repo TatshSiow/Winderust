@@ -63,11 +63,16 @@ struct ManagedIoPriority {
 
 pub(crate) trait IoPriorityRecoveryIntent {
     fn commit(self) -> Result<(), String>;
+    fn retain_pending(self) -> Result<(), String>;
 }
 
 impl IoPriorityRecoveryIntent for RecoveryIntent {
     fn commit(self) -> Result<(), String> {
         RecoveryIntent::commit(self)
+    }
+
+    fn retain_pending(self) -> Result<(), String> {
+        RecoveryIntent::retain_pending(self)
     }
 }
 
@@ -269,7 +274,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             &process,
             current,
             desired,
-            CommitFailureBehavior::Compensate,
+            CommitFailureBehavior::RetainOwnership,
         ) {
             Ok(()) => {
                 self.pending_releases.remove(&identity);
@@ -316,6 +321,9 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         &mut self,
         active_targets: &BTreeSet<ProcessTargetKey>,
     ) -> IoPriorityReleaseSummary {
+        if self.pending_releases.is_empty() {
+            self.next_release_retry = None;
+        }
         let identities = self
             .managed
             .iter()
@@ -327,8 +335,12 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
         self.pending_releases
             .extend(identities.iter().map(|(_, identity)| identity.clone()));
         let summary = self.release_identities(identities);
-        self.next_release_retry =
-            (!self.pending_releases.is_empty()).then(|| Instant::now() + Duration::from_secs(1));
+        if self.pending_releases.is_empty() {
+            self.next_release_retry = None;
+        } else {
+            self.next_release_retry
+                .get_or_insert_with(|| Instant::now() + Duration::from_secs(1));
+        }
         summary
     }
 
@@ -449,7 +461,7 @@ impl<P: IoPriorityPlatform> IoPriorityController<P> {
             &process,
             current,
             baseline,
-            CommitFailureBehavior::KeepExpected,
+            CommitFailureBehavior::RelinquishRestored,
         ) {
             Ok(()) => Ok(true),
             // Preserve a confirmed exit; otherwise recheck for exit during restoration.
@@ -508,8 +520,8 @@ struct TransitionFailure {
 
 #[derive(Clone, Copy)]
 enum CommitFailureBehavior {
-    Compensate,
-    KeepExpected,
+    RetainOwnership,
+    RelinquishRestored,
 }
 
 fn apply_transition<P: IoPriorityPlatform>(
@@ -554,11 +566,16 @@ fn apply_transition<P: IoPriorityPlatform>(
 
     if let Err(error) = intent.commit() {
         let message = format!("Crash recovery commit failed: {error}");
+        // The helper may have compacted this transition into an earlier baseline.
+        // Keep the verified target so both pending and committed journals can unwind it.
         return match commit_failure_behavior {
-            CommitFailureBehavior::Compensate => Err(compensate_without_intent(
-                platform, process, original, message,
-            )),
-            CommitFailureBehavior::KeepExpected => Err(TransitionFailure {
+            CommitFailureBehavior::RetainOwnership => Err(TransitionFailure {
+                error: ProcessControlError::Failed(message),
+                uncertain: true,
+                relinquish_recovery: false,
+                expected_preserved: true,
+            }),
+            CommitFailureBehavior::RelinquishRestored => Err(TransitionFailure {
                 error: ProcessControlError::Failed(message),
                 uncertain: false,
                 relinquish_recovery: true,
@@ -584,7 +601,7 @@ fn compensate_with_intent<P: IoPriorityPlatform>(
             expected_preserved: false,
         },
         Err(compensation_error) => {
-            let recovery_error = intent.commit().err();
+            let recovery_error = intent.retain_pending().err();
             TransitionFailure {
                 error: transition_failure_error(primary_error, compensation_error, recovery_error),
                 uncertain: true,
@@ -592,32 +609,6 @@ fn compensate_with_intent<P: IoPriorityPlatform>(
                 expected_preserved: false,
             }
         }
-    }
-}
-
-fn compensate_without_intent<P: IoPriorityPlatform>(
-    platform: &mut P,
-    process: &P::Process,
-    original: u32,
-    primary_error: String,
-) -> TransitionFailure {
-    match restore_and_verify(platform, process, original) {
-        Ok(()) => TransitionFailure {
-            error: ProcessControlError::Failed(primary_error),
-            uncertain: false,
-            relinquish_recovery: true,
-            expected_preserved: false,
-        },
-        Err(compensation_error) => TransitionFailure {
-            error: transition_failure_error(
-                ProcessControlError::Failed(primary_error),
-                compensation_error,
-                None,
-            ),
-            uncertain: true,
-            relinquish_recovery: false,
-            expected_preserved: false,
-        },
     }
 }
 
@@ -738,6 +729,14 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+
+        fn retain_pending(self) -> Result<(), String> {
+            self.events
+                .lock()
+                .unwrap()
+                .push("retain_pending".to_owned());
+            Ok(())
         }
     }
 
@@ -1009,18 +1008,20 @@ mod tests {
                     .is_err());
                 assert_eq!(controller.pending_releases.len(), 1);
             }
-            let now = Instant::now();
+            let due = controller.next_release_retry.unwrap();
+            for _ in 0..8 {
+                assert!(controller
+                    .release_policy_except(&BTreeSet::from([target(42, 7).key()]))
+                    .failures
+                    .is_empty());
+                assert_eq!(controller.next_release_retry, Some(due));
+            }
+            let now = due - Duration::from_millis(1);
             assert_eq!(controller.retry_pending_releases(now).restored_processes, 0);
             controller.platform.fail_next(FakeFailure::Open);
+            assert_eq!(controller.retry_pending_releases(due).failures.len(), 1);
             assert_eq!(
-                controller
-                    .retry_pending_releases(now + Duration::from_secs(2))
-                    .failures
-                    .len(),
-                1
-            );
-            assert_eq!(
-                controller.release_retry_delay(now + Duration::from_secs(2)),
+                controller.release_retry_delay(due),
                 Some(Duration::from_secs(1))
             );
             if replace {
@@ -1030,7 +1031,7 @@ mod tests {
             }
             assert_eq!(
                 controller
-                    .retry_pending_releases(now + Duration::from_secs(4))
+                    .retry_pending_releases(due + Duration::from_secs(1))
                     .restored_processes,
                 usize::from(!replace)
             );
@@ -1330,13 +1331,8 @@ mod tests {
     }
 
     #[test]
-    fn begin_apply_verification_and_commit_failures_compensate() {
-        for failure in [
-            FakeFailure::Begin,
-            FakeFailure::Apply,
-            FakeFailure::Verify,
-            FakeFailure::Commit,
-        ] {
+    fn begin_apply_and_verification_failures_compensate() {
+        for failure in [FakeFailure::Begin, FakeFailure::Apply, FakeFailure::Verify] {
             let mut platform = FakePlatform::new(2);
             platform.fail_next(failure);
             let mut controller = IoPriorityController::with_platform(platform);
@@ -1353,6 +1349,89 @@ mod tests {
             assert_eq!(controller.platform.processes[&42].priority, 2);
             assert!(!controller.has_managed_state());
         }
+    }
+
+    #[test]
+    fn commit_failure_retains_verified_target_and_the_first_baseline() {
+        for replacing in [false, true] {
+            let mut controller = IoPriorityController::with_platform(FakePlatform::new(2));
+            if replacing {
+                controller
+                    .apply_policy_claim(
+                        claim(
+                            ControlOwner::IoPriority,
+                            ProcessIoPriority::Low,
+                            IoPriorityPreservation::Exact,
+                        ),
+                        true,
+                    )
+                    .unwrap();
+            }
+            controller.platform.fail_next(FakeFailure::Commit);
+            let error = controller
+                .apply_policy_claim(
+                    claim(
+                        ControlOwner::IoPriority,
+                        ProcessIoPriority::High,
+                        IoPriorityPreservation::Exact,
+                    ),
+                    true,
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("commit failed"));
+            assert_eq!(controller.platform.processes[&42].priority, 3);
+            let managed = controller.managed.values().next().unwrap();
+            assert_eq!((managed.baseline, managed.expected), (2, 3));
+            let events = controller.platform.events.lock().unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.starts_with("apply:"))
+                    .count(),
+                if replacing { 2 } else { 1 }
+            );
+            assert!(!events.iter().any(|event| event.starts_with("relinquish:")));
+            drop(events);
+            controller.shutdown().unwrap();
+            assert_eq!(controller.platform.processes[&42].priority, 2);
+            assert!(!controller.has_managed_state());
+        }
+    }
+
+    #[test]
+    fn unverified_compensation_retains_a_pending_edge_to_the_first_baseline() {
+        let mut controller = IoPriorityController::with_platform(FakePlatform::new(2));
+        controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::Low,
+                    IoPriorityPreservation::Exact,
+                ),
+                true,
+            )
+            .unwrap();
+        controller.platform.events.lock().unwrap().clear();
+        controller.platform.fail_next(FakeFailure::Verify);
+        controller.platform.fail_next(FakeFailure::Verify);
+        assert!(controller
+            .apply_policy_claim(
+                claim(
+                    ControlOwner::IoPriority,
+                    ProcessIoPriority::High,
+                    IoPriorityPreservation::Exact
+                ),
+                true,
+            )
+            .is_err());
+        assert_eq!(controller.platform.processes[&42].priority, 1);
+        let managed = controller.managed.values().next().unwrap();
+        assert_eq!((managed.baseline, managed.expected), (2, 3));
+        let events = controller.platform.events.lock().unwrap();
+        assert!(events.iter().any(|event| event == "retain_pending"));
+        assert!(!events
+            .iter()
+            .any(|event| event == "commit" || event.starts_with("relinquish:")));
     }
 
     #[test]

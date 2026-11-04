@@ -12,7 +12,6 @@ use windows_sys::Win32::{
             PdhOpenQueryW, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE,
             PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
         },
-        ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION},
         SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
         Threading::{
             GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -25,7 +24,6 @@ pub struct MemoryUsageSnapshot {
     pub percent: Option<f32>,
     pub used_physical_bytes: Option<u64>,
     pub total_physical_bytes: Option<u64>,
-    pub cached_physical_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -76,7 +74,6 @@ pub fn sample_memory_usage() -> MemoryUsageSnapshot {
         percent: Some(status.dwMemoryLoad.min(100) as f32),
         used_physical_bytes: Some(used_physical_bytes),
         total_physical_bytes: Some(total_physical_bytes),
-        cached_physical_bytes: system_cache_bytes(),
     }
 }
 
@@ -94,28 +91,10 @@ impl IoUsageMonitor {
             .sampled_at
             .duration_since(previous.sampled_at)
             .as_secs_f64();
-        if elapsed <= 0.0 {
-            return IoUsageSnapshot::default();
-        }
-        let mut totals = None;
-        for (identity, &(read, write)) in &current.processes {
-            let Some(&(old_read, old_write)) = previous.processes.get(identity) else {
-                continue;
-            };
-            let (Some(read), Some(write)) =
-                (read.checked_sub(old_read), write.checked_sub(old_write))
-            else {
-                continue;
-            };
-            let (total_read, total_write) = totals.get_or_insert((0u64, 0u64));
-            *total_read = total_read.saturating_add(read);
-            *total_write = total_write.saturating_add(write);
-        }
-        let Some((read, write)) = totals else {
+        let Some((read, write)) = counter_rates(&previous.processes, &current.processes, elapsed)
+        else {
             return IoUsageSnapshot::default();
         };
-        let read = read as f64 / elapsed;
-        let write = write as f64 / elapsed;
         IoUsageSnapshot {
             bytes_per_second: Some(read + write),
             read_bytes_per_second: Some(read),
@@ -235,35 +214,42 @@ impl NetworkUsageMonitor {
             .sampled_at
             .duration_since(previous.sampled_at)
             .as_secs_f64();
-        if elapsed <= 0.0 {
-            return NetworkUsageSnapshot::default();
-        }
-        let mut totals = None;
-        for (identity, &(download, upload)) in &current.interfaces {
-            let Some(&(old_download, old_upload)) = previous.interfaces.get(identity) else {
-                continue;
-            };
-            let (Some(download), Some(upload)) = (
-                download.checked_sub(old_download),
-                upload.checked_sub(old_upload),
-            ) else {
-                continue;
-            };
-            let (total_download, total_upload) = totals.get_or_insert((0u64, 0u64));
-            *total_download = total_download.saturating_add(download);
-            *total_upload = total_upload.saturating_add(upload);
-        }
-        let Some((download, upload)) = totals else {
+        let Some((download, upload)) =
+            counter_rates(&previous.interfaces, &current.interfaces, elapsed)
+        else {
             return NetworkUsageSnapshot::default();
         };
-        let download = download as f64 / elapsed;
-        let upload = upload as f64 / elapsed;
         NetworkUsageSnapshot {
             bytes_per_second: Some(download + upload),
             download_bytes_per_second: Some(download),
             upload_bytes_per_second: Some(upload),
         }
     }
+}
+
+fn counter_rates<K: Ord>(
+    previous: &BTreeMap<K, (u64, u64)>,
+    current: &BTreeMap<K, (u64, u64)>,
+    elapsed: f64,
+) -> Option<(f64, f64)> {
+    if elapsed <= 0.0 {
+        return None;
+    }
+    let mut totals = None;
+    for (identity, &(first, second)) in current {
+        let Some(&(old_first, old_second)) = previous.get(identity) else {
+            continue;
+        };
+        let (Some(first), Some(second)) =
+            (first.checked_sub(old_first), second.checked_sub(old_second))
+        else {
+            continue;
+        };
+        let (total_first, total_second) = totals.get_or_insert((0u64, 0u64));
+        *total_first = total_first.saturating_add(first);
+        *total_second = total_second.saturating_add(second);
+    }
+    totals.map(|(first, second)| (first as f64 / elapsed, second as f64 / elapsed))
 }
 
 fn system_memory_status() -> Option<MEMORYSTATUSEX> {
@@ -274,24 +260,6 @@ fn system_memory_status() -> Option<MEMORYSTATUSEX> {
     // SAFETY: status declares its size and remains writable for the call.
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
     (ok != 0).then_some(status)
-}
-
-fn system_cache_bytes() -> Option<u64> {
-    let mut info = PERFORMANCE_INFORMATION {
-        cb: std::mem::size_of::<PERFORMANCE_INFORMATION>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: info is writable and info.cb is exactly its initialized structure size.
-    let ok = unsafe { GetPerformanceInfo(&mut info, info.cb) };
-    if ok == 0 {
-        return None;
-    }
-
-    Some(cache_bytes_from_pages(info.SystemCache, info.PageSize))
-}
-
-fn cache_bytes_from_pages(page_count: usize, page_size: usize) -> u64 {
-    (page_count as u64).saturating_mul(page_size as u64)
 }
 
 fn read_system_io_counters() -> Option<IoCounterSample> {

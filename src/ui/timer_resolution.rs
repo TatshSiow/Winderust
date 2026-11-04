@@ -86,13 +86,14 @@ impl Editor {
         &'a self,
         s: &'a TimerResolutionSettings,
         status: &TimerResolutionSnapshot,
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let mut body = column![
-            super::widgets::settings_card(super::widgets::setting_row(
+            super::widgets::toggle_card(
                 "timer_resolution.enable",
-                super::widgets::switch(s.enabled, Some(Message::Enabled))
-            )),
+                s.enabled,
+                Some(Message::Enabled)
+            ),
             super::widgets::setting_title("common.rules"),
             super::app_picker::view(
                 &self.path,

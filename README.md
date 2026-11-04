@@ -1,43 +1,46 @@
-> [!IMPORTANT]
-> Join the [Winderust Discord community](https://discord.com/invite/M7nctFZUxX).
+<p align="center">
+  <img src="image/icon-design.png" alt="Winderust logo" width="144" height="144">
+</p>
 
-> [!WARNING]  
+<h1 align="center">Winderust</h1>
+
+<p align="center">
+  <strong>Windows Performance &amp; Power Manager</strong><br>
+  An engine to improve your Windows experience.
+</p>
+
+<p align="center">Powered by <strong>Rust</strong> and <strong>Iced</strong>.</p>
+
+<p align="center">
+  <a href="https://github.com/TatshSiow/Winderust/releases"><strong>Download the latest release</strong></a>
+  &nbsp;&middot;&nbsp;
+  <a href="#features">Features</a>
+  &nbsp;&middot;&nbsp;
+  <a href="#runbuild-it-yourself">Build from source</a>
+</p>
+
+<p align="center">
+  <a href="https://discord.com/invite/M7nctFZUxX">
+    <img src="resources/discord-button.svg" alt="Join the Winderust Discord community" width="144" height="40">
+  </a>
+</p>
+
+> [!WARNING]
 > Alpha state, expects things to break,imperfect or not nicely handled.
 
-# Winderust
-
-Windows Performance & Power Manager. A system engine to improve your Windows experience.
-
-The Windows desktop UI uses Iced with software rendering. Settings remain portable
-beside the executable, with English and Traditional Chinese locales.
-
-![Winderust Home dashboard](screenshots/Home.png)
-
-## Download
-
-[Download the latest release](https://github.com/TatshSiow/Winderust/releases).
+<p align="center">
+  <img src="resources/Home.png" alt="Winderust Home dashboard" width="960">
+</p>
 
 ## Features
 
-- Adaptive Engine that automatically adjust background process resource
-- Automatic power plan switching modules
-- CPU/GPU/Memory/IO etc. Priority Control
+- Adaptive Engine that automatically adjust background process resources
+- Automatic power plan
+- CPU/GPU/Memory/IO etc. Priority Controls
 - Smart memory trimming for background process
+- CPU/Memory watchdog (Alert,Kill,Restart)
 - iOS inspired background app suspension
 - etc. 
-
-## Documentation
-
-- [Documentation index](docs/README.md)
-- [Architecture](docs/architecture.md)
-- [Adaptive Engine implementation](docs/adaptive-engine-implementation.md)
-- [Release checklist](docs/release-checklist.md)
-
-## Benchmark
-
-Adaptive Engine benchmarks compare foreground responsiveness, retained background throughput,
-and package power on specific hardware. See [`benchmark/`](benchmark/README.md) for reports and
-methodology limits.
 
 ## Run/Build it yourself
 - [Prerequisites](https://rustup.rs)
@@ -52,37 +55,27 @@ Release build
 cargo build --release
 ```
 
-The executable is written to `target\*`
+The release build is in `target\*`
 
 
-## Diagnostic logs
+## Bug Report
 
-When reporting a crash or shutdown failure, attach `winderust-diagnostics.log`
-and `winderust-recovery.log` from beside the executable, plus any matching
-`*.previous.log` files. Each log is limited to 1 MiB with one backup.
-They record startup/version details, Rust panics with backtraces, and startup,
-shutdown, and recovery failures. No upload occurs automatically.
+When reporting a crash or uncommon behaviour, attach :
+- `winderust-diagnostics.log`
+- `winderust-recovery.log`
+- other`*.previous.log` files
 
-Logs can contain process names and local paths; review them before sharing.
-The executable directory must be writable. Forced termination, native crashes,
-and power loss may leave no final entry. These diagnostics are separate from
-the in-memory Action Log, which still requires manual CSV export.
+Logs may contain process names and local path, review them before upload/reporting.
+
+Using developer **End Task**, system crash or power loss may not generate the log. 
 
 ## Contributions
 
-Before contributing, run:
-
-```powershell
-cargo fmt -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-```
-
-See 
+Check:
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [SECURITY.md](SECURITY.md).
 
 ## License
 
 Copyright (C) 2026 Tatsh Siow.
-Licensed under [GPL-3.0-only](LICENSE).
+Licensed under [GPLv3](LICENSE).

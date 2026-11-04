@@ -12,9 +12,13 @@ mod cpu_allocation;
 mod cpu_limiter;
 mod design;
 mod home;
+mod hotkeys;
 mod memory_trim;
+mod modal;
 mod motion;
 mod navigation;
+mod navigation_flyout;
+mod pickers;
 mod popover;
 mod power_rules;
 mod priority_control;
@@ -26,8 +30,10 @@ mod settings_pages;
 mod status_rail;
 mod tasks;
 mod timer_resolution;
+mod watchdog;
 mod widgets;
 mod win32_priority_separation;
+mod window_frame;
 use rust_i18n::t;
 
 pub(crate) mod app;
@@ -60,6 +66,7 @@ pub enum Page {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
+    Watchdog,
     ProcessorAffinityHard,
     ByForeground,
     ByTime,
@@ -77,7 +84,7 @@ pub struct PageSection {
     pub pages: &'static [Page],
 }
 
-const OVERVIEW_PAGES: [Page; 1] = [Page::Home];
+const HOME_PAGES: [Page; 1] = [Page::Home];
 const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
 const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
     Page::ByForeground,
@@ -100,10 +107,11 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 3] = [
+const WINDERUST_FEATURE_PAGES: [Page; 4] = [
     Page::AdaptiveEngine,
     Page::BackgroundEfficiency,
     Page::MemoryTrim,
+    Page::Watchdog,
 ];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const SETTINGS_PAGES: [Page; 3] = [
@@ -120,7 +128,7 @@ const ADVANCED_CONTROLS_PAGES: [Page; 3] = [
 const PAGE_SECTIONS: [PageSection; 10] = [
     PageSection {
         landing_page: Page::Home,
-        pages: &OVERVIEW_PAGES,
+        pages: &HOME_PAGES,
     },
     PageSection {
         landing_page: Page::ProcessList,
@@ -212,6 +220,7 @@ impl Page {
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
             Self::MemoryTrim => t!("nav.memory_trim"),
+            Self::Watchdog => t!("nav.watchdog"),
             Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
             Self::ByForeground => t!("nav.by_foreground"),
             Self::ByTime => t!("nav.by_time"),
@@ -237,6 +246,7 @@ impl Page {
             Self::WinderustFeatures
             | Self::AdaptiveEngine
             | Self::BackgroundEfficiency
+            | Self::Watchdog
             | Self::MemoryTrim => Self::WinderustFeatures,
             Self::PowerPlanControl
             | Self::ByActivity
@@ -306,6 +316,7 @@ mod tests {
         assert!(Page::ByForeground.supports_power_source_profiles());
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());
+        assert!(!Page::Watchdog.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
         assert!(!Page::ProcessList.supports_power_source_profiles());
         assert!(!Page::ActionLog.supports_power_source_profiles());

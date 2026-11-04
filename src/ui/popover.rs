@@ -10,39 +10,42 @@ use iced::{
 pub(super) fn view<'a, Message: 'a>(
     id: u64,
     anchor: Element<'a, Message>,
-    content: Element<'a, Message>,
+    content: impl Fn() -> Element<'a, Message> + 'a,
 ) -> Element<'a, Message> {
     Element::new(Popover {
         id,
         anchor,
-        content,
-        context: false,
+        content: Some(Box::new(content)),
+        popup: None,
     })
 }
-pub(super) fn context_menu<'a, Message: 'a>(
+pub(super) fn context_menu<'a, Message: Clone + 'a>(
     id: u64,
     anchor: Element<'a, Message>,
-    content: Element<'a, Message>,
+    content: impl Fn() -> Element<'a, Message> + 'a,
 ) -> Element<'a, Message> {
     Element::new(Popover {
         id,
-        anchor,
-        content,
-        context: true,
+        anchor: iced_aw::ContextMenu::new(anchor, move || {
+            super::scrolling::repaint_popup(content())
+        })
+        .into(),
+        content: None,
+        popup: None,
     })
 }
 struct Popover<'a, Message> {
-    context: bool,
     id: u64,
     anchor: Element<'a, Message>,
-    content: Element<'a, Message>,
+    content: Option<Box<dyn Fn() -> Element<'a, Message> + 'a>>,
+    popup: Option<Element<'a, Message>>,
 }
 #[derive(Default)]
 struct State {
     id: u64,
     open: bool,
 }
-impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
+impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> {
     fn size(&self) -> Size<Length> {
         self.anchor.as_widget().size()
     }
@@ -56,7 +59,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
         })
     }
     fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.anchor), Tree::new(&self.content)]
+        let mut children = vec![Tree::new(&self.anchor)];
+        if let Some(popup) = &self.popup {
+            children.push(Tree::new(popup));
+        }
+        children
     }
     fn diff(&self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<State>();
@@ -65,10 +72,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
                 id: self.id,
                 open: false,
             };
-            tree.children[1] = Tree::new(&self.content);
+            tree.children = self.children();
         }
         tree.children[0].diff(&self.anchor);
-        tree.children[1].diff(&self.content);
     }
     fn layout(
         &mut self,
@@ -122,12 +128,20 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if self.context
-            && !matches!(
+        if self.content.is_none() {
+            // iced_aw owns the menu; retain focus-loss dismissal and clipped hit testing.
+            if matches!(event, Event::Window(iced::window::Event::Unfocused)) {
+                tree.children[0] = Tree::new(&self.anchor);
+                shell.request_redraw();
+                return;
+            }
+            if matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
-            )
-        {
+            ) && !cursor.is_over(*viewport)
+            {
+                return;
+            }
             self.anchor.as_widget_mut().update(
                 &mut tree.children[0],
                 event,
@@ -138,21 +152,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
                 shell,
                 viewport,
             );
+            return;
         }
-        let trigger = if self.context {
-            matches!(
-                event,
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+        let trigger = matches!(
+            event,
+            Event::Mouse(
+                mouse::Event::CursorMoved { .. } | mouse::Event::ButtonPressed(mouse::Button::Left)
             )
-        } else {
-            matches!(
-                event,
-                Event::Mouse(
-                    mouse::Event::CursorMoved { .. }
-                        | mouse::Event::ButtonPressed(mouse::Button::Left)
-                )
-            )
-        };
+        );
         if trigger && cursor.is_over(layout.bounds()) && cursor.is_over(*viewport) {
             let state = tree.state.downcast_mut::<State>();
             if !state.open {
@@ -183,10 +190,23 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
         &'b mut self,
         tree: &'b mut Tree,
         layout: Layout<'b>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        if self.content.is_none() {
+            if !viewport.intersects(&(layout.bounds() + translation)) {
+                tree.children[0] = Tree::new(&self.anchor);
+                return None;
+            }
+            return self.anchor.as_widget_mut().overlay(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                viewport,
+                translation,
+            );
+        }
         let state = tree.state.downcast_mut::<State>();
         if !state.open {
             return None;
@@ -196,17 +216,25 @@ impl<Message> Widget<Message, Theme, Renderer> for Popover<'_, Message> {
             state.open = false;
             return None;
         }
+        if self.popup.is_none() {
+            let content = self.content.as_ref().expect("Hover popover has content");
+            let popup = super::scrolling::repaint_popup(content());
+            if tree.children.len() == 1 {
+                tree.children.push(Tree::new(&popup));
+            } else {
+                tree.children[1].diff(&popup);
+            }
+            self.popup = Some(popup);
+        }
         Some(overlay::Element::new(Box::new(Popup {
-            content: &mut self.content,
+            content: self.popup.as_mut().expect("Open hover popover was built"),
             tree: &mut tree.children[1],
             open: &mut state.open,
             anchor,
-            context: self.context,
         })))
     }
 }
 struct Popup<'a, 'b, Message> {
-    context: bool,
     content: &'b mut Element<'a, Message>,
     tree: &'b mut Tree,
     open: &'b mut bool,
@@ -261,8 +289,7 @@ impl<Message> iced::advanced::Overlay<Message, Theme, Renderer> for Popup<'_, '_
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
-        let outside =
-            !cursor.is_over(layout.bounds()) && (self.context || !cursor.is_over(self.anchor));
+        let outside = !cursor.is_over(layout.bounds()) && !cursor.is_over(self.anchor);
         let escape = matches!(
             event,
             Event::Keyboard(keyboard::Event::KeyPressed {
@@ -273,9 +300,7 @@ impl<Message> iced::advanced::Overlay<Message, Theme, Renderer> for Popup<'_, '_
         if escape
             || matches!(event, Event::Window(iced::window::Event::Unfocused))
             || (outside && matches!(event, Event::Mouse(mouse::Event::ButtonPressed(_))))
-            || (!self.context
-                && outside
-                && matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. })))
+            || (outside && matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. })))
         {
             *self.open = false;
             shell.invalidate_layout();
@@ -285,8 +310,6 @@ impl<Message> iced::advanced::Overlay<Message, Theme, Renderer> for Popup<'_, '_
             }
             return;
         }
-        let mut messages = Vec::new();
-        let mut content_shell = Shell::new(&mut messages);
         self.content.as_widget_mut().update(
             self.tree,
             event,
@@ -294,16 +317,9 @@ impl<Message> iced::advanced::Overlay<Message, Theme, Renderer> for Popup<'_, '_
             cursor,
             renderer,
             clipboard,
-            &mut content_shell,
+            shell,
             &layout.bounds(),
         );
-        let selected = !content_shell.is_empty();
-        shell.merge(content_shell, |message| message);
-        if self.context && selected {
-            *self.open = false;
-            shell.invalidate_layout();
-            shell.request_redraw();
-        }
         if cursor.is_over(layout.bounds()) && matches!(event, Event::Mouse(_)) {
             shell.capture_event();
         }
@@ -340,18 +356,206 @@ mod tests {
     use crate::ui::action_log::Message;
     use iced::advanced::Overlay;
     #[test]
-    fn hover_popup_uses_scrolled_anchor_for_visibility() {
+    fn context_menu_keeps_dismissal_clipping_identity_and_actions() {
+        fn menu(id: u64) -> Element<'static, ()> {
+            context_menu(
+                id,
+                iced::widget::button("Color").width(42).height(42).into(),
+                || {
+                    iced::widget::button("Edit")
+                        .width(140)
+                        .height(32)
+                        .on_press(())
+                        .into()
+                },
+            )
+        }
         let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let mut element: Element<'_, ()> = view(
-            1,
-            iced::widget::container("Process")
-                .width(160)
-                .height(35)
-                .into(),
-            iced::widget::text("Affected processes").into(),
+        let mut view = menu(1);
+        let mut tree = Tree::new(&view);
+        let viewport = Rectangle::with_size(Size::new(400.0, 300.0));
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, viewport.size()),
         );
+        let point = node.bounds().center();
+        let mut messages = Vec::new();
+        let mut clipboard = iced::advanced::clipboard::Null;
+        for dismissal in 0..4 {
+            view.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                Layout::new(&node),
+                mouse::Cursor::Available(point),
+                &renderer,
+                &mut clipboard,
+                &mut Shell::new(&mut messages),
+                &viewport,
+            );
+            {
+                let mut overlay = view
+                    .as_widget_mut()
+                    .overlay(
+                        &mut tree,
+                        Layout::new(&node),
+                        &renderer,
+                        &viewport,
+                        Vector::ZERO,
+                    )
+                    .unwrap();
+                let overlay = overlay.as_overlay_mut();
+                let node = overlay.layout(&renderer, viewport.size());
+                let content = node.children()[0].bounds();
+                assert!(viewport.contains(content.center()));
+                overlay.update(
+                    &Event::Mouse(mouse::Event::CursorMoved {
+                        position: iced::Point::new(350., 250.),
+                    }),
+                    Layout::new(&node),
+                    mouse::Cursor::Available(iced::Point::new(350., 250.)),
+                    &renderer,
+                    &mut clipboard,
+                    &mut Shell::new(&mut messages),
+                );
+                if dismissal == 0 {
+                    for event in [
+                        mouse::Event::ButtonPressed(mouse::Button::Left),
+                        mouse::Event::ButtonReleased(mouse::Button::Left),
+                    ] {
+                        overlay.update(
+                            &Event::Mouse(event),
+                            Layout::new(&node),
+                            mouse::Cursor::Available(content.center()),
+                            &renderer,
+                            &mut clipboard,
+                            &mut Shell::new(&mut messages),
+                        );
+                    }
+                    assert_eq!(messages, vec![()]);
+                } else if dismissal == 1 {
+                    overlay.update(
+                        &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                        Layout::new(&node),
+                        mouse::Cursor::Available(iced::Point::new(350., 250.)),
+                        &renderer,
+                        &mut clipboard,
+                        &mut Shell::new(&mut messages),
+                    );
+                } else if dismissal == 2 {
+                    overlay.update(
+                        &Event::Keyboard(keyboard::Event::KeyPressed {
+                            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                            modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                            physical_key: keyboard::key::Physical::Code(
+                                keyboard::key::Code::Escape,
+                            ),
+                            location: keyboard::Location::Standard,
+                            modifiers: keyboard::Modifiers::default(),
+                            text: None,
+                            repeat: false,
+                        }),
+                        Layout::new(&node),
+                        mouse::Cursor::Unavailable,
+                        &renderer,
+                        &mut clipboard,
+                        &mut Shell::new(&mut messages),
+                    );
+                }
+            }
+            if dismissal == 3 {
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &Event::Window(iced::window::Event::Unfocused),
+                    Layout::new(&node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut clipboard,
+                    &mut Shell::new(&mut messages),
+                    &viewport,
+                );
+            }
+            assert!(view
+                .as_widget_mut()
+                .overlay(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &viewport,
+                    Vector::ZERO
+                )
+                .is_none());
+        }
+        let clipped = Rectangle {
+            x: 100.,
+            ..viewport
+        };
+        view.as_widget_mut().update(
+            &mut tree,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            Layout::new(&node),
+            mouse::Cursor::Available(point),
+            &renderer,
+            &mut clipboard,
+            &mut Shell::new(&mut messages),
+            &clipped,
+        );
+        assert!(view
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                Vector::ZERO
+            )
+            .is_none());
+        view.as_widget_mut().update(
+            &mut tree,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            Layout::new(&node),
+            mouse::Cursor::Available(point),
+            &renderer,
+            &mut clipboard,
+            &mut Shell::new(&mut messages),
+            &viewport,
+        );
+        view = menu(2);
+        view.as_widget().diff(&mut tree);
+        assert!(view
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                Vector::ZERO
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn hover_popup_defers_content_and_keeps_identity_and_scrolled_visibility() {
+        fn popup(id: u64, builds: &std::cell::Cell<usize>) -> Element<'_, ()> {
+            view(
+                id,
+                iced::widget::container("Process")
+                    .width(160)
+                    .height(35)
+                    .into(),
+                move || {
+                    builds.set(builds.get() + 1);
+                    iced::widget::text("Affected processes").into()
+                },
+            )
+        }
+        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let builds = std::cell::Cell::new(0);
+        let mut element = popup(1, &builds);
         let mut tree = Tree::new(&element);
-        let node = element
+        assert_eq!(builds.get(), 0);
+        assert_eq!(tree.children.len(), 1);
+        let mut node = element
             .as_widget_mut()
             .layout(
                 &mut tree,
@@ -361,11 +565,73 @@ mod tests {
             .move_to(iced::Point::new(20.0, 700.0));
         let viewport = Rectangle::with_size(Size::new(500.0, 300.0));
         let translation = Vector::new(0.0, -650.0);
+        for recreate_tree in [false, true] {
+            if recreate_tree {
+                tree = Tree::new(&element);
+                node = element
+                    .as_widget_mut()
+                    .layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(Size::ZERO, Size::new(500.0, 1000.0)),
+                    )
+                    .move_to(iced::Point::new(20.0, 700.0));
+            }
+            element.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::CursorMoved {
+                    position: node.bounds().center(),
+                }),
+                Layout::new(&node),
+                mouse::Cursor::Available(node.bounds().center()),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+                &(viewport - translation),
+            );
+            assert!(element
+                .as_widget_mut()
+                .overlay(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &viewport,
+                    translation,
+                )
+                .is_some());
+            assert_eq!(builds.get(), 1);
+            assert_eq!(tree.children.len(), 2);
+        }
+        element = popup(1, &builds);
+        element.as_widget().diff(&mut tree);
+        assert_eq!(builds.get(), 1);
+        assert_eq!(tree.children.len(), 2);
+        assert!(element
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                translation,
+            )
+            .is_some());
+        assert_eq!(builds.get(), 2);
+        assert!(element
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                Vector::ZERO,
+            )
+            .is_none());
+        assert_eq!(builds.get(), 2);
+        assert!(!tree.state.downcast_ref::<State>().open);
         element.as_widget_mut().update(
             &mut tree,
-            &Event::Mouse(mouse::Event::CursorMoved {
-                position: node.bounds().center(),
-            }),
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             Layout::new(&node),
             mouse::Cursor::Available(node.bounds().center()),
             &renderer,
@@ -383,71 +649,12 @@ mod tests {
                 translation,
             )
             .is_some());
-        assert!(element
-            .as_widget_mut()
-            .overlay(
-                &mut tree,
-                Layout::new(&node),
-                &renderer,
-                &viewport,
-                Vector::ZERO,
-            )
-            .is_none());
-    }
-
-    #[test]
-    fn context_menu_stays_open_until_dismissed_or_an_action_is_selected() {
-        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let mut content: Element<'_, ()> = iced::widget::button("Edit").on_press(()).into();
-        let mut tree = Tree::new(&content);
-        let mut open = true;
-        let mut popup = Popup {
-            content: &mut content,
-            tree: &mut tree,
-            open: &mut open,
-            anchor: Rectangle::new(iced::Point::new(20., 20.), Size::new(42., 42.)),
-            context: true,
-        };
-        let node = popup.layout(&renderer, Size::new(400., 300.));
-        let mut messages = Vec::new();
-        let mut clipboard = iced::advanced::clipboard::Null;
-        popup.update(
-            &Event::Mouse(mouse::Event::CursorMoved {
-                position: iced::Point::ORIGIN,
-            }),
-            Layout::new(&node),
-            mouse::Cursor::Available(iced::Point::ORIGIN),
-            &renderer,
-            &mut clipboard,
-            &mut Shell::new(&mut messages),
-        );
-        assert!(*popup.open);
-        let cursor = mouse::Cursor::Available(node.bounds().center());
-        for event in [
-            mouse::Event::ButtonPressed(mouse::Button::Left),
-            mouse::Event::ButtonReleased(mouse::Button::Left),
-        ] {
-            popup.update(
-                &Event::Mouse(event),
-                Layout::new(&node),
-                cursor,
-                &renderer,
-                &mut clipboard,
-                &mut Shell::new(&mut messages),
-            );
-        }
-        assert!(!*popup.open);
-        assert_eq!(messages, vec![()]);
-        *popup.open = true;
-        popup.update(
-            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-            Layout::new(&node),
-            mouse::Cursor::Available(iced::Point::ORIGIN),
-            &renderer,
-            &mut clipboard,
-            &mut Shell::new(&mut messages),
-        );
-        assert!(!*popup.open);
+        assert_eq!(builds.get(), 2);
+        element = popup(2, &builds);
+        element.as_widget().diff(&mut tree);
+        assert_eq!(builds.get(), 2);
+        assert_eq!(tree.children.len(), 1);
+        assert!(!tree.state.downcast_ref::<State>().open);
     }
 
     #[test]
@@ -473,7 +680,6 @@ mod tests {
             tree: &mut tree,
             open: &mut open,
             anchor,
-            context: false,
         };
         let node = popup.layout(&renderer, Size::new(500.0, 300.0));
         let bounds = node.bounds();

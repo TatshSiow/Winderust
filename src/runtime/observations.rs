@@ -251,26 +251,69 @@ pub(crate) fn foreground_process_group_ids(
     processes: &[ProcessInfo],
     root: Option<u32>,
 ) -> BTreeSet<u32> {
-    let by_id = processes
+    let Some(root) = root else {
+        return BTreeSet::new();
+    };
+    let Some(root_created) = processes
         .iter()
-        .map(|p| (p.id, p))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let Some(root) = root.filter(|id| by_id.get(id).is_some_and(|p| p.creation_time.is_some()))
+        .rev()
+        .find(|process| process.id == root)
+        .and_then(|process| process.creation_time)
     else {
         return BTreeSet::new();
     };
+    if !processes.iter().any(|child| {
+        child.parent_id == Some(root)
+            && child.id != root
+            && child
+                .creation_time
+                .is_some_and(|created| created >= root_created)
+    }) {
+        return BTreeSet::from([root]);
+    }
+    let by_id = processes
+        .iter()
+        .map(|process| (process.id, process))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let valid_generation = |child: &ProcessInfo, parent_created| {
+        child
+            .creation_time
+            .zip(parent_created)
+            .is_some_and(|(child, parent)| child >= parent)
+    };
     let mut group = BTreeSet::from([root]);
     let mut pending = vec![root];
-    while let Some(parent) = pending.pop() {
+    // Scanning small families costs less than building the complete ancestry index.
+    for _ in 0..16 {
+        let Some(parent) = pending.pop() else {
+            return group;
+        };
         let parent_created = by_id[&parent].creation_time;
         for child in processes {
             if child.parent_id == Some(parent)
-                && child
-                    .creation_time
-                    .zip(parent_created)
-                    .is_some_and(|(child, parent)| child >= parent)
+                && valid_generation(child, parent_created)
                 && group.insert(child.id)
             {
+                pending.push(child.id);
+            }
+        }
+    }
+    if pending.is_empty() {
+        return group;
+    }
+    let mut children = processes
+        .iter()
+        .filter_map(|process| process.parent_id.map(|parent| (parent, process)))
+        .collect::<Vec<_>>();
+    children.sort_by_key(|(parent, _)| *parent);
+    while let Some(parent) = pending.pop() {
+        let parent_created = by_id[&parent].creation_time;
+        let first = children.partition_point(|(parent_id, _)| *parent_id < parent);
+        for (_, child) in children[first..]
+            .iter()
+            .take_while(|(parent_id, _)| *parent_id == parent)
+        {
+            if valid_generation(child, parent_created) && group.insert(child.id) {
                 pending.push(child.id);
             }
         }
@@ -391,7 +434,7 @@ mod tests {
             &mut ActionLog::default(),
         );
         assert_eq!(result.failed_processes, 0);
-        assert_eq!(result.adjusted_threads, 0);
+        assert_eq!(result.adjusted_processes, 0);
     }
 
     #[test]
@@ -442,6 +485,112 @@ mod tests {
                     ),
                     expected
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn foreground_group_index_preserves_scan_results_across_forests_and_cycles() {
+        fn reference(processes: &[ProcessInfo], root: Option<u32>) -> BTreeSet<u32> {
+            let by_id = processes
+                .iter()
+                .map(|process| (process.id, process))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let Some(root) = root.filter(|id| {
+                by_id
+                    .get(id)
+                    .is_some_and(|process| process.creation_time.is_some())
+            }) else {
+                return BTreeSet::new();
+            };
+            let mut group = BTreeSet::from([root]);
+            let mut pending = vec![root];
+            while let Some(parent) = pending.pop() {
+                for child in processes {
+                    if child.parent_id == Some(parent)
+                        && child
+                            .creation_time
+                            .zip(by_id[&parent].creation_time)
+                            .is_some_and(|(child, parent)| child >= parent)
+                        && group.insert(child.id)
+                    {
+                        pending.push(child.id);
+                    }
+                }
+            }
+            group
+        }
+
+        let make = |id, parent_id, creation_time| ProcessInfo {
+            id,
+            parent_id,
+            creation_time,
+            session_id: Some(1),
+            user_name: None,
+            is_service_account: Some(false),
+            is_critical: Some(false),
+            can_set_information: false,
+            name: format!("{id}.exe"),
+            image_path: None,
+        };
+        let deep = (1..=512)
+            .map(|id| make(id, (id > 1).then_some(id - 1), Some(u64::from(id))))
+            .collect::<Vec<_>>();
+        let leaf = (1..=512)
+            .map(|id| make(id, None, Some(u64::from(id))))
+            .collect::<Vec<_>>();
+        let mut wide = (1..=512)
+            .map(|id| make(id, (id > 1).then_some(1), Some(u64::from(id))))
+            .collect::<Vec<_>>();
+        wide.extend((513..=1024).map(|id| make(id, None, Some(u64::from(id)))));
+        let mut unknown_root = deep.clone();
+        unknown_root[0].creation_time = None;
+        let mut interrupted = deep.clone();
+        interrupted[100].creation_time = None;
+        interrupted[200].creation_time = Some(1);
+        let cyclic = vec![
+            make(1, Some(3), Some(10)),
+            make(2, Some(1), Some(10)),
+            make(3, Some(2), Some(10)),
+            make(4, Some(5), Some(10)),
+            make(5, Some(4), Some(10)),
+            make(6, Some(6), Some(10)),
+            make(7, Some(999), Some(10)),
+        ];
+        let duplicate_ids = vec![
+            make(1, None, Some(10)),
+            make(2, Some(1), Some(11)),
+            make(3, Some(2), Some(12)),
+            make(1, None, Some(100)),
+        ];
+        let mut forests = vec![
+            Vec::new(),
+            leaf,
+            deep,
+            wide,
+            unknown_root,
+            interrupted,
+            cyclic,
+            duplicate_ids,
+        ];
+        for family_size in [15, 16, 17] {
+            let mut entries = (1..=family_size)
+                .map(|id| make(id, (id > 1).then_some(id - 1), Some(u64::from(id))))
+                .collect::<Vec<_>>();
+            entries.extend((513..=1024).map(|id| make(id, None, Some(u64::from(id)))));
+            forests.push(entries);
+        }
+        for mut entries in forests {
+            for _ in 0..2 {
+                for root in [None, Some(1), Some(2), Some(6), Some(9999)] {
+                    assert_eq!(
+                        foreground_process_group_ids(&entries, root),
+                        reference(&entries, root),
+                        "root {root:?} in {} process records",
+                        entries.len()
+                    );
+                }
+                entries.reverse();
             }
         }
     }

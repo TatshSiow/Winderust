@@ -40,6 +40,7 @@ pub enum ActionLogFeature {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
+    Watchdog,
     TimerResolution,
 }
 
@@ -59,6 +60,35 @@ pub enum ActionLogResult {
     Restored,
     Skipped,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionLogLevel {
+    Information,
+    Warning,
+    Error,
+}
+
+impl ActionLogLevel {
+    pub const ALL: [Self; 3] = [Self::Information, Self::Warning, Self::Error];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Information => "INFO",
+            Self::Warning => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+impl ActionLogResult {
+    pub fn level(self) -> ActionLogLevel {
+        match self {
+            Self::Applied | Self::Restored => ActionLogLevel::Information,
+            Self::Skipped => ActionLogLevel::Warning,
+            Self::Failed => ActionLogLevel::Error,
+        }
+    }
 }
 
 pub struct ActionLog {
@@ -101,21 +131,23 @@ impl ActionLog {
         result: ActionLogResult,
         reason: impl Into<String>,
     ) {
+        let should_record = self.mode.should_record(result);
+        if result == ActionLogResult::Skipped && !should_record {
+            return;
+        }
         let process_name = process_name.into();
         let reason = reason.into();
         let timestamp_epoch_ms = timestamp_epoch_ms();
-        let should_record = self.mode.should_record(result);
         if result == ActionLogResult::Skipped
-            && (!should_record
-                || self.entries.iter().rev().any(|entry| {
-                    entry.feature == feature
-                        && entry.process_id == process_id
-                        && entry.process_name == process_name
-                        && entry.result == result
-                        && entry.reason == reason
-                        && timestamp_epoch_ms.saturating_sub(entry.timestamp_epoch_ms)
-                            < SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS
-                }))
+            && self.entries.iter().rev().any(|entry| {
+                entry.feature == feature
+                    && entry.process_id == process_id
+                    && entry.process_name == process_name
+                    && entry.result == result
+                    && entry.reason == reason
+                    && timestamp_epoch_ms.saturating_sub(entry.timestamp_epoch_ms)
+                        < SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS
+            })
         {
             return;
         }
@@ -176,10 +208,11 @@ impl ActionLogMode {
     fn should_record(self, result: ActionLogResult) -> bool {
         match self {
             Self::Full => true,
-            Self::Warning => {
-                matches!(result, ActionLogResult::Failed | ActionLogResult::Skipped)
-            }
-            Self::Error => matches!(result, ActionLogResult::Failed),
+            Self::Warning => matches!(
+                result.level(),
+                ActionLogLevel::Warning | ActionLogLevel::Error
+            ),
+            Self::Error => result.level() == ActionLogLevel::Error,
             Self::Off => false,
         }
     }
@@ -201,6 +234,66 @@ fn timestamp_epoch_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_levels_preserve_capture_thresholds() {
+        for (result, level, recorded) in [
+            (
+                ActionLogResult::Applied,
+                ActionLogLevel::Information,
+                [true, false, false, false],
+            ),
+            (
+                ActionLogResult::Restored,
+                ActionLogLevel::Information,
+                [true, false, false, false],
+            ),
+            (
+                ActionLogResult::Skipped,
+                ActionLogLevel::Warning,
+                [true, true, false, false],
+            ),
+            (
+                ActionLogResult::Failed,
+                ActionLogLevel::Error,
+                [true, true, true, false],
+            ),
+        ] {
+            assert_eq!(result.level(), level);
+            for (mode, expected) in ActionLogMode::ALL.into_iter().zip(recorded) {
+                assert_eq!(mode.should_record(result), expected, "{mode:?} {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn filtered_skips_do_not_convert_payloads_or_change_log_state() {
+        struct Payload<'a>(&'a std::cell::Cell<usize>);
+        impl From<Payload<'_>> for String {
+            fn from(payload: Payload<'_>) -> Self {
+                payload.0.set(payload.0.get() + 1);
+                "payload".to_owned()
+            }
+        }
+
+        for mode in ActionLogMode::ALL {
+            let conversions = std::cell::Cell::new(0);
+            let mut log = ActionLog::new(1);
+            log.set_mode(mode);
+            log.record(
+                ActionLogFeature::ProcessPriority,
+                Some(1),
+                Payload(&conversions),
+                ActionLogResult::Skipped,
+                Payload(&conversions),
+            );
+            let visible = matches!(mode, ActionLogMode::Full | ActionLogMode::Warning);
+            assert_eq!(conversions.get(), if visible { 2 } else { 0 }, "{mode:?}");
+            assert_eq!(log.entries().len(), usize::from(visible));
+            assert_eq!(log.revision(), u64::from(visible));
+            assert!(log.summaries().is_empty());
+        }
+    }
 
     #[test]
     fn action_log_keeps_bounded_history() {

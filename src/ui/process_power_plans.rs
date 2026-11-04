@@ -1,4 +1,4 @@
-use super::widgets::{self, checkbox, pick_list};
+use super::widgets::{self, checkbox};
 use crate::ui::scrolling::scrollable;
 use crate::{config::Settings, power::PowerPlan, ui::process_rules::*};
 use iced::widget::column;
@@ -25,15 +25,6 @@ pub(super) enum Message {
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Choice(Option<String>, String);
-
-impl std::fmt::Display for Choice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.1)
-    }
 }
 
 impl Editor {
@@ -101,7 +92,7 @@ impl Editor {
         kind: Kind,
         settings: &'a Settings,
         plans: &[PowerPlan],
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
         status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
         let master_enabled = settings.general.enabled;
@@ -112,10 +103,11 @@ impl Editor {
         macro_rules! render_rules {
             ($field:ident, $can_add:ident, $enable:literal) => {{
                 let settings = &settings.$field;
-                let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+                let mut body = column![super::widgets::toggle_card(
                     $enable,
-                    super::widgets::switch(settings.enabled, Some(Message::Enabled))
-                )),]
+                    settings.enabled,
+                    Some(Message::Enabled)
+                ),]
                 .spacing(super::widgets::CARD_GAP);
                 let mut rules_body = column![super::app_picker::view(
                     &self.path,
@@ -129,29 +121,10 @@ impl Editor {
                 .spacing(super::widgets::CARD_GAP);
                 let mut cards = Vec::new();
                 for (index, rule) in settings.rules.iter().enumerate() {
-                    let mut choices = vec![Choice(None, t!("common.none").to_string())];
-                    choices.extend(
-                        plans
-                            .iter()
-                            .map(|plan| Choice(Some(plan.guid.clone()), plan.display_name())),
-                    );
-                    let selected = choices
-                        .iter()
-                        .find(|choice| choice.0 == rule.power_plan_guid)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            Choice(
-                                rule.power_plan_guid.clone(),
-                                rule.power_plan_guid.clone().unwrap_or_default(),
-                            )
+                    let selector =
+                        widgets::plan(rule.power_plan_guid.as_deref(), plans, move |guid| {
+                            Message::Plan(index, guid)
                         });
-                    let selector: Element<'_, Message> = {
-                        pick_list(choices, Some(selected), move |choice| {
-                            Message::Plan(index, choice.0)
-                        })
-                        .width(Fill)
-                        .into()
-                    };
                     let key = super::power_rules::power_rule_status(
                         master_enabled && settings.enabled && rule.enabled,
                         !rule.executable_path.trim().is_empty(),
@@ -182,7 +155,7 @@ impl Editor {
                                 .center_x(80)
                                 .into(),
                             ),
-                            iced::widget::rule::horizontal(1)
+                            widgets::settings_divider()
                         ]
                         .into(),
                     ));

@@ -46,7 +46,7 @@ CPU Behaviour has shared detection/timing followed by three independent policies
 - **Limit Background Processors** restricts background candidates only, using its own selector,
   percentage/custom mask, and soft/hard method. It never narrows foreground access.
 - **Dynamic Resource Zones (Experimental)** uses separate settings and complementary CPU Sets (Soft).
-  Speed leaves zoning off; Performance retains explicit opt-in. Balanced and Power Save leave it off.
+  The Performance preset enables zoning; Speed, Balanced, and Power Save leave it off.
 
 Shared foreground/system pressure uses the existing aggregate metric. Background-app CPU demand
 is normalized against one logical processor; the thresholds are not directly interchangeable.

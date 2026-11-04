@@ -53,8 +53,6 @@ pub struct AppSuspensionSnapshot {
     pub suspended_processes: usize,
     pub suspended_process_ids: Vec<u32>,
     pub temporary_thawed_processes: usize,
-    pub network_wake_processes: usize,
-    pub audio_wake_processes: usize,
     pub background_grace_apps: Vec<String>,
     pub suspended_apps: Vec<String>,
     pub temporary_thawed_apps: Vec<String>,
@@ -1905,16 +1903,6 @@ impl AppSuspensionManager {
             suspended_processes: self.suspended.len(),
             suspended_process_ids: self.suspended.keys().copied().collect(),
             temporary_thawed_processes: self.temporary_thawed.len(),
-            network_wake_processes: self
-                .temporary_thawed
-                .values()
-                .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
-                .count(),
-            audio_wake_processes: self
-                .temporary_thawed
-                .values()
-                .filter(|process| process.reason == TemporaryThawReason::AudioWake)
-                .count(),
             background_grace_apps: self.tracked.keys().cloned().collect(),
             suspended_apps: self
                 .suspended

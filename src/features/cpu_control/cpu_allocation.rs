@@ -437,18 +437,16 @@ impl CpuAllocationManager {
         let mut apply = |target: CpuAllocationTarget, zone_role: Option<&str>| {
             let role = zone_role.unwrap_or(&fallback_label);
             let mut effective = false;
-            let failure_process_name = target.process_name.clone();
-            let failure_executable_path = target.executable_path.clone();
             let suppression = self.check_process_suppression(
                 target.process_id,
-                &failure_process_name,
-                &failure_executable_path,
+                &target.process_name,
+                &target.executable_path,
                 action_log,
             );
             if suppression.suppressed {
                 skipped_processes += 1;
                 if suppression.newly_suppressed {
-                    auto_excluded_processes.insert(failure_executable_path.clone());
+                    auto_excluded_processes.insert(target.executable_path);
                 }
                 if zone_role.is_some() {
                     zone_failure = ZoneAllocationFailure::Degraded;
@@ -482,7 +480,7 @@ impl CpuAllocationManager {
                 Ok(CpuAllocationApplyOutcome::Applied) => {
                     effective = true;
                     if zone_role.is_some() || self.zone_generation.is_empty() {
-                        self.clear_process_failure(&failure_executable_path);
+                        self.clear_process_failure(&target.executable_path);
                     }
                     action_log.record(
                         self.action_log_feature,
@@ -499,7 +497,7 @@ impl CpuAllocationManager {
                 Ok(CpuAllocationApplyOutcome::Unchanged) => {
                     effective = true;
                     if zone_role.is_some() || self.zone_generation.is_empty() {
-                        self.clear_process_failure(&failure_executable_path);
+                        self.clear_process_failure(&target.executable_path);
                     }
                 }
                 Ok(
@@ -515,7 +513,7 @@ impl CpuAllocationManager {
                     }
                     skipped_processes += 1;
                     if zone_role.is_some() || self.zone_generation.is_empty() {
-                        self.clear_process_failure(&failure_executable_path);
+                        self.clear_process_failure(&target.executable_path);
                     }
                 }
                 Err(CpuAllocationApplyError::Target(ProcessControlError::ProcessExited)) => {
@@ -530,11 +528,11 @@ impl CpuAllocationManager {
                     }
                     skipped_processes += 1;
                     self.failure_suppression
-                        .suppress_process_failure(&failure_executable_path);
+                        .suppress_process_failure(&target.executable_path);
                     action_log.record(
                         self.action_log_feature,
                         Some(target.process_id),
-                        failure_process_name,
+                        target.process_name,
                         ActionLogResult::Skipped,
                         message,
                     );
@@ -550,11 +548,11 @@ impl CpuAllocationManager {
                     if zone_role.is_some() {
                         zone_failure = ZoneAllocationFailure::Degraded;
                     }
-                    self.record_process_failure(&failure_executable_path);
+                    self.record_process_failure(&target.executable_path);
                     failures.record(
                         "Apply",
                         target.process_id,
-                        &failure_process_name,
+                        &target.process_name,
                         error,
                         self.action_log_feature,
                         action_log,
@@ -888,16 +886,12 @@ impl CpuAllocationFailures {
     }
 }
 
-fn cpu_allocation_target_key(
-    target: &CpuAllocationTarget,
-) -> crate::control::process::ProcessTargetKey {
-    ProcessControlTarget::automatic(
+fn cpu_allocation_target_key(target: &CpuAllocationTarget) -> ProcessTargetKey {
+    ProcessTargetKey::new(
         target.process_id,
-        target.process_name.clone(),
-        PathBuf::from(&target.executable_path),
         target.creation_time,
+        Path::new(&target.executable_path),
     )
-    .key()
 }
 
 fn cpu_allocation_request_label(request: CpuAllocationRequest) -> &'static str {

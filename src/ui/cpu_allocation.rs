@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, text_input};
+use super::widgets::{action_button, button, checkbox, icon_button, text_input};
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
 use crate::foreground::executable_path_key;
@@ -66,13 +66,10 @@ pub(super) struct Editor {
     editing_preset: Option<usize>,
     preset_open: bool,
     preset_read_only: bool,
-    presets_tab: bool,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    RailTab(bool),
-    Status(super::status_rail::Message),
     Path(String),
     Browse,
     Add,
@@ -92,15 +89,14 @@ pub(super) enum Message {
 impl Editor {
     pub(super) fn update(&mut self, s: &mut Settings, k: Kind, m: Message) {
         let available =
-            cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
+            || cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
         match m {
-            Message::RailTab(value) => self.presets_tab = value,
-            Message::Status(_) => {}
             Message::Enabled(v) => settings_mut(s, k).enabled = v,
             Message::Path(v) => self.path = v,
             Message::Browse => {}
             Message::Add => {
                 if can_add(s, &self.path) {
+                    let available = available();
                     settings_mut(s, k).rules.push(CpuAllocationRule {
                         enabled: true,
                         executable_path: executable_path_key(Path::new(&self.path)),
@@ -118,7 +114,7 @@ impl Editor {
             }
             Message::Mask(i, tier, choice) => {
                 if let Some(r) = settings_mut(s, k).rules.get_mut(i) {
-                    tier.set(r, choice.0 & available);
+                    tier.set(r, choice.0 & available());
                     self.selected_presets
                         .insert((r.executable_path.clone(), tier as usize), choice);
                 }
@@ -136,28 +132,26 @@ impl Editor {
                 self.preset_open = true;
                 self.preset_read_only = true;
                 self.preset_name = name;
-                self.preset_mask = mask & available;
+                self.preset_mask = mask & available();
             }
             Message::NewPreset => {
                 self.preset_read_only = false;
                 self.preset_open = true;
-                self.presets_tab = true;
                 self.editing_preset = None;
                 self.preset_name.clear();
-                self.preset_mask = available;
+                self.preset_mask = available();
             }
             Message::EditPreset(i) => {
                 self.preset_read_only = false;
                 if let Some(p) = s.cpu_allocation_presets.get(i) {
                     self.preset_open = true;
-                    self.presets_tab = true;
                     self.editing_preset = Some(i);
                     self.preset_name = p.name.clone();
-                    self.preset_mask = p.core_mask & available;
+                    self.preset_mask = p.core_mask & available();
                 }
             }
             Message::PresetName(v) if !self.preset_read_only => self.preset_name = v,
-            Message::PresetMask(v) if !self.preset_read_only => self.preset_mask = v & available,
+            Message::PresetMask(v) if !self.preset_read_only => self.preset_mask = v & available(),
             Message::PresetName(_) | Message::PresetMask(_) => {}
             Message::SavePreset => {
                 let name = self.preset_name.trim();
@@ -221,17 +215,26 @@ impl Editor {
         k: Kind,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let processors = cpu_allocation::logical_processors();
         let feature = settings(s, k);
+        let processors = if feature.rules.is_empty() {
+            Vec::new()
+        } else {
+            cpu_allocation::logical_processors()
+        };
         let mut body = column![
-            super::widgets::settings_card(super::widgets::setting_row(
+            super::widgets::toggle_card(
                 match k {
                     Kind::Soft => "cpu_sets_soft.enable",
                     Kind::Hard => "processor_affinity_hard.enable",
                 },
-                super::widgets::switch(feature.enabled, Some(Message::Enabled)),
-            )),
-            super::widgets::setting_title("cpu_allocation.custom_rules"),
+                feature.enabled,
+                Some(Message::Enabled),
+            ),
+            super::widgets::setting_title_with_help(
+                "cpu_allocation.custom_rules",
+                "",
+                "cpu_allocation.rules_help"
+            ),
             super::app_picker::view(
                 &self.path,
                 candidates,
@@ -309,7 +312,7 @@ impl Editor {
         };
         let header = row![
             text(title).width(Fill),
-            button(super::navigation::glyph("icons/x.svg")).on_press(Message::ClosePreset)
+            icon_button("icons/x.svg").on_press(Message::ClosePreset)
         ]
         .align_y(iced::Center);
         let mut cpus = row![].spacing(design::space::CONTROL);
@@ -339,10 +342,12 @@ impl Editor {
                 )
                 .width(100)
                 .height(64)
-                .style(if selected {
-                    super::widgets::primary_button
-                } else {
-                    super::widgets::tertiary_button
+                .style(move |theme, status| {
+                    if selected {
+                        super::widgets::tab_style(theme, status, true)
+                    } else {
+                        super::widgets::tertiary_button(theme, status)
+                    }
                 })
                 .on_press_maybe(
                     (!self.preset_read_only).then_some(Message::PresetMask(self.preset_mask ^ bit)),
@@ -355,7 +360,11 @@ impl Editor {
                     && p.name.trim().eq_ignore_ascii_case(self.preset_name.trim())
             });
         let mut body = column![
-            super::widgets::settings_card(
+            super::widgets::heading(
+                t!("common.preset_details").to_string(),
+                design::typography::BODY
+            ),
+            super::widgets::settings_card(super::widgets::settings_rows([
                 column![
                     text(t!("cpu_allocation.preset_name").to_string()),
                     text_input(
@@ -366,14 +375,14 @@ impl Editor {
                     text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
                 ]
                 .spacing(design::space::SMALL)
-            ),
-            super::widgets::settings_card(
+                .into(),
                 column![
                     text(t!("cpu_allocation.selected_logical_cpus").to_string()),
                     cpus.wrap()
                 ]
                 .spacing(design::space::SMALL)
-            )
+                .into(),
+            ]))
         ]
         .spacing(design::space::MEDIUM);
         if self.preset_mask == 0 {
@@ -387,14 +396,21 @@ impl Editor {
         }
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
-            button(text(t!("common.cancel").to_string()))
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::ClosePreset)
+            action_button(
+                t!(if self.preset_read_only {
+                    "common.close"
+                } else {
+                    "common.cancel"
+                })
+                .to_string(),
+            )
+            .style(super::widgets::tertiary_button)
+            .on_press(Message::ClosePreset)
         ]
         .spacing(design::space::SMALL);
         if !self.preset_read_only {
             footer = footer.push(
-                button(text(t!("common.save").to_string()))
+                action_button(t!("common.save").to_string())
                     .style(super::widgets::primary_button)
                     .on_press_maybe(
                         (valid_name && self.preset_mask != 0).then_some(Message::SavePreset),
@@ -408,11 +424,9 @@ impl Editor {
             (950, 760),
         ))
     }
-    pub(super) fn side_panel<'a>(
+    pub(super) fn presets_panel<'a>(
         &'a self,
         s: &'a crate::application::SettingsEditor,
-        k: Kind,
-        status: &'a crate::automation::RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         let processors = cpu_allocation::logical_processors();
         let mut rail = column![super::widgets::heading(
@@ -432,9 +446,7 @@ impl Editor {
                     .width(Fill)
                     .style(super::widgets::quiet)
                     .on_press(message.clone()),
-                    button(super::navigation::glyph("icons/info.svg"))
-                        .style(super::widgets::quiet)
-                        .on_press(message)
+                    icon_button("icons/info.svg").on_press(message)
                 ]
                 .align_y(iced::Center)
                 .spacing(design::space::TIGHT),
@@ -456,13 +468,8 @@ impl Editor {
                         .width(Fill)
                         .style(super::widgets::quiet)
                         .on_press(Message::EditPreset(i)),
-                    iced::widget::tooltip(
-                        button(super::navigation::glyph("icons/pencil.svg"))
-                            .padding(7)
-                            .width(32)
-                            .height(32)
-                            .style(super::widgets::quiet)
-                            .on_press(Message::EditPreset(i)),
+                    super::widgets::tooltip(
+                        icon_button("icons/pencil.svg").on_press(Message::EditPreset(i)),
                         text(t!("common.edit").to_string()),
                         iced::widget::tooltip::Position::Top
                     ),
@@ -472,48 +479,16 @@ impl Editor {
                 .spacing(design::space::TIGHT),
             );
         }
-        if !self.presets_tab {
-            let page = match k {
-                Kind::Soft => crate::ui::Page::CpuSetsSoft,
-                Kind::Hard => crate::ui::Page::ProcessorAffinityHard,
-            };
-            rail = column![];
-            if let Some(status) = super::status_rail::view(page, s, status, &[]) {
-                rail = rail.push(status.map(Message::Status));
-            }
-        }
-        let tabs = row![
-            super::widgets::panel_tab(
-                t!("common.status").to_string(),
-                !self.presets_tab,
-                Message::RailTab(false),
-                true,
+        column![
+            scrollable(rail).width(Fill).height(Fill),
+            super::widgets::preset_footer(
+                t!("cpu_allocation.add_preset").to_string(),
+                Message::NewPreset
             ),
-            super::widgets::panel_tab(
-                t!("cpu_allocation.presets").to_string(),
-                self.presets_tab,
-                Message::RailTab(true),
-                true,
-            )
-        ]
-        .spacing(design::space::SMALL);
-        let mut panel = column![
-            tabs,
-            super::motion::wrap(
-                scrollable(rail).width(Fill).height(Fill),
-                true,
-                super::motion::Effect::Content(u64::from(self.presets_tab))
-            )
         ]
         .spacing(design::space::MEDIUM)
-        .height(Fill);
-        if self.presets_tab {
-            panel = panel.push(super::widgets::preset_footer(
-                t!("cpu_allocation.add_preset").to_string(),
-                Message::NewPreset,
-            ));
-        }
-        panel.into()
+        .height(Fill)
+        .into()
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {

@@ -49,12 +49,17 @@ pub(crate) struct CpuLimiterFailure {
     pub(crate) error: CpuLimiterTargetError,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CpuLimiterTargetError {
+    #[error("{0}")]
     Job(SuspensionError),
+    #[error("{0}")]
     Process(ProcessControlError),
+    #[error("{0:?}")]
     Thread(ThreadSuspensionError),
+    #[error("{0}")]
     Recovery(String),
+    #[error("{cause} Rollback failed: {rollback}")]
     Rollback {
         cause: Box<CpuLimiterTargetError>,
         rollback: Box<CpuLimiterTargetError>,
@@ -85,22 +90,6 @@ impl CpuLimiterTargetError {
         }
     }
 }
-
-impl std::fmt::Display for CpuLimiterTargetError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Job(error) => error.fmt(formatter),
-            Self::Process(error) => error.fmt(formatter),
-            Self::Thread(error) => write!(formatter, "{error:?}"),
-            Self::Recovery(error) => formatter.write_str(error),
-            Self::Rollback { cause, rollback } => {
-                write!(formatter, "{cause} Rollback failed: {rollback}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CpuLimiterTargetError {}
 
 impl From<SuspensionError> for CpuLimiterTargetError {
     fn from(error: SuspensionError) -> Self {

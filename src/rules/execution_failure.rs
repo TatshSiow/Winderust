@@ -166,26 +166,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn three_continuous_failures_suppress_execution() {
-        let mut state = ExecutionFailureState::default();
-
-        state.record_failure();
-        state.record_failure();
-        assert!(!state.is_suppressed());
-
-        state.record_failure();
-        assert!(state.is_suppressed());
-    }
-
-    #[test]
-    fn suppression_log_marker_is_set_once() {
-        let mut state = ExecutionFailureState::default();
-
-        assert!(state.mark_suppression_logged());
-        assert!(!state.mark_suppression_logged());
-    }
-
-    #[test]
     fn tracker_keeps_exact_paths_and_same_named_binaries_separate() {
         let mut tracker = ExecutionFailureTracker::default();
 

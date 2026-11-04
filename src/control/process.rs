@@ -1,4 +1,7 @@
-use std::{cmp::Ordering, fmt, path::PathBuf};
+use std::{
+    cmp::Ordering,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     foreground::{
@@ -68,11 +71,7 @@ impl ProcessControlTarget {
     }
 
     pub(crate) fn key(&self) -> ProcessTargetKey {
-        ProcessTargetKey {
-            id: self.id,
-            creation_time: self.creation_time,
-            executable_path: executable_path_key(&self.executable_path).to_ascii_lowercase(),
-        }
+        ProcessTargetKey::new(self.id, self.creation_time, &self.executable_path)
     }
 }
 
@@ -81,6 +80,16 @@ pub(crate) struct ProcessTargetKey {
     pub(crate) id: u32,
     creation_time: u64,
     executable_path: String,
+}
+
+impl ProcessTargetKey {
+    pub(crate) fn new(id: u32, creation_time: u64, executable_path: &Path) -> Self {
+        Self {
+            id,
+            creation_time,
+            executable_path: executable_path_key(executable_path).to_ascii_lowercase(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -161,11 +170,15 @@ impl ProcessIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ProcessControlError {
+    #[error("{0}")]
     AccessDenied(String),
+    #[error("Process exited.")]
     ProcessExited,
+    #[error("{0}")]
     Unavailable(String),
+    #[error("{0}")]
     Failed(String),
 }
 
@@ -183,24 +196,11 @@ pub(super) fn transition_failure_error(
     let mut message = format!("{primary_error} Compensation failed: {compensation_error}.");
     if let Some(recovery_error) = recovery_error {
         message.push_str(&format!(
-            " Recovery journal commit failed: {recovery_error}."
+            " Recovery journal update failed: {recovery_error}."
         ));
     }
     ProcessControlError::Failed(message)
 }
-
-impl fmt::Display for ProcessControlError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AccessDenied(message) | Self::Unavailable(message) | Self::Failed(message) => {
-                formatter.write_str(message)
-            }
-            Self::ProcessExited => formatter.write_str("Process exited."),
-        }
-    }
-}
-
-impl std::error::Error for ProcessControlError {}
 
 impl From<ProcessOperationError> for ProcessControlError {
     fn from(error: ProcessOperationError) -> Self {
@@ -208,7 +208,6 @@ impl From<ProcessOperationError> for ProcessControlError {
             ProcessOperationError::AccessDenied { .. } => {
                 Self::AccessDenied("Access denied.".to_owned())
             }
-            ProcessOperationError::ProcessExited => Self::ProcessExited,
             ProcessOperationError::Failed { operation, code } => {
                 Self::Failed(format!("{operation} failed with error {code}."))
             }
@@ -274,6 +273,32 @@ pub(crate) fn open_process_for_termination(
         ProcessAccess::Termination,
         ProcessActionAccess::Terminate,
     )
+}
+
+pub(crate) fn open_process_for_restart(
+    target: &ProcessControlTarget,
+    allow_cross_session_process_control: bool,
+) -> Result<(ProcessIdentity, WinHandle), ProcessControlError> {
+    let (identity, process) = open_process_with_access(
+        target,
+        allow_cross_session_process_control,
+        ProcessAccess::Restart,
+        ProcessActionAccess::Terminate,
+    )?;
+    let current_session =
+        process_session_id(windows_process::current_process_id()).ok_or_else(|| {
+            ProcessControlError::Unavailable(
+                "Winderust's Windows session is unavailable.".to_owned(),
+            )
+        })?;
+    if identity.session_id != Some(current_session)
+        || crate::foreground::process_runs_as_service_account_from_handle(&process) != Some(false)
+    {
+        return Err(ProcessControlError::AccessDenied(
+            "Restart requires a non-service app in Winderust's Windows session.".to_owned(),
+        ));
+    }
+    Ok((identity, process))
 }
 
 pub(crate) fn open_process_for_job_assignment(
@@ -413,7 +438,7 @@ mod tests {
             ProcessControlError::Failed("restore failed".into()),
             Some("journal failed".into()),
         );
-        assert_eq!(error, ProcessControlError::Failed("access denied Compensation failed: restore failed. Recovery journal commit failed: journal failed.".into()));
+        assert_eq!(error, ProcessControlError::Failed("access denied Compensation failed: restore failed. Recovery journal update failed: journal failed.".into()));
     }
 
     use super::*;
@@ -464,6 +489,10 @@ mod tests {
         );
 
         assert_eq!(target.key(), identity.key());
+        assert_eq!(
+            target.key(),
+            ProcessTargetKey::new(target.id, target.creation_time, &target.executable_path)
+        );
         assert_eq!(identity.target().creation_time, 7);
 
         let metadata_drift = ProcessIdentity::new(
@@ -475,6 +504,18 @@ mod tests {
         );
         assert_eq!(identity, metadata_drift);
         assert_eq!(identity.cmp(&metadata_drift), Ordering::Equal);
+        assert_eq!(
+            target.key(),
+            ProcessTargetKey::new(42, 7, &metadata_drift.executable_path)
+        );
+        assert_ne!(
+            target.key(),
+            ProcessTargetKey::new(43, 7, &target.executable_path)
+        );
+        assert_ne!(
+            target.key(),
+            ProcessTargetKey::new(42, 7, Path::new(r"C:\Other\app.exe"))
+        );
 
         let replacement = ProcessControlTarget::automatic(
             42,

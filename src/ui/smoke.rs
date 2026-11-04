@@ -34,12 +34,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(26) {
+    if extra == Some(54) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11)
+            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52)
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -61,6 +61,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25) => Page::ProcessPriority,
+            Some(26..=37) => Page::Home,
+            Some(38 | 42 | 43) => Page::Home,
+            Some(39) => Page::ProcessList,
+            Some(40) => Page::LanguageAndAppearance,
+            Some(41) => Page::AdaptiveEngine,
+            Some(44) => Page::CpuSetsSoft,
+            Some(45) => Page::ProcessorAffinityHard,
+            Some(46) => Page::AdvancedPowerPlanTuning,
+            Some(47) => Page::AdaptiveEngine,
+            Some(48) => Page::ProcessList,
+            Some(49) => Page::ActionLog,
+            Some(50) => Page::WinderustBehaviour,
+            Some(51..=53) => Page::Watchdog,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -69,33 +82,109 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else {
             crate::config::AppLanguage::English
         };
-        app.settings.general.theme_mode = if chinese || extra.is_some_and(|i| i >= 13) {
-            crate::config::AppThemeMode::Dark
-        } else {
-            crate::config::AppThemeMode::Light
+        app.settings.general.theme_mode =
+            if chinese || extra.is_some_and(|i| (14..=34).contains(&i)) {
+                crate::config::AppThemeMode::Dark
+            } else {
+                crate::config::AppThemeMode::Light
+            };
+        app.settings.general.accent.source = crate::config::AccentColorSource::Custom;
+        app.settings.general.accent.custom_color = match extra {
+            Some(0..=12) => 0x9b59d0,
+            Some(13..=25) => 0x16895f,
+            Some(_) => 0xd65a65,
+            None if chinese => 0x9b59d0,
+            None => 0x246bfe,
         };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
+        if extra.is_some_and(|i| i >= 38) {
+            let _ = app.update(Message::Preferences(settings_pages::Message::Theme(
+                crate::config::AppThemeMode::Amoled,
+            )));
+            assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
+        }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
+        if matches!(extra, Some(51..=53)) {
+            let mut rule =
+                crate::config::WatchdogRule::new(r"C:\Apps\Resource Monitor\sample.exe".into());
+            rule.memory.enabled = true;
+            rule.memory_unit = crate::config::WatchdogMemoryUnit::Megabytes;
+            rule.memory.warning.threshold = 1000;
+            rule.memory.critical.threshold = 2000;
+            rule.memory.critical.action = crate::config::WatchdogAction::Terminate;
+            app.settings
+                .edit_global(|settings| settings.watchdog.rules = vec![rule]);
+            app.watchdog = watchdog::Editor::default();
+            let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
+        }
+        let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
-        assert!(!app.feature_info_expanded);
-        if matches!(extra, Some(0 | 1)) {
-            let _ = app.update(Message::ToggleFeatureInfo);
-            assert!(app.feature_info_expanded);
+        if matches!(extra, Some(51..=53)) {
+            let before = app.settings.global().watchdog.clone();
+            assert!(app.pending_editor());
+            let _ = app.update(Message::Watchdog(watchdog::Message::Threshold(
+                crate::config::WatchdogResource::Cpu,
+                false,
+                String::new(),
+            )));
+            let _ = app.search_keyboard(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                iced::keyboard::Modifiers::empty(),
+                false,
+                iced::event::Status::Ignored,
+            );
+            assert!(!app.pending_editor());
+            assert_eq!(app.settings.global().watchdog, before);
+            let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
+            if extra == Some(51) {
+                let _ = app.update(Message::Watchdog(watchdog::Message::CancelRule));
+            } else if extra == Some(52) {
+                let _ = app.update(Message::Watchdog(watchdog::Message::MonitorEnabled(
+                    crate::config::WatchdogResource::Cpu,
+                    false,
+                )));
+            } else if extra == Some(53) {
+                let _ = app.update(Message::Watchdog(watchdog::Message::Tab(
+                    crate::config::WatchdogResource::Memory,
+                )));
+            }
+        }
+        assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
+        assert_eq!(app.side_panel_open, was_open);
+        let _ = app.update(Message::CloseSidePanel);
+        if !navigation::page_feature_info(page).is_empty() {
+            assert!(app.side_panel(page).is_some());
         }
         if extra == Some(0) {
             let section = Page::SettingsHome;
-            let _ = app.update(Message::ToggleSection(section));
+            let _ = app.update(Message::Navigation(navigation::Event::Select(section)));
             assert_eq!(app.page, section);
-            assert_eq!(app.expanded_section, Some(section));
-            let _ = app.update(Message::ToggleSection(section));
-            assert_eq!(app.expanded_section, None);
-            let _ = app.update(Message::ToggleSection(section));
-            assert_eq!(app.expanded_section, Some(section));
-            let _ = app.update(Message::ToggleSection(Page::PowerPlanControl));
-            assert_eq!(app.expanded_section, Some(Page::PowerPlanControl));
+            assert_eq!(app.navigation.section, None);
             let _ = app.update(Message::Page(page));
-            assert_eq!(app.expanded_section, Some(page.section_landing_page()));
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )));
+            assert_eq!(app.page, page);
+            assert_eq!(app.navigation.section, Some(section));
+            let _ = app.update(Message::Navigation(navigation::Event::Dismiss));
+            assert_eq!(app.navigation.section, None);
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                Page::PowerPlanControl,
+            )));
+            assert_eq!(app.navigation.section, Some(Page::PowerPlanControl));
+            let _ = app.update(Message::Page(page));
+            assert_eq!(app.navigation.section, None);
+            let _ = app.update(Message::OpenNavigationSearch);
+            assert!(app.navigation_search_open);
+            let _ = app.update(Message::NavigationSearch("cpu".into()));
+            let _ = app.update(Message::CloseNavigationSearch);
+            assert!(!app.navigation_search_open);
+            assert!(app.navigation_search.is_empty());
+            let _ = app.update(Message::OpenNavigationSearch);
+            let _ = app.update(Message::Page(page));
+            assert!(!app.navigation_search_open);
+            assert!(app.navigation_search.is_empty());
         }
         if extra == Some(0) {
             let _ = app.update(Message::Efficiency(
@@ -104,11 +193,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         } else if extra == Some(1) {
             let _ = app.update(Message::CpuLimiter(cpu_limiter::Message::Collapse));
         }
-        if extra == Some(3) {
-            app.settings.general.navigation_collapsed = true;
-        }
         if let Some(index @ 4..=12) = extra {
-            app.settings.general.navigation_collapsed = false;
             if index <= 10 {
                 use adaptive_engine::{Message as AdaptiveMessage, TuningTab};
                 if index == 4 {
@@ -164,9 +249,19 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             }
         }
         if extra == Some(9) {
-            let before = app.status_collapsed;
-            let _ = app.update(Message::ToggleStatus);
-            assert_eq!(app.status_collapsed, !before);
+            let before = app.side_panel_open;
+            let _ = app.update(Message::ToggleSidePanel);
+            assert_eq!(app.side_panel_open, !before);
+        }
+        if extra == Some(20) {
+            for source in [
+                advanced_power_plan_tuning::Source::Ac,
+                advanced_power_plan_tuning::Source::Battery,
+            ] {
+                let _ = app.update(Message::PowerTuning(
+                    advanced_power_plan_tuning::Message::Group(source),
+                ));
+            }
         }
         if extra == Some(18) {
             app.settings.background_efficiency.enabled = true;
@@ -185,30 +280,211 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if extra == Some(17) {
             app.adaptive = adaptive_engine::Editor::default();
         }
-        return Some(Task::batch([
-            iced::window::resize(
-                window,
-                iced::Size::new(
-                    if extra.is_some_and(|i| i >= 13) {
-                        1920.0
-                    } else if chinese || extra.is_some() {
-                        900.0
+        if matches!(extra, Some(13 | 29..=34 | 38 | 42 | 43)) {
+            app.home.populate_smoke_history();
+            app.settings.general.enabled = true;
+            app.settings.cpu_limiter.enabled = true;
+            app.settings.process_priority.enabled = true;
+            app.settings.memory_trim.enabled = true;
+            app.settings.io_priority.enabled = true;
+            use crate::action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult};
+            app.status.action_log_entries = Arc::new(
+                (0..10)
+                    .map(|index| ActionLogEntry {
+                        sequence: index + 1,
+                        batch_id: index + 1,
+                        timestamp_epoch_ms: 1_770_000_000_000 + index as u128 * 10_000,
+                        feature: ActionLogFeature::MemoryTrim,
+                        process_id: Some(1234),
+                        process_name: "example.exe".into(),
+                        result: if index % 3 == 0 {
+                            ActionLogResult::Skipped
+                        } else {
+                            ActionLogResult::Applied
+                        },
+                        reason: "Render-smoke fixture: memory trim completed.".into(),
+                    })
+                    .collect(),
+            );
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        let search = if matches!(extra, Some(26..=28 | 43)) {
+            if extra == Some(26) {
+                let _ = app.update(Message::SearchKeyboard {
+                    key: iced::keyboard::Key::Character("/".into()),
+                    modifiers: iced::keyboard::Modifiers::empty(),
+                    repeat: false,
+                    status: iced::event::Status::Captured,
+                });
+                assert!(!app.navigation_search_open);
+                let _ = app.update(Message::SearchKeyboard {
+                    key: iced::keyboard::Key::Character("k".into()),
+                    modifiers: iced::keyboard::Modifiers::CTRL,
+                    repeat: false,
+                    status: iced::event::Status::Ignored,
+                });
+                assert!(app.navigation_search_open);
+            }
+            let open = app.update(Message::OpenNavigationSearch);
+            if extra != Some(26) {
+                let _ = app.update(Message::NavigationSearch(
+                    if matches!(extra, Some(27 | 43)) {
+                        "cpu"
                     } else {
-                        1120.0
-                    },
-                    if extra.is_some_and(|i| i >= 13) {
-                        1080.0
-                    } else if chinese {
-                        620.0
-                    } else {
-                        760.0
-                    },
-                ),
+                        "zzzz-no-match"
+                    }
+                    .into(),
+                ));
+            }
+            if extra == Some(27) {
+                let down = || Message::SearchKeyboard {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown),
+                    modifiers: iced::keyboard::Modifiers::empty(),
+                    repeat: false,
+                    status: iced::event::Status::Ignored,
+                };
+                let _ = app.update(down());
+                assert_eq!(app.navigation_search_selected, 1);
+                let expected = app.search_choices()[1];
+                let _ = app.update(Message::ConfirmSearch);
+                assert_eq!(app.page, expected);
+                assert!(!app.navigation_search_open);
+                let _ = app.update(Message::Page(Page::Home));
+                let _ = app.update(Message::OpenNavigationSearch);
+                let _ = app.update(Message::NavigationSearch("cpu".into()));
+                let _ = app.update(down());
+            }
+            open
+        } else {
+            Task::none()
+        };
+        let navigation = if matches!(extra, Some(35..=37 | 42)) {
+            let section = if extra == Some(36) {
+                Page::AdvancedControls
+            } else {
+                Page::SettingsHome
+            };
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )));
+            assert_eq!(app.page, page);
+            assert_eq!(app.navigation.selected, Some(0));
+            let _ = app.update(Message::Navigation(navigation::Event::Key(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::End),
+                false,
+            )));
+            assert_eq!(
+                app.navigation.selected,
+                Some(navigation::children(section).len() - 1)
+            );
+            let _ = app.update(Message::Navigation(navigation::Event::Key(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                false,
+            )));
+            assert_eq!(app.page, *navigation::children(section).last().unwrap());
+            assert_eq!(app.navigation.section, None);
+            let _ = app.update(Message::Page(page));
+            let _ = app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )));
+            let _ = app.update(Message::Navigation(navigation::Event::Key(
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                false,
+            )));
+            assert_eq!(app.page, page);
+            assert_eq!(app.navigation.section, None);
+            app.update(Message::Navigation(navigation::Event::OpenKeyboard(
+                section,
+            )))
+        } else {
+            Task::none()
+        };
+        if matches!(extra, Some(0 | 1 | 41)) {
+            for &tab in SidePanelTab::for_page(page) {
+                let _ = app.update(Message::SidePanelTab(tab));
+                assert_eq!(app.side_panel_tab, tab);
+                assert!(app.side_panel(page).is_some());
+            }
+            let _ = app.update(Message::Page(page));
+            assert_eq!(app.side_panel_tab, SidePanelTab::for_page(page)[0]);
+            let _ = app.update(Message::SidePanelTab(SidePanelTab::Info));
+            assert_eq!(app.side_panel_tab, SidePanelTab::Info);
+            let _ = app.update(Message::ToggleSidePanel);
+            assert!(app.side_panel_open);
+            let _ = app.update(Message::SearchKeyboard {
+                key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                modifiers: iced::keyboard::Modifiers::empty(),
+                repeat: false,
+                status: iced::event::Status::Ignored,
+            });
+            assert!(app.side_panel_open);
+            assert_eq!(app.page, page);
+            let _ = app.update(Message::OpenNavigationSearch);
+            assert!(app.side_panel_open);
+            let _ = app.update(Message::CloseNavigationSearch);
+            let _ = app.update(Message::Navigation(navigation::Event::Dismiss));
+            assert!(app.side_panel_open);
+            let _ = app.update(Message::CloseSidePanel);
+            assert!(!app.side_panel_open);
+            let _ = app.update(Message::ToggleSidePanel);
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if matches!(extra, Some(44..=46)) {
+            let tab = if extra == Some(46) {
+                SidePanelTab::Info
+            } else {
+                SidePanelTab::Presets
+            };
+            let _ = app.update(Message::SidePanelTab(tab));
+            assert_eq!(app.side_panel_tab, tab);
+            assert!(app.side_panel(page).is_some());
+            let _ = app.update(Message::ToggleSidePanel);
+            assert!(app.side_panel_open);
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if matches!(extra, Some(47..=50)) {
+            let _ = app.update(Message::ToggleSidePanel);
+            assert!(app.side_panel_open);
+            app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        let size = match extra {
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=53) => iced::Size::new(900.0, 620.0),
+            Some(30) => iced::Size::new(1280.0, 720.0),
+            Some(31) => iced::Size::new(1440.0, 900.0),
+            Some(32) => iced::Size::new(1920.0, 720.0),
+            Some(33) => iced::Size::new(900.0, 1000.0),
+            Some(34) => iced::Size::new(1536.0, 960.0),
+            _ => iced::Size::new(
+                if extra.is_some_and(|i| i >= 13) {
+                    1920.0
+                } else if chinese || extra.is_some() {
+                    900.0
+                } else {
+                    1120.0
+                },
+                if extra.is_some_and(|i| i >= 13) {
+                    1080.0
+                } else if chinese {
+                    620.0
+                } else {
+                    760.0
+                },
             ),
+        };
+        return Some(Task::batch([
+            iced::window::resize(window, size),
             navigate,
+            search,
+            navigation,
         ]));
     }
     run.ticks += 1;
+    if extra == Some(53) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "watchdog-rule-details",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
     if run.ticks
         == if extra.is_some_and(|i| i >= 13) {
             12
@@ -263,6 +539,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        94
+        124
     );
 }

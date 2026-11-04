@@ -1,5 +1,3 @@
-use std::fmt;
-
 pub(crate) use crate::platform::windows::timer_resolution::TimerResolutionInfo;
 use crate::platform::windows::timer_resolution::{
     TimerResolutionPlatform, WindowsTimerResolutionPlatform,
@@ -18,18 +16,13 @@ pub(crate) enum TimerResolutionTransitionStage {
     RequestDesired,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
 pub(crate) struct TimerResolutionTransitionError {
     pub(crate) stage: TimerResolutionTransitionStage,
     pub(crate) released_100ns: Option<u32>,
     pub(crate) active_100ns: Option<u32>,
     pub(crate) message: String,
-}
-
-impl fmt::Display for TimerResolutionTransitionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
 }
 
 pub(crate) struct TimerResolutionController<

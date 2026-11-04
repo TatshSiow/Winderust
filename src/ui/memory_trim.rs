@@ -52,7 +52,7 @@ impl Editor {
             }
             Message::WorkingSet(v) => {
                 if let Ok(v) = v.parse::<u64>() {
-                    if (1..=1_048_576).contains(&v) {
+                    if (1..=1_000_000).contains(&v) {
                         settings.process_working_set_threshold_mb = v;
                     }
                 }
@@ -81,12 +81,13 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a MemoryTrimSettings,
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
+        let mut body = column![super::widgets::toggle_card(
             "memory_trim.enable",
-            super::widgets::switch(settings.enabled, Some(Message::Enabled))
-        )),]
+            settings.enabled,
+            Some(Message::Enabled)
+        ),]
         .spacing(super::widgets::CARD_GAP);
         let field = |label: &str, unit: &str, value: String, change: fn(String) -> Message| {
             super::widgets::setting_row_with_unit(
@@ -101,21 +102,22 @@ impl Editor {
             (
                 0,
                 "memory_trim.category_thresholds",
-                column![
+                super::widgets::settings_rows([
                     field(
                         "memory_trim.memory_threshold",
                         "%",
                         settings.system_memory_load_threshold_percent.to_string(),
-                        Message::Load
-                    ),
+                        Message::Load,
+                    )
+                    .into(),
                     field(
                         "memory_trim.working_set_threshold",
-                        "MiB",
+                        "MB",
                         settings.process_working_set_threshold_mb.to_string(),
-                        Message::WorkingSet
+                        Message::WorkingSet,
                     )
-                ]
-                .spacing(design::space::MEDIUM),
+                    .into(),
+                ]),
             ),
             (
                 1,
@@ -165,11 +167,13 @@ impl Editor {
                 )
             })
             .collect();
-        safety = safety.push(super::widgets::process_rules_table(
-            [],
-            cards,
-            t!("memory_trim.no_exclusions").to_string(),
-        ));
+        safety = safety.push(super::widgets::settings_divider()).push(
+            super::widgets::process_rules_table(
+                [],
+                cards,
+                t!("memory_trim.no_exclusions").to_string(),
+            ),
+        );
 
         body = body.push(super::widgets::setting_group(
             "memory_trim.category_safety".to_string(),

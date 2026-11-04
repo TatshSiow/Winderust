@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ## Unreleased
 
+## 0.10.0-alpha - 2026-11-04
+
+### Added
+
+- Watchdog to monitor CPU and memory use, notify you when thresholds are exceeded, and optionally stop or restart selected apps.
+- Home has a new Recent Logs section for recent Action Log entries.
+- Advanced Power Plan Tuning now includes Long Running and Short Running thread policies.
+- App wide search with customizable keyboard shortcuts.
+- AMOLED theme.
+- Shows the update status below Update Channel in About.
+
+### Changed
+
+- Home and Search have new layouts. Navigation menus open on hover, and breadcrumbs start at Home.
+- Home charts now show 60 seconds of history using actual sample times, preserve gaps when data is unavailable, and show accurate values on hover. RAM Usage shows available memory instead of cached memory.
+- Window controls follow the app theme. The side panel docks beside the page, with Info, Status, and, where supported, Presets tabs.
+- Light and Dark themes use your chosen accent color more consistently.
+- Settings cards, tables, tabs, buttons, and time and color pickers have more consistent styling. Descriptions appear with the settings they explain.
+- Action Log uses INFO, WARN, and ERROR consistently, including in CSV exports.
+- Memory, storage, and network values now use decimal byte units.
+- Navigation and redraws use fewer resources. Closing to the tray also frees window and rendering resources.
+- About has simpler credits and an icon for each project link.
+- Power Plan Control no longer falls back to By Activity's Active plan when no enabled rule applies.
+
+### Fixed
+
+- Fixed popup and tooltip artifacts and scrollbar alignment at different display scales, along with cases where clicks reached the page behind a dialog.
+- Winderust lowers its own power priority only while hidden, keeping the visible window responsive.
+- Failed process and thread restorations stay queued for retry, and the original settings are preserved if crash-recovery updates cannot be confirmed.
+- By CPU Load resets its sustained-use timer after missing readings or power-profile changes. By Time handles clocks that repeat when daylight saving time ends.
+- UI wording is more consistent in English and Traditional Chinese.
+
+### Removed
+
+- Removed Home's pause control and Process List's pause and manual refresh controls. Both pages update automatically.
+
+### Upgrade notes
+
+Back up the settings kept beside the executable and any exported presets before updating.
+
+- Processor masks in CPU Allocation presets and CPU Sets (Soft)/Processor Affinity (Hard) rules now use quoted hexadecimal text: `0x` followed by exactly 16 hexadecimal digits, such as `"0x000000000000000f"`. Update or recreate older numeric entries before loading them.
+- App Suspension network thresholds now use byte units only. Change saved bit-unit selections to byte units before loading those settings; keep the stored byte values unchanged.
+- Memory Trim now treats 1 MB as 1,000,000 bytes rather than 1,048,576 bytes. Review your working set thresholds if you rely on exact limits.
+- Invalid By Time clocks, By CPU Load ranges, or App Suspension durations are now rejected during load, import, save, and export. An On Battery profile also cannot contain another On Battery profile.
+
 ## 0.9.1-alpha - 2026-10-02
 
 ### Added

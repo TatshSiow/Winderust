@@ -40,6 +40,15 @@ use ui::app;
 rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() {
+    #[cfg(feature = "recovery-smoke")]
+    if crash_recovery::smoke::run_if_requested() {
+        return;
+    }
+    #[cfg(feature = "render-smoke")]
+    if std::env::args().any(|argument| argument == "--window-lifecycle-smoke") {
+        ui::app::window_lifecycle_smoke::run_check();
+        return;
+    }
     #[cfg(feature = "render-smoke")]
     if std::env::args().any(|argument| argument == "--render-smoke") {
         ui::app::smoke::render_all_pages();
@@ -161,13 +170,12 @@ impl SingleInstanceRestoreEvent {
         unsafe { WaitForSingleObject(self.handle.raw(), wait_milliseconds) == WAIT_OBJECT_0 }
     }
 
-    fn listen(self, hwnd: windows_sys::Win32::Foundation::HWND) {
-        let hwnd = hwnd as usize;
+    fn listen(self) {
         if let Err(error) = std::thread::Builder::new()
             .name("single-instance-restore".to_owned())
             .spawn(move || {
                 while self.wait(windows_sys::Win32::System::Threading::INFINITE) {
-                    tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
+                    tray::request_restore();
                 }
             })
         {
@@ -259,33 +267,67 @@ mod tests {
             );
             return;
         }
-        for (locale, home) in [
-            ("en", "Home"),
-            ("zh-TW", "\u{9996}\u{9801}"),
-            ("en", "Home"),
+        for (locale, home, unavailable) in [
+            ("en", "Home", "Unavailable"),
+            ("zh-TW", "\u{9996}\u{9801}", "無法使用"),
+            ("en", "Home", "Unavailable"),
         ] {
             rust_i18n::set_locale(locale);
             assert_eq!(rust_i18n::t!("nav.home"), home);
+            assert_eq!(rust_i18n::t!("common.unavailable"), unavailable);
         }
         assert_eq!(rust_i18n::t!("common.rule", number = 7), "Rule 7");
         assert_eq!(rust_i18n::t!("nav.home", locale = "unknown-locale"), "Home");
     }
 
     #[test]
-    fn locale_labels_are_not_question_mark_placeholders() {
-        for (locale, source) in [
-            ("en", include_str!("../locales/en.yml")),
-            ("zh-TW", include_str!("../locales/zh-TW.yml")),
-        ] {
-            for (index, line) in source.lines().enumerate() {
-                if let Some((_, value)) = line.split_once(':') {
-                    let value = value.trim().trim_matches(['\"', '\'']);
-                    assert!(
-                        value.is_empty() || !value.chars().all(|c| c == '?'),
-                        "{locale}:{} contains a placeholder label",
-                        index + 1
-                    );
-                }
+    fn locales_have_matching_keys_placeholders_and_complete_labels() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        fn placeholders(value: &str) -> BTreeSet<&str> {
+            value
+                .split("%{")
+                .skip(1)
+                .map(|part| {
+                    let (name, _) = part.split_once('}').expect("Unclosed locale placeholder");
+                    assert!(!name.is_empty(), "Empty locale placeholder");
+                    name
+                })
+                .collect()
+        }
+
+        let backend = _rust_i18n_backend();
+        let english = backend
+            .messages_for_locale("en")
+            .expect("English locale must exist")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        let chinese = backend
+            .messages_for_locale("zh-TW")
+            .expect("Traditional Chinese locale must exist")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert!(!english.is_empty(), "Locale catalog must not be empty");
+        assert_eq!(
+            english.keys().collect::<Vec<_>>(),
+            chinese.keys().collect::<Vec<_>>(),
+            "Locales must contain the same keys without relying on fallback"
+        );
+
+        for (locale, messages) in [("en", &english), ("zh-TW", &chinese)] {
+            for (key, value) in messages {
+                assert!(
+                    !value.trim().is_empty()
+                        && !value.chars().all(|c| c == '?')
+                        && !value.contains("??")
+                        && !value.contains('\u{fffd}'),
+                    "{locale}:{key} contains an empty or corrupted label: {value}"
+                );
+                assert_eq!(
+                    placeholders(value),
+                    placeholders(&english[key]),
+                    "{locale}:{key} must preserve interpolation parameters"
+                );
             }
         }
     }

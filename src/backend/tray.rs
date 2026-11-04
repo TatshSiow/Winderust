@@ -1,30 +1,33 @@
 use std::{
-    mem::{size_of, transmute},
+    mem::size_of,
     panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
     sync::{
         atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
+    thread::{self, JoinHandle},
 };
 
 use rust_i18n::t;
 use windows_sys::Win32::{
-    Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Foundation::{GetLastError, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Shell::{
-            Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+            Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_WARNING,
+            NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
         },
         WindowsAndMessaging::{
-            AppendMenuW, CallWindowProcW, ChangeWindowMessageFilterEx, CreatePopupMenu,
-            DestroyMenu, GetCursorPos, GetForegroundWindow, IsIconic, LoadImageW,
-            RegisterWindowMessageW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-            ShowWindow, TrackPopupMenu, GWLP_WNDPROC, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON,
+            AppendMenuW, ChangeWindowMessageFilterEx, CreatePopupMenu, CreateWindowExW,
+            DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, EndMenu, GetCursorPos,
+            GetForegroundWindow, GetMessageW, IsIconic, LoadImageW, PostMessageW, PostQuitMessage,
+            RegisterClassW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow, ShowWindow,
+            TrackPopupMenu, TranslateMessage, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON,
             LR_DEFAULTSIZE, LR_SHARED, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
-            MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE, SW_HIDE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD,
-            TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_POWERBROADCAST,
-            WM_RBUTTONUP, WM_SETICON, WM_SHOWWINDOW, WNDPROC,
+            MSG, MSGFLT_ALLOW, PBT_APMPOWERSTATUSCHANGE, SW_RESTORE, SW_SHOW, TPM_RETURNCMD,
+            TPM_RIGHTBUTTON, WM_APP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_POWERBROADCAST,
+            WM_RBUTTONUP, WM_SETICON, WNDCLASSW,
         },
     },
 };
@@ -33,6 +36,7 @@ use crate::win_util::wide_null;
 
 const TRAY_UID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
+const WM_STOP_TRAY: u32 = WM_APP + 2;
 const MENU_SHOW: usize = 1001;
 const MENU_EXIT: usize = 1002;
 const MENU_MASTER: usize = 1003;
@@ -117,14 +121,32 @@ fn menu_action(command: usize, state: &MenuState) -> Option<MenuAction> {
 }
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static NOTIFICATION_WINDOW: AtomicIsize = AtomicIsize::new(0);
+
+pub(crate) fn show_notification(title: &str, body: &str, critical: bool) -> Result<(), String> {
+    let hwnd = NOTIFICATION_WINDOW.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return Err("Windows notification tray icon is unavailable.".into());
+    }
+    let mut data = notify_data(hwnd as HWND);
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = if critical { NIIF_ERROR } else { NIIF_WARNING };
+    write_wide_fixed(&mut data.szInfoTitle, title);
+    write_wide_fixed(&mut data.szInfo, body);
+    // SAFETY: data is initialized and identifies the registered tray icon. Shell validates
+    // the window if teardown raced with this call; no borrowed pointers escape.
+    if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) } == 0 {
+        Err("Windows rejected the Watchdog notification.".into())
+    } else {
+        Ok(())
+    }
+}
 static TASKBAR_RECREATED: AtomicBool = AtomicBool::new(false);
 
 pub fn take_taskbar_created() -> bool {
     take_requested(&TASKBAR_RECREATED)
 }
 
-static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
-static HIDE_ON_CLOSE: AtomicBool = AtomicBool::new(false);
 static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESTORE_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -162,33 +184,23 @@ impl Drop for TrayVisibilityWatcher {
 
 pub struct TrayIcon {
     hwnd: HWND,
-    original_wndproc: isize,
+    thread: Option<JoinHandle<()>>,
     registered: bool,
 }
 
 impl TrayIcon {
-    pub fn install(hwnd: HWND) -> Result<Self, String> {
-        if hwnd.is_null() {
-            return Err("Cannot create tray icon without a window handle.".to_owned());
-        }
-
+    pub fn install() -> Result<Self, String> {
         let name = wide_null("TaskbarCreated");
         // SAFETY: name is null-terminated and valid throughout registration.
         let message = unsafe { RegisterWindowMessageW(name.as_ptr()) };
         if message == 0 {
             return Err("Failed to register the taskbar recreation message.".into());
         }
-        // SAFETY: hwnd is the live app window; only the payload-free shell notification is allowed.
-        if unsafe { ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, std::ptr::null_mut()) }
-            == 0
-        {
-            return Err("Failed to allow taskbar recreation notifications.".into());
-        }
         TASKBAR_CREATED.store(message, Ordering::Relaxed);
-        let original_wndproc = subclass_window(hwnd)?;
+        let (hwnd, thread) = start_tray_window()?;
         let mut icon = Self {
             hwnd,
-            original_wndproc,
+            thread: Some(thread),
             registered: false,
         };
         icon.register()?;
@@ -197,13 +209,38 @@ impl TrayIcon {
 
     pub fn is_registered(&self) -> bool {
         self.registered
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
     }
 
     pub fn invalidate(&mut self) {
+        NOTIFICATION_WINDOW.store(0, Ordering::Release);
         self.registered = false;
     }
 
     pub fn register(&mut self) -> Result<(), String> {
+        NOTIFICATION_WINDOW.store(0, Ordering::Release);
+        self.registered = false;
+        if self.thread.as_ref().is_none_or(JoinHandle::is_finished) {
+            if let Some(thread) = self.thread.take() {
+                if thread.join().is_err() {
+                    eprintln!("Tray window thread panicked before registration retry.");
+                }
+            }
+            let (hwnd, thread) = start_tray_window()?;
+            self.hwnd = hwnd;
+            self.thread = Some(thread);
+        }
+        let message = TASKBAR_CREATED.load(Ordering::Relaxed);
+        // SAFETY: hwnd is the live tray host; only the payload-free shell notification is allowed.
+        if unsafe {
+            ChangeWindowMessageFilterEx(self.hwnd, message, MSGFLT_ALLOW, std::ptr::null_mut())
+        } == 0
+        {
+            return Err("Failed to allow taskbar recreation notifications.".into());
+        }
         let mut data = notify_data(self.hwnd);
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = WM_TRAYICON;
@@ -212,6 +249,7 @@ impl TrayIcon {
         // SAFETY: data identifies the live window and uses a shared icon handle.
         self.registered = unsafe { Shell_NotifyIconW(NIM_ADD, &data) } != 0;
         if self.registered {
+            NOTIFICATION_WINDOW.store(self.hwnd as isize, Ordering::Release);
             Ok(())
         } else {
             Err("Failed to add Winderust to the system tray.".into())
@@ -221,14 +259,23 @@ impl TrayIcon {
 
 impl Drop for TrayIcon {
     fn drop(&mut self) {
+        NOTIFICATION_WINDOW.store(0, Ordering::Release);
         let data = notify_data(self.hwnd);
         // SAFETY: data identifies the tray icon installed for this live window and deletion does
         // not transfer ownership.
         unsafe {
             Shell_NotifyIconW(NIM_DELETE, &data);
         }
-        if let Err(error) = restore_window_proc(self.hwnd, self.original_wndproc) {
-            eprintln!("{error}");
+        // SAFETY: hwnd belongs to our live tray thread, and the stop message carries no pointers.
+        let stopped = unsafe { PostMessageW(self.hwnd, WM_STOP_TRAY, 0, 0) } != 0;
+        if let Some(thread) = self.thread.take() {
+            if stopped || thread.is_finished() {
+                if thread.join().is_err() {
+                    eprintln!("Tray window thread panicked during shutdown.");
+                }
+            } else {
+                eprintln!("Failed to stop the tray window thread.");
+            }
         }
     }
 }
@@ -245,18 +292,8 @@ fn take_requested(requested: &AtomicBool) -> bool {
     requested.swap(false, Ordering::Relaxed)
 }
 
-pub fn set_hide_on_close(enabled: bool) {
-    HIDE_ON_CLOSE.store(enabled, Ordering::Relaxed);
-}
-
 pub fn is_hidden_to_tray() -> bool {
     HIDDEN_TO_TRAY.load(Ordering::Relaxed)
-}
-
-pub fn hide_window(hwnd: HWND) {
-    set_hidden_to_tray(true);
-    // SAFETY: hwnd is obtained from the live Iced window; ShowWindow does not retain pointers.
-    unsafe { ShowWindow(hwnd, SW_HIDE) };
 }
 
 fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -269,11 +306,16 @@ fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
 }
 
 fn write_wide_fixed<const N: usize>(target: &mut [u16; N], value: &str) {
-    for (slot, code) in target
-        .iter_mut()
-        .zip(value.encode_utf16().chain(std::iter::once(0)))
-    {
-        *slot = code;
+    target.fill(0);
+    let mut used = 0;
+    for character in value.chars() {
+        let mut units = [0; 2];
+        let encoded = character.encode_utf16(&mut units);
+        if used + encoded.len() >= N {
+            break;
+        }
+        target[used..used + encoded.len()].copy_from_slice(encoded);
+        used += encoded.len();
     }
 }
 
@@ -313,51 +355,105 @@ fn load_app_icon() -> HICON {
     }
 }
 
-fn subclass_window(hwnd: HWND) -> Result<isize, String> {
-    if ORIGINAL_WNDPROC.load(Ordering::SeqCst) != 0 {
-        return Err("The tray window is already subclassed.".to_owned());
+fn start_tray_window() -> Result<(HWND, JoinHandle<()>), String> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let thread = thread::Builder::new()
+        .name("tray-window".into())
+        .spawn(move || tray_window_thread(sender))
+        .map_err(|error| format!("Failed to start the tray window thread: {error}"))?;
+    match receiver
+        .recv()
+        .map_err(|error| format!("Tray window did not start: {error}"))
+        .and_then(std::convert::identity)
+    {
+        Ok(hwnd) => Ok((hwnd as HWND, thread)),
+        Err(error) => {
+            if thread.join().is_err() {
+                eprintln!("Tray window thread panicked during startup.");
+            }
+            Err(error)
+        }
     }
-
-    // SAFETY: clearing the calling thread's last-error value lets the zero return from the
-    // following SetWindowLongPtrW call be distinguished from failure.
-    unsafe { SetLastError(0) };
-    // SAFETY: hwnd is the live Iced window and tray_wnd_proc has the required static callback ABI.
-    let previous =
-        unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, tray_wnd_proc as *const () as isize) };
-    if previous == 0 {
-        // SAFETY: GetLastError is captured immediately after the failed SetWindowLongPtrW call.
-        let error = unsafe { GetLastError() };
-        return Err(format!(
-            "Failed to subclass the tray window with error code {error}."
-        ));
-    }
-
-    ORIGINAL_WNDPROC.store(previous, Ordering::SeqCst);
-    Ok(previous)
 }
 
-fn restore_window_proc(hwnd: HWND, original_wndproc: isize) -> Result<(), String> {
-    // SAFETY: hwnd is the same live window subclassed by TrayIcon, and original_wndproc is the
-    // window procedure returned by that successful SetWindowLongPtrW call.
-    unsafe { SetLastError(0) };
-    // SAFETY: the original callback has the WNDPROC ABI and remains owned by the live window.
-    let previous = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original_wndproc) };
-    if previous == 0 {
-        // SAFETY: GetLastError is captured immediately after SetWindowLongPtrW returned zero.
+fn tray_window_thread(sender: mpsc::SyncSender<Result<usize, String>>) {
+    let hwnd = match create_tray_window() {
+        Ok(hwnd) => hwnd,
+        Err(error) => {
+            if sender.send(Err(error)).is_err() {
+                eprintln!("Tray window startup receiver disconnected.");
+            }
+            return;
+        }
+    };
+    if sender.send(Ok(hwnd as usize)).is_ok() {
+        let mut message = MSG::default();
+        loop {
+            // SAFETY: message is writable; this thread owns the tray host and message queue.
+            let result = unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) };
+            if result <= 0 {
+                if result < 0 {
+                    eprintln!("Tray window message loop failed.");
+                    request_restore();
+                }
+                break;
+            }
+            // SAFETY: message was initialized by GetMessageW and is dispatched on its owner thread.
+            unsafe {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+    // SAFETY: this thread owns the hidden tray window and will not use it after destruction.
+    unsafe { DestroyWindow(hwnd) };
+}
+
+fn create_tray_window() -> Result<HWND, String> {
+    let class_name = wide_null("WinderustTray");
+    // SAFETY: a null name requests the current process module without transferring ownership.
+    let module = unsafe { GetModuleHandleW(null()) };
+    let class = WNDCLASSW {
+        lpfnWndProc: Some(tray_wnd_proc),
+        hInstance: module,
+        lpszClassName: class_name.as_ptr(),
+        ..Default::default()
+    };
+    // SAFETY: class owns valid pointers for registration and the callback has a static lifetime.
+    if unsafe { RegisterClassW(&class) } == 0 {
+        // SAFETY: GetLastError immediately follows failed class registration.
         let error = unsafe { GetLastError() };
-        if error != 0 {
+        if error != ERROR_CLASS_ALREADY_EXISTS {
             return Err(format!(
-                "Failed to restore the tray window procedure with error code {error}."
+                "Failed to register the tray window class: {error}."
             ));
         }
     }
-
-    ORIGINAL_WNDPROC.store(0, Ordering::SeqCst);
-    Ok(())
-}
-
-fn close_needs_prompt(minimized: bool, foreground: bool) -> bool {
-    minimized || !foreground
+    // A hidden top-level window receives TaskbarCreated broadcasts; message-only windows do not.
+    // SAFETY: names are terminated, the registered callback is static, and optional inputs are null.
+    let hwnd = unsafe {
+        CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            class_name.as_ptr(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            module,
+            std::ptr::null(),
+        )
+    };
+    if hwnd.is_null() {
+        // SAFETY: GetLastError immediately follows failed window creation.
+        let error = unsafe { GetLastError() };
+        Err(format!("Failed to create the tray window: {error}."))
+    } else {
+        Ok(hwnd)
+    }
 }
 
 unsafe extern "system" fn tray_wnd_proc(
@@ -366,39 +462,25 @@ unsafe extern "system" fn tray_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if message == WM_STOP_TRAY {
+        // SAFETY: this callback runs on the tray owner thread; both calls retain no pointers.
+        unsafe {
+            EndMenu();
+            PostQuitMessage(0);
+        }
+        return 0;
+    }
     if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) {
         TASKBAR_RECREATED.store(true, Ordering::Relaxed);
-        HIDE_ON_CLOSE.store(false, Ordering::Relaxed);
         wake_ui();
     }
     if message == WM_POWERBROADCAST && wparam == PBT_APMPOWERSTATUSCHANGE as usize {
         wake_ui();
     }
-    if message == WM_CLOSE {
-        // SAFETY: hwnd belongs to this active window procedure callback.
-        if unsafe { close_needs_prompt(IsIconic(hwnd) != 0, GetForegroundWindow() == hwnd) } {
-            EXIT_REQUESTED.store(true, Ordering::Relaxed);
-            wake_ui();
-            return 0;
-        }
-    }
-    if message == WM_CLOSE && HIDE_ON_CLOSE.load(Ordering::Relaxed) {
-        set_hidden_to_tray(true);
-        // SAFETY: hwnd is the window associated with this active window procedure callback.
-        unsafe { ShowWindow(hwnd, SW_HIDE) };
-        return 0;
-    }
-
-    if message == WM_SHOWWINDOW && wparam != 0 && HIDDEN_TO_TRAY.load(Ordering::Relaxed) {
-        // SAFETY: hwnd is the window associated with this active window procedure callback.
-        unsafe { ShowWindow(hwnd, SW_HIDE) };
-        return 0;
-    }
-
     if message == WM_TRAYICON && wparam as u32 == TRAY_UID {
         match lparam as u32 {
-            WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
-                show_window(hwnd);
+            WM_LBUTTONUP | WM_LBUTTONDBLCLK | NIN_BALLOONUSERCLICK => {
+                request_restore();
                 return 0;
             }
             WM_RBUTTONUP => {
@@ -409,25 +491,19 @@ unsafe extern "system" fn tray_wnd_proc(
         }
     }
 
-    let previous = ORIGINAL_WNDPROC.load(Ordering::SeqCst);
-    if previous != 0 {
-        // SAFETY: previous was returned by SetWindowLongPtrW for GWLP_WNDPROC and therefore has
-        // the WNDPROC ABI.
-        unsafe {
-            let proc: WNDPROC = transmute(previous);
-            CallWindowProcW(proc, hwnd, message, wparam, lparam)
-        }
-    } else {
-        0
-    }
+    // SAFETY: unhandled messages are forwarded with the unchanged window callback arguments.
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+pub(crate) fn request_restore() {
+    set_hidden_to_tray(false);
+    RESTORE_REQUESTED.store(true, Ordering::Relaxed);
+    wake_ui();
 }
 
 pub(crate) fn show_window(hwnd: HWND) {
     set_hidden_to_tray(false);
-    RESTORE_REQUESTED.store(true, Ordering::Relaxed);
-    wake_ui();
-    // SAFETY: hwnd is the live application window supplied by its window procedure callback or
-    // captured when the single-instance restore listener starts.
+    // SAFETY: hwnd is the current live application window supplied by the UI.
     unsafe {
         ShowWindow(
             hwnd,
@@ -439,6 +515,16 @@ pub(crate) fn show_window(hwnd: HWND) {
         );
         SetForegroundWindow(hwnd);
     }
+}
+
+pub(crate) fn close_needs_prompt(hwnd: HWND) -> bool {
+    // SAFETY: hwnd is the current live GUI window; these calls only query its state.
+    let (minimized, foreground) = unsafe { (IsIconic(hwnd) != 0, GetForegroundWindow() == hwnd) };
+    close_needs_prompt_state(minimized, foreground)
+}
+
+fn close_needs_prompt_state(minimized: bool, foreground: bool) -> bool {
+    minimized || !foreground
 }
 
 fn append_menu(
@@ -535,7 +621,7 @@ fn show_tray_menu(hwnd: HWND) {
     };
 
     match command as usize {
-        MENU_SHOW => show_window(hwnd),
+        MENU_SHOW => request_restore(),
         // The app restores its window and owns confirmation and shutdown.
         MENU_EXIT => EXIT_REQUESTED.store(true, Ordering::Relaxed),
         command => {
@@ -552,7 +638,7 @@ fn show_tray_menu(hwnd: HWND) {
     }
 }
 
-fn set_hidden_to_tray(hidden: bool) {
+pub(crate) fn set_hidden_to_tray(hidden: bool) {
     if HIDDEN_TO_TRAY.swap(hidden, Ordering::Relaxed) == hidden {
         return;
     }
@@ -616,11 +702,53 @@ mod tests {
     }
 
     #[test]
+    fn tray_host_lives_independently_of_the_gui_window() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetParent, IsWindow, IsWindowVisible};
+
+        let (host, thread) = start_tray_window().expect("start independent tray host");
+        let class = wide_null("STATIC");
+        // SAFETY: STATIC is a built-in class; this test owns the hidden GUI stand-in window.
+        let gui = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                null(),
+                0,
+                0,
+                0,
+                100,
+                100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                GetModuleHandleW(null()),
+                std::ptr::null(),
+            )
+        };
+        // SAFETY: the GUI is owned by this thread; the tray host remains owned by its own thread.
+        let (gui_destroyed, host_exists, host_hidden, host_top_level) = unsafe {
+            (
+                DestroyWindow(gui) != 0,
+                IsWindow(host) != 0,
+                IsWindowVisible(host) == 0,
+                GetParent(host).is_null(),
+            )
+        };
+        // SAFETY: the host is live; this pointer-free message asks its owner thread to stop.
+        let posted = unsafe { PostMessageW(host, WM_STOP_TRAY, 0, 0) } != 0;
+        let joined = thread.join();
+        // SAFETY: IsWindow accepts an old handle and only queries whether it remains valid.
+        let host_destroyed = unsafe { IsWindow(host) == 0 };
+        assert!(!gui.is_null());
+        assert!(gui_destroyed && host_exists && host_hidden && host_top_level);
+        assert!(posted && joined.is_ok() && host_destroyed);
+    }
+
+    #[test]
     fn background_and_minimized_closes_prompt_instead_of_hiding() {
-        assert!(close_needs_prompt(false, false));
-        assert!(close_needs_prompt(true, false));
-        assert!(close_needs_prompt(true, true));
-        assert!(!close_needs_prompt(false, true));
+        assert!(close_needs_prompt_state(false, false));
+        assert!(close_needs_prompt_state(true, false));
+        assert!(close_needs_prompt_state(true, true));
+        assert!(!close_needs_prompt_state(false, true));
     }
 
     #[test]
@@ -666,5 +794,18 @@ mod tests {
 
         assert!(take_requested(&requested));
         assert!(!take_requested(&requested));
+    }
+
+    #[test]
+    fn notification_text_is_terminated_without_splitting_surrogates() {
+        let mut text = [1; 5];
+        write_wide_fixed(&mut text, "ab😀c");
+        assert_eq!(String::from_utf16(&text[..4]).unwrap(), "ab😀");
+        assert_eq!(text[4], 0);
+        write_wide_fixed(&mut text, "a");
+        assert_eq!(text, [97, 0, 0, 0, 0]);
+        let mut tiny = [1; 2];
+        write_wide_fixed(&mut tiny, "😀");
+        assert_eq!(tiny, [0, 0]);
     }
 }

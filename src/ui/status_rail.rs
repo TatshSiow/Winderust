@@ -1,6 +1,6 @@
 use super::action_log::{action_log_process_label, action_log_time_label};
 use super::design;
-use super::widgets::button;
+use super::widgets::action_button;
 use crate::ui::scrolling::scrollable;
 use crate::{
     action_log::{ActionLogEntry, ActionLogFeature},
@@ -23,12 +23,12 @@ enum FeatureRunState {
     Inactive,
     Unknown,
 }
-struct FeatureStatusSummary {
+struct FeatureStatusSummary<'a> {
     scanned: Option<usize>,
     adjusted: Option<usize>,
     protected_or_denied: Option<usize>,
     skipped: Option<usize>,
-    last_error: Option<String>,
+    last_error: Option<&'a str>,
     action_log_feature: ActionLogFeature,
 }
 #[derive(Debug, Clone)]
@@ -126,11 +126,19 @@ pub(super) fn view<'a>(
             "common.process_activity",
             column![
                 metric(
-                    "common.scanned_processes",
+                    if page == Page::Watchdog {
+                        "watchdog.monitored"
+                    } else {
+                        "common.scanned_processes"
+                    },
                     count(available.then_some(summary.scanned).flatten())
                 ),
                 metric(
-                    "common.adjusted_processes",
+                    if page == Page::Watchdog {
+                        "watchdog.alerting"
+                    } else {
+                        "common.adjusted_processes"
+                    },
                     count(available.then_some(summary.adjusted).flatten())
                 ),
                 metric(
@@ -174,7 +182,7 @@ pub(super) fn view<'a>(
                 log(
                     "common.last_failed",
                     actions.and_then(|s| s.last_failed.as_ref()),
-                    summary.last_error.as_deref()
+                    summary.last_error
                 )
             ]
             .spacing(design::space::CONTROL),
@@ -282,7 +290,7 @@ pub(super) fn view<'a>(
         && !crate::privilege::is_running_as_admin()
     {
         body = body.push(
-            button(text(t!("admin_rights.relaunch").to_string())).on_press(Message::RelaunchAdmin),
+            action_button(t!("admin_rights.relaunch").to_string()).on_press(Message::RelaunchAdmin),
         );
     }
     let content: Element<'a, Message> = scrollable(
@@ -293,22 +301,7 @@ pub(super) fn view<'a>(
     .width(Fill)
     .height(Fill)
     .into();
-    Some(
-        if matches!(
-            page,
-            Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard
-        ) {
-            content
-        } else {
-            column![
-                super::widgets::panel_heading(t!("common.status").to_string()),
-                content
-            ]
-            .spacing(design::space::MEDIUM)
-            .height(Fill)
-            .into()
-        },
-    )
+    Some(content)
 }
 fn saved_runtime_settings(
     editor: &crate::application::SettingsEditor,
@@ -326,7 +319,7 @@ fn sidebar_state(
     page: Page,
     settings: &Settings,
     runtime: &RuntimeStatusSnapshot,
-    summary: &FeatureStatusSummary,
+    summary: &FeatureStatusSummary<'_>,
 ) -> FeatureRunState {
     use crate::control::power_plan::PowerPlanOwner;
     use crate::rules::DecisionState;
@@ -397,7 +390,8 @@ fn sidebar_state(
     {
         return FeatureRunState::Paused;
     }
-    let active = summary.adjusted.is_some_and(|count| count > 0)
+    let active = (page == Page::Watchdog && summary.scanned.is_some_and(|count| count > 0))
+        || summary.adjusted.is_some_and(|count| count > 0)
         || (page == Page::TimerResolution && features.timer_resolution.requested_100ns.is_some())
         || (page == Page::AdaptiveEngine
             && plan.owner == Some(PowerPlanOwner::AdaptiveEngine)
@@ -471,7 +465,7 @@ fn log(
 fn feature_status_summary(
     page: Page,
     runtime: &RuntimeStatusSnapshot,
-) -> Option<FeatureStatusSummary> {
+) -> Option<FeatureStatusSummary<'_>> {
     let summary = match page {
         Page::AdaptiveEngine => {
             let status = &runtime.feature_status.adaptive_engine_process;
@@ -480,7 +474,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::AdaptiveEngine,
             }
         }
@@ -491,8 +485,19 @@ fn feature_status_summary(
                 adjusted: Some(status.throttled_processes),
                 protected_or_denied: Some(status.access_denied_processes),
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::BackgroundEfficiency,
+            }
+        }
+        Page::Watchdog => {
+            let status = &runtime.feature_status.watchdog;
+            FeatureStatusSummary {
+                scanned: Some(status.monitored_processes),
+                adjusted: Some(status.alerting_processes),
+                protected_or_denied: None,
+                skipped: Some(status.skipped_processes),
+                last_error: status.last_error.as_deref(),
+                action_log_feature: ActionLogFeature::Watchdog,
             }
         }
         Page::MemoryTrim => {
@@ -502,7 +507,7 @@ fn feature_status_summary(
                 adjusted: Some(status.trimmed_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::MemoryTrim,
             }
         }
@@ -513,7 +518,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::ProcessPriority,
             }
         }
@@ -524,7 +529,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::ThreadPriority,
             }
         }
@@ -535,7 +540,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::DynamicPriorityBoost,
             }
         }
@@ -546,7 +551,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::IoPriority,
             }
         }
@@ -557,7 +562,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: Some(status.denied_processes),
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::GpuPriority,
             }
         }
@@ -568,7 +573,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::MemoryPriority,
             }
         }
@@ -579,7 +584,7 @@ fn feature_status_summary(
                 adjusted: Some(status.limited_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::CpuLimiter,
             }
         }
@@ -600,7 +605,7 @@ fn feature_status_summary(
                 adjusted: Some(status.adjusted_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: feature,
             }
         }
@@ -611,7 +616,7 @@ fn feature_status_summary(
                 adjusted: Some(status.suspended_processes),
                 protected_or_denied: None,
                 skipped: Some(status.skipped_processes),
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::AppSuspension,
             }
         }
@@ -622,7 +627,7 @@ fn feature_status_summary(
                 adjusted: None,
                 protected_or_denied: None,
                 skipped: None,
-                last_error: status.last_error.clone(),
+                last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::TimerResolution,
             }
         }

@@ -6,64 +6,27 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE_NAME: &str = "Winderust";
 const STARTUP_ALLOWED_EXTENSIONS: &[&str] = &["exe", "com"];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum StartupRegistrationError {
+    #[error("failed to read Winderust executable path: {0}")]
     ReadExecutablePath(String),
+    #[error("failed to resolve Winderust executable path: {0}")]
     ResolveExecutablePath(String),
+    #[error("Winderust executable path is not a file.")]
     ExecutableIsNotFile,
+    #[error("Winderust executable path has no extension.")]
     ExecutableHasNoExtension,
+    #[error("Winderust executable path has unexpected extension ({0:?}).")]
     UnexpectedExecutableExtension(String),
+    #[error("Failed to create startup registry key: {0}")]
     CreateRegistryKey(String),
+    #[error("Failed to write startup registry value: {0}")]
     WriteRegistryValue(String),
+    #[error("Failed to open startup registry key: {0}")]
     OpenRegistryKey(String),
+    #[error("Failed to delete startup registry value: {0}")]
     DeleteRegistryValue(String),
 }
-
-impl std::fmt::Display for StartupRegistrationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReadExecutablePath(error) => {
-                write!(
-                    formatter,
-                    "failed to read Winderust executable path: {error}"
-                )
-            }
-            Self::ResolveExecutablePath(error) => {
-                write!(
-                    formatter,
-                    "failed to resolve Winderust executable path: {error}"
-                )
-            }
-            Self::ExecutableIsNotFile => {
-                formatter.write_str("Winderust executable path is not a file.")
-            }
-            Self::ExecutableHasNoExtension => {
-                formatter.write_str("Winderust executable path has no extension.")
-            }
-            Self::UnexpectedExecutableExtension(extension) => write!(
-                formatter,
-                "Winderust executable path has unexpected extension ({extension:?})."
-            ),
-            Self::CreateRegistryKey(error) => {
-                write!(formatter, "Failed to create startup registry key: {error}")
-            }
-            Self::WriteRegistryValue(error) => {
-                write!(formatter, "Failed to write startup registry value: {error}")
-            }
-            Self::OpenRegistryKey(error) => {
-                write!(formatter, "Failed to open startup registry key: {error}")
-            }
-            Self::DeleteRegistryValue(error) => {
-                write!(
-                    formatter,
-                    "Failed to delete startup registry value: {error}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for StartupRegistrationError {}
 
 pub(crate) fn set_startup_with_windows(enabled: bool) -> Result<(), StartupRegistrationError> {
     if enabled {

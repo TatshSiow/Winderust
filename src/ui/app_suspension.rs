@@ -1,5 +1,5 @@
 use super::design;
-use super::widgets::{button, checkbox, pick_list, text_input};
+use super::widgets::{action_button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::config::{AppSuspensionSettings, NetworkThresholdUnit};
 use crate::ui::process_rules::{
@@ -63,8 +63,10 @@ impl Editor {
             }
             Message::Delay(field, v) => {
                 let max = match field {
-                    Delay::Background | Delay::ThawInterval => 86_400,
-                    _ => 3600,
+                    Delay::Background | Delay::ThawInterval => {
+                        AppSuspensionSettings::MAX_DELAY_SECONDS
+                    }
+                    _ => AppSuspensionSettings::MAX_WAKE_DURATION_SECONDS,
                 };
                 if let Ok(v) = v.parse::<u64>() {
                     if (1..=max).contains(&v) {
@@ -158,33 +160,42 @@ impl Editor {
         s: &'a AppSuspensionSettings,
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
-        candidates: &[super::app_picker::Candidate],
+        candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::settings_card(super::widgets::setting_row(
-            "app_suspension.enable",
-            super::widgets::switch(s.enabled, Some(Message::Enabled))
-        )),]
+        let mut body = column![
+            super::widgets::heading(
+                t!("app_suspension.behavior").to_string(),
+                design::typography::BODY
+            ),
+            super::widgets::settings_card(super::widgets::settings_rows([
+                super::widgets::setting_row(
+                    "app_suspension.enable",
+                    super::widgets::switch(s.enabled, Some(Message::Enabled))
+                )
+                .into(),
+                delay_row(
+                    Delay::Background,
+                    "app_suspension.background_delay",
+                    s.background_delay_seconds,
+                ),
+            ])),
+        ]
         .spacing(super::widgets::CARD_GAP);
-        body = body.push(super::widgets::settings_card(delay_row(
-            Delay::Background,
-            "app_suspension.background_delay",
-            s.background_delay_seconds,
-        )));
         for (i, key, enabled, toggle, rows) in [
             (
                 0,
-                "app_suspension.temporary_thaw",
+                "app_suspension.temporary_resume",
                 s.temporary_thaw_enabled,
                 Message::Thaw as fn(bool) -> Message,
                 vec![
                     (
                         Delay::ThawInterval,
-                        "app_suspension.thaw_every",
+                        "app_suspension.resume_every",
                         s.temporary_thaw_interval_seconds,
                     ),
                     (
                         Delay::ThawDuration,
-                        "app_suspension.thaw_duration",
+                        "app_suspension.resume_duration",
                         s.temporary_thaw_duration_seconds,
                     ),
                 ],
@@ -196,7 +207,7 @@ impl Editor {
                 Message::Audio,
                 vec![(
                     Delay::Audio,
-                    "app_suspension.audio_refreeze",
+                    "app_suspension.suspend_after_audio",
                     s.audio_wake_duration_seconds,
                 )],
             ),
@@ -207,16 +218,15 @@ impl Editor {
                 Message::Network,
                 vec![(
                     Delay::Network,
-                    "app_suspension.network_refreeze",
+                    "app_suspension.network_suspension_delay",
                     s.network_wake_duration_seconds,
                 )],
             ),
         ] {
-            let controls = iced::widget::Column::with_children(
+            let controls = super::widgets::settings_rows(
                 rows.into_iter()
                     .map(|(field, label, value)| delay_row(field, label, value)),
-            )
-            .spacing(design::space::SMALL);
+            );
             body = body.push(super::widgets::setting_group(
                 key.to_string(),
                 self.expanded[i],
@@ -225,6 +235,10 @@ impl Editor {
                 controls,
             ));
         }
+        body = body.push(super::widgets::heading(
+            t!("common.rules").to_string(),
+            design::typography::BODY,
+        ));
         body = body.push(super::app_picker::view(
             &self.path,
             candidates,
@@ -249,14 +263,14 @@ impl Editor {
                 .any(|p| process_setting_matches(p, &r.executable_path));
             let state = column![
                 text(indicator(status, &r.executable_path, blocked)),
-                button(text(
+                action_button(
                     t!(if frozen {
-                        "app_suspension.thaw"
+                        "app_suspension.resume_temporarily"
                     } else {
-                        "app_suspension.freeze"
+                        "app_suspension.suspend"
                     })
                     .to_string()
-                ))
+                )
                 .on_press_maybe(
                     (frozen || (status.enabled && r.enabled && !blocked))
                         .then_some(Message::Toggle(i))
@@ -318,32 +332,24 @@ impl Editor {
                         .center_x(80)
                         .into(),
                     ),
-                    iced::widget::rule::horizontal(1)
+                    super::widgets::settings_divider()
                 ]
                 .into(),
             ));
         }
-        body = body.push(
-            scrollable(
-                iced::widget::container(super::widgets::process_rules_table_with_actions(
-                    [
-                        "app_suspension.audio",
-                        "app_suspension.network",
-                        "app_suspension.download",
-                        "app_suspension.upload",
-                    ]
-                    .map(|key| t!(key).to_string()),
-                    cards,
-                    t!("app_suspension.no_suspendable").to_string(),
-                    80,
-                    true,
-                ))
-                .width(1240),
-            )
-            .direction(iced::widget::scrollable::Direction::Horizontal(
-                iced::widget::scrollable::Scrollbar::new(),
-            )),
-        );
+        body = body.push(super::widgets::process_rules_table_with_actions(
+            [
+                "app_suspension.audio",
+                "app_suspension.network",
+                "app_suspension.download",
+                "app_suspension.upload",
+            ]
+            .map(|key| t!(key).to_string()),
+            cards,
+            t!("app_suspension.no_suspendable").to_string(),
+            80,
+            true,
+        ));
 
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));
@@ -379,9 +385,9 @@ fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
     } else if app_suspension::contains_process(&s.audio_wake_apps, p) {
         "audio"
     } else if app_suspension::contains_process(&s.suspended_apps, p) {
-        "frozen"
+        "suspended"
     } else if app_suspension::contains_process(&s.temporary_thawed_apps, p) {
-        "thawed"
+        "temporarily_resumed"
     } else if app_suspension::contains_process(&s.background_grace_apps, p) {
         "waiting"
     } else if s.status_unknown {

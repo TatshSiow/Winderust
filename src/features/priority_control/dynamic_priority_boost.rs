@@ -11,7 +11,7 @@ use crate::{
             DynamicPriorityBoostController, DynamicPriorityBoostReleaseSummary,
             DynamicPriorityBoostState,
         },
-        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     foreground::{
         process_count_label, process_executable_path, process_failure_key, process_session_id,
@@ -224,17 +224,9 @@ impl DynamicPriorityBoostManager {
 
         let active_targets = target_processes
             .iter()
-            .map(
-                |(process_id, (process_name, executable_path, _, creation_time))| {
-                    ProcessControlTarget::automatic(
-                        *process_id,
-                        process_name.clone(),
-                        executable_path.clone(),
-                        *creation_time,
-                    )
-                    .key()
-                },
-            )
+            .map(|(process_id, (_, executable_path, _, creation_time))| {
+                ProcessTargetKey::new(*process_id, *creation_time, executable_path)
+            })
             .collect();
 
         let mut skipped_processes = 0;

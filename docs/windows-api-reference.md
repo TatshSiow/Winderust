@@ -1,4 +1,4 @@
-# Reference Library
+# Windows API Reference
 
 This file collects the Windows API references behind Winderust features.
 It covers feature-defining and compatibility-sensitive boundaries; routine
@@ -22,7 +22,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Power Plan Control and Advanced Power Plan Tuning | `src/rules/decision_engine.rs`, `src/control/power_plan.rs`, `src/application/advanced_power_plan_tuning.rs`, `src/power/powercfg.rs`, and `src/platform/windows/power_plan.rs` | Power policy, automatic lifecycle/recovery, typed persistent tuning, domain façade, and the sole native power-scheme boundary |
 | Automation event wake handling | `src/backend/automation.rs`, `src/activity/input_hook.rs`, and `src/backend/windows_events.rs` | Runtime-owned low-level input hooks, foreground/window WinEvent hooks, power, suspend/resume, and session notifications |
 | Winderust self-power | `src/backend/self_power.rs` and `src/platform/windows/self_power.rs` | Strict baseline/composition lifecycle plus the sole raw current-process priority and Power Throttling adapter |
-| System tray lifecycle | `src/backend/tray.rs`, `src/ui/app.rs` | Notification-area icon, window-procedure subclassing, popup menu, restore/quit messages, and bounded install failure |
+| System tray lifecycle | `src/backend/tray.rs`, `src/ui/app.rs` | Independent hidden native host, notification-area icon, popup menu, restore/quit messages, and bounded install failure |
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, retained App Suspension and CPU Limiter freeze jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/adaptive_engine_process.rs`, `adaptive_engine_process/policy.rs`, `adaptive_engine_process/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
@@ -35,6 +35,31 @@ window rendering and infrastructure calls are not duplicated here.
 | App Suspension | `src/features/advanced_controls/app_suspension.rs`, `src/control/suspension.rs`, `src/platform/windows/job.rs`, `src/platform/windows/suspension.rs`, and `app_suspension/wake_activity.rs` | Policy, shared App Suspension / CPU Limiter lifecycle controller, named Job Object primitives, compatibility-sensitive freeze information class, and audio/network wake detection |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs`, `src/control/timer_resolution.rs`, and `src/platform/windows/timer_resolution.rs` | Foreground-rule policy, process-lifetime ownership, and the sole raw WinMM adapter |
 | Win32 Priority Separation | `src/application/win32_priority_separation.rs`, `src/backend/win_registry.rs`, and `src/ui/win32_priority_separation.rs` | Typed persistent backup/apply/restore service, narrow registry adapter, and UI presentation for the `Win32PrioritySeparation` value |
+| Update checks | `src/backend/update_checker.rs`, `src/ui/app.rs` | Synchronous HTTPS WinHTTP requests on a background task, bounded response parsing, and typed diagnostic errors |
+
+## Update Checks
+
+`src/backend/update_checker.rs` owns WinHTTP handles and captures native errors
+immediately on failure. It requires successful timeout configuration before
+connecting, queries the numeric HTTP status after receiving headers, and accepts
+only HTTP 200 before reading a response of at most 64 KiB. The Stable endpoint
+parses one release object; the Pre-release endpoint parses a release list. Release
+tags become private, fallibly constructed semantic versions before comparison.
+The UI logs typed failure details while retaining its localized failure message.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `WinHttpSetTimeouts` | Sets five-second resolve, connect, send, and receive timeouts; failure stops the request. These are per-operation timeouts, not a total request deadline. | https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpsettimeouts |
+| `WinHttpQueryHeaders` | Reads `WINHTTP_QUERY_STATUS_CODE` with `WINHTTP_QUERY_FLAG_NUMBER` into a DWORD after `WinHttpReceiveResponse`. | https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpqueryheaders |
+
+## Process Icons
+
+`src/backend/process_icon.rs` draws extracted icons into a private DIB section.
+It calls [GdiFlush](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-gdiflush)
+and checks drawing/flush success before copying the pixels into a BMP. This
+synchronizes direct pixel access with GDI drawing as required by
+[CreateDIBSection](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-createdibsection).
+The selected object is restored before releasing the bitmap and device context.
 
 ## Power Plan Switching
 
@@ -59,8 +84,20 @@ User-facing behavior:
 - When automation decides to switch mode, Winderust calls the Windows API to set the selected scheme as active.
 - Adaptive Engine creates a temporary plan named `Winderust Adaptive`; startup recovery only recognizes that exact current Winderust name/description pair.
 - Ordinary automation and the temporary Adaptive plan are mutually exclusive typed controller owners. Window visibility changes cadence, not ownership.
-- Before each automatic mutation, the controller records a recovery intent, applies and verifies the active GUID, then commits the intent. Failures attempt compensation; an unrecovered intent remains for the crash helper.
-- If an external actor breaks Winderust's expected GUID chain, the controller rebases its clean baseline instead of overwriting that choice.
+- Before each automatic mutation, the controller records a recovery intent, applies and verifies the active GUID, then commits the intent. Failed application or verification compensates only while a fresh query still reports the attempted target, and confirms the restored GUID before canceling the intent. An observed external selection is preserved.
+- Uncertain compensation leaves the acknowledged intent pending without holding
+  the recovery mutex. A later verified observation must acknowledge its Commit,
+  Cancel, or ownership release before another mutation. A failed Commit
+  acknowledgment leaves the verified target in place for the helper; rolling it
+  back could hide an earlier restoration baseline behind a committed mismatch.
+  Power-plan retries retain the exact intent ID, so an already processed Commit
+  can be acknowledged idempotently before another transition begins.
+- If an external actor breaks Winderust's expected GUID chain, the controller
+  requires the helper to acknowledge forgetting committed and pending power-plan
+  edges before relinquishing or rebasing local ownership. Failed acknowledgment
+  keeps release pending and blocks further switches. Restoration rechecks the
+  expected managed GUID immediately before switching and skips an observed
+  external choice.
 
 ### Power Scheme APIs
 
@@ -95,7 +132,7 @@ User-facing behavior:
 
 ## By Time clock invalidation
 
-`src/backend/windows_events.rs` forwards [WM_TIMECHANGE](https://learn.microsoft.com/en-us/windows/win32/sysinfo/wm-timechange) and [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange) as `ClockChanged`. All setting-change broadcasts conservatively recheck By Time, including time-zone changes, without dereferencing the optional message string. `src/backend/automation.rs` wakes configured By Time rules in either power profile and `src/runtime/scheduler.rs` invalidates only the power-plan deadline. Policy and the next local-time boundary are recomputed; elapsed-time domains retain monotonic deadlines. Existing local-time handling selects the earliest ambiguous boundary and skips nonexistent boundaries.
+`src/backend/windows_events.rs` forwards [WM_TIMECHANGE](https://learn.microsoft.com/en-us/windows/win32/sysinfo/wm-timechange) and [WM_SETTINGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-settingchange) as `ClockChanged`. All setting-change broadcasts conservatively recheck By Time, including time-zone changes, without dereferencing the optional message string. `src/backend/automation.rs` wakes configured By Time rules in either power profile and `src/runtime/scheduler.rs` invalidates only the power-plan deadline. Policy and the next local-time boundary are recomputed; elapsed-time domains retain monotonic deadlines. Ambiguous local boundaries consider both clock occurrences and select the earliest one still in the future; nonexistent boundaries are skipped. Scheduled checks wait at most 60 seconds so local offset transitions can change rule applicability without a broadcast or a representable endpoint. Earlier rule endpoints and clock events still wake immediately when due.
 
 ## Automation Input Hook
 
@@ -163,7 +200,9 @@ that event from a blocked listener thread, so the handoff adds no polling wake s
 
 ## Winderust Self-Power
 
-`src/backend/self_power.rs` owns Winderust's own process-lifetime priority and Power Throttling state. Before its first write, `SelfPowerController` strictly reads both original values; failure to capture either reversible baseline blocks the transition. Hidden-to-tray and Adaptive requests are composed into one desired state, applied as one verified transaction, and compensated if a later write or verification fails. These requests control only EcoQoS and hidden Idle priority; they preserve timer-resolution throttling bits exactly as observed. Clean disable and shutdown restore the exact captured baseline. This state does not use the external journal because process termination also terminates the controlled Winderust process.
+`src/backend/self_power.rs` owns Winderust's own process-lifetime priority and Power Throttling state. Before its first write, `SelfPowerController` strictly reads both original values; failure to capture either reversible baseline blocks the transition. Hidden-to-tray requests EcoQoS and Idle priority as one verified transaction, compensated if a later write or verification fails. Showing the window restores the exact captured baseline even when Adaptive Engine is enabled; visible software rendering must not receive an application-requested EcoQoS policy. Timer-resolution throttling bits are preserved exactly as observed. Clean shutdown also restores the captured baseline. This state does not use the external journal because process termination also terminates the controlled Winderust process.
+
+[Microsoft QoS guidance](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) reserves EcoQoS for work that does not contribute to the foreground user experience.
 
 `src/platform/windows/self_power.rs` owns the current-process pseudo-handle and every raw query/set
 for this lifecycle. It converts the Windows structure to the shared platform-layer typed Power
@@ -190,10 +229,41 @@ closes the pipe. The watchdog also invokes the existing narrowly identified
 `Winderust Adaptive` stale-plan cleanup. No recovery journal is persisted to
 disk.
 
+The optional `recovery-smoke` feature adds isolated subprocess fixtures in
+`src/backend/crash_recovery/smoke.rs`, exercised by `tests/recovery_smoke.rs`.
+They use the same `run_watchdog_loop`, command acknowledgements, exact-process
+validation, native priority adapter, and retrying journal replay as the normal
+helper. A command gate permits only conservative Process Priority entries for
+one exact disposable `System32\ping.exe` identity; power-plan, job, thread, and
+other process-property entries are rejected before handling. The fixture injects
+no-op stale-plan cleanup and bypasses application startup. The production helper
+continues to use `restore_stale_adaptive_plans`; these tests do not establish
+machine-wide plan recovery coverage.
+
 `PowerPlanController` is the sole producer of automatic power-plan journal
-transactions. It verifies the active GUID before committing, compensates
-failed transitions, and leaves an acknowledged intent available when clean
-compensation cannot prove restoration.
+transactions. It verifies the active GUID before committing, preserves observed
+external selections during compensation, and leaves an acknowledged intent
+pending when compensation cannot prove restoration. Pending transitions retain
+their distinction from committed edges until a later observation resolves them.
+
+The shared `RecoveryIntent` boundary in `src/backend/crash_recovery.rs` blocks
+its transport after a generic Commit failure. Process Priority, Efficiency Mode,
+Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, Memory
+Priority, and CPU Allocation retain their verified target and original baseline
+on that failure. If compensation itself is uncertain, these controllers retain
+the acknowledged Begin as pending and block journal reuse until helper recovery;
+committing it could conceal an earlier baseline when Windows already restored
+the previous value but its readback failed.
+
+Power-plan journal replay in the same module rechecks the live GUID immediately
+before restoring and verifies the resulting baseline. Startup and helper stale
+Adaptive cleanup in `src/power/powercfg.rs` rechecks activation after matching the
+current name and description; it verifies restoration before deleting an active
+managed plan. An enumerated active flag cannot authorize a later switch over an
+observed external selection.
+Helper retries finish journal replay before stale Adaptive cleanup. Metadata
+contains the immediate source plan; restoring it after a failed replay could
+hide an older baseline owned by the journal.
 
 Recovery reopens a process only when its PID, creation time, and executable path
 still identify the recorded instance. It restores a property only while the
@@ -208,6 +278,25 @@ job even when the recorded root process has exited. Job descendants join by
 default and can remain frozen after their root exits, so root liveness is not a
 valid precondition for restoring a helper-owned job. If the watchdog cannot
 accept an intent, Winderust blocks the corresponding mutation.
+
+`src/backend/crash_recovery.rs::recover_thread_key` requests only
+`PROCESS_QUERY_LIMITED_INFORMATION` for the parent process, matching live Thread
+Priority acquisition. Mutation access is requested separately on the exact thread;
+a restrictive process DACL must not prevent restoration of an independently
+permitted thread change. Process and thread objects have separate security
+descriptors and access checks: [process rights](https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights)
+and [thread rights](https://learn.microsoft.com/en-us/windows/win32/procthread/thread-security-and-access-rights).
+The owned-child regression in `src/backend/crash_recovery/tests.rs` denies parent
+process-setting access while preserving thread access and verifies replay.
+It runs on a dedicated test thread using a copy of its own primary token:
+[DuplicateTokenEx](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-duplicatetokenex)
+preserves user/group identity in an impersonation token;
+[AdjustTokenPrivileges](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges)
+with `DisableAllPrivileges=TRUE` disables privileges only on that copy, and
+[ImpersonateLoggedOnUser](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-impersonateloggedonuser)
+applies it only to that thread until exit. This makes the denial assertion
+independent of CI runner privileges without changing the process token or
+production access checks. Token setup failures fail the test.
 
 For App Suspension and CPU Limiter freeze intents, the watchdog opens and retains its own Job Object
 handle before acknowledging the pending freeze. This keeps the object alive if
@@ -321,7 +410,7 @@ Winderust does not enable debug privilege. Elevated process access continues to 
 
 ## Advanced Power Plan Tuning
 
-Winderust can apply separate AC and battery processor-power percentages and processor boost modes to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process CPU allocation.
+Winderust can apply separate AC and battery processor-power percentages, processor boost modes, and long/short-running thread scheduling policies to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process CPU allocation.
 
 Implementation paths:
 
@@ -334,8 +423,7 @@ Implementation paths:
 - `src/platform/windows/power_plan.rs`: raw processor-setting reads/writes, scheme activation, GUID
   conversion, and native power-policy boundary.
 
-The explicit tuning service applies ten ordered A/C and battery settings and
-retains the exact failing stage. It re-reads the selected plan after every
+The explicit tuning service applies ten ordered A/C and battery processor settings, then up to four selected scheduling-policy values, and retains the exact failing stage. It re-reads the selected plan after every
 attempt, including a partial failure, so the UI reflects the values Windows now
 holds rather than the pre-apply draft. This persistent user command does not use
 the automatic power-plan recovery journal or claim ledger.
@@ -348,6 +436,15 @@ the automatic power-plan recovery journal or claim ledger.
 | Core parking minimum cores | Sets the percentage of logical processors that must remain unparked. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-core-parking-cpmincores |
 | Processor performance min/max | Sets minimum and maximum processor performance percentages. | [Minimum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-minperformance) / [Maximum](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-maxperformance) |
 | Processor performance boost mode | Controls Windows processor boost policy values such as disabled, enabled, aggressive, and efficient modes. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfboostmode |
+
+Scheduling-policy details:
+
+- `src/power/plan.rs`: `ProcessorSchedulingPolicy` maps documented indices 0-5 exactly; unknown values fail instead of becoming Automatic. Explicit tuning/preset values compose the existing processor values and optional scheduling overrides. Adaptive processor profiles convert with no scheduling overrides.
+- `src/platform/windows/power_plan.rs`: SDK `GUID_PROCESSOR_THREAD_SCHEDULING_POLICY` (`93b8b6dc-0698-4d1c-9ee4-0644e900c85d`) and `GUID_PROCESSOR_SHORT_THREAD_SCHEDULING_POLICY` (`bae08b81-2d5e-4688-ad6a-13243356654b`) use the processor subgroup. `ERROR_FILE_NOT_FOUND` on an optional read means unavailable; all other read errors remain failures. Existing required processor settings still fail if missing.
+- `src/ui/advanced_power_plan_tuning.rs`: loaded values preserve each plan/source; unsupported settings cannot be enabled by a preset. Built-in presets leave scheduling untouched; custom presets serialize optional overrides. Apply remains an explicit persistent operation with stage-specific errors and post-attempt readback; it never adds a runtime recovery claim.
+- [SchedulingPolicy](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-hetero-power-scheduling-schedulingpolicy): long-running threads, alias `SCHEDPOLICY`, indices 0 All / 1 Performance / 2 Prefer performance / 3 Efficiency / 4 Prefer efficiency / 5 Automatic.
+- [ShortSchedulingPolicy](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-hetero-power-scheduling-shortschedulingpolicy): short-running threads, alias `SHORTSCHEDPOLICY`, same six values. Windows determines the short/long threshold; Winderust does not change that threshold.
+- [Microsoft SDK declarations](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/winnt.h): direct source for the two scheduling GUIDs.
 
 ## Priority Control
 
@@ -599,10 +696,10 @@ Winderust keeps App Suspension opt-in and limited to explicitly selected apps be
 | `OpenProcess(PROCESS_SET_INFORMATION)` | Performs a non-mutating access-right probe during process discovery. Processes that expose query metadata but deny this mutation right, including protected security services, are classified as inaccessible and excluded from process-control rules. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
 | `GetProcessInformation(ProcessProtectionLevelInfo)` | Reads `PROCESS_PROTECTION_LEVEL_INFORMATION` during process discovery. Any level other than `PROTECTION_LEVEL_NONE` identifies a Protected Process Light target and makes it inaccessible to Winderust controls. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_protection_level_information |
 | `NtQueryObject(ObjectBasicInformation)` | Reads `PUBLIC_OBJECT_BASIC_INFORMATION.GrantedAccess` from Winderust's own opened process handle so kernel security callbacks that silently strip requested rights are detected. Discovery probes `PROCESS_SET_INFORMATION`; action validation probes the operation-specific mask (`PROCESS_TERMINATE`, `PROCESS_SET_INFORMATION`, or job-assignment rights) while retaining critical/PPL checks. This API is documented by Microsoft but explicitly compatibility-sensitive; failure is treated as inaccessible. | https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryobject |
-| `OpenProcessToken` | Opens each queryable process token once with `TOKEN_QUERY`; the same captured SID populates the Process List User column and App Suspension picker eligibility. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken |
+| `OpenProcessToken` | Opens each queryable process token once per enrichment with `TOKEN_QUERY` for service-account safety. Full Process List enrichment also uses the same captured SID for its User column. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken |
 | `GetTokenInformation(TokenUser)` | Reads the SID of the account associated with the process token. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation |
 | `IsWellKnownSid` | Makes App Suspension automation, Process List actions, and process-picker eligibility fail closed for LocalSystem, LocalService, and NetworkService process tokens while leaving unrelated process controls available. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-iswellknownsid |
-| `LookupAccountSidW` | Resolves the process token SID to its local account name; inaccessible or unmapped tokens use the neutral `Unavailable · S#` UI fallback rather than guessing an account. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw |
+| `LookupAccountSidW` | Full Process List enrichment resolves the process token SID to its local account name; runtime and picker enrichment skip this display-only lookup while retaining SID safety checks. Inaccessible or unmapped tokens use the neutral `Unavailable · S#` UI fallback rather than guessing an account. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw |
 | `CloseHandle` | Closes process and job handles after use. | https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle |
 | `SetLastError` / `GetLastError` | Clears the thread error slot immediately before `CreateJobObjectW`, then captures it immediately afterward so `ERROR_ALREADY_EXISTS` cannot be confused with a stale success-path value; other failures likewise capture their error before another Win32 call. | [Set](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setlasterror) / [Get](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror) |
 
@@ -701,7 +798,7 @@ therefore reports suspension only for process IDs currently suspended and
 tracked by Winderust; it does not infer suspension from undocumented NT thread
 state.
 
-# GPU Engine utilization
+## GPU Engine utilization
 
 - Implementation: `src/platform/windows/gpu_usage.rs` owns the English PDH wildcard query for
   `\\GPU Engine(*)\\Utilization Percentage`, formatted-array parsing, per-engine aggregation, and
@@ -712,7 +809,7 @@ state.
   matching physical-engine instances, clamp each engine to 100%, and report the busiest engine.
   Missing or invalid samples are unavailable observations, not zero utilization.
 
-# Appearance change notifications
+## Appearance change notifications
 
 - `src/backend/windows_events.rs` routes WM_SETTINGCHANGE, WM_THEMECHANGED, and
   WM_DWMCOLORIZATIONCOLORCHANGED through AppearanceChanged. The runtime generation
@@ -758,9 +855,41 @@ state.
 - `src/platform/windows/power_plan.rs`: `delete_scheme` accepts `ERROR_FILE_NOT_FOUND` only after successful scheme enumeration confirms the target GUID is absent. Enumeration errors and other deletion failures remain errors. Active-plan restoration stays in `src/control/power_plan.rs`.
 - Official references: https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerdeletescheme and https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499- . The API documents nonzero failure codes; accepting verified absence is Winderust cleanup policy.
 
+## Watchdog notifications and termination
+
+- `src/backend/tray.rs::show_notification` uses [Shell_NotifyIconW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw) with `NIM_MODIFY` and `NIF_INFO` on the existing `(HWND, uID)` registration. [NOTIFYICONDATAW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-notifyicondataw) uses `NIIF_WARNING` for Warning and `NIIF_ERROR` for Critical; these are severity styles, not an alarm or a bypass of Windows notification preferences. Fixed UTF-16 fields stay terminated without splitting surrogate pairs. `NIN_BALLOONUSERCLICK` requests GUI restoration or recreation through the daemon. An atomic published tray-host HWND is cleared on invalidation/drop; Shell failure is returned and logged. No undocumented Windows contract is used.
+- `src/features/winderust_features/watchdog.rs` reuses process resource samples and creation timestamps, summing eligible instances by the rule's exact executable path. CPU uses per-instance deltas; memory sums working sets (shared pages may be counted more than once). `src/backend/automation/runner.rs::run_watchdog_update` routes explicitly configured automatic termination through `src/control/process_termination.rs` and its sole [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) adapter. PID/name/path/creation-time validation, critical/PPL and recovery-helper protection, cross-session settings, and Windows access checks remain authoritative immediately before mutation. Each app incident captures a batch of exact matching instances; controller preflight validates every target before any termination. Threshold observation does not authorize a raw process mutation.
+
+## Watchdog app restart
+
+`src/control/process_restart.rs` owns restart preflight, exact-instance termination, bounded exit waits, and one replacement. `src/control/process.rs` reuses identity/protection/Windows access checks with query/terminate/synchronize/create-process rights and additionally requires a known current Windows session and non-service account. Restart deliberately rejects other sessions even when cross-session process control is enabled.
+
+`src/platform/windows/process_restart.rs` queries the oldest captured instance's token through [OpenProcessToken](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken), verifies a common Windows logon through [TOKEN_STATISTICS.AuthenticationId](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_statistics), and uses [CreateEnvironmentBlock](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createenvironmentblock) without inheriting Winderust's environment. [UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute) supplies PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, whose documented inheritance includes the parent's token, affinity, priority, and job. [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw) uses EXTENDED_STARTUPINFO_PRESENT and CREATE_SUSPENDED to prepare the exact explicit executable before any original process is stopped. No executable arguments are restored; its parent directory is the working directory. No alternate-user, elevation, or unrestricted-job fallback is allowed. Failure to prepare leaves the original app running. A captured process can exit between preflight and termination; [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess) then returns ERROR_ACCESS_DENIED even through its retained valid handle. The controller accepts a failed stop only when a zero-time exit wait on that same handle confirms termination; a live process or failed wait preserves the original stop error and cancels the replacement. After stopping captured instances, [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject) waits on retained exact handles with one shared two-second budget; [ResumeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread) must consume the single creation-time suspension. Failure before resume destroys the owned suspended replacement through the existing termination adapter. Process-creation/resume success does not guarantee application initialization or restored documents.
+
+Parent-token inheritance does not preserve the new token object's security descriptor. An elevated creator can produce a high-label token object for an unelevated browser, which was verified to make Vivaldi exit after a successful resume. Before stopping originals, the restart adapter reads the source token's DACL and mandatory label with [GetKernelObjectSecurity](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-getkernelobjectsecurity), confirms a distinct replacement TOKEN_STATISTICS.TokenId, and applies only those fields to the owned suspended replacement's primary token with [SetKernelObjectSecurity](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setkernelobjectsecurity). The original token is never modified. [SECURITY_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information) specifies READ_CONTROL for both queries, WRITE_DAC for the DACL update, and WRITE_OWNER for the mandatory-label update; LABEL_SECURITY_INFORMATION does not request the full audit SACL. Failure cancels the replacement before any original is stopped. This token-object security behavior is an empirically validated Windows boundary, not an additional guarantee of PROC_THREAD_ATTRIBUTE_PARENT_PROCESS. The native regression compares both fields using owned suspended test processes with a lower token-object label; neither test child executes.
+
 ## Tray recreation
 
-`src/backend/tray.rs` registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification) and re-adds the notification icon without subclassing the window again. [ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex) allows only that payload-free shell notification through UIPI for elevated execution. `src/ui/app.rs` retries failed registration at five-second intervals and permits hide-on-close only while the icon is registered.
+`src/platform/windows/window_dpi.rs::ensure_visible` checks a recreated GUI window's physical
+screen rectangle with [GetWindowRect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowrect)
+and [MonitorFromRect](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-monitorfromrect)
+on Winit's DPI-aware UI thread. A wholly off-screen window is moved to the nearest connected
+monitor's work-area origin from [GetMonitorInfoW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmonitorinfow).
+[SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos)
+uses `SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE`. Visible placements and window dimensions
+remain unchanged. The check runs before restoring maximization so the normal restore rectangle
+is reachable too; failures are reported. No undocumented Windows contract is used.
+
+`src/backend/tray.rs` owns a hidden native top-level window and message thread independently of
+the Iced GUI. It registers [TaskbarCreated](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification)
+and re-adds the notification icon after Explorer restarts. A top-level host is required because
+[message-only windows do not receive broadcasts](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features#message-only-windows).
+[ChangeWindowMessageFilterEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changewindowmessagefilterex)
+allows only that payload-free shell notification through UIPI for elevated execution.
+`src/ui/app.rs` retries failed registration at five-second intervals, recreates a failed host,
+and permits closing the GUI to the tray only while the icon is registered. Tray actions enqueue
+restore/quit intent without capturing a GUI HWND. The daemon destroys/recreates its Iced window;
+the native tray host remains alive in background mode. No undocumented Windows contract is used.
 
 ## Dashboard network rates
 
@@ -770,15 +899,21 @@ Processor-value application in `src/power/powercfg.rs` treats failure to query t
 
 ### Single-instance window restoration
 
+The restore listener requests restoration through the daemon without retaining a GUI HWND,
+so duplicate launches also work before the first window opens or after one is destroyed.
+
 `src/main.rs` uses `Local\Winderust.SingleInstance` and `Local\Winderust.RestoreWindow` for every build and executable location. The session-local mutex prevents debug, release, and separate portable copies from running automation together; duplicate launches signal the shared restore event. Elevation handoff and watchdog startup bypass remain unchanged. Reference: [Kernel object namespaces](https://learn.microsoft.com/en-us/windows/win32/termserv/kernel-object-namespaces).
 
 ## Tray UI wakeups
 
-src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle hidden windows need no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
+src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle windowless operation needs no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
 
-## Native accent color dialog
+## Accent color picker
 
-- `src/backend/file_dialog.rs::choose_color`, invoked through the shared worker task in `src/ui/app.rs` to keep the modal loop outside Iced's event loop, uses [ChooseColorW](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-choosecolorw) with a live owner, RGB initialization and expanded controls. App RGB values are converted to/from COLORREF. Cancel preserves the accent; [CommDlgExtendedError](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-commdlgextendederror) distinguishes cancellation from failure. The dialog's 16 custom slots are seeded from saved accent colors; the existing Save button owns persistent palette additions.
+- Accent color selection uses the shared in-app editor in `src/ui/pickers.rs`,
+  opened by `src/ui/settings_pages.rs`; it has no native common-dialog boundary. Cancel,
+  Escape, focus loss, and navigation discard the picker selection. Submit edits
+  the settings draft; the existing Save button owns saved palette additions.
 
 ## Adaptive plan CPU idle states
 
@@ -788,7 +923,7 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 
 ### Dynamic Resource Zones allocation contract
 
-`src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background soft CPU Sets through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
+`src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background CPU Sets (Soft) through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
 
 - https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount ? zero means failure; multiple groups are outside this mask domain.
 - https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets ? thread-selected sets and restrictive affinity still apply; placement is not exclusive physical-core ownership.
@@ -812,6 +947,14 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 
 ## Exact identity and CPU Set observations
 
+`src/platform/windows.rs::ProcessOperationError` preserves invalid-parameter
+errors from retained-handle operations as failures. For example,
+[SetProcessAffinityMask](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask)
+can report `ERROR_INVALID_PARAMETER` for an unsupported mask or processor-group
+layout while the process is alive. This must retain the controller's baseline
+and recovery ownership. Missing-PID classification stays at the separate
+`OpenProcess` acquisition boundary in `src/platform/windows/process.rs`.
+
 `src/cpu.rs::PerProcessorUsageMonitor` collects valid per-processor deltas into a complete vector or returns unavailable. Shared percentage calculation uses checked cumulative-counter arithmetic. [GetSystemTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes) includes idle in kernel time. The existing NT processor collector and index domain are unchanged.
 
 - `src/backend/win_util.rs::WinHandle::process_times` returns creation and CPU counters from one [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) call, preserving its native failure code. `src/control/process.rs` treats failed reads as unavailable rather than proof of exit.
@@ -824,3 +967,8 @@ src/backend/tray.rs wakes the Iced UI on tray actions, visibility changes, Taskb
 `src/platform/windows/window_dpi.rs::install`, called by `src/ui/app.rs` when the native window is acquired, installs a UI-thread [SetWindowSubclass](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-setwindowsubclass) callback independent of tray settings. During [WM_DPICHANGED](https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged), it forwards the message through DefSubclassProc so Winit still updates its DPI and emits events. For restored windows, a thread-local, window-specific scope retains Windows' suggested outer rectangle; nested [WM_WINDOWPOSCHANGING](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-windowposchanging) messages that both move and resize use that rectangle. Ordinary resizing, position-only/style changes, minimized/maximized handling and the remaining message chain remain unchanged. The scope restores its predecessor after forwarding; WM_NCDESTROY removes the callback.
 
 This application workaround addresses [Winit 0.30.13 mixed-DPI growth issue #4600](https://github.com/rust-windowing/winit/issues/4600). It relies on that version's synchronous SetWindowPos call during DPI processing, including WM_WINDOWPOSCHANGING delivery; it does not access Winit internals or change upstream sources. Reassess the workaround when upgrading Winit. All native APIs are documented; no undocumented Windows contract is introduced.
+
+
+## Themed window chrome
+
+src/ui/window_frame.rs renders the themed title bar and restored-window resize targets; src/ui/app.rs disables Iced window decorations and routes its events through Iced 0.14 [drag](https://docs.rs/iced/0.14.0/iced/window/fn.drag.html), [drag_resize](https://docs.rs/iced/0.14.0/iced/window/fn.drag_resize.html), minimize, and toggle_maximize tasks. Window resize events refresh the native maximized state; no polling or new raw Windows adapter is introduced. Winit retains native size constraints and maximized work-area handling. Caption close and native close requests share the existing WindowClose lifecycle. The mixed-DPI subclass above remains unchanged.

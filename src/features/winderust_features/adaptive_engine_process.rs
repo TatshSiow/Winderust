@@ -1051,10 +1051,9 @@ impl AdaptiveEngineProcessManager {
         let mut summarized_background_applies = 0;
 
         for (process_id, target) in target_processes {
-            let failure_process_name = target.process_name.clone();
             if self.is_executable_path_suppressed(
                 process_id,
-                &failure_process_name,
+                &target.process_name,
                 &target.executable_path,
                 action_log,
                 &mut auto_excluded_processes,
@@ -1128,7 +1127,7 @@ impl AdaptiveEngineProcessManager {
                             failures.record_control_error(
                                 "Apply Background Efficiency",
                                 process_id,
-                                &failure_process_name,
+                                &target.process_name,
                                 error,
                                 action_log,
                             );
@@ -1175,7 +1174,7 @@ impl AdaptiveEngineProcessManager {
                         failures.record_control_error(
                             "Apply priority",
                             process_id,
-                            &failure_process_name,
+                            &target.process_name,
                             error,
                             action_log,
                         );
@@ -1659,17 +1658,9 @@ impl AdaptiveEngineProcessManager {
 
         let active_targets = targets
             .iter()
-            .map(
-                |(process_id, process_name, executable_path, creation_time)| {
-                    ProcessControlTarget::automatic(
-                        *process_id,
-                        process_name.clone(),
-                        PathBuf::from(executable_path),
-                        *creation_time,
-                    )
-                    .key()
-                },
-            )
+            .map(|(process_id, _, executable_path, creation_time)| {
+                ProcessTargetKey::new(*process_id, *creation_time, Path::new(executable_path))
+            })
             .collect::<BTreeSet<_>>();
         self.merge_controller_release(
             priority_efficiency_controller.release_priority_policy_except(
@@ -2035,13 +2026,11 @@ fn adaptive_engine_process_priority_target_key(
     process_id: u32,
     target: &PriorityTarget,
 ) -> ProcessTargetKey {
-    ProcessControlTarget::automatic(
+    ProcessTargetKey::new(
         process_id,
-        target.process_name.clone(),
-        PathBuf::from(&target.executable_path),
         target.creation_time,
+        Path::new(&target.executable_path),
     )
-    .key()
 }
 
 impl Default for AdaptiveEngineProcessSnapshot {

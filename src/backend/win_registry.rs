@@ -3,34 +3,19 @@ use std::io;
 use windows_sys::Win32::System::Registry::{HKEY, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum RegistryError {
+    #[error("Failed to open registry key for read: {0}")]
     OpenForRead(String),
+    #[error("Failed to read registry value: {0}")]
     ReadValue(String),
+    #[error("Failed to open registry key for write: {0}")]
     OpenForWrite(String),
+    #[error("Failed to create registry key: {0}")]
     CreateKey(String),
+    #[error("Failed to write registry value: {0}")]
     WriteValue(String),
 }
-
-impl std::fmt::Display for RegistryError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::OpenForRead(error) => {
-                write!(formatter, "Failed to open registry key for read: {error}")
-            }
-            Self::ReadValue(error) => write!(formatter, "Failed to read registry value: {error}"),
-            Self::OpenForWrite(error) => {
-                write!(formatter, "Failed to open registry key for write: {error}")
-            }
-            Self::CreateKey(error) => write!(formatter, "Failed to create registry key: {error}"),
-            Self::WriteValue(error) => {
-                write!(formatter, "Failed to write registry value: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RegistryError {}
 
 pub(crate) fn try_read_registry_dword_root(
     root: HKEY,

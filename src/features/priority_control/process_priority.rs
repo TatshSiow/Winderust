@@ -1,6 +1,7 @@
-#[cfg(test)]
-use crate::config::ProcessPrioritySetting;
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
@@ -13,7 +14,7 @@ use crate::{
             PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
             ProcessPropertyApplyOutcome,
         },
-        process::{ControlOwner, ProcessControlError, ProcessControlTarget},
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     foreground::{
         is_foreground_process, process_executable_path, process_failure_key, process_session_id,
@@ -455,16 +456,12 @@ impl ProcessPriorityFailures {
     }
 }
 
-fn process_priority_target_key(
-    target: &ProcessPriorityTarget,
-) -> crate::control::process::ProcessTargetKey {
-    ProcessControlTarget::automatic(
+fn process_priority_target_key(target: &ProcessPriorityTarget) -> ProcessTargetKey {
+    ProcessTargetKey::new(
         target.process_id,
-        target.process_name.clone(),
-        PathBuf::from(&target.executable_path),
         target.creation_time,
+        Path::new(&target.executable_path),
     )
-    .key()
 }
 
 fn priority_preservation(
@@ -487,17 +484,6 @@ fn priority_preservation(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn can_apply_once(priority: ProcessPrioritySetting) -> bool {
-    matches!(
-        priority,
-        ProcessPrioritySetting::Idle
-            | ProcessPrioritySetting::BelowNormal
-            | ProcessPrioritySetting::Normal
-            | ProcessPrioritySetting::AboveNormal
-    )
-}
-
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     crate::foreground::contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
@@ -505,15 +491,6 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn quick_apply_only_accepts_safe_concrete_priorities() {
-        assert!(can_apply_once(ProcessPrioritySetting::BelowNormal));
-        assert!(can_apply_once(ProcessPrioritySetting::Normal));
-        assert!(can_apply_once(ProcessPrioritySetting::AboveNormal));
-        assert!(!can_apply_once(ProcessPrioritySetting::High));
-        assert!(!can_apply_once(ProcessPrioritySetting::Realtime));
-    }
 
     #[test]
     fn repeated_failures_emit_one_process_priority_auto_exclusion_and_success_resets_it() {

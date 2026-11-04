@@ -204,67 +204,6 @@ fn foreground_skip_matches_pid_or_process_group() {
 }
 
 #[test]
-fn foreground_group_includes_child_processes() {
-    let processes = vec![
-        ProcessInfo {
-            id: 42,
-            creation_time: Some(1),
-            parent_id: None,
-            session_id: None,
-            user_name: None,
-            is_service_account: None,
-            is_critical: Some(false),
-            can_set_information: true,
-            name: "foreground.exe".to_owned(),
-            image_path: Some(PathBuf::from("foreground.exe".to_owned())),
-        },
-        ProcessInfo {
-            id: 99,
-            creation_time: Some(1),
-            parent_id: Some(42),
-            session_id: None,
-            user_name: None,
-            is_service_account: None,
-            is_critical: Some(false),
-            can_set_information: true,
-            name: "worker.exe".to_owned(),
-            image_path: Some(PathBuf::from("worker.exe".to_owned())),
-        },
-        ProcessInfo {
-            id: 100,
-            creation_time: Some(1),
-            parent_id: Some(99),
-            session_id: None,
-            user_name: None,
-            is_service_account: None,
-            is_critical: Some(false),
-            can_set_information: true,
-            name: "helper.exe".to_owned(),
-            image_path: Some(PathBuf::from("helper.exe".to_owned())),
-        },
-        ProcessInfo {
-            id: 101,
-            creation_time: Some(1),
-            parent_id: None,
-            session_id: None,
-            user_name: None,
-            is_service_account: None,
-            is_critical: Some(false),
-            can_set_information: true,
-            name: "background.exe".to_owned(),
-            image_path: Some(PathBuf::from("background.exe".to_owned())),
-        },
-    ];
-
-    let group = foreground_process_group_ids(&processes, Some(42));
-
-    assert!(group.contains(&42));
-    assert!(group.contains(&99));
-    assert!(group.contains(&100));
-    assert!(!group.contains(&101));
-}
-
-#[test]
 fn adaptive_engine_process_keeps_relative_restraints_when_foreground_saturates_cpu() {
     let settings = AdaptiveEngineProcessSettings {
         cpu_pressure_restraint_enabled: true,

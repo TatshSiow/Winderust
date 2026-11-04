@@ -26,7 +26,7 @@ use crate::{
     win_util::last_error,
 };
 
-const MB: u64 = 1024 * 1024;
+const MB: u64 = 1_000_000;
 const CPU_IDLE_THRESHOLD_PERCENT: f32 = 1.0;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
@@ -580,15 +580,26 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 
 fn size_label(bytes: u64) -> String {
     if bytes >= MB {
-        format!("{} MiB", bytes / MB)
+        format!("{} MB", bytes / MB)
+    } else if bytes >= 1_000 {
+        format!("{} KB", bytes / 1_000)
     } else {
-        format!("{} KiB", bytes / 1024)
+        format!("{bytes} B")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freed_memory_uses_decimal_byte_units() {
+        assert_eq!(size_label(999), "999 B");
+        assert_eq!(size_label(1_000), "1 KB");
+        assert_eq!(size_label(999_999), "999 KB");
+        assert_eq!(size_label(1_000_000), "1 MB");
+        assert_eq!(size_label(256_000_000), "256 MB");
+    }
 
     #[test]
     fn repeated_process_failures_suppress_memory_trim_retries() {
@@ -739,7 +750,9 @@ mod tests {
 
         let usage = process_cpu_usage_percent(previous, current).unwrap();
 
-        assert!(usage > 0.0);
-        assert!(usage <= 100.0);
+        let processors = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        assert!((usage - 100.0 / processors as f32).abs() < 0.0001);
     }
 }
