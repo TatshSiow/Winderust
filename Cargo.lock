@@ -3379,7 +3379,7 @@ dependencies = [
 
 [[package]]
 name = "winderust"
-version = "0.9.1-alpha"
+version = "0.10.0-alpha"
 dependencies = [
  "atomic-write-file",
  "chrono",

@@ -6,7 +6,10 @@
 2. Update the package version in `Cargo.toml`, refresh the root package entry in
    `Cargo.lock`, and add the dated release section to `CHANGELOG.md`. Verify that
    the lockfile contains no unrelated dependency changes. Build the changelog
-   from commits after the previous tag and do not rewrite a published section.
+   from the net changes between the previous release on `main` and the release
+   candidate on `dev` (`git diff <previous-main-sha> dev`), rather than dev commit
+   summaries alone. Include only changes from that released version and do not
+   rewrite a published section.
 3. Run the [development checks](development.md#project-basics) and
    `.\scripts\build_release.cmd`. Smoke-test startup, tray behavior, settings
    persistence beside the executable, process-state restoration, and power-plan
