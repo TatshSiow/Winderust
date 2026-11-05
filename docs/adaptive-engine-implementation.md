@@ -111,6 +111,9 @@ migration or copying from the limiter is performed.
 - When a selected process falls below its recovery threshold, Winderust removes processor
   allocation first, keeps the softer restraint during the recovery period, and then restores the
   original state. Renewed CPU demand cancels recovery.
+- Missing per-process samples or invalid CPU deltas discard that target's old
+  baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
+  skipped/excluded targets cannot retain stale candidate tracking.
 - Least-used selection samples its configured All, P-core, or E-core pool and changes the selected mask only after
   the existing rebalance interval or a meaningful load improvement. Fixed topology and custom
   selections do not rebalance.

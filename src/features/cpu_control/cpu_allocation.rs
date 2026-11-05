@@ -1070,27 +1070,32 @@ fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
 
 fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalProcessorInfo>> {
     let mut processors = Vec::new();
+    let mut seen_processor_mask = 0_u64;
     let mut core_index = 0;
     let mut offset = 0;
     let header_size = size_of::<LogicalProcessorInformationHeader>();
     let processor_size = size_of::<PROCESSOR_RELATIONSHIP>();
     let group_mask_offset = header_size + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask);
-    let group_mask_size = size_of::<GROUP_AFFINITY>();
 
-    while offset + header_size <= buffer.len() {
+    while offset < buffer.len() {
+        if buffer.len() - offset < header_size {
+            return None;
+        }
         // SAFETY: The header bounds check above guarantees enough bytes; unaligned reads are used
         // because the Win32 records are byte-packed.
         let header = unsafe {
             read_unaligned(buffer.as_ptr().add(offset) as *const LogicalProcessorInformationHeader)
         };
         let record_size = header.size as usize;
-        if record_size < header_size || offset + record_size > buffer.len() {
-            break;
+        let record_end = offset.checked_add(record_size)?;
+        if record_size < header_size || record_end > buffer.len() {
+            return None;
         }
 
-        if header.relationship == RelationProcessorCore
-            && record_size >= header_size + processor_size
-        {
+        if header.relationship == RelationProcessorCore {
+            if record_size < header_size + processor_size {
+                return None;
+            }
             // SAFETY: record_size was validated against the buffer and includes a complete
             // PROCESSOR_RELATIONSHIP.
             let processor = unsafe {
@@ -1098,23 +1103,25 @@ fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalPr
                     buffer.as_ptr().add(offset + header_size) as *const PROCESSOR_RELATIONSHIP
                 )
             };
-            let available_group_count =
-                record_size.saturating_sub(group_mask_offset) / group_mask_size;
-            let group_count = usize::from(processor.GroupCount).min(available_group_count);
-            for group_index in 0..group_count {
-                // SAFETY: group_count is capped by the number of complete GROUP_AFFINITY records
-                // inside this validated record.
-                let group_affinity = unsafe {
-                    read_unaligned(
-                        buffer
-                            .as_ptr()
-                            .add(offset + group_mask_offset + group_index * group_mask_size)
-                            as *const GROUP_AFFINITY,
-                    )
-                };
-                if group_affinity.Group != 0 {
-                    continue;
+            if processor.GroupCount != 1 {
+                return None;
+            }
+            // SAFETY: The validated PROCESSOR_RELATIONSHIP includes its single core
+            // GROUP_AFFINITY, and read_unaligned permits the byte buffer's alignment.
+            let group_affinity = unsafe {
+                read_unaligned(
+                    buffer.as_ptr().add(offset + group_mask_offset) as *const GROUP_AFFINITY
+                )
+            };
+            if group_affinity.Mask == 0 {
+                return None;
+            }
+            if group_affinity.Group == 0 {
+                let mask = group_affinity.Mask as u64;
+                if seen_processor_mask & mask != 0 {
+                    return None;
                 }
+                seen_processor_mask |= mask;
 
                 for bit in 0..usize::BITS as usize {
                     if (group_affinity.Mask & (1_usize << bit)) != 0 && bit < 64 {
@@ -1130,7 +1137,7 @@ fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalPr
             core_index += 1;
         }
 
-        offset += record_size;
+        offset = record_end;
     }
 
     if processors.is_empty() {
@@ -1138,7 +1145,6 @@ fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalPr
     } else {
         classify_logical_processors(&mut processors);
         processors.sort_by_key(|processor| processor.index);
-        processors.dedup_by_key(|processor| processor.index);
         Some(processors)
     }
 }
@@ -1566,6 +1572,87 @@ mod tests {
         );
         assert_eq!(processors[0].kind, LogicalProcessorKind::Performance);
         assert_eq!(processors[1].kind, LogicalProcessorKind::Efficiency);
+    }
+
+    #[test]
+    fn topology_parser_rejects_malformed_records_after_a_valid_prefix() {
+        let mut prefix = Vec::new();
+        append_processor_record(&mut prefix, 1, 0);
+
+        let mut trailing_header = prefix.clone();
+        trailing_header.extend_from_slice(&[0; 3]);
+
+        let mut truncated_record = prefix.clone();
+        append_processor_record(&mut truncated_record, 2, 0);
+        truncated_record.pop();
+
+        let mut undersized_core = prefix.clone();
+        let header_size = size_of::<LogicalProcessorInformationHeader>();
+        let start = undersized_core.len();
+        undersized_core.resize(start + header_size, 0);
+        let size_offset = start + std::mem::offset_of!(LogicalProcessorInformationHeader, size);
+        undersized_core[size_offset..size_offset + size_of::<u32>()]
+            .copy_from_slice(&(header_size as u32).to_ne_bytes());
+
+        let mut invalid_size = prefix;
+        invalid_size.extend_from_slice(&[0; size_of::<LogicalProcessorInformationHeader>()]);
+
+        for buffer in [
+            trailing_header,
+            truncated_record,
+            undersized_core,
+            invalid_size,
+        ] {
+            assert!(logical_processors_from_topology_bytes(&buffer).is_none());
+        }
+    }
+
+    #[test]
+    fn topology_parser_rejects_invalid_core_group_counts() {
+        for group_count in [0_u16, 2] {
+            let mut buffer = Vec::new();
+            append_processor_record(&mut buffer, 1, 0);
+            let start = buffer.len();
+            append_processor_record(&mut buffer, 2, 0);
+            let count_offset = start
+                + size_of::<LogicalProcessorInformationHeader>()
+                + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupCount);
+            buffer[count_offset..count_offset + size_of::<u16>()]
+                .copy_from_slice(&group_count.to_ne_bytes());
+
+            assert!(logical_processors_from_topology_bytes(&buffer).is_none());
+        }
+    }
+
+    #[test]
+    fn topology_parser_rejects_processors_assigned_to_multiple_cores() {
+        let mut buffer = Vec::new();
+        append_processor_record(&mut buffer, 1, 1);
+        append_processor_record(&mut buffer, 3, 0);
+
+        assert!(logical_processors_from_topology_bytes(&buffer).is_none());
+        let mut empty_core = Vec::new();
+        append_processor_record(&mut empty_core, 1, 0);
+        append_processor_record(&mut empty_core, 0, 0);
+        assert!(logical_processors_from_topology_bytes(&empty_core).is_none());
+    }
+
+    #[test]
+    fn topology_parser_keeps_group_zero_selection() {
+        let mut buffer = Vec::new();
+        append_processor_record(&mut buffer, 1, 0);
+        let start = buffer.len();
+        append_processor_record(&mut buffer, 1, 0);
+        let group_offset = start
+            + size_of::<LogicalProcessorInformationHeader>()
+            + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask)
+            + std::mem::offset_of!(GROUP_AFFINITY, Group);
+        buffer[group_offset..group_offset + size_of::<u16>()].copy_from_slice(&1_u16.to_ne_bytes());
+
+        let processors = logical_processors_from_topology_bytes(&buffer).unwrap();
+        assert_eq!(processors.len(), 1);
+        assert_eq!(processors[0].index, 0);
+        assert_eq!(processors[0].core_index, 0);
     }
 
     fn append_processor_record(buffer: &mut Vec<u8>, mask: usize, efficiency_class: u8) {

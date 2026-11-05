@@ -635,6 +635,201 @@ fn process_cpu_demand_percent_uses_one_logical_processor_capacity() {
     assert_eq!(usage, 100.0);
 }
 
+struct AdaptiveCpuObservations {
+    manager: AdaptiveEngineProcessManager,
+    settings: AdaptiveEngineProcessSettings,
+    started_at: Instant,
+    path: &'static str,
+    creation_time: u64,
+}
+
+impl AdaptiveCpuObservations {
+    fn new(settings: AdaptiveEngineProcessSettings) -> Self {
+        Self {
+            manager: AdaptiveEngineProcessManager::default(),
+            settings,
+            started_at: Instant::now(),
+            path: r"C:\Apps\worker.exe",
+            creation_time: 1,
+        }
+    }
+
+    fn sample(
+        &mut self,
+        seconds: u64,
+        cpu_time_100ns: u64,
+    ) -> Option<AdaptiveEngineProcessCandidate> {
+        self.observe(Some((
+            ProcessCpuSample {
+                cpu_time_100ns,
+                sampled_at: self.started_at + Duration::from_secs(seconds),
+            },
+            self.creation_time,
+        )))
+    }
+
+    fn observe(
+        &mut self,
+        sample: Option<(ProcessCpuSample, u64)>,
+    ) -> Option<AdaptiveEngineProcessCandidate> {
+        self.manager.update_adaptive_engine_process_sample(
+            42,
+            "worker.exe",
+            self.path,
+            &self.settings,
+            AdaptiveEngineProcessTier::Background,
+            sample,
+        )
+    }
+}
+
+#[test]
+fn adaptive_cpu_sample_gap_discards_only_the_targets_baseline_and_recovery() {
+    let mut observations = AdaptiveCpuObservations::new(AdaptiveEngineProcessSettings {
+        limit_background_processors_enabled: true,
+        background_app_cpu_threshold_percent: 70,
+        cpu_recovery_threshold_percent: 20,
+        cpu_restraint_time_seconds: 0,
+        cpu_recovery_time_seconds: 10,
+        ..Default::default()
+    });
+    assert!(observations.sample(0, 0).is_none());
+    assert!(observations.sample(1, 10_000_000).is_some());
+    observations
+        .manager
+        .tracked_processes
+        .get_mut(&42)
+        .unwrap()
+        .selected = true;
+    assert_eq!(
+        observations.sample(2, 10_000_000).unwrap().decision,
+        AdaptiveEngineProcessDecision::LowerPriority
+    );
+    let unrelated = observations.manager.tracked_processes[&42].clone();
+    assert!(unrelated.below_since.is_some());
+    observations
+        .manager
+        .tracked_processes
+        .insert(99, unrelated.clone());
+
+    assert!(observations.observe(None).is_none());
+    assert!(!observations.manager.tracked_processes.contains_key(&42));
+    assert_eq!(
+        observations.manager.tracked_processes[&99].below_since,
+        unrelated.below_since
+    );
+    assert!(observations.manager.tracked_processes[&99].active);
+    assert!(observations.sample(10, 90_000_000).is_none());
+    assert!(!observations.manager.tracked_processes[&42].active);
+    assert!(observations.manager.tracked_processes[&42]
+        .below_since
+        .is_none());
+    assert!(observations.sample(11, 100_000_000).is_some());
+    assert_eq!(
+        observations.manager.tracked_processes[&42].active_since,
+        Some(observations.started_at + Duration::from_secs(11))
+    );
+}
+
+#[test]
+fn adaptive_invalid_cpu_delta_restarts_the_incident_from_a_fresh_interval() {
+    for (invalid_cpu_time, invalid_seconds) in [(0, 2), (20_000_000, 1)] {
+        let mut observations = AdaptiveCpuObservations::new(AdaptiveEngineProcessSettings {
+            limit_background_processors_enabled: true,
+            background_app_cpu_threshold_percent: 70,
+            ..Default::default()
+        });
+        assert!(observations.sample(0, 0).is_none());
+        assert!(observations.sample(1, 10_000_000).is_some());
+        observations
+            .manager
+            .tracked_processes
+            .get_mut(&42)
+            .unwrap()
+            .selected = true;
+        assert!(observations
+            .sample(invalid_seconds, invalid_cpu_time)
+            .is_none());
+        let state = &observations.manager.tracked_processes[&42];
+        assert!(!state.active);
+        assert!(!state.selected);
+        assert!(state.high_since.is_none());
+        assert!(state.below_since.is_none());
+        assert!(state.active_since.is_none());
+        assert!(state.decision.is_none());
+        assert!(state.last_usage_tenths.is_none());
+
+        assert!(observations
+            .sample(invalid_seconds + 1, invalid_cpu_time + 10_000_000)
+            .is_some());
+        assert_eq!(
+            observations.manager.tracked_processes[&42].active_since,
+            Some(observations.started_at + Duration::from_secs(invalid_seconds + 1))
+        );
+    }
+}
+
+#[test]
+fn adaptive_replacement_identity_does_not_reuse_the_previous_cpu_incident() {
+    for (creation, path) in [(2, r"C:\Apps\worker.exe"), (1, r"C:\Other\worker.exe")] {
+        let mut observations = AdaptiveCpuObservations::new(AdaptiveEngineProcessSettings {
+            background_app_cpu_threshold_percent: 70,
+            ..Default::default()
+        });
+        assert!(observations.sample(0, 0).is_none());
+        assert!(observations.sample(1, 10_000_000).is_some());
+        observations
+            .manager
+            .tracked_processes
+            .get_mut(&42)
+            .unwrap()
+            .selected = true;
+        observations.creation_time = creation;
+        observations.path = path;
+        assert!(observations.sample(2, 20_000_000).is_none());
+        assert!(!observations.manager.tracked_processes[&42].active);
+        assert!(observations.sample(3, 30_000_000).is_some());
+        assert_eq!(
+            observations.manager.tracked_processes[&42].active_since,
+            Some(observations.started_at + Duration::from_secs(3))
+        );
+    }
+}
+
+#[test]
+fn adaptive_complete_cpu_intervals_preserve_hold_then_priority_only_recovery() {
+    let mut observations = AdaptiveCpuObservations::new(AdaptiveEngineProcessSettings {
+        limit_background_processors_enabled: true,
+        background_app_cpu_threshold_percent: 70,
+        cpu_recovery_threshold_percent: 20,
+        cpu_restraint_time_seconds: 3,
+        cpu_recovery_time_seconds: 2,
+        ..Default::default()
+    });
+    assert!(observations.sample(0, 0).is_none());
+    assert!(observations.sample(1, 10_000_000).is_some());
+    observations
+        .manager
+        .tracked_processes
+        .get_mut(&42)
+        .unwrap()
+        .selected = true;
+    for (seconds, expected) in [
+        (2, Some(AdaptiveEngineProcessDecision::LimitProcessors)),
+        (4, Some(AdaptiveEngineProcessDecision::LowerPriority)),
+        (5, Some(AdaptiveEngineProcessDecision::LowerPriority)),
+        (6, None),
+    ] {
+        assert_eq!(
+            observations
+                .sample(seconds, 10_000_000)
+                .map(|candidate| candidate.decision),
+            expected
+        );
+    }
+    assert!(!observations.manager.tracked_processes[&42].active);
+}
+
 #[test]
 fn process_detection_falls_through_and_preservation_follows_selected_tier() {
     let mut settings = AdaptiveEngineProcessSettings {

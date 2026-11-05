@@ -75,6 +75,52 @@ struct TrackedProcess {
     trimmed_while_idle: bool,
 }
 
+impl TrackedProcess {
+    fn break_idle_interval(&mut self) {
+        self.previous_cpu_time = None;
+        self.idle_since = None;
+    }
+
+    fn observe_cpu(
+        &mut self,
+        current: ProcessCpuSample,
+        idle_duration: Duration,
+        now: Instant,
+    ) -> bool {
+        let Some(usage) = self.sample_cpu_usage(current) else {
+            return false;
+        };
+        ready_to_trim(self, usage, idle_duration, now)
+    }
+
+    fn observe_below_working_set_threshold(&mut self, current: Option<ProcessCpuSample>) {
+        self.idle_since = None;
+        let Some(current) = current else {
+            self.break_idle_interval();
+            return;
+        };
+        if self
+            .sample_cpu_usage(current)
+            .is_some_and(|usage| usage > CPU_IDLE_THRESHOLD_PERCENT)
+        {
+            self.trimmed_while_idle = false;
+        }
+    }
+
+    fn sample_cpu_usage(&mut self, current: ProcessCpuSample) -> Option<f32> {
+        let previous = self.previous_cpu_time.replace(current);
+        let Some(previous) = previous else {
+            self.idle_since = None;
+            return None;
+        };
+        let Some(usage) = process_cpu_usage_percent(previous, current) else {
+            self.break_idle_interval();
+            return None;
+        };
+        Some(usage)
+    }
+}
+
 impl MemoryTrimManager {
     #[expect(
         clippy::too_many_arguments,
@@ -163,7 +209,7 @@ impl MemoryTrimManager {
         }
 
         if foreground_process_id.is_none() {
-            self.clear_tracking();
+            self.break_idle_intervals();
             return MemoryTrimSnapshot {
                 enabled: true,
                 status: MemoryTrimStatus::ForegroundUnknown,
@@ -174,7 +220,7 @@ impl MemoryTrimManager {
         let memory_load_percent = match system_memory_load_percent() {
             Ok(percent) => percent,
             Err(err) => {
-                self.clear_tracking();
+                self.break_idle_intervals();
                 return MemoryTrimSnapshot {
                     enabled: true,
                     status: MemoryTrimStatus::Error(err.clone()),
@@ -186,7 +232,7 @@ impl MemoryTrimManager {
 
         let threshold = settings.system_memory_load_threshold_percent.min(100);
         if mode == MemoryTrimMode::Automatic && memory_load_percent < threshold {
-            self.clear_tracking();
+            self.break_idle_intervals();
             return MemoryTrimSnapshot {
                 enabled: true,
                 memory_load_percent: Some(memory_load_percent),
@@ -203,7 +249,7 @@ impl MemoryTrimManager {
         let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(err) => {
-                self.clear_tracking();
+                self.break_idle_intervals();
                 return MemoryTrimSnapshot {
                     enabled: true,
                     memory_load_percent: Some(memory_load_percent),
@@ -306,7 +352,9 @@ impl MemoryTrimManager {
                     candidate_processes += 1;
                     self.clear_process_failure(&executable_path);
                 }
-                Ok(ProcessUpdate::Trimmed { freed_bytes }) => {
+                Ok(ProcessUpdate::Trimmed {
+                    working_set_reduction_bytes,
+                }) => {
                     candidate_processes += 1;
                     trimmed_processes += 1;
                     trimmed_apps.insert(process_name.clone());
@@ -316,7 +364,7 @@ impl MemoryTrimManager {
                         Some(process_id),
                         process_name,
                         ActionLogResult::Applied,
-                        trim_reason(mode, freed_bytes),
+                        trim_reason(mode, working_set_reduction_bytes),
                     );
                 }
                 Err(ProcessControlError::ProcessExited) => {
@@ -371,33 +419,48 @@ impl MemoryTrimManager {
     ) -> Result<ProcessUpdate, ProcessControlError> {
         let process_id = target.id;
         let executable_path = target.executable_path.to_string_lossy().into_owned();
-        let sample = controller.sample(
-            target,
-            allow_cross_session_process_control,
-            mode == MemoryTrimMode::Automatic,
-        )?;
-        let threshold_bytes = settings.process_working_set_threshold_mb.saturating_mul(MB);
-        if sample.working_set_bytes < threshold_bytes {
-            self.tracked.remove(&process_id);
-            return Ok(ProcessUpdate::Waiting);
-        }
-
-        if mode == MemoryTrimMode::Manual {
-            let outcome = controller.trim(target, allow_cross_session_process_control)?;
-            return Ok(ProcessUpdate::Trimmed {
-                freed_bytes: outcome.freed_bytes,
-            });
-        }
-
-        let cpu_sample = sample.cpu.ok_or_else(|| {
-            ProcessControlError::Failed("Memory Trim CPU sample is unavailable.".to_owned())
-        })?;
         if self.tracked.get(&process_id).is_some_and(|state| {
             state.creation_time != target.creation_time
                 || !same_executable_path(Path::new(&state.executable_path), &target.executable_path)
         }) {
             self.tracked.remove(&process_id);
         }
+        let sample = match controller.sample(
+            target,
+            allow_cross_session_process_control,
+            mode == MemoryTrimMode::Automatic,
+        ) {
+            Ok(sample) => sample,
+            Err(error) => {
+                if let Some(state) = self.tracked.get_mut(&process_id) {
+                    state.break_idle_interval();
+                }
+                return Err(error);
+            }
+        };
+        let threshold_bytes = settings.process_working_set_threshold_mb.saturating_mul(MB);
+        if sample.working_set_bytes < threshold_bytes {
+            if let Some(state) = self.tracked.get_mut(&process_id) {
+                state.observe_below_working_set_threshold(sample.cpu);
+            }
+            return Ok(ProcessUpdate::Waiting);
+        }
+
+        if mode == MemoryTrimMode::Manual {
+            let outcome = controller.trim(target, allow_cross_session_process_control)?;
+            return Ok(ProcessUpdate::Trimmed {
+                working_set_reduction_bytes: outcome.working_set_reduction_bytes,
+            });
+        }
+
+        let Some(cpu_sample) = sample.cpu else {
+            if let Some(state) = self.tracked.get_mut(&process_id) {
+                state.break_idle_interval();
+            }
+            return Err(ProcessControlError::Failed(
+                "Memory Trim CPU sample is unavailable.".to_owned(),
+            ));
+        };
         let state = self
             .tracked
             .entry(process_id)
@@ -410,17 +473,8 @@ impl MemoryTrimManager {
             });
         state.executable_path = executable_path;
 
-        let usage = state
-            .previous_cpu_time
-            .and_then(|previous| process_cpu_usage_percent(previous, cpu_sample));
-        state.previous_cpu_time = Some(cpu_sample);
-        let Some(usage) = usage else {
-            return Ok(ProcessUpdate::Candidate);
-        };
-
-        if !ready_to_trim(
-            state,
-            usage,
+        if !state.observe_cpu(
+            cpu_sample,
             Duration::from_secs(settings.process_idle_seconds),
             now,
         ) {
@@ -430,12 +484,18 @@ impl MemoryTrimManager {
         let outcome = controller.trim(target, allow_cross_session_process_control)?;
         state.trimmed_while_idle = true;
         Ok(ProcessUpdate::Trimmed {
-            freed_bytes: outcome.freed_bytes,
+            working_set_reduction_bytes: outcome.working_set_reduction_bytes,
         })
     }
 
     fn clear_tracking(&mut self) {
         self.tracked.clear();
+    }
+
+    fn break_idle_intervals(&mut self) {
+        for state in self.tracked.values_mut() {
+            state.break_idle_interval();
+        }
     }
 
     fn clear_failure_suppression(&mut self) {
@@ -493,7 +553,9 @@ enum MemoryTrimMode {
 enum ProcessUpdate {
     Waiting,
     Candidate,
-    Trimmed { freed_bytes: Option<u64> },
+    Trimmed {
+        working_set_reduction_bytes: Option<u64>,
+    },
 }
 
 fn ready_to_trim(
@@ -514,14 +576,14 @@ fn ready_to_trim(
     let idle_since = *state.idle_since.get_or_insert(now);
     now.duration_since(idle_since) >= idle_duration
 }
-fn trim_reason(mode: MemoryTrimMode, freed_bytes: Option<u64>) -> String {
+fn trim_reason(mode: MemoryTrimMode, working_set_reduction_bytes: Option<u64>) -> String {
     let action = match mode {
         MemoryTrimMode::Automatic => "Trimmed working set",
         MemoryTrimMode::Manual => "Manually trimmed working set",
     };
-    match freed_bytes {
-        Some(freed_bytes) => format!("{action}; estimated freed {}.", size_label(freed_bytes)),
-        None => format!("{action}; freed-memory estimate unavailable."),
+    match working_set_reduction_bytes {
+        Some(bytes) => format!("{action}; working-set reduction {}.", size_label(bytes)),
+        None => format!("{action}; working-set reduction unavailable."),
     }
 }
 
@@ -589,170 +651,4 @@ fn size_label(bytes: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn freed_memory_uses_decimal_byte_units() {
-        assert_eq!(size_label(999), "999 B");
-        assert_eq!(size_label(1_000), "1 KB");
-        assert_eq!(size_label(999_999), "999 KB");
-        assert_eq!(size_label(1_000_000), "1 MB");
-        assert_eq!(size_label(256_000_000), "256 MB");
-    }
-
-    #[test]
-    fn repeated_process_failures_suppress_memory_trim_retries() {
-        let mut manager = MemoryTrimManager::default();
-        let mut log = ActionLog::new(8);
-        let executable_path = r"C:\Apps\app.exe";
-
-        manager.record_process_failure(executable_path);
-        manager.record_process_failure(r"C:/Apps/app.exe");
-        assert!(!manager.is_process_suppressed(
-            42,
-            "app.exe",
-            executable_path,
-            &mut log,
-            &mut BTreeSet::new()
-        ));
-
-        manager.record_process_failure(executable_path);
-        assert!(manager.is_process_suppressed(
-            42,
-            "app.exe",
-            executable_path,
-            &mut log,
-            &mut BTreeSet::new()
-        ));
-        assert!(manager.is_process_suppressed(
-            43,
-            "app.exe",
-            r"C:/Apps/app.exe",
-            &mut log,
-            &mut BTreeSet::new()
-        ));
-
-        let entries = log.entries();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
-        assert_eq!(entries[0].result, ActionLogResult::Skipped);
-        assert!(entries[0].reason.contains("Stopped retrying Memory Trim"));
-    }
-
-    #[test]
-    fn successful_process_clears_memory_trim_failure_suppression() {
-        let mut manager = MemoryTrimManager::default();
-        let mut log = ActionLog::new(8);
-        let executable_path = r"C:\Apps\app.exe";
-
-        manager.record_process_failure(executable_path);
-        manager.record_process_failure(executable_path);
-        manager.record_process_failure(executable_path);
-        assert!(manager.is_process_suppressed(
-            42,
-            "app.exe",
-            executable_path,
-            &mut log,
-            &mut BTreeSet::new()
-        ));
-
-        manager.clear_process_failure(r"C:/Apps/app.exe");
-        assert!(!manager.is_process_suppressed(
-            42,
-            "app.exe",
-            executable_path,
-            &mut log,
-            &mut BTreeSet::new()
-        ));
-    }
-
-    #[test]
-    fn builtin_exclusions_cover_sensitive_windows_processes() {
-        assert!(is_builtin_excluded("csrss.exe"));
-        assert!(is_builtin_excluded("winlogon.exe"));
-        assert!(!is_builtin_excluded("worker.exe"));
-    }
-
-    #[test]
-    fn foreground_skip_matches_pid_or_exact_path() {
-        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
-
-        assert!(should_ignore_foreground_process(
-            true,
-            42,
-            Path::new(r"C:\Apps\helper.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(should_ignore_foreground_process(
-            true,
-            99,
-            Path::new(r"c:\apps\foreground\APP.EXE"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(!should_ignore_foreground_process(
-            true,
-            99,
-            Path::new(r"D:\Other\app.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-    }
-
-    #[test]
-    fn trim_eligibility_rearms_only_after_process_activity() {
-        let now = Instant::now();
-        let mut process = TrackedProcess {
-            executable_path: r"C:\Apps\app.exe".to_owned(),
-            creation_time: 1,
-            previous_cpu_time: None,
-            idle_since: None,
-            trimmed_while_idle: false,
-        };
-        let idle_duration = Duration::from_secs(300);
-
-        assert!(!ready_to_trim(&mut process, 0.0, idle_duration, now));
-        assert!(ready_to_trim(
-            &mut process,
-            0.0,
-            idle_duration,
-            now + idle_duration
-        ));
-
-        process.trimmed_while_idle = true;
-        assert!(!ready_to_trim(
-            &mut process,
-            0.0,
-            idle_duration,
-            now + idle_duration
-        ));
-        assert!(!ready_to_trim(
-            &mut process,
-            2.0,
-            idle_duration,
-            now + idle_duration
-        ));
-        assert!(!process.trimmed_while_idle);
-    }
-    #[test]
-    fn process_cpu_usage_percent_scales_by_processor_count() {
-        let now = Instant::now();
-        let previous = ProcessCpuSample {
-            cpu_time_100ns: 0,
-            sampled_at: now,
-        };
-        let current = ProcessCpuSample {
-            cpu_time_100ns: 10_000_000,
-            sampled_at: now + Duration::from_secs(1),
-        };
-
-        let usage = process_cpu_usage_percent(previous, current).unwrap();
-
-        let processors = std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1);
-        assert!((usage - 100.0 / processors as f32).abs() < 0.0001);
-    }
-}
+mod tests;

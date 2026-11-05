@@ -45,7 +45,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   target accepts replacement ownership or completes restoration/relinquishment;
   failed or uncertain replacements retain unresolved cleanup. Memory Priority
   retries reconcile surviving claims before restoring a baseline.
-- Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
+- Failed process identity reads preserve restoration ownership unless a query on
+  the same handle positively confirms exit; verified identity mismatch also
+  relinquishes it. An unavailable termination query retains the original error.
 - Retained-handle operation errors preserve their native failure code. In
   particular, `ERROR_INVALID_PARAMETER` from a setter is not process-exit
   evidence and must not discard restoration state.
@@ -115,6 +117,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - By CPU Load requires finite observations from 0% to 100%. Missing or invalid
   observations, settings invalidation, and power-profile changes restart sustained
   duration timers; time in an inactive profile cannot satisfy a rule's duration.
+  Deferring ordinary switching while Adaptive owns the active plan also resets
+  qualification; unobserved time cannot complete an ordinary load condition.
 - By CPU Load durations range from zero through `i64::MAX` seconds, matching TOML
   integer storage. Larger edits remain invalid drafts and fail persistence preflight.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
@@ -147,6 +151,16 @@ Read the relevant section before changing feature policy, ownership, restoration
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
 - Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), CPU Limiter, App Suspension.
 - Exclusion-list features append `ProcessExclusionRule`.
+
+## Memory Trim
+
+- Automatic trimming requires current pressure, working-set size, and sustained
+  observed CPU idleness. Missing/invalid samples, low pressure, and a working set
+  below the size threshold break idle qualification without rearming a process
+  already trimmed during that idle episode. Observed activity or a new exact
+  process identity may rearm it; explicitly disabling automation clears tracking.
+- Before/after working-set reduction is not measured system RAM reclaimed.
+  Unavailable readback remains unknown; trimming cannot restore discarded pages.
 
 ## App Suspension and CPU Limiter
 
@@ -210,6 +224,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
   fixed P/E/no-SMT topology masks, or an exact custom mask. The per-app CPU threshold decides when a background app becomes eligible;
   the shared CPU allocation coordinator remains the only mutation and restoration owner.
+- Adaptive per-process demand requires consecutive valid CPU observations for
+  the same exact identity. Missing samples, invalid deltas, or a non-actionable
+  target discard its old qualification/recovery state without resetting unrelated
+  targets or changing global pressure policy.
 - CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog. The
   topology-derived Core Presets are read-only: All, P-cores, E-cores, All cores no SMT, P-cores no
   SMT, and E-cores no SMT. Custom presets remain editable. Every rule independently selects Focus,

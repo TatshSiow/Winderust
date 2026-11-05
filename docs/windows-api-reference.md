@@ -403,6 +403,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | `OpenProcess` | `src/platform/windows/process.rs` maps each typed control operation to its minimal access profile and owns raw acquisition for process-control commands. `src/control/process.rs` then validates PID, creation time, absolute executable path, session policy, process name, critical/protected state, and operation-specific capability on that same retained handle. Other read-only discovery and recovery paths keep their independently justified openers. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | `GetProcessTimes` | Captures creation time in the lightweight shared process snapshot using its existing query handle. Typed controls pair that value with the exact executable path, then revalidate both immediately before mutation so PID reuse fails closed without requiring a full path-enrichment pass. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes |
 | `QueryFullProcessImageNameW` | Reads executable paths through `src/foreground/process_list.rs` for process discovery, foreground/cursor identification, and exact executable-path matching across every user-configured process rule. Process mutation paths revalidate the expected executable path on the same opened handle immediately before the change; built-in Windows safety exclusions remain filename-based. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew |
+| `GetExitCodeProcess` | After an identity-query failure, `src/control/process.rs` asks `src/platform/windows/process.rs::exit_confirmed` for positive termination evidence on the same handle. Confirmed exits enter existing restoration cleanup; `STILL_ACTIVE` (including explicit exit code 259) and failed queries preserve the original identity error. Existing query rights suffice; no debug privilege or additional access is requested. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess |
 | Process handles and identifiers | Documents that a process ID is valid only until process termination and can be reused, while an open handle continues to identify that process object. Winderust pairs executable-path checks with creation-time checks wherever sampled state crosses into a later mutation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers |
 | Process Security and Access Rights | Documents the query-only `PROCESS_QUERY_LIMITED_INFORMATION` right and the `PROCESS_SET_INFORMATION` right required by `SetProcessInformation`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
 
@@ -427,6 +428,10 @@ The explicit tuning service applies ten ordered A/C and battery processor settin
 attempt, including a partial failure, so the UI reflects the values Windows now
 holds rather than the pre-apply draft. This persistent user command does not use
 the automatic power-plan recovery journal or claim ledger.
+Success requires readback to match every requested processor value and selected
+scheduling override on both power sources. Unselected scheduling fields remain
+unowned. Unknown native boost modes and out-of-range percentages fail reading
+instead of being normalized into apparently successful settings.
 
 | API / Setting | Used for | Reference |
 | --- | --- | --- |
@@ -523,7 +528,7 @@ Implementation entry points:
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GlobalMemoryStatusEx` | Reads overall physical-memory load and availability. | https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex |
-| `K32GetProcessMemoryInfo` | The typed command boundary reads the working set before a trim and, when available, after it; a failed post-trim query leaves the freed-memory estimate unknown rather than treating the whole prior working set as freed. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
+| `K32GetProcessMemoryInfo` | The typed command boundary measures before/after working-set reduction, not system RAM reclaimed; failed post-trim queries leave the reduction unknown. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
 | `SetProcessWorkingSetSize` | `src/platform/windows/memory_trim.rs` alone passes `SIZE_T(-1)` for both bounds to remove as many pages as possible. `MemoryTrimController` supplies a handle with exact creation/path identity, critical/PPL, current-session policy, and `PROCESS_SET_QUOTA` validation immediately before the irreversible call. | https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setprocessworkingsetsize |
 
 
@@ -924,6 +929,14 @@ src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, T
 ### Dynamic Resource Zones allocation contract
 
 `src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background CPU Sets (Soft) through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
+
+`src/features/cpu_control/cpu_allocation.rs::logical_processors_from_topology_bytes`
+rejects truncated records, invalid core group counts, empty core masks, and duplicate
+group-0 logical processors instead of trusting a partial topology. Minimal complete records
+remain valid; other processor groups do not broaden the current selection domain.
+The variable-length record contract is documented by
+[GetLogicalProcessorInformationEx](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getlogicalprocessorinformationex)
+and [PROCESSOR_RELATIONSHIP](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-processor_relationship).
 
 - https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount ? zero means failure; multiple groups are outside this mask domain.
 - https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets ? thread-selected sets and restrictive affinity still apply; placement is not exclusive physical-core ownership.

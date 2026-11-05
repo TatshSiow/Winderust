@@ -19,7 +19,7 @@ pub(crate) struct MemoryTrimProcessSample {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MemoryTrimOutcome {
-    pub(crate) freed_bytes: Option<u64>,
+    pub(crate) working_set_reduction_bytes: Option<u64>,
 }
 
 pub(crate) trait MemoryTrimPlatform {
@@ -123,12 +123,14 @@ impl<P: MemoryTrimPlatform> MemoryTrimController<P> {
             .open(target, allow_cross_session_process_control)?;
         let before = self.platform.working_set_bytes(&process)?;
         self.platform.trim(&process)?;
-        let freed_bytes = self
+        let working_set_reduction_bytes = self
             .platform
             .working_set_bytes(&process)
             .ok()
             .map(|after| before.saturating_sub(after));
-        Ok(MemoryTrimOutcome { freed_bytes })
+        Ok(MemoryTrimOutcome {
+            working_set_reduction_bytes,
+        })
     }
 }
 
@@ -214,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_trim_keeps_an_unavailable_freed_estimate_unknown() {
+    fn successful_trim_keeps_an_unavailable_working_set_reduction_unknown() {
         let platform = FakePlatform {
             working_sets: VecDeque::from([
                 Ok(128),
@@ -227,8 +229,24 @@ mod tests {
 
         let outcome = controller.trim(&target(), true).unwrap();
 
-        assert_eq!(outcome.freed_bytes, None);
+        assert_eq!(outcome.working_set_reduction_bytes, None);
         assert_eq!(controller.platform.trim_calls, 1);
+    }
+
+    #[test]
+    fn successful_trim_reports_only_the_observed_working_set_reduction() {
+        for (after, reduction) in [(64, 64), (256, 0)] {
+            let platform = FakePlatform {
+                working_sets: VecDeque::from([Ok(128), Ok(after)]),
+                ..Default::default()
+            };
+            let mut controller = MemoryTrimController::with_platform(platform);
+
+            let outcome = controller.trim(&target(), false).unwrap();
+
+            assert_eq!(outcome.working_set_reduction_bytes, Some(reduction));
+            assert_eq!(controller.platform.trim_calls, 1);
+        }
     }
 
     #[test]

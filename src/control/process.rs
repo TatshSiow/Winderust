@@ -338,7 +338,8 @@ fn open_process_with_access(
         target,
         handle.process_times().map(|(creation, _)| creation),
         || query_process_image_path(&handle),
-    )?;
+    )
+    .map_err(|error| classify_identity_failure(error, windows_process::exit_confirmed(&handle)))?;
 
     let session_id = process_session_id(target.id);
     if !allow_cross_session_process_control {
@@ -406,6 +407,17 @@ fn validate_identity_observation(
     Ok(creation)
 }
 
+fn classify_identity_failure(
+    error: ProcessControlError,
+    exit_confirmed: Result<bool, ProcessOperationError>,
+) -> ProcessControlError {
+    if exit_confirmed == Ok(true) {
+        ProcessControlError::ProcessExited
+    } else {
+        error
+    }
+}
+
 fn open_process_error(process_id: u32, error: ProcessOpenError) -> ProcessControlError {
     match error {
         ProcessOpenError::AccessDenied => {
@@ -442,6 +454,80 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn identity_query_failures_require_positive_exit_evidence_for_cleanup() {
+        let unavailable =
+            ProcessControlError::Unavailable("path query failed with error 31".into());
+        assert_eq!(
+            classify_identity_failure(unavailable.clone(), Ok(true)),
+            ProcessControlError::ProcessExited
+        );
+        for observation in [
+            Ok(false),
+            Err(ProcessOperationError::AccessDenied {
+                operation: "GetExitCodeProcess",
+            }),
+            Err(ProcessOperationError::Failed {
+                operation: "GetExitCodeProcess",
+                code: 31,
+            }),
+        ] {
+            assert_eq!(
+                classify_identity_failure(unavailable.clone(), observation),
+                unavailable
+            );
+            assert_eq!(
+                classify_identity_failure(ProcessControlError::ProcessExited, observation),
+                ProcessControlError::ProcessExited
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "opens and terminates its own disposable process; run in integration QA"]
+    fn retained_exited_process_is_classified_for_cleanup() -> Result<(), String> {
+        use std::{
+            os::windows::process::CommandExt,
+            process::{Child, Command, Stdio},
+        };
+
+        struct OwnedProcess(Child);
+        impl Drop for OwnedProcess {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot missing")?)
+            .join(r"System32\PING.EXE");
+        let mut child = OwnedProcess(
+            Command::new(&executable)
+                .args(["-t", "127.0.0.1"])
+                .creation_flags(0x0800_0000)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| error.to_string())?,
+        );
+        let target =
+            crate::foreground::capture_process_action_target(child.0.id(), &executable, false)
+                .map_err(|error| error.to_string())?;
+        let target = ProcessControlTarget::from_action_target(&target);
+        let (_, retained) =
+            open_process_for_set_information(&target, false).map_err(|error| error.to_string())?;
+        assert_eq!(windows_process::exit_confirmed(&retained), Ok(false));
+        child.0.kill().map_err(|error| error.to_string())?;
+        child.0.wait().map_err(|error| error.to_string())?;
+        assert_eq!(windows_process::exit_confirmed(&retained), Ok(true));
+        assert!(matches!(
+            open_process_for_set_information(&target, false),
+            Err(ProcessControlError::ProcessExited)
+        ));
+        Ok(())
+    }
 
     #[test]
     fn unavailable_identity_is_not_an_exit_but_verified_mismatch_is() {

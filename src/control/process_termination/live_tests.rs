@@ -40,7 +40,9 @@ fn live_trim_and_termination_validate_identity() -> Result<(), String> {
     let outcome = trim
         .trim(&control_target, false)
         .map_err(|e| e.to_string())?;
-    assert!(outcome.freed_bytes.is_some_and(|bytes| bytes > 0));
+    assert!(outcome
+        .working_set_reduction_bytes
+        .is_some_and(|bytes| bytes > 0));
     assert!(child.0.try_wait().map_err(|e| e.to_string())?.is_none());
 
     let mut termination = ProcessTerminationController::default();

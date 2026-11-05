@@ -163,6 +163,17 @@ struct AdaptiveEngineProcessProcess {
     selected: bool,
 }
 
+impl AdaptiveEngineProcessProcess {
+    fn clear_restraint(&mut self) {
+        self.high_since = None;
+        self.below_since = None;
+        self.active_since = None;
+        self.decision = None;
+        self.active = false;
+        self.selected = false;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AdaptiveEngineProcessDecision {
     LowerPriority,
@@ -721,13 +732,7 @@ impl AdaptiveEngineProcessManager {
                 zones.status = ZoneStatus::Unavailable;
                 zones.reason = "zone_unavailable";
             }
-            let current_ids = restrainable_processes
-                .keys()
-                .copied()
-                .collect::<BTreeSet<_>>();
-            self.tracked_processes
-                .retain(|process_id, _| current_ids.contains(process_id));
-
+            let mut actionable_process_ids = BTreeSet::new();
             let mut adaptive_engine_process_candidates = Vec::new();
             for (process_id, (process_name, tier)) in &restrainable_processes {
                 if *tier == AdaptiveEngineProcessTier::VisibleWindow
@@ -745,18 +750,21 @@ impl AdaptiveEngineProcessManager {
                 if settings.custom_rule_enabled_for(&executable_path) {
                     continue;
                 }
-
-                if let Some(candidate) = self.update_adaptive_engine_process_process(
+                actionable_process_ids.insert(*process_id);
+                let sample = process_cpu_sample_with_identity(*process_id, &executable_path);
+                if let Some(candidate) = self.update_adaptive_engine_process_sample(
                     *process_id,
                     process_name,
                     &executable_path,
                     settings,
                     *tier,
-                    now,
+                    sample,
                 ) {
                     adaptive_engine_process_candidates.push(candidate);
                 }
             }
+            self.tracked_processes
+                .retain(|process_id, _| actionable_process_ids.contains(process_id));
 
             let selected_candidates = select_adaptive_engine_process_candidates(
                 adaptive_engine_process_candidates,
@@ -1746,15 +1754,20 @@ impl AdaptiveEngineProcessManager {
         result
     }
 
-    fn update_adaptive_engine_process_process(
+    fn update_adaptive_engine_process_sample(
         &mut self,
         process_id: u32,
         process_name: &str,
         executable_path: &str,
         settings: &AdaptiveEngineProcessSettings,
         tier: AdaptiveEngineProcessTier,
-        now: Instant,
+        sample: Option<(ProcessCpuSample, u64)>,
     ) -> Option<AdaptiveEngineProcessCandidate> {
+        let Some((current, creation_time)) = sample else {
+            self.tracked_processes.remove(&process_id);
+            return None;
+        };
+        let now = current.sampled_at;
         let threshold = f32::from(settings.background_app_cpu_threshold_percent.min(100));
         let recovery_threshold = f32::from(
             settings
@@ -1764,8 +1777,6 @@ impl AdaptiveEngineProcessManager {
         );
         let cpu_restraint_time = Duration::from_secs(settings.cpu_restraint_time_seconds);
         let cpu_recovery_time = Duration::from_secs(settings.cpu_recovery_time_seconds);
-        let (current, creation_time) =
-            process_cpu_sample_with_identity(process_id, executable_path)?;
         if self
             .tracked_processes
             .get(&process_id)
@@ -1804,7 +1815,10 @@ impl AdaptiveEngineProcessManager {
         state.previous_cpu_time = Some(current);
 
         state.last_usage_tenths = None;
-        let usage = usage?;
+        let Some(usage) = usage else {
+            state.clear_restraint();
+            return None;
+        };
         state.last_usage_tenths = Some(percent_tenths(usage));
         if usage >= threshold {
             state.below_since = None;
@@ -1820,17 +1834,8 @@ impl AdaptiveEngineProcessManager {
             ));
         }
 
-        if !state.active {
-            state.high_since = None;
-            state.below_since = None;
-            return None;
-        }
-        if state.active && !state.selected {
-            state.active = false;
-            state.high_since = None;
-            state.below_since = None;
-            state.active_since = None;
-            state.decision = None;
+        if !state.active || !state.selected {
+            state.clear_restraint();
             return None;
         }
 
@@ -1854,12 +1859,7 @@ impl AdaptiveEngineProcessManager {
                 tier,
             ));
         }
-        state.active = false;
-        state.selected = false;
-        state.high_since = None;
-        state.below_since = None;
-        state.active_since = None;
-        state.decision = None;
+        state.clear_restraint();
         None
     }
 

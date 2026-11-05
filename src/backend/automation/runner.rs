@@ -1485,6 +1485,7 @@ impl RuntimeCore {
         observations: &mut CycleObservations,
     ) -> Result<(), String> {
         if self.power_plan_controller.adaptive_active() {
+            self.by_cpu_load_scheduler.reset();
             return Ok(());
         }
 

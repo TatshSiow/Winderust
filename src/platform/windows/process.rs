@@ -1,13 +1,15 @@
 use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, STILL_ACTIVE},
     System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_CREATE_PROCESS, PROCESS_QUERY_INFORMATION,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
-        PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        GetCurrentProcessId, GetExitCodeProcess, OpenProcess, PROCESS_CREATE_PROCESS,
+        PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     },
 };
 
 use crate::win_util::{last_error, WinHandle};
+
+use super::ProcessOperationError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProcessAccess {
@@ -30,6 +32,16 @@ pub(crate) enum ProcessOpenError {
 pub(crate) fn current_process_id() -> u32 {
     // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
     unsafe { GetCurrentProcessId() }
+}
+
+pub(crate) fn exit_confirmed(process: &WinHandle) -> Result<bool, ProcessOperationError> {
+    let mut exit_code = 0;
+    // SAFETY: process is an owned process handle with query access, and exit_code is writable.
+    if unsafe { GetExitCodeProcess(process.raw(), &mut exit_code) } == 0 {
+        return Err(ProcessOperationError::capture("GetExitCodeProcess"));
+    }
+    // STILL_ACTIVE is also a possible explicit exit code, so it cannot confirm termination.
+    Ok(exit_code != STILL_ACTIVE as u32)
 }
 
 pub(crate) fn open(process_id: u32, access: ProcessAccess) -> Result<WinHandle, ProcessOpenError> {
