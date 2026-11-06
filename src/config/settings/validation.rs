@@ -127,6 +127,39 @@ impl ByCpuLoadRule {
         {
             return Err("Between threshold must not exceed the upper threshold".to_owned());
         }
+        self.validate_stability()
+    }
+
+    pub fn validate_stability(&self) -> Result<(), String> {
+        let Some(stability) = &self.stability else {
+            return Ok(());
+        };
+        if !Self::duration_is_valid(stability.minimum_hold_seconds) {
+            return Err(format!(
+                "minimum hold must not exceed {} seconds",
+                Self::MAX_DURATION_SECONDS
+            ));
+        }
+        let valid_thresholds = match self.comparison {
+            CpuUsageComparison::AtOrAbove => {
+                stability.exit_threshold_percent <= self.threshold_percent
+                    && stability.exit_upper_threshold_percent.is_none()
+            }
+            CpuUsageComparison::AtOrBelow => {
+                stability.exit_threshold_percent >= self.threshold_percent
+                    && stability.exit_upper_threshold_percent.is_none()
+            }
+            CpuUsageComparison::Between => {
+                stability.exit_threshold_percent <= self.threshold_percent
+                    && stability.exit_upper_threshold_percent.is_some_and(|upper| {
+                        upper >= self.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX)
+                    })
+            }
+            CpuUsageComparison::Else => false,
+        };
+        if !valid_thresholds {
+            return Err("switching stability release thresholds must include the entry condition; Else rules cannot use stability".to_owned());
+        }
         Ok(())
     }
 }

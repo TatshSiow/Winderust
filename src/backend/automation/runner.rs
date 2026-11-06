@@ -1489,6 +1489,30 @@ impl RuntimeCore {
             return Ok(());
         }
 
+        if let Err(error) = self
+            .power_plan_controller
+            .refresh_active_plan_if_due(Instant::now())
+        {
+            self.by_cpu_load_scheduler.reset();
+            if let Some(feature) = self
+                .power_plan_controller
+                .status()
+                .decision_state
+                .and_then(power_plan_action_log_feature)
+            {
+                self.action_log.record(
+                    feature,
+                    None,
+                    String::new(),
+                    ActionLogResult::Failed,
+                    format!("Refreshing the active power plan failed: {error}"),
+                );
+            }
+            return Err(error);
+        }
+        self.by_cpu_load_scheduler
+            .observe_active_plan(self.power_plan_controller.status().current_guid.as_deref());
+
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
         let foreground_executable_path = foreground_lookup_required(settings)
@@ -1500,6 +1524,10 @@ impl RuntimeCore {
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
+        let primary_cpu_load_rule_index = by_cpu_load_decision
+            .as_ref()
+            .filter(|decision| !decision.is_else)
+            .map(|decision| decision.rule_index);
         let by_running_app = self.by_running_app_manager.active_decision().map(
             |(rule_index, rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
                 rule_index,
@@ -1521,6 +1549,17 @@ impl RuntimeCore {
             by_cpu_load: by_cpu_load_decision,
         };
         let decision = decide(settings, decision_input);
+        let winning_cpu_load_rule_index = if decision.state == DecisionState::ByCpuLoad {
+            primary_cpu_load_rule_index
+        } else {
+            None
+        };
+        if matches!(
+            decision.state,
+            DecisionState::Disabled | DecisionState::PausedWhilePluggedIn
+        ) {
+            self.by_cpu_load_scheduler.reset();
+        }
         let feature = power_plan_action_log_feature(decision.state);
         let target_guid = decision.power_plan_guid.clone().unwrap_or_default();
         let reason = decision.reason.clone();
@@ -1529,6 +1568,11 @@ impl RuntimeCore {
             .reconcile_ordinary(decision, Instant::now())
         {
             Ok(applied) => {
+                self.by_cpu_load_scheduler.confirm_applied_rule(
+                    winning_cpu_load_rule_index,
+                    self.power_plan_controller.status().current_guid.as_deref(),
+                    Instant::now(),
+                );
                 if let (true, Some(feature)) = (applied, feature) {
                     self.action_log.record(
                         feature,
@@ -1541,6 +1585,8 @@ impl RuntimeCore {
                 Ok(())
             }
             Err(error) => {
+                self.by_cpu_load_scheduler
+                    .confirm_applied_rule(None, None, Instant::now());
                 if let Some(feature) = feature {
                     self.action_log.record(
                         feature,
@@ -1631,8 +1677,10 @@ mod settings_tests {
     use super::*;
 
     #[test]
-    fn cpu_load_duration_restarts_after_an_inactive_power_profile() {
-        use crate::config::{ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison};
+    fn cpu_load_qualification_and_hold_restart_after_an_inactive_power_profile() {
+        use crate::config::{
+            ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison,
+        };
 
         let mut settings = Settings::default();
         settings.by_activity.enabled = false;
@@ -1647,6 +1695,11 @@ mod settings_tests {
             threshold_percent: CpuLoadPercent::new(75).unwrap(),
             upper_threshold_percent: None,
             duration_seconds: 30,
+            stability: Some(ByCpuLoadStability {
+                exit_threshold_percent: CpuLoadPercent::new(65).unwrap(),
+                exit_upper_threshold_percent: None,
+                minimum_hold_seconds: 30,
+            }),
             power_plan_guid: Some("high-load-plan".into()),
             else_enabled: false,
             else_power_plan_guid: None,
@@ -1683,6 +1736,29 @@ mod settings_tests {
             )
             .unwrap();
         assert_eq!(decision.power_plan_guid, "high-load-plan");
+        runner.by_cpu_load_scheduler.confirm_applied_rule(
+            Some(decision.rule_index),
+            Some("high-load-plan"),
+            start + Duration::from_secs(90),
+        );
+        assert!(runner
+            .by_cpu_load_scheduler
+            .current_decision_at(
+                &settings.by_cpu_load,
+                Some(20.0),
+                start + Duration::from_secs(91),
+            )
+            .is_some());
+        runner.note_settings(settings.battery_profile(), true);
+        runner.note_settings(&settings, true);
+        assert!(runner
+            .by_cpu_load_scheduler
+            .current_decision_at(
+                &settings.by_cpu_load,
+                Some(20.0),
+                start + Duration::from_secs(92),
+            )
+            .is_none());
     }
 
     #[test]

@@ -121,6 +121,18 @@ Read the relevant section before changing feature policy, ownership, restoration
   qualification; unobserved time cannot complete an ordinary load condition.
 - By CPU Load durations range from zero through `i64::MAX` seconds, matching TOML
   integer storage. Larger edits remain invalid drafts and fail persistence preflight.
+- By CPU Load Switching stability is optional and leaves existing rules unchanged
+  when disabled. Entry still requires the configured sustained duration. Once the
+  primary plan is confirmed active, its inclusive release threshold or wider
+  release range retains the rule; a minimum hold can delay release beyond that
+  range. The hold starts at confirmation, including when the plan is already active,
+  and repeated checks do not extend it. Earlier qualified CPU rules and higher-priority
+  features can preempt it. Else selections never acquire a primary rule's hold.
+- Missing observations, settings/profile changes, pause, Adaptive deferral, and
+  observed external plan changes clear held By CPU Load state. A failed or
+  unconfirmed application cannot start a hold. Active-plan observation precedes
+  retained-rule evaluation, using the controller's existing observation cadence.
+  Release yields to other selected rules or Else; it does not add baseline restoration.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
   Startup cleanup rechecks the live active GUID after matching metadata and

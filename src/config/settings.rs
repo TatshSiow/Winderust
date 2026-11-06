@@ -1779,6 +1779,8 @@ pub struct ByCpuLoadRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upper_threshold_percent: Option<CpuLoadPercent>,
     pub duration_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stability: Option<ByCpuLoadStability>,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
     #[serde(default)]
@@ -1798,6 +1800,8 @@ struct ByCpuLoadRuleWire {
     upper_threshold_percent: Option<CpuLoadPercent>,
     duration_seconds: u64,
     #[serde(default)]
+    stability: Option<ByCpuLoadStability>,
+    #[serde(default)]
     power_plan_guid: Option<String>,
     #[serde(default)]
     else_enabled: bool,
@@ -1816,6 +1820,7 @@ impl TryFrom<ByCpuLoadRuleWire> for ByCpuLoadRule {
             threshold_percent: wire.threshold_percent,
             upper_threshold_percent: wire.upper_threshold_percent,
             duration_seconds: wire.duration_seconds,
+            stability: wire.stability,
             power_plan_guid: wire.power_plan_guid,
             else_enabled: wire.else_enabled,
             else_power_plan_guid: wire.else_power_plan_guid,
@@ -1834,11 +1839,20 @@ impl Default for ByCpuLoadRule {
             threshold_percent: CpuLoadPercent(20),
             upper_threshold_percent: None,
             duration_seconds: 30,
+            stability: None,
             power_plan_guid: None,
             else_enabled: false,
             else_power_plan_guid: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByCpuLoadStability {
+    pub exit_threshold_percent: CpuLoadPercent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_upper_threshold_percent: Option<CpuLoadPercent>,
+    pub minimum_hold_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1970,6 +1984,7 @@ impl Default for ByCpuLoadSettings {
                     threshold_percent: CpuLoadPercent(15),
                     upper_threshold_percent: None,
                     duration_seconds: 60,
+                    stability: None,
                     power_plan_guid: None,
                     else_enabled: false,
                     else_power_plan_guid: None,
@@ -1981,6 +1996,7 @@ impl Default for ByCpuLoadSettings {
                     threshold_percent: CpuLoadPercent(50),
                     upper_threshold_percent: None,
                     duration_seconds: 10,
+                    stability: None,
                     power_plan_guid: None,
                     else_enabled: false,
                     else_power_plan_guid: None,

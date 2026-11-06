@@ -109,7 +109,7 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
             Some(by_cpu_load_decision.power_plan_guid),
             DecisionState::ByCpuLoad,
             format!(
-                "CPU load is {:.1}% and matched rule '{}'.",
+                "CPU load is {:.1}% and selected By CPU Load rule '{}'.",
                 by_cpu_load_decision.usage_percent, by_cpu_load_decision.rule_name
             ),
         );
@@ -243,6 +243,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    is_else: false,
                     rule_index: 0,
                     rule_name: "Low CPU".to_owned(),
                     power_plan_guid: "cpu-low-guid".to_owned(),
@@ -464,6 +465,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    is_else: false,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-custom".to_owned(),
@@ -538,6 +540,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    is_else: false,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -569,6 +572,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    is_else: false,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -601,6 +605,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
+                    is_else: false,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),

@@ -164,13 +164,17 @@ fn test_runtime(mut child: Child) -> Result<RecoveryRuntime, String> {
     })
 }
 
-fn spawn_test_helper(command: &str, args: &[&str]) -> Result<Child, String> {
-    Command::new("cmd")
-        .arg("/C")
-        .arg(format!("{command} {}", args.join(" ")))
+fn spawn_test_helper(exit_code: u32) -> Result<Child, String> {
+    let system_root =
+        std::env::var_os("SystemRoot").ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
+    let executable = Path::new(&system_root).join("System32").join("cmd.exe");
+    Command::new(executable)
+        .args(["/D", "/C"])
+        .arg(format!("exit {exit_code}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|error| format!("Failed to spawn test recovery helper: {error}"))
 }
@@ -236,13 +240,13 @@ fn recovery_client_finish_is_idempotent_without_an_active_runtime() {
 
 #[test]
 fn recovery_runtime_finish_accepts_successful_helper_exit() -> Result<(), String> {
-    let runtime = test_runtime(spawn_test_helper("exit", &["0"])?)?;
+    let runtime = test_runtime(spawn_test_helper(0)?)?;
     finish_recovery_runtime(runtime)
 }
 
 #[test]
 fn recovery_runtime_finish_reports_helper_exit_code() -> Result<(), String> {
-    let helper = spawn_test_helper("exit", &["11"])?;
+    let helper = spawn_test_helper(11)?;
     let result = finish_recovery_runtime(test_runtime(helper)?);
     assert!(result.is_err());
     assert!(result
@@ -254,7 +258,7 @@ fn recovery_runtime_finish_reports_helper_exit_code() -> Result<(), String> {
 #[test]
 fn deferred_power_intent_resolves_the_exact_id_only_after_acknowledgement() -> Result<(), String> {
     for applied in [false, true] {
-        let mut runtime = test_runtime(spawn_test_helper("exit", &["0"])?)?;
+        let mut runtime = test_runtime(spawn_test_helper(0)?)?;
         let baseline = RecoveryEntry::PowerPlan {
             original_guid: "original".to_owned(),
             expected_guid: "first".to_owned(),
@@ -344,7 +348,7 @@ fn deferred_power_intent_resolves_the_exact_id_only_after_acknowledgement() -> R
 #[test]
 fn rejected_generic_commit_blocks_later_mutations_and_preserves_eof_recovery() -> Result<(), String>
 {
-    let mut runtime = test_runtime(spawn_test_helper("exit", &["0"])?)?;
+    let mut runtime = test_runtime(spawn_test_helper(0)?)?;
     let baseline = RecoveryEntry::PowerPlan {
         original_guid: "original".to_owned(),
         expected_guid: "first".to_owned(),
@@ -410,7 +414,7 @@ fn rejected_generic_commit_blocks_later_mutations_and_preserves_eof_recovery() -
 #[test]
 fn retaining_uncertain_compensation_keeps_pending_edges_and_blocks_new_mutations(
 ) -> Result<(), String> {
-    let mut runtime = test_runtime(spawn_test_helper("exit", &["0"])?)?;
+    let mut runtime = test_runtime(spawn_test_helper(0)?)?;
     let baseline = RecoveryEntry::Process {
         identity: identity(),
         original: ProcessValue::PriorityClass(1),

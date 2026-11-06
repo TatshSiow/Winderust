@@ -253,12 +253,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
     }
 
     pub(crate) fn refresh_active_plan(&mut self, now: Instant) -> Result<(), String> {
-        self.next_active_plan_refresh = Some(now + ACTIVE_PLAN_REFRESH_INTERVAL);
+        self.next_active_plan_refresh = None;
         let actual_guid = self.platform.active_guid()?;
-        if let Err(error) = self.observe_active_plan(&actual_guid) {
-            self.next_active_plan_refresh = None;
-            return Err(error);
-        }
+        self.observe_active_plan(&actual_guid)?;
+        self.next_active_plan_refresh = Some(now + ACTIVE_PLAN_REFRESH_INTERVAL);
         self.cleanup_inactive_adaptive_plan()
     }
 
@@ -669,7 +667,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
     }
 
-    fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), String> {
+    pub(crate) fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), String> {
         if self.ownership_release_pending
             || self.uncertain_switch.is_some()
             || self
@@ -925,7 +923,14 @@ mod tests {
     };
 
     use super::*;
-    use crate::rules::DecisionState;
+    use crate::{
+        config::{
+            ByCpuLoadRule, ByCpuLoadSettings, ByCpuLoadStability, CpuLoadPercent,
+            CpuUsageComparison,
+        },
+        features::power_plan_control::{ByCpuLoadDecision, ByCpuLoadScheduler},
+        rules::DecisionState,
+    };
 
     fn switch_active_verified<P: PowerPlanPlatform>(
         platform: &mut P,
@@ -1385,6 +1390,33 @@ mod tests {
         }
     }
 
+    fn cpu_load_settings() -> ByCpuLoadSettings {
+        ByCpuLoadSettings {
+            enabled: true,
+            rules: vec![ByCpuLoadRule {
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
+                duration_seconds: 0,
+                stability: Some(ByCpuLoadStability {
+                    exit_threshold_percent: CpuLoadPercent::new(65).unwrap(),
+                    exit_upper_threshold_percent: None,
+                    minimum_hold_seconds: 30,
+                }),
+                power_plan_guid: Some("managed".into()),
+                ..ByCpuLoadRule::default()
+            }],
+        }
+    }
+
+    fn cpu_load_decision(candidate: &ByCpuLoadDecision) -> DecisionOutcome {
+        DecisionOutcome {
+            rule_index: Some(candidate.rule_index),
+            power_plan_guid: Some(candidate.power_plan_guid.clone()),
+            state: DecisionState::ByCpuLoad,
+            reason: "test CPU load decision".into(),
+        }
+    }
+
     fn adaptive_request() -> AdaptivePowerPlanRequest {
         AdaptivePowerPlanRequest {
             profile: AdaptivePowerProfile::Responsive,
@@ -1834,6 +1866,200 @@ mod tests {
         assert!(!controller
             .reconcile_ordinary(decision(Some("target")), now + Duration::from_secs(1))
             .unwrap());
+    }
+
+    #[test]
+    fn failed_active_plan_query_is_retried_before_using_the_cached_plan() {
+        let start = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.refresh_active_plan_if_due(start).unwrap();
+        controller.platform.active = "external".into();
+        controller
+            .platform
+            .query_failures
+            .insert(controller.platform.query_count + 1);
+        let failed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
+
+        assert!(controller.refresh_active_plan_if_due(failed_at).is_err());
+        controller
+            .refresh_active_plan_if_due(failed_at + Duration::from_secs(1))
+            .unwrap();
+
+        assert_eq!(
+            controller.status().current_guid.as_deref(),
+            Some("external")
+        );
+        assert_eq!(controller.platform.query_count, 3);
+    }
+
+    #[test]
+    fn already_effective_cpu_plan_begins_hold_after_confirmation() {
+        let start = Instant::now();
+        let settings = cpu_load_settings();
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("MANAGED"));
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), start)
+            .unwrap();
+        let confirmed_at = start + Duration::from_secs(20);
+
+        assert!(!controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), confirmed_at)
+            .unwrap());
+        scheduler.confirm_applied_rule(
+            Some(candidate.rule_index),
+            controller.status().current_guid.as_deref(),
+            confirmed_at,
+        );
+
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(49))
+            .is_some());
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(50))
+            .is_none());
+        assert!(!controller
+            .platform
+            .events
+            .borrow()
+            .iter()
+            .any(|event| event.starts_with("apply:")));
+    }
+
+    #[test]
+    fn failed_and_delayed_cpu_plan_switches_do_not_begin_a_hold() {
+        let start = Instant::now();
+        let settings = cpu_load_settings();
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.platform.failure = Some(FailurePoint::Begin);
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), start)
+            .unwrap();
+
+        assert!(controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), start)
+            .is_err());
+        scheduler.confirm_applied_rule(None, None, start);
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(1))
+            .is_none());
+
+        controller.platform.failure = None;
+        let retry_at = start + Duration::from_secs(2);
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), retry_at)
+            .unwrap();
+        assert!(!controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), retry_at)
+            .unwrap());
+        scheduler.confirm_applied_rule(
+            Some(candidate.rule_index),
+            controller.status().current_guid.as_deref(),
+            retry_at,
+        );
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(3))
+            .is_none());
+
+        let applied_at = start + SWITCH_RETRY_INTERVAL;
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), applied_at)
+            .unwrap();
+        assert!(controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), applied_at)
+            .unwrap());
+        scheduler.confirm_applied_rule(
+            Some(candidate.rule_index),
+            controller.status().current_guid.as_deref(),
+            applied_at,
+        );
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), applied_at + Duration::from_secs(1))
+            .is_some());
+    }
+
+    #[test]
+    fn higher_priority_same_plan_handoff_restarts_cpu_rule_hold() {
+        for state in [DecisionState::ByForeground, DecisionState::ByRunningApp] {
+            let start = Instant::now();
+            let settings = cpu_load_settings();
+            let mut scheduler = ByCpuLoadScheduler::default();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            let candidate = scheduler
+                .current_decision_at(&settings, Some(80.0), start)
+                .unwrap();
+            controller
+                .reconcile_ordinary(cpu_load_decision(&candidate), start)
+                .unwrap();
+            scheduler.confirm_applied_rule(
+                Some(0),
+                controller.status().current_guid.as_deref(),
+                start,
+            );
+
+            let preempted_at = start + Duration::from_secs(1);
+            let mut higher_priority = decision(Some("managed"));
+            higher_priority.state = state;
+            assert!(!controller
+                .reconcile_ordinary(higher_priority, preempted_at)
+                .unwrap());
+            scheduler.confirm_applied_rule(
+                None,
+                controller.status().current_guid.as_deref(),
+                preempted_at,
+            );
+            assert!(scheduler
+                .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(2))
+                .is_none());
+
+            let resumed_at = start + Duration::from_secs(20);
+            let candidate = scheduler
+                .current_decision_at(&settings, Some(80.0), resumed_at)
+                .unwrap();
+            assert!(!controller
+                .reconcile_ordinary(cpu_load_decision(&candidate), resumed_at)
+                .unwrap());
+            scheduler.confirm_applied_rule(
+                Some(candidate.rule_index),
+                controller.status().current_guid.as_deref(),
+                resumed_at,
+            );
+            assert!(scheduler
+                .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(49))
+                .is_some());
+            assert!(scheduler
+                .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(50))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn observing_external_plan_releases_cpu_hold_before_proposing_a_plan() {
+        let start = Instant::now();
+        let settings = cpu_load_settings();
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), start)
+            .unwrap();
+        controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), start)
+            .unwrap();
+        scheduler.confirm_applied_rule(Some(0), controller.status().current_guid.as_deref(), start);
+        controller.platform.active = "external".into();
+        let observed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
+
+        controller.refresh_active_plan_if_due(observed_at).unwrap();
+        scheduler.observe_active_plan(controller.status().current_guid.as_deref());
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), observed_at)
+            .is_none());
+        assert!(!controller
+            .reconcile_ordinary(decision(None), observed_at)
+            .unwrap());
+        assert_eq!(controller.platform.active, "external");
+        assert!(controller.platform.journal.borrow().is_empty());
     }
 
     #[test]

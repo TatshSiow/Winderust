@@ -174,6 +174,7 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
             threshold_percent: CpuLoadPercent::new(50).unwrap(),
             upper_threshold_percent: None,
             duration_seconds: 10,
+            stability: None,
             power_plan_guid: Some("plan".into()),
             else_enabled: false,
             else_power_plan_guid: None,
@@ -292,6 +293,7 @@ fn cpu_rule_status_tracks_selected_else_plan_and_failed_switches() {
         threshold_percent: CpuLoadPercent::new(75).unwrap(),
         upper_threshold_percent: None,
         duration_seconds: 0,
+        stability: None,
     };
     let mut status = PowerPlanStatus {
         owner: Some(PowerPlanOwner::OrdinaryAutomation),
@@ -541,6 +543,206 @@ fn cpu_range_edits_remain_transactional_until_both_bounds_are_valid() {
             .get(),
         90
     );
+}
+
+#[test]
+fn cpu_stability_edits_preserve_invalid_drafts_until_saved_or_cancelled() {
+    let mut editor = Editor::default();
+    let mut settings = Settings::default();
+    let before = settings.clone();
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Edit(0));
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Stability(0, true),
+    );
+    let stability = editor.draft.as_ref().unwrap().by_cpu_load.rules[0]
+        .stability
+        .as_ref()
+        .unwrap();
+    assert_eq!(stability.exit_threshold_percent.get(), 15);
+    assert_eq!(stability.minimum_hold_seconds, 0);
+    assert!(editor.valid());
+
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::ExitThreshold(0, "10".into()),
+    );
+    assert!(!editor.valid());
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Save);
+    assert_eq!(settings, before);
+    assert!(editor.has_pending_editor());
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::ExitThreshold(0, "".into()),
+    );
+    assert_eq!(editor.inputs[&(editor.ids[0], Field::ExitThreshold)], "");
+    assert!(!editor.valid());
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::ExitThreshold(0, "25".into()),
+    );
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::MinimumHold(0, u64::MAX.to_string()),
+    );
+    assert_eq!(
+        editor.inputs[&(editor.ids[0], Field::MinimumHold)],
+        u64::MAX.to_string()
+    );
+    assert!(!editor.valid());
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Save);
+    assert_eq!(settings, before);
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::MinimumHold(0, "90000".into()),
+    );
+    assert!(editor.valid());
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Save);
+    let saved = settings.clone();
+    let stability = settings.by_cpu_load.rules[0].stability.as_ref().unwrap();
+    assert_eq!(stability.exit_threshold_percent.get(), 25);
+    assert_eq!(stability.minimum_hold_seconds, 90_000);
+    assert_eq!(
+        toml::from_str::<Settings>(&toml::to_string(&settings).unwrap()).unwrap(),
+        settings
+    );
+
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Edit(0));
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Stability(0, false),
+    );
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Cancel);
+    assert_eq!(settings, saved);
+}
+
+#[test]
+fn cpu_stability_hides_no_invalid_drafts_after_toggle_or_comparison_changes() {
+    let mut editor = Editor::default();
+    let mut settings = Settings::default();
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Edit(0));
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Comparison(0, CpuUsageComparison::Between),
+    );
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Upper(0, "60".into()),
+    );
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Stability(0, true),
+    );
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::MinimumHold(0, "30".into()),
+    );
+    for message in [
+        Message::Upper(0, "".into()),
+        Message::ExitThreshold(0, "".into()),
+        Message::ExitUpper(0, "".into()),
+    ] {
+        editor.update(Kind::CpuLoad, &mut settings, &[], message);
+    }
+    assert!(!editor.valid());
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Comparison(0, CpuUsageComparison::AtOrAbove),
+    );
+    assert!(editor.valid());
+    let stability = editor.draft.as_ref().unwrap().by_cpu_load.rules[0]
+        .stability
+        .as_ref()
+        .unwrap();
+    assert_eq!(stability.exit_threshold_percent.get(), 15);
+    assert_eq!(stability.exit_upper_threshold_percent, None);
+    assert_eq!(stability.minimum_hold_seconds, 30);
+
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Comparison(0, CpuUsageComparison::Between),
+    );
+    let stability = editor.draft.as_ref().unwrap().by_cpu_load.rules[0]
+        .stability
+        .as_ref()
+        .unwrap();
+    assert_eq!(stability.exit_upper_threshold_percent.unwrap().get(), 60);
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::ExitUpper(0, "101".into()),
+    );
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::MinimumHold(0, "-1".into()),
+    );
+    assert!(!editor.valid());
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Stability(0, false),
+    );
+    assert!(editor.valid());
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Stability(0, true),
+    );
+    assert_eq!(
+        editor.draft.as_ref().unwrap().by_cpu_load.rules[0]
+            .stability
+            .as_ref()
+            .unwrap()
+            .minimum_hold_seconds,
+        0
+    );
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::MinimumHold(0, "-1".into()),
+    );
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::Comparison(0, CpuUsageComparison::Else),
+    );
+    assert!(editor.valid());
+    assert!(editor.draft.as_ref().unwrap().by_cpu_load.rules[0]
+        .stability
+        .is_none());
 }
 
 #[test]

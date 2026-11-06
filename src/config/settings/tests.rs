@@ -42,6 +42,70 @@ fn cpu_load_ranges_match_inclusive_bounds_without_reordering() {
 }
 
 #[test]
+fn cpu_load_stability_is_opt_in_and_release_bounds_enclose_entry_bounds() {
+    let mut rule = ByCpuLoadRule::default();
+    let raw = toml::to_string(&rule).unwrap();
+    assert!(!raw.contains("stability"));
+    assert_eq!(toml::from_str::<ByCpuLoadRule>(&raw).unwrap(), rule);
+    for (comparison, entry, upper, exit, exit_upper, valid) in [
+        (CpuUsageComparison::AtOrAbove, 75, None, 65, None, true),
+        (CpuUsageComparison::AtOrAbove, 75, None, 76, None, false),
+        (CpuUsageComparison::AtOrBelow, 25, None, 35, None, true),
+        (CpuUsageComparison::AtOrBelow, 25, None, 24, None, false),
+        (CpuUsageComparison::AtOrBelow, 25, None, 35, Some(80), false),
+        (
+            CpuUsageComparison::Between,
+            40,
+            Some(60),
+            30,
+            Some(70),
+            true,
+        ),
+        (
+            CpuUsageComparison::Between,
+            40,
+            Some(60),
+            41,
+            Some(70),
+            false,
+        ),
+        (
+            CpuUsageComparison::Between,
+            40,
+            Some(60),
+            30,
+            Some(59),
+            false,
+        ),
+        (CpuUsageComparison::Between, 40, Some(60), 30, None, false),
+        (CpuUsageComparison::Between, 40, None, 30, Some(100), true),
+        (CpuUsageComparison::Between, 40, None, 30, Some(99), false),
+        (CpuUsageComparison::Else, 40, None, 30, None, false),
+    ] {
+        rule.comparison = comparison;
+        rule.threshold_percent = CpuLoadPercent(entry);
+        rule.upper_threshold_percent = upper.map(CpuLoadPercent);
+        rule.stability = Some(ByCpuLoadStability {
+            exit_threshold_percent: CpuLoadPercent(exit),
+            exit_upper_threshold_percent: exit_upper.map(CpuLoadPercent),
+            minimum_hold_seconds: 0,
+        });
+        assert_eq!(rule.validate().is_ok(), valid, "{rule:?}");
+        let parsed = toml::from_str::<ByCpuLoadRule>(&toml::to_string(&rule).unwrap());
+        if valid {
+            assert_eq!(parsed.unwrap(), rule);
+        } else {
+            assert!(parsed.is_err());
+        }
+    }
+    rule.comparison = CpuUsageComparison::AtOrAbove;
+    for seconds in [i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+        rule.stability.as_mut().unwrap().minimum_hold_seconds = seconds;
+        assert_eq!(rule.validate().is_ok(), seconds <= i64::MAX as u64);
+    }
+}
+
+#[test]
 fn visible_window_default_remains_independent_from_background() {
     let mut rule = ProcessExclusionRule {
         process_background_priority: Some(ProcessPrioritySetting::BelowNormal),

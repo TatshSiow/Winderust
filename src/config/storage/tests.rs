@@ -348,6 +348,70 @@ fn reversed_cpu_load_ranges_fail_export_without_overwriting() {
 }
 
 #[test]
+fn cpu_load_stability_validates_both_profiles_without_overwriting_invalid_settings() {
+    use crate::config::{ByCpuLoadStability, CpuLoadPercent};
+
+    let path = std::env::temp_dir().join(format!(
+        "winderust-cpu-load-stability-{}.toml",
+        std::process::id()
+    ));
+    for battery in [false, true] {
+        let mut settings = Settings::default();
+        let profile = if battery {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_cpu_load.rules[0].stability = Some(ByCpuLoadStability {
+            exit_threshold_percent: CpuLoadPercent::new(20).unwrap(),
+            exit_upper_threshold_percent: None,
+            minimum_hold_seconds: 30,
+        });
+        export_toml_to(&path, &settings).unwrap();
+        assert_eq!(import_toml_from(&path).unwrap(), settings);
+        for (field, invalid) in [
+            ("exit_threshold_percent", 14),
+            ("exit_threshold_percent", 101),
+            ("exit_upper_threshold_percent", 80),
+            ("minimum_hold_seconds", -1),
+        ] {
+            let mut value = toml::Value::try_from(&settings).unwrap();
+            let profile = if battery {
+                &mut value["on_battery"]
+            } else {
+                &mut value
+            };
+            profile["by_cpu_load"]["rules"][0]["stability"]
+                .as_table_mut()
+                .unwrap()
+                .insert(field.into(), invalid.into());
+            let raw = toml::to_string(&value).unwrap();
+            fs::write(&path, &raw).unwrap();
+            assert!(load_from_path(&path).is_err(), "{battery}/{field}");
+            assert!(import_toml_from(&path).is_err(), "{battery}/{field}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        }
+        let profile = if battery {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_cpu_load.rules[0]
+            .stability
+            .as_mut()
+            .unwrap()
+            .minimum_hold_seconds = u64::MAX;
+        fs::write(&path, "existing settings").unwrap();
+        assert!(export_toml_to(&path, &settings)
+            .unwrap_err()
+            .contains("minimum hold"));
+        assert!(write_toml_settings(&path, &settings).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing settings");
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn independent_zone_settings_validate_root_battery_and_presets_without_rewriting() {
     let mut settings = Settings::default();
     settings.adaptive_engine_process.processor_limit_percent = 40;
@@ -698,6 +762,7 @@ fn toml_round_trip_preserves_settings() {
                 threshold_percent: crate::config::CpuLoadPercent::new(18).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 45,
+                stability: None,
                 power_plan_guid: Some("low-cpu-guid".to_owned()),
                 else_enabled: true,
                 else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
