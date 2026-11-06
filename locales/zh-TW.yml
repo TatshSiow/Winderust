@@ -640,7 +640,7 @@ adaptive_engine_process:
   reaction_time: "反應時間"
   reaction_time_help: "Winderust 正常檢查 CPU 壓力的間隔；前景應用程式變更時可立即執行安全檢查。"
   cpu_restraint_time: "CPU 限制時間"
-  cpu_restraint_time_help: "Winderust 開始反應後，應用程式至少會維持限制的時間。"
+  cpu_restraint_time_help: "應用程式被列為限制候選後，至少經過這段時間，才可因 CPU 使用率降低而開始還原。CPU 使用率較高的應用程式仍可取代它。"
   maximum_restrained_apps: "最多限制應用程式"
   maximum_restrained_apps_help: "限制自適應引擎同時限制的高負載可見視窗或背景應用程式數量。較低的值較溫和，較高的值會處理更多負載。"
   cpu_recovery_time: "CPU 還原時間"

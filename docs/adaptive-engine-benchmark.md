@@ -242,6 +242,18 @@ Primary Windows Balanced versus Winderust Balanced A/B matrix:
 .\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 4 -Rounds 5
 ```
 
+For foreground-only single-thread and multi-thread CPU throughput, start from
+Windows Balanced and keep the visible benchmark window focused:
+
+```powershell
+.\scripts\adaptive_throughput_benchmark.ps1 -Cases Default,Balanced -Passes 4 -Seconds 20 -WarmupSeconds 10 -CooldownSeconds 10
+```
+
+This runner verifies Windows foreground ownership during measurement and accepts
+results only after runtime restoration. It has no independent background load
+and does not assert Winderust's internal foreground classification. Case order
+is balanced; each case measures single-thread before multi-thread throughput.
+
 Use `-EnableCpuPressureRestraint`, `-DisableBackgroundProcessorLimit`,
 `-ProcessRestraintThresholdPercent <1-100>`, or
 `-MaximumRestrainedApps <1-32>` only for controlled tuning variants. Use

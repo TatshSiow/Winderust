@@ -2,7 +2,7 @@
 #Requires -RunAsAdministrator
 param(
     [string]$WinderustExePath = '.\target\release\winderust.exe',
-    [ValidateSet('Default', 'DefaultPCores', 'Speed', 'SpeedThreadDefault', 'SpeedThreadDefaultPowerOff', 'SpeedRestraint', 'SpeedRestraintThreadDefault')]
+    [ValidateSet('Default', 'DefaultPCores', 'Balanced', 'Speed', 'SpeedThreadDefault', 'SpeedThreadDefaultPowerOff', 'SpeedRestraint', 'SpeedRestraintThreadDefault')]
     [string[]]$Cases = @('Default', 'Speed', 'SpeedThreadDefault', 'SpeedThreadDefaultPowerOff'),
     [ValidateRange(1, 10)][int]$Passes = 4,
     [ValidateRange(1, 30)][int]$Seconds = 10,

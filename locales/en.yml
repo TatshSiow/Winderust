@@ -638,7 +638,7 @@ adaptive_engine_process:
   reaction_time: "Reaction time"
   reaction_time_help: "How often Winderust normally samples CPU pressure. Foreground changes can trigger an immediate safety check."
   cpu_restraint_time: "CPU restraint time"
-  cpu_restraint_time_help: "The minimum time an app remains restrained after Winderust reacts."
+  cpu_restraint_time_help: "Waits this long after an app becomes a restraint candidate before allowing low-CPU recovery. Apps with higher CPU use can still take its place."
   maximum_restrained_apps: "Maximum restrained apps"
   maximum_restrained_apps_help: "Limits how many hot visible-window or background apps Adaptive Engine restrains at once. Lower values are gentler; higher values react to more load."
   cpu_recovery_time: "CPU recovery time"
