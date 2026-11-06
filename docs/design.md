@@ -167,6 +167,8 @@ hover/press; background shading supplies feedback.
 - By Foreground, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
+- By CPU Load labels its selectors Target plan and Else plan. Else selects an
+  explicitly configured plan; it does not automatically restore the previous plan.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
   tabs, alongside Info in the shared docked panel.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and

@@ -45,6 +45,7 @@ pub enum WindowsAutomationEvent {
     ForegroundChanged,
     WindowCreated,
     PowerChanged,
+    SuspendResume,
     SessionChanged,
     ClockChanged,
     AppearanceChanged,
@@ -320,12 +321,12 @@ unsafe extern "system" fn event_window_proc(
     match message {
         WM_POWERBROADCAST => {
             match wparam as u32 {
-                PBT_POWERSETTINGCHANGE
-                | PBT_APMRESUMEAUTOMATIC
+                PBT_POWERSETTINGCHANGE => notify_event(WindowsAutomationEvent::PowerChanged),
+                PBT_APMRESUMEAUTOMATIC
                 | PBT_APMRESUMECRITICAL
                 | PBT_APMRESUMESTANDBY
                 | PBT_APMRESUMESUSPEND
-                | PBT_APMSUSPEND => notify_event(WindowsAutomationEvent::PowerChanged),
+                | PBT_APMSUSPEND => notify_event(WindowsAutomationEvent::SuspendResume),
                 _ => {}
             }
             1
@@ -382,6 +383,50 @@ fn notify_event(event: WindowsAutomationEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_setting_and_suspend_resume_messages_remain_distinct() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = Some(Arc::new(move |event| {
+                received.lock().unwrap().push(event);
+            }));
+        });
+        for broadcast in [
+            PBT_POWERSETTINGCHANGE,
+            PBT_APMSUSPEND,
+            PBT_APMRESUMEAUTOMATIC,
+            PBT_APMRESUMECRITICAL,
+            PBT_APMRESUMESTANDBY,
+            PBT_APMRESUMESUSPEND,
+        ] {
+            assert_eq!(
+                // SAFETY: These broadcasts are classified by wparam without reading lparam.
+                unsafe {
+                    event_window_proc(
+                        std::ptr::null_mut(),
+                        WM_POWERBROADCAST,
+                        broadcast as WPARAM,
+                        0,
+                    )
+                },
+                1
+            );
+        }
+        EVENT_CALLBACK.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                WindowsAutomationEvent::PowerChanged,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+            ]
+        );
+    }
 
     #[test]
     fn appearance_messages_refresh_the_shared_theme() {

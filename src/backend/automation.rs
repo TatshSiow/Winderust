@@ -347,6 +347,7 @@ struct AutomationWakeEvents {
     foreground_changed: bool,
     window_created: bool,
     power_changed: bool,
+    suspend_resume: bool,
     session_changed: bool,
     clock_changed: bool,
     appearance_changed: bool,
@@ -361,6 +362,10 @@ impl AutomationWakeEvents {
             WindowsAutomationEvent::ForegroundChanged => self.foreground_changed = true,
             WindowsAutomationEvent::WindowCreated => self.window_created = true,
             WindowsAutomationEvent::PowerChanged => self.power_changed = true,
+            WindowsAutomationEvent::SuspendResume => {
+                self.power_changed = true;
+                self.suspend_resume = true;
+            }
             WindowsAutomationEvent::SessionChanged => self.session_changed = true,
             WindowsAutomationEvent::ClockChanged => self.clock_changed = true,
             WindowsAutomationEvent::AppearanceChanged => self.appearance_changed = true,
@@ -957,7 +962,8 @@ fn run_background_automation(
     while let Some(snapshot) = automation_snapshot(&shared) {
         runner.action_log.begin_batch();
         let configured_settings = snapshot.settings;
-        let settings = active_power_source_settings(configured_settings.as_ref(), power_source());
+        let plugged_in = power_source();
+        let settings = active_power_source_settings(configured_settings.as_ref(), plugged_in);
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =
             runner.cpu_allocation_release_retry_pending();
@@ -1053,10 +1059,7 @@ fn run_background_automation(
             APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL,
         );
         let event_now = Instant::now();
-        let settings_changed = runner.note_settings(
-            settings,
-            wake_events.settings_changed || wake_events.power_changed,
-        );
+        let settings_changed = runner.note_settings(settings, wake_events, plugged_in);
         if settings_changed {
             scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }

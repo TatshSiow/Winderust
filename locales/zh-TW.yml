@@ -478,7 +478,10 @@ by_cpu_load:
   comparison_at_or_above: ">= 大於或等於"
   comparison_at_or_below: "<= 小於或等於"
   comparison_between: "介於"
+  target_plan: "目標電源計畫"
   else: "否則"
+  else_help: "沒有 CPU 規則符合條件或仍在維持時，使用選定的否則電源計畫，不會自動還原先前的電源計畫。"
+  else_plan: "否則電源計畫"
 
 background_efficiency:
   foreground_detection: "前景偵測"

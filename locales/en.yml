@@ -476,7 +476,10 @@ by_cpu_load:
   comparison_at_or_above: ">= greater than or equal to"
   comparison_at_or_below: "<= less than or equal to"
   comparison_between: "between"
+  target_plan: "Target plan"
   else: "Else"
+  else_help: "Use the selected Else plan when no CPU rule qualifies or remains held. The previous plan is not restored automatically."
+  else_plan: "Else plan"
 
 background_efficiency:
   foreground_detection: "Foreground Detection"

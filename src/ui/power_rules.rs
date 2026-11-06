@@ -857,7 +857,7 @@ impl Editor {
                 }
                 let plans = widgets::settings_rows([
                     widgets::setting_row(
-                        "by_running_app.power_plan",
+                        "by_cpu_load.target_plan",
                         widgets::plan(guid.as_deref(), plans, move |v| Message::Plan(index, v)),
                     )
                     .into(),
@@ -871,7 +871,7 @@ impl Editor {
                     column![
                         widgets::settings_divider(),
                         widgets::setting_row(
-                            "by_running_app.power_plan",
+                            "by_cpu_load.else_plan",
                             widgets::plan(r.else_power_plan_guid.as_deref(), plans, move |v| {
                                 Message::ElsePlan(index, v)
                             })

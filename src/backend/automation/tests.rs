@@ -2484,6 +2484,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         for event in [
             WindowsAutomationEvent::ForegroundChanged,
             WindowsAutomationEvent::PowerChanged,
+            WindowsAutomationEvent::SuspendResume,
             WindowsAutomationEvent::SessionChanged,
             WindowsAutomationEvent::ClockChanged,
         ] {

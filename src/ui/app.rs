@@ -305,6 +305,7 @@ pub(crate) fn run(
                 power_plans: Vec::new(),
                 power_plans_loading: false,
                 power_plans_loaded: false,
+                power_plans_reload_pending: false,
                 foreground_plans: process_power_plans::Editor::default(),
                 running_app_plans: process_power_plans::Editor::default(),
                 activity_inputs: by_activity::Inputs::default(),
@@ -597,6 +598,7 @@ struct WinderustApp {
     power_plans: Vec<crate::power::PowerPlan>,
     power_plans_loading: bool,
     power_plans_loaded: bool,
+    power_plans_reload_pending: bool,
     foreground_plans: process_power_plans::Editor,
     running_app_plans: process_power_plans::Editor,
     activity_inputs: by_activity::Inputs,
@@ -1475,9 +1477,13 @@ impl WinderustApp {
             }
             Message::PowerPlans(result) => {
                 self.power_plans_loading = false;
-                match result {
-                    Ok(plans) => {
-                        self.power_plans = plans;
+                match accept_power_plan_catalog(
+                    &mut self.power_plans,
+                    result,
+                    &mut self.power_plans_reload_pending,
+                ) {
+                    Ok(false) => return self.load_power_plans(),
+                    Ok(true) => {
                         self.power_plans_loaded = true;
                         if self.page == Page::AdvancedPowerPlanTuning {
                             self.power_tuning.ensure_plan(&self.power_plans);
@@ -1724,6 +1730,13 @@ impl WinderustApp {
                     work.push(self.show_window());
                 }
                 if let Some(status) = self.runtime.status_snapshot_since(self.status.generation) {
+                    if sync_active_power_plan(
+                        &mut self.power_plans,
+                        self.status.power_plan_status.current_guid.as_deref(),
+                        status.power_plan_status.current_guid.as_deref(),
+                    ) {
+                        self.power_plans_reload_pending |= self.power_plans_loading;
+                    }
                     if status.appearance_change_generation
                         != self.status.appearance_change_generation
                     {
@@ -3109,6 +3122,36 @@ fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
         || page.section_landing_page() == Page::PowerPlanControl
 }
 
+fn sync_active_power_plan(
+    plans: &mut [crate::power::PowerPlan],
+    previous_guid: Option<&str>,
+    current_guid: Option<&str>,
+) -> bool {
+    let Some(current_guid) = current_guid else {
+        return false;
+    };
+    // An unchanged cached status must not overwrite a freshly enumerated catalog.
+    if previous_guid.is_some_and(|previous| previous.eq_ignore_ascii_case(current_guid)) {
+        return false;
+    }
+    for plan in plans {
+        plan.active = plan.guid.eq_ignore_ascii_case(current_guid);
+    }
+    true
+}
+
+fn accept_power_plan_catalog(
+    plans: &mut Vec<crate::power::PowerPlan>,
+    result: Result<Vec<crate::power::PowerPlan>, String>,
+    reload_pending: &mut bool,
+) -> Result<bool, String> {
+    if std::mem::take(reload_pending) {
+        return Ok(false);
+    }
+    *plans = result?;
+    Ok(true)
+}
+
 fn ui_wake_channel() -> (
     std::sync::Arc<dyn Fn() + Send + Sync>,
     iced::futures::channel::mpsc::Receiver<()>,
@@ -3728,6 +3771,77 @@ mod tests {
             ));
             assert!(!page_needs_power_plans(Page::Home, process_rulesets_open));
         }
+    }
+
+    #[test]
+    fn runtime_plan_changes_refresh_catalog_markers_without_overwriting_fresh_queries() {
+        let mut plans = vec![
+            crate::power::PowerPlan {
+                guid: "balanced".into(),
+                name: "Balanced".into(),
+                active: true,
+            },
+            crate::power::PowerPlan {
+                guid: "ultimate".into(),
+                name: "Ultimate".into(),
+                active: false,
+            },
+        ];
+        assert!(!sync_active_power_plan(&mut plans, None, None));
+        assert_eq!(plans[0].display_name(), "Balanced (active)");
+
+        assert!(sync_active_power_plan(
+            &mut plans,
+            Some("balanced"),
+            Some("ULTIMATE")
+        ));
+        assert_eq!(plans[0].display_name(), "Balanced");
+        assert_eq!(plans[1].display_name(), "Ultimate (active)");
+
+        // A later native enumeration may be newer than the cached runtime GUID.
+        plans[0].active = true;
+        plans[1].active = false;
+        assert!(!sync_active_power_plan(
+            &mut plans,
+            Some("ULTIMATE"),
+            Some("ultimate")
+        ));
+        assert!(!sync_active_power_plan(&mut plans, Some("ULTIMATE"), None));
+        assert_eq!(plans[0].display_name(), "Balanced (active)");
+        assert_eq!(plans[1].display_name(), "Ultimate");
+    }
+
+    #[test]
+    fn catalog_completion_after_a_runtime_switch_requires_a_fresh_query() {
+        let balanced = crate::power::PowerPlan {
+            guid: "balanced".into(),
+            name: "Balanced".into(),
+            active: true,
+        };
+        let mut plans = vec![balanced.clone()];
+        let mut reload_pending =
+            sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+        assert!(!accept_power_plan_catalog(
+            &mut plans,
+            Ok(vec![balanced.clone()]),
+            &mut reload_pending,
+        )
+        .unwrap());
+        assert!(!plans[0].active);
+        assert!(!reload_pending);
+
+        assert!(
+            accept_power_plan_catalog(&mut plans, Ok(vec![balanced]), &mut reload_pending,)
+                .unwrap()
+        );
+        assert!(plans[0].active);
+
+        reload_pending |= sync_active_power_plan(&mut plans, Some("ultimate"), Some("balanced"));
+        reload_pending |= sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+        assert!(
+            !accept_power_plan_catalog(&mut plans, Ok(Vec::new()), &mut reload_pending).unwrap()
+        );
+        assert_eq!(plans.len(), 1);
     }
 
     use super::*;

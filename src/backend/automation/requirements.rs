@@ -439,7 +439,7 @@ fn windows_event_wake_required_for_profile(
                 power_plan_checks_required(settings) || event_driven_process_work_required(settings)
             }
             WindowsAutomationEvent::WindowCreated => event_driven_process_work_required(settings),
-            WindowsAutomationEvent::PowerChanged => {
+            WindowsAutomationEvent::PowerChanged | WindowsAutomationEvent::SuspendResume => {
                 automation_worker_required_for_profile(settings)
             }
             WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),

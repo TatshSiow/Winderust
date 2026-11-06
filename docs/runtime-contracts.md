@@ -133,6 +133,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   unconfirmed application cannot start a hold. Active-plan observation precedes
   retained-rule evaluation, using the controller's existing observation cadence.
   Release yields to other selected rules or Else; it does not add baseline restoration.
+- Ordinary power-setting notifications preserve CPU qualification and holds;
+  Winderust's own plan switch must not restart qualification and select Else.
+  Actual power-source changes and suspend/resume restart qualification and holds,
+  including when the two power profiles contain identical settings. They also
+  discard cached CPU usage and prime a fresh sampling interval before any CPU rule,
+  including a zero-duration rule, can select a plan.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
   Startup cleanup rechecks the live active GUID after matching metadata and
