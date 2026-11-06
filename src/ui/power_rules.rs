@@ -965,8 +965,17 @@ impl Editor {
                 .on_press_maybe((self.valid() && !name.trim().is_empty()).then_some(Message::Save))
         ]
         .spacing(design::space::SMALL);
-        let modal =
-            widgets::modal_frame(header, scrollable(content).height(Fill), footer, (800, 760));
+        let modal = widgets::modal_frame(
+            header,
+            scrollable(content)
+                .id(match kind {
+                    Kind::Time => "by-time-rule-details",
+                    Kind::CpuLoad => "by-cpu-load-rule-details",
+                })
+                .height(Fill),
+            footer,
+            (800, 760),
+        );
         Some(modal)
     }
 

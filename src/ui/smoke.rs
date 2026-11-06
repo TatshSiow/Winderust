@@ -34,12 +34,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(54) {
+    if extra == Some(58) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52)
+            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56)
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -74,6 +74,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(49) => Page::ActionLog,
             Some(50) => Page::WinderustBehaviour,
             Some(51..=53) => Page::Watchdog,
+            Some(54..=57) => Page::ByCpuLoad,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -98,7 +99,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
-        if extra.is_some_and(|i| i >= 38) {
+        if extra.is_some_and(|i| (38..=53).contains(&i)) {
             let _ = app.update(Message::Preferences(settings_pages::Message::Theme(
                 crate::config::AppThemeMode::Amoled,
             )));
@@ -118,8 +119,85 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.watchdog = watchdog::Editor::default();
             let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
         }
+        if matches!(extra, Some(54..=57)) {
+            use crate::config::{
+                ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison,
+            };
+            let _ = app.update(Message::Watchdog(watchdog::Message::CancelRule));
+            let _ = app.update(Message::PowerRules(
+                power_rules::Kind::CpuLoad,
+                power_rules::Message::Cancel,
+            ));
+            let (comparison, threshold, upper, release, release_upper) = match extra {
+                Some(54) => (CpuUsageComparison::AtOrAbove, 75, None, 65, None),
+                Some(57) => (CpuUsageComparison::AtOrBelow, 25, None, 35, None),
+                _ => (CpuUsageComparison::Between, 40, Some(60), 30, Some(70)),
+            };
+            let percent = |value| CpuLoadPercent::new(value).expect("valid smoke CPU percentage");
+            let power_plan_guid = app.power_plans.first().map(|plan| plan.guid.clone());
+            app.settings.edit_global(|settings| {
+                settings.general.enabled = false;
+                settings.by_cpu_load.rules = vec![ByCpuLoadRule {
+                    name: "CPU load stability".into(),
+                    comparison,
+                    threshold_percent: percent(threshold),
+                    upper_threshold_percent: upper.map(percent),
+                    duration_seconds: 5,
+                    stability: Some(ByCpuLoadStability {
+                        exit_threshold_percent: percent(release),
+                        exit_upper_threshold_percent: release_upper.map(percent),
+                        minimum_hold_seconds: 30,
+                    }),
+                    power_plan_guid,
+                    ..ByCpuLoadRule::default()
+                }];
+            });
+            if extra == Some(54) {
+                let before = app.settings.by_time.clone();
+                let _ = app.update(Message::Page(Page::ByTime));
+                let _ = app.update(Message::PowerRules(
+                    power_rules::Kind::Time,
+                    power_rules::Message::Edit(0),
+                ));
+                let _ = app.update(Message::PowerRules(
+                    power_rules::Kind::Time,
+                    power_rules::Message::Start(0, String::new()),
+                ));
+                let _ = app.search_keyboard(
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    iced::keyboard::Modifiers::empty(),
+                    false,
+                    iced::event::Status::Ignored,
+                );
+                assert!(!app.pending_editor());
+                assert_eq!(app.settings.by_time, before);
+            }
+        }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
+        if matches!(extra, Some(54..=57)) {
+            let edit =
+                || Message::PowerRules(power_rules::Kind::CpuLoad, power_rules::Message::Edit(0));
+            if extra == Some(54) {
+                let before = app.settings.by_cpu_load.clone();
+                let _ = app.update(edit());
+                let _ = app.update(Message::PowerRules(
+                    power_rules::Kind::CpuLoad,
+                    power_rules::Message::ExitThreshold(0, String::new()),
+                ));
+                let _ = app.search_keyboard(
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    iced::keyboard::Modifiers::empty(),
+                    false,
+                    iced::event::Status::Ignored,
+                );
+                assert!(!app.pending_editor());
+                assert_eq!(app.settings.by_cpu_load, before);
+            }
+            let _ = app.update(edit());
+            assert!(app.cpu_rules.has_pending_editor());
+            assert!(!app.settings.general.enabled);
+        }
         if matches!(extra, Some(51..=53)) {
             let before = app.settings.global().watchdog.clone();
             assert!(app.pending_editor());
@@ -448,7 +526,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=53) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=57) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -482,6 +560,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     if extra == Some(53) && run.ticks == 3 {
         return Some(iced::widget::operation::snap_to(
             "watchdog-rule-details",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
+    if matches!(extra, Some(56 | 57)) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "by-cpu-load-rule-details",
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
@@ -539,6 +623,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        124
+        128
     );
 }

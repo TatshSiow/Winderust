@@ -766,10 +766,24 @@ impl WinderustApp {
                 _ => return Task::none(),
             }
         }
-        if self.page == Page::Watchdog && self.watchdog.has_pending_editor() {
+        let cancel_rule = match self.page {
+            Page::Watchdog if self.watchdog.has_pending_editor() => {
+                Some(Message::Watchdog(watchdog::Message::CancelRule))
+            }
+            Page::ByTime if self.time_rules.has_pending_editor() => Some(Message::PowerRules(
+                power_rules::Kind::Time,
+                power_rules::Message::Cancel,
+            )),
+            Page::ByCpuLoad if self.cpu_rules.has_pending_editor() => Some(Message::PowerRules(
+                power_rules::Kind::CpuLoad,
+                power_rules::Message::Cancel,
+            )),
+            _ => None,
+        };
+        if let Some(cancel_rule) = cancel_rule {
             return match key {
                 Key::Named(Named::Escape) if !repeat && status == iced::event::Status::Ignored => {
-                    self.update(Message::Watchdog(watchdog::Message::CancelRule))
+                    self.update(cancel_rule)
                 }
                 Key::Named(Named::Tab) if status == iced::event::Status::Ignored => {
                     if modifiers.shift() {

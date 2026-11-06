@@ -58,6 +58,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   pointer/touch actions, scrolling, typing, focus operations, and existing background
   overlays. Outside presses may dismiss a popup but must never activate the content
   behind it. Keep window chrome usable and preserve background scroll/input state.
+- Unhandled Escape cancels By Time, By CPU Load, and Watchdog rule dialogs without
+  saving their drafts. Open pickers and focused controls handle Escape first.
 - Use shared 10px surface and 6px control corner radii consistently. Do not introduce large rounded marketing panels.
 - Use the shared scroll helpers and scrollbar settings for both axes. Keep a permanent gutter for page, tab, and table scrolling, including when the thumb is hidden, so page/tab changes cannot shift content; never paint tracks over cards, controls, or table cells. Use a transparent track and a slim rounded neutral thumb, with stronger hover/drag contrast and no accent-colored strip.
 - Floating menus and hover popups use balanced surface padding. Reserve scrollbar
