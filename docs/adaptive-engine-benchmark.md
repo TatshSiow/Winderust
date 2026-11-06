@@ -16,8 +16,8 @@ the visible benchmark shell. They are created through the local WMI process
 provider so they are not descendants of that foreground shell; otherwise
 Winderust's foreground process-group protection would correctly protect the
 generated load. The runner also clears inherited Power Throttling before each
-measurement. Runtime results are rejected unless Windows reports an actual
-priority change on one of those workers.
+measurement. The default runtime benchmark requires Windows to report an actual
+CPU Set allocation on a generated worker from a clean baseline.
 
 The optional `IoLoop` foreground scenario measures foreground temp-file
 read/write completion time and reports foreground IOPS under the same generated
@@ -27,6 +27,11 @@ rating storage hardware.
 The optional `MessageLoop` foreground scenario measures hidden WinForms timer
 delay under the same generated background load. It is useful for checking
 foreground UI/message-pump latency, not raw CPU throughput.
+
+In the runtime runner, `CpuLoop`, `IoLoop`, and `MessageLoop` execute in the
+excluded PowerShell host. Their results are latency proxies under competing CPU
+load; they do not establish that Winderust detected and tuned a real foreground
+application. The synthetic runner separately models foreground controls.
 
 The optional `WinderustLaunch` foreground scenario measures launching this app
 under the same generated background load. It refuses to run while Winderust is
@@ -158,7 +163,7 @@ because it can interfere with scheduler placement.
 | --- | --- | --- |
 | Policy unit tests | Prove pressure, saturation, restoration, bounded history, and topology decisions. | All deterministic state transitions pass. |
 | Synthetic mechanism matrix | Isolate priority, QoS, CPU Sets, affinity, and processor-policy effects. | Median and P95 improve in at least 2/3 paired passes; absolute values are used for direct preset ranking. |
-| Release-runtime A/B | Exercise the real automation loop and current serialized preset. | Required before accepting a global preset change. Run CPU, I/O, and message-loop scenarios; the runner fails unless it directly observes a generated worker priority change. |
+| Release-runtime A/B | Exercise the real automation loop and current canonical preset. | Required before accepting a global preset change. Run CPU, I/O, and message-loop latency proxies; the default runner requires native CPU Set allocation on a generated worker from a clean baseline. |
 | Hardware matrix | Check topology portability. | At least Intel hybrid plus AMD/all-P evidence before claiming a universal default. |
 
 Do not rank presets as a linear slow-to-fast ladder. Compare foreground latency,
@@ -222,7 +227,14 @@ and multi-thread distributions before deciding whether to change preset defaults
 
 ## Benchmark Command
 
-Primary real-runtime Balanced/Low Impact A/B matrix:
+Build the opt-in headless runtime host before running the real-runtime matrix,
+including when using `-SettingsOnly`:
+
+```powershell
+cargo build --locked --release --features runtime-benchmark
+```
+
+Primary Windows Balanced versus Winderust Balanced A/B matrix:
 
 ```powershell
 .\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario CpuLoop -Passes 4 -Rounds 5
@@ -230,12 +242,14 @@ Primary real-runtime Balanced/Low Impact A/B matrix:
 .\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 4 -Rounds 5
 ```
 
-Use `-DisableBackgroundProcessorLimit`,
+Use `-EnableCpuPressureRestraint`, `-DisableBackgroundProcessorLimit`,
 `-ProcessRestraintThresholdPercent <1-100>`, or
 `-MaximumRestrainedApps <1-32>` only for controlled tuning variants. Use
 `-ForegroundOrSystemCpuThresholdPercent <1-100>` to force a known activation
-threshold during controlled Adaptive Engine comparisons; the
-default command keeps the serialized Low Impact values.
+threshold during controlled Adaptive Engine comparisons. Only explicitly
+supplied tuning parameters override the canonical Balanced preset. CPU Pressure
+Restraint remains off unless requested; `-EnableDynamicResourceZones` enables a
+separate zoning variant.
 
 Use `-BackgroundPressureAcBoostPolicy <0-100>` and
 `-BackgroundPressureAcBoostMode <mode>` to screen an A/C Background Pressure
@@ -247,17 +261,30 @@ objective. The default remains `-2`, which rejects a package-power regression
 beyond 2% without pretending that every responsiveness preset must save 20% in
 a foreground-contended Focus and Launch workload.
 
-The runtime benchmark uses an isolated portable configuration with the current
-500 ms Processor Power cadence and 1.5 second Low Impact Adaptive Engine reaction
-interval. It explicitly enables the current Balanced processor policy and Low
-Impact Adaptive Engine preset. Use an even pass count of at least four so
+The runner requests settings through
+`--runtime-benchmark-settings <directory> Balanced`, then starts
+`--runtime-benchmark <directory> Balanced` without the application UI. Both use
+the canonical built-in Balanced preset applied to fresh defaults, with the
+benchmark host exclusion and any explicit tuning overrides. The default keeps
+CPU Pressure Restraint off, a 60% background processor limit, the 1000 ms general
+polling interval, and Balanced's priority-control switches. Processor Power
+retains its independent 500 ms demand-sampling cadence. The report records the
+complete generated TOML and structured settings in JSON so each result can be
+checked against the configuration that ran.
+
+The headless host shuts down the runtime and recovery client and verifies that
+the original power plan was restored. The runner does not force-kill the host
+or manually delete its managed plan. Use an even pass count of at least four so
 Stock-first and Adaptive-first orders are equally represented. Stock and
 Adaptive cases receive the same 100-second background-load warmup and 30-second
 cooldown before measurement. The JSON validation gate requires observed
-Adaptive Engine priority control, at least 3% aggregate median and P95
+Adaptive Engine process control, at least 3% aggregate median and P95
 improvement, at least 85% retained background throughput, and no package-power
 regression beyond 2%. A run that only creates the adaptive power plan without
-changing a generated worker priority is invalid for scheduler tuning.
+changing a generated worker's native CPU Set allocation is invalid for the
+default scheduler comparison. CPU Pressure Restraint variants can additionally
+record priority and EcoQoS changes; those changes are not required by the
+default Balanced configuration.
 
 The JSON also records `worker_efficiency_enabled_counts` and
 `worker_efficiency_coverage_percent` from direct Windows Power Throttling
@@ -319,8 +346,8 @@ Quick sensor check:
 .\scripts\power_drain_benchmark.ps1 -Phases Current -MinPasses 3 -MaxPasses 8 -SampleSeconds 10 -StableCvPercent 20 -NoPrompt
 ```
 
-If the release binary is not built, either run `cargo build --release` first or
-pass `-WinderustExePath <path-to-winderust.exe>`.
+Use `-WinderustExePath <path-to-winderust.exe>` to select another freshly built
+binary with the `runtime-benchmark` feature.
 
 Trust a local tuning direction only when median and P95 both improve by at least
 3% in at least two of three passes. If median improves but P95 or jitter gets

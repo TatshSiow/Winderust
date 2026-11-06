@@ -54,3 +54,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+      - name: Check benchmark preset parity
+        run: cargo test --locked --features runtime-benchmark ui::adaptive_engine::benchmark::tests

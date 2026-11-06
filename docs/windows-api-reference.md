@@ -580,6 +580,13 @@ failures, and a newly queued handoff bypasses an older retry deadline.
 zero-count probe represents a genuinely empty CPU Set list. Both the live
 Windows adapter and crash-recovery mirror follow this contract.
 
+The read-only native helper in `scripts/adaptive_runtime_benchmark.ps1` also
+queries `GetProcessDefaultCpuSets` for generated benchmark workers. The runner
+uses those observations to reject an unclean baseline and confirm actual CPU
+Set allocation with CPU Pressure Restraint off. The helper does not set CPU Sets
+or own process state; the headless production runtime and its recovery client
+retain restoration ownership.
+
 ### CPU Allocation APIs
 
 | API | Used for | Reference |
@@ -587,7 +594,7 @@ Windows adapter and crash-recovery mirror follow this contract.
 | `GetProcessAffinityMask` | `src/platform/windows/cpu_allocation.rs` reads the current process and system affinity masks before the coordinator changes them. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessaffinitymask |
 | `SetProcessAffinityMask` | The same adapter is the sole live writer for the coordinator's configured hard affinity mask; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessaffinitymask |
 | `GetSystemCpuSetInformation` | The adapter converts the packed variable-length topology buffer into group-zero logical-processor-to-CPU-Set IDs for soft mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
-| `GetProcessDefaultCpuSets` | The adapter reads existing process default CPU Set IDs so the coordinator can capture and restore the exact baseline. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
+| `GetProcessDefaultCpuSets` | The adapter reads existing process default CPU Set IDs so the coordinator can capture and restore the exact baseline. The runtime benchmark helper also reads generated workers' IDs to verify real-runtime allocation. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
 | `SetProcessDefaultCpuSets` | The adapter is the sole live writer that applies or clears process default CPU Set IDs; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets |
 | `GetActiveProcessorGroupCount` | Detects multi-group systems where single-mask affinity APIs are group-relative. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount |
 | Processor Groups | Explains why hard affinity masks are group-relative and why multi-group systems need special handling. | https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups |

@@ -150,8 +150,11 @@ not be presented as universal battery-life claims.
 - Broader media classification should be added only if active-audio protection
   proves insufficient in real usage.
 
-The fixed-policy runtime benchmark keeps zoning off by default. Use
-`scripts/adaptive_runtime_benchmark.ps1 -EnableDynamicResourceZones` for the separate opt-in
-scenario (`-SettingsOnly` validates/generates its configuration without starting workloads).
+The runtime benchmark generates canonical Balanced settings, with zoning and
+CPU Pressure Restraint off unless explicitly requested. See the
+[benchmark guide](adaptive-engine-benchmark.md#benchmark-command) for the opt-in
+host build, configuration export, activation checks, and runtime comparisons.
+Its excluded-host I/O and message-loop scenarios measure latency under load;
+they do not validate real foreground detection.
 Unit/fake-backend tests establish safety and configuration behavior, not performance gains;
 foreground-only and mixed-workload A/B measurements remain necessary on the target hardware.

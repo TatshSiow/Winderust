@@ -1,6 +1,7 @@
 param(
     [switch]$SettingsOnly,
     [switch]$EnableDynamicResourceZones,
+    [switch]$EnableCpuPressureRestraint,
     [int]$Passes = 4,
     [int]$Rounds = 5,
     [int]$Iterations = 1000000,
@@ -35,302 +36,359 @@ if ($Passes -lt 4 -or ($Passes % 2) -ne 0) {
 if ($WorkerSeconds -le ($WarmupSeconds + 30)) {
     throw 'WorkerSeconds must exceed WarmupSeconds by more than 30 seconds so workers survive measurement.'
 }
-$backgroundProcessorLimitEnabled = !$DisableBackgroundProcessorLimit.IsPresent
-
-$settingsToml = @'
-adaptive_engine_presets = []
-
-[general]
-enabled = true
-startup_with_windows = false
-start_minimized = true
-hide_to_tray = false
-check_interval_ms = 500
-
-[adaptive_engine]
-enabled = true
-processor_power_policy_enabled = true
-
-[adaptive_engine.base_processor_policy]
-core_parking_min = 25
-performance_min = 5
-performance_max = 95
-boost_policy = 60
-boost_mode = "efficient_enabled"
-
-[adaptive_engine.background_pressure_profile]
-ac_policy = __BACKGROUND_PRESSURE_AC_BOOST_POLICY__
-ac_mode = "__BACKGROUND_PRESSURE_AC_BOOST_MODE__"
-battery_policy = 60
-battery_mode = "efficient_enabled"
-
-[adaptive_engine.focus_and_launch_profile]
-ac_policy = 100
-ac_mode = "aggressive"
-battery_policy = 80
-battery_mode = "efficient_aggressive"
-
-[background_efficiency]
-enabled = false
-
-[adaptive_engine_process]
-process_priority_enabled = true
-background_efficiency_enabled = true
-focus_process_background_efficiency_override_enabled = true
-visible_window_background_efficiency_override_enabled = true
-focus_process_background_efficiency_mode = false
-visible_window_background_efficiency_mode = false
-background_efficiency_mode = true
-focus_process_priority = "above_normal"
-background_priority = "below_normal"
-visible_window_priority = "normal"
-io_priority = { enabled = false, foreground_detection_enabled = true, foreground_priority = "normal", visible_window_detection_enabled = true, visible_window_priority = "very_low", background_priority = "very_low", preserve_foreground_priority = true, preserve_visible_window_priority = true, preserve_background_priority = true, exclusions = [] }
-thread_priority = { enabled = true, foreground_detection_enabled = true, foreground_priority = "default", visible_window_detection_enabled = true, visible_window_priority = "below_normal", background_priority = "below_normal", preserve_foreground_priority = true, preserve_visible_window_priority = true, preserve_background_priority = true, exclusions = [] }
-dynamic_priority_boost = { enabled = true, foreground_detection_enabled = true, foreground_boost = "enabled", visible_window_detection_enabled = true, visible_window_boost = "disabled", background_boost = "disabled", exclusions = [] }
-gpu_priority = { enabled = true, foreground_detection_enabled = true, foreground_priority = "default", visible_window_detection_enabled = true, visible_window_priority = "below_normal", background_priority = "below_normal", preserve_foreground_priority = true, preserve_visible_window_priority = true, preserve_background_priority = true, exclusions = [] }
-memory_priority_enabled = false
-focus_process_memory_priority = "default"
-visible_window_memory_priority = "default"
-background_memory_priority = "low"
-cpu_pressure_restraint_enabled = true
-limit_background_processors_enabled = __LIMIT_BACKGROUND_PROCESSORS__
-# Zoning is a separate opt-in scenario; the historical default stays off.
-dynamic_resource_zones_enabled = __DYNAMIC_RESOURCE_ZONES__
-dynamic_resource_zone_settings = { foreground_share_percent = 75, background_processor_selection = "least_used", specific_processors = [] }
-cpu_allocation_method = "cpu_sets_soft"
-background_processor_selection = "least_used"
-processor_limit_percent = 75
-specific_processors = []
-foreground_or_system_cpu_threshold_percent = __FOREGROUND_OR_SYSTEM_CPU_THRESHOLD__
-background_app_cpu_threshold_percent = __PROCESS_RESTRAINT_THRESHOLD__
-cpu_recovery_threshold_percent = 5
-reaction_time_ms = 1500
-cpu_restraint_time_seconds = 2
-cpu_recovery_time_seconds = 4
-maximum_restrained_apps = __MAXIMUM_RESTRAINED_APPS__
-custom_rules = [{ enabled = true, executable_path = "__BENCHMARK_HOST_PATH__" }]
-
-[by_activity]
-enabled = false
-idle_timeout_seconds = 300
-switch_to_performance_on_resume = false
-
-[by_foreground]
-enabled = false
-rules = []
-
-[by_time]
-enabled = false
-rules = []
-'@
-$settingsToml = $settingsToml.Replace('__DYNAMIC_RESOURCE_ZONES__', $EnableDynamicResourceZones.IsPresent.ToString().ToLowerInvariant())
-$benchmarkHostPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$escapedBenchmarkHostPath = $benchmarkHostPath.Replace('\', '\\')
-$settingsToml = $settingsToml.Replace(
-    '__BENCHMARK_HOST_PATH__',
-    $escapedBenchmarkHostPath
-)
-$settingsToml = $settingsToml.Replace(
-    '__LIMIT_BACKGROUND_PROCESSORS__',
-    $backgroundProcessorLimitEnabled.ToString().ToLowerInvariant()
-)
-$settingsToml = $settingsToml.Replace(
-    '__PROCESS_RESTRAINT_THRESHOLD__',
-    $ProcessRestraintThresholdPercent.ToString([Globalization.CultureInfo]::InvariantCulture)
-)
-$settingsToml = $settingsToml.Replace(
-    '__MAXIMUM_RESTRAINED_APPS__',
-    $MaximumRestrainedApps.ToString([Globalization.CultureInfo]::InvariantCulture)
-)
-$settingsToml = $settingsToml.Replace(
-    '__FOREGROUND_OR_SYSTEM_CPU_THRESHOLD__',
-    $ForegroundOrSystemCpuThresholdPercent.ToString([Globalization.CultureInfo]::InvariantCulture)
-)
-$settingsToml = $settingsToml.Replace(
-    '__BACKGROUND_PRESSURE_AC_BOOST_POLICY__',
-    $BackgroundPressureAcBoostPolicy.ToString([Globalization.CultureInfo]::InvariantCulture)
-)
-$settingsToml = $settingsToml.Replace(
-    '__BACKGROUND_PRESSURE_AC_BOOST_MODE__',
-    $BackgroundPressureAcBoostMode
-)
-
-if ($SettingsOnly) {
-    $settingsToml
-    return
-}
-
-# Validate the real generated payload before importing workload helpers or changing plans.
-Push-Location (Split-Path $PSScriptRoot -Parent)
-try {
-    $env:WINDERUST_BENCHMARK_SETTINGS = $settingsToml
-    cargo test --locked adaptive_runtime_benchmark_generated_settings_are_valid
-    if ($LASTEXITCODE -ne 0) { throw 'Adaptive runtime benchmark settings validation failed.' }
-} finally {
-    Remove-Item Env:WINDERUST_BENCHMARK_SETTINGS -ErrorAction SilentlyContinue
-    Pop-Location
-}
-
-$benchmarkScript = Join-Path $PSScriptRoot 'adaptive_engine_process_benchmark.ps1'
-$env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
-try {
-    . $benchmarkScript `
-        -Passes $Passes `
-        -Rounds $Rounds `
-        -Iterations $Iterations `
-        -WorkerSeconds $WorkerSeconds `
-        -BackgroundWorkers ([Math]::Min([Math]::Ceiling([Environment]::ProcessorCount * 0.9), 24)) `
-        -ForegroundScenario $ForegroundScenario `
-        -WinderustExePath $WinderustExePath `
-        -SkipPower:$SkipPower
-} finally {
-    Remove-Item Env:WINDERUST_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
-}
-
-$balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
-$originalGuid = Get-ActiveSchemeGuid
-$sourceExePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
-$configDir = Join-Path ([IO.Path]::GetTempPath()) "winderust-adaptive-benchmark-$([guid]::NewGuid())"
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$scratchRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'target\adaptive-runtime-benchmark'))
+$configDir = Join-Path $scratchRoot ([guid]::NewGuid().ToString())
 $exePath = Join-Path $configDir 'winderust.exe'
-$configPath = Join-Path $configDir 'settings.toml'
 $runtime = $null
-function Write-IsolatedSettings {
-    [IO.Directory]::CreateDirectory($configDir) | Out-Null
-    Copy-Item -LiteralPath $sourceExePath -Destination $exePath
-    [IO.File]::WriteAllText($configPath, $settingsToml, [Text.UTF8Encoding]::new($false))
+$exportProcess = $null
+$originalGuid = $null
+$originalTemp = $env:TEMP
+$originalTmp = $env:TMP
+$benchmarkHostPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$explicitOverrides = [ordered]@{}
+$overrideParameters = [ordered]@{
+    EnableDynamicResourceZones = 'dynamic_resource_zones_enabled'
+    EnableCpuPressureRestraint = 'cpu_pressure_restraint_enabled'
+    DisableBackgroundProcessorLimit = 'limit_background_processors_enabled'
+    ProcessRestraintThresholdPercent = 'background_app_cpu_threshold_percent'
+    MaximumRestrainedApps = 'maximum_restrained_apps'
+    ForegroundOrSystemCpuThresholdPercent = 'foreground_or_system_cpu_threshold_percent'
+    BackgroundPressureAcBoostPolicy = 'background_pressure_ac_boost_policy'
+    BackgroundPressureAcBoostMode = 'background_pressure_ac_boost_mode'
+}
+foreach ($name in $overrideParameters.Keys) {
+    if ($PSBoundParameters.ContainsKey($name)) {
+        $value = $PSBoundParameters[$name]
+        if ($value -is [System.Management.Automation.SwitchParameter]) { $value = $value.IsPresent }
+        if ($name -eq 'DisableBackgroundProcessorLimit') { $value = !$value }
+        $explicitOverrides[$overrideParameters[$name]] = $value
+    }
+}
+$request = [ordered]@{ benchmark_host_path = $benchmarkHostPath }
+foreach ($key in $explicitOverrides.Keys) { $request[$key] = $explicitOverrides[$key] }
+$requestJson = $request | ConvertTo-Json
+
+function Assert-IsolatedProcessesExited {
+    try {
+        $processes = @(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($exePath)) -ErrorAction Stop)
+    } catch {
+        if ($_.FullyQualifiedErrorId -eq 'NoProcessFoundForGivenName,Microsoft.PowerShell.Commands.GetProcessCommand') { return }
+        throw
+    }
+    try {
+        foreach ($process in $processes) {
+            try {
+                # Retain this process identity while reading its path and checking exit.
+                $null = $process.Handle
+                if ($process.HasExited) { continue }
+                $path = $process.Path
+                $started = $process.StartTime.ToUniversalTime().ToString('o')
+                if ($process.HasExited) { continue }
+                if ([string]::IsNullOrWhiteSpace($path)) { throw 'The executable path is unavailable.' }
+                $pathMatches = [IO.Path]::GetFullPath($path).Equals($exePath, [StringComparison]::OrdinalIgnoreCase)
+            } catch {
+                throw "Cannot verify whether process $($process.Id) is an isolated recovery process: $($_.Exception.Message)"
+            }
+            if ($pathMatches) {
+                throw "Isolated runtime or recovery process $($process.Id), started $started, remains alive."
+            }
+        }
+    } finally {
+        foreach ($process in $processes) { $process.Dispose() }
+    }
 }
 
 function Remove-IsolatedConfig {
-    if (-not [IO.Directory]::Exists($configDir)) {
-        return
+    if (-not [IO.Directory]::Exists($configDir)) { return }
+    foreach ($process in @($exportProcess, $script:runtime.process)) {
+        if ($null -ne $process -and !$process.HasExited) {
+            throw "Benchmark process is still running; recovery files remain at $configDir."
+        }
+    }
+    $target = [IO.Path]::GetFullPath($configDir)
+    $expectedRoot = $scratchRoot.TrimEnd('\') + '\'
+    if (!$target.StartsWith($expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing to remove a benchmark directory outside its scratch directory.'
     }
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
         try {
-            Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
             return
         } catch {
-            if ($attempt -eq 39) {
-                throw
-            }
+            if ($attempt -eq 39) { throw }
             Start-Sleep -Milliseconds 250
         }
     }
 }
 
-function Start-AdaptiveRuntime {
-    powercfg /setactive $balancedGuid | Out-Null
-    $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Hidden
-
-    for ($attempt = 0; $attempt -lt 80; $attempt++) {
-        Start-Sleep -Milliseconds 250
-        $process.Refresh()
-        if ($process.HasExited) {
-            throw 'Winderust exited before Adaptive Engine activated.'
-        }
-        $planLine = powercfg /list | Where-Object { $_ -like '*Winderust Adaptive*' } | Select-Object -First 1
-        if ($planLine) {
-            return [pscustomobject]@{
-                process = $process
-                plan_guid = ([regex]::Match($planLine, '[0-9a-fA-F-]{36}')).Value
-            }
-        }
-    }
-
-    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-    throw 'Adaptive Engine did not create its managed power plan within 20 seconds.'
+if (!(Test-Path -LiteralPath $WinderustExePath -PathType Leaf)) {
+    throw 'Build the benchmark binary first: cargo build --locked --release --features runtime-benchmark; then pass -WinderustExePath if needed.'
 }
-
-function Stop-AdaptiveRuntime {
-    param($Runtime)
-    if ($null -eq $Runtime) {
+try {
+    [IO.Directory]::CreateDirectory($configDir) | Out-Null
+    Copy-Item -LiteralPath (Resolve-Path -LiteralPath $WinderustExePath).Path -Destination $exePath
+    $binarySha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash
+    [IO.File]::WriteAllText((Join-Path $configDir 'request.json'), $requestJson, [Text.UTF8Encoding]::new($false))
+    $exportProcess = Start-Process -FilePath $exePath -ArgumentList @('--runtime-benchmark-settings', ('"{0}"' -f $configDir), 'Balanced') -WindowStyle Hidden -PassThru
+    if (!$exportProcess.WaitForExit(30000)) {
+        throw 'Settings export timed out. Build with --features runtime-benchmark and close the unexpected Winderust instance before retrying.'
+    }
+    $finishedPath = Join-Path $configDir 'finished.txt'
+    if (!(Test-Path -LiteralPath $finishedPath)) {
+        throw 'The binary did not export benchmark settings. Rebuild with --features runtime-benchmark.'
+    }
+    $finished = [IO.File]::ReadAllText($finishedPath).Trim()
+    if ($finished -ne 'ok') { throw "Settings export failed: $finished" }
+    $settingsToml = [IO.File]::ReadAllText((Join-Path $configDir 'settings.toml'))
+    $settingsJson = [IO.File]::ReadAllText((Join-Path $configDir 'settings.json'))
+    $effectiveSettings = $settingsJson | ConvertFrom-Json
+    if ($SettingsOnly) {
+        $settingsToml
         return
     }
-    $process = $Runtime.process
+} catch {
+    Remove-IsolatedConfig
+    throw
+} finally {
+    if ($SettingsOnly) { Remove-IsolatedConfig }
+}
+
+$failures = New-Object 'System.Collections.Generic.List[string]'
+try {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     try {
-        $process.Refresh()
-        if (-not $process.HasExited) {
-            [void]$process.CloseMainWindow()
-            if (-not $process.WaitForExit(5000)) {
-                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-            }
+        $principal = New-Object Security.Principal.WindowsPrincipal $identity
+        if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Run the runtime benchmark from an elevated PowerShell host. SettingsOnly does not require elevation.'
         }
     } finally {
-        powercfg /setactive $balancedGuid | Out-Null
-        $managedPlanExists = powercfg /list | Where-Object { $_ -match [regex]::Escape($Runtime.plan_guid) }
-        if ($managedPlanExists) {
-            powercfg /delete $Runtime.plan_guid | Out-Null
+        $identity.Dispose()
+    }
+    $env:TEMP = $configDir
+    $env:TMP = $configDir
+    $benchmarkScript = Join-Path $PSScriptRoot 'adaptive_engine_process_benchmark.ps1'
+    $env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
+    try {
+        . $benchmarkScript `
+            -Passes $Passes `
+            -Rounds $Rounds `
+            -Iterations $Iterations `
+            -WorkerSeconds $WorkerSeconds `
+            -BackgroundWorkers ([Math]::Min([Math]::Ceiling([Environment]::ProcessorCount * 0.9), 24)) `
+            -ForegroundScenario $ForegroundScenario `
+            -WinderustExePath $WinderustExePath `
+            -SkipPower:$SkipPower
+    } finally {
+        Remove-Item Env:WINDERUST_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
+    }
+
+    $balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
+    if (!('AdaptiveRuntimeCpuSets' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class AdaptiveRuntimeCpuSets {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessDefaultCpuSets(IntPtr process, [Out] uint[] ids, uint count, out uint required);
+    public static uint[] Read(IntPtr process) {
+        uint count;
+        if (!GetProcessDefaultCpuSets(process, null, 0, out count)) {
+            int error = Marshal.GetLastWin32Error();
+            if (error != 122) throw new Win32Exception(error);
+        }
+        if (count == 0) return new uint[0];
+        uint[] ids = new uint[count];
+        if (!GetProcessDefaultCpuSets(process, ids, count, out count)) {
+            int error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error);
+        }
+        if (count > ids.Length) throw new InvalidOperationException("CPU Set count exceeds the query buffer.");
+        Array.Resize(ref ids, (int)count);
+        return ids;
+    }
+}
+'@
+    }
+    if (@([AdaptiveRuntimeCpuSets]::Read([Diagnostics.Process]::GetCurrentProcess().Handle)).Count) {
+        throw 'The benchmark controller already has CPU Sets; use an unrestricted PowerShell host.'
+    }
+    $script:originalGetWorkerPriorities = (Get-Item Function:\Get-WorkerPriorities).ScriptBlock
+    $script:workerCpuSetSamples = @{}
+    function Get-WorkerPriorities {
+        param([object[]]$Processes)
+        # Sample the exact worker handles while Run-Case still owns the live processes.
+        foreach ($process in $Processes) {
+            try {
+                $ids = @([AdaptiveRuntimeCpuSets]::Read($process.Handle))
+                $observation = [pscustomobject]@{
+                    pid = $process.Id
+                    start_time_utc = $process.StartTime.ToUniversalTime().ToString('o')
+                    cpu_set_ids = $ids
+                    error = $null
+                }
+            } catch {
+                $observation = [pscustomobject]@{ pid = $process.Id; start_time_utc = $null; cpu_set_ids = @(); error = $_.Exception.Message }
+            }
+            $key = '{0}:{1}:{2}:{3}' -f $observation.pid, $observation.start_time_utc, ($observation.cpu_set_ids -join ','), $observation.error
+            $script:workerCpuSetSamples[$key] = $observation
+        }
+        & $script:originalGetWorkerPriorities -Processes $Processes
+    }
+
+    function Select-PowerScheme {
+        param([string]$Guid)
+        powercfg /setactive $Guid | Out-Null
+        if ($LASTEXITCODE -ne 0 -or (Get-ActiveSchemeGuid) -ne $Guid) {
+            throw "Failed to select power scheme $Guid."
         }
     }
-}
 
-function Read-ActiveProcessorPolicy {
-    $scheme = Get-ActiveSchemeGuid
-    $values = [ordered]@{}
-    foreach ($setting in $processorPolicySettings) {
-        $index = Get-PowerSettingIndexes -SchemeGuid $scheme -SettingGuid $setting.Guid
-        $values[$setting.Name] = [pscustomobject]@{ ac = $index.ac; dc = $index.dc }
+    function Start-AdaptiveRuntime {
+        Select-PowerScheme $balancedGuid
+        $directory = [IO.Directory]::CreateDirectory((Join-Path $configDir ([guid]::NewGuid().ToString()))).FullName
+        [IO.File]::WriteAllText((Join-Path $directory 'request.json'), $requestJson, [Text.UTF8Encoding]::new($false))
+        $process = Start-Process -FilePath $exePath -ArgumentList @('--runtime-benchmark', ('"{0}"' -f $directory), 'Balanced') -WindowStyle Hidden -PassThru
+        $script:runtime = [pscustomobject]@{ process = $process; directory = $directory; shutdown_attempted = $false }
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        while (!(Test-Path -LiteralPath (Join-Path $directory 'ready.txt'))) {
+            $process.Refresh()
+            if ($process.HasExited) {
+                $failure = Get-Content -LiteralPath (Join-Path $directory 'finished.txt') -ErrorAction SilentlyContinue
+                throw "Adaptive Engine runtime failed: $failure"
+            }
+            if ([DateTime]::UtcNow -gt $deadline) {
+                throw 'Adaptive Engine startup timed out. Build with --features runtime-benchmark and close other Winderust instances.'
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if ([IO.File]::ReadAllText((Join-Path $directory 'ready.txt')).Trim() -ne $balancedGuid) {
+            throw 'The runtime captured an unexpected baseline power scheme.'
+        }
+        if ([IO.File]::ReadAllText((Join-Path $directory 'settings.json')) -ne $settingsJson) {
+            throw 'The production runtime settings differ from the exported Balanced settings.'
+        }
+        if ($effectiveSettings.adaptive_engine.processor_power_policy_enabled) {
+            while ((Get-ActiveSchemeGuid) -eq $balancedGuid) {
+                if ($process.HasExited -or [DateTime]::UtcNow -gt $deadline) {
+                    throw 'Adaptive Engine did not activate its managed processor power policy.'
+                }
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        return $script:runtime
     }
-    [pscustomobject]@{ scheme = $scheme; values = [pscustomobject]$values }
-}
 
-function Assert-ValidCase {
-    param([pscustomobject]$Result, [string]$Name)
-    if ($Result.workers_alive_after_measurement -ne $workerCount) {
-        throw ('Invalid {0} benchmark: only {1} of {2} workers survived measurement.' -f $Name, $Result.workers_alive_after_measurement, $workerCount)
+    function Stop-AdaptiveRuntime {
+        param($Runtime)
+        if ($null -eq $Runtime) {
+            return
+        }
+        $Runtime.shutdown_attempted = $true
+        $process = $Runtime.process
+        [IO.File]::WriteAllText((Join-Path $Runtime.directory 'stop'), '')
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
+        while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+            $process.Refresh()
+        }
+        if (!$process.HasExited) {
+            throw "Runtime shutdown timed out; it remains alive to finish recovery. Files: $($Runtime.directory)"
+        }
+        $finished = [IO.File]::ReadAllText((Join-Path $Runtime.directory 'finished.txt')).Trim()
+        if ($finished -ne 'ok') { throw "Runtime shutdown or restoration failed: $finished" }
+        if ((Get-ActiveSchemeGuid) -ne $balancedGuid) { throw 'The runtime did not restore Windows Balanced.' }
     }
-    if ($Result.foreground_priority_after_measurement -ne 'Normal') {
-        throw ('Invalid {0} benchmark: foreground host priority changed to {1}.' -f $Name, $Result.foreground_priority_after_measurement)
+
+    function Read-ActiveProcessorPolicy {
+        $scheme = Get-ActiveSchemeGuid
+        $values = [ordered]@{}
+        foreach ($setting in $processorPolicySettings) {
+            $index = Get-PowerSettingIndexes -SchemeGuid $scheme -SettingGuid $setting.Guid
+            $values[$setting.Name] = [pscustomobject]@{ ac = $index.ac; dc = $index.dc }
+        }
+        [pscustomobject]@{ scheme = $scheme; values = [pscustomobject]$values }
     }
-}
 
-function Run-StockCase {
-    powercfg /setactive $balancedGuid | Out-Null
-    $result = Run-Case `
-        -Name 'stock_balanced' `
-        -Model 'Windows Balanced with no Winderust runtime.' `
-        -ForegroundPriority 'Normal' `
-        -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
-        -AffinitySelectedCount 0 `
-        -AffinityMask 0 `
-        -AssistControls (New-AssistControls) `
-        -WarmupSeconds $WarmupSeconds
-    Assert-ValidCase -Result $result -Name 'Stock'
-    return $result
-}
+    function Assert-ValidCase {
+        param([pscustomobject]$Result, [string]$Name)
+        if ($Result.workers_alive_after_measurement -ne $workerCount) {
+            throw ('Invalid {0} benchmark: only {1} of {2} workers survived measurement.' -f $Name, $Result.workers_alive_after_measurement, $workerCount)
+        }
+        if ($Result.foreground_priority_after_measurement -ne 'Normal') {
+            throw ('Invalid {0} benchmark: foreground host priority changed to {1}.' -f $Name, $Result.foreground_priority_after_measurement)
+        }
+        $Result | Add-Member -NotePropertyName observed_worker_cpu_sets -NotePropertyValue @($script:workerCpuSetSamples.Values)
+        if (@($Result.observed_worker_cpu_sets | Where-Object { $null -ne $_.error }).Count) {
+            throw "Invalid $Name benchmark: a native worker CPU Set query failed."
+        }
+    }
 
-function Run-AdaptiveCase {
-    $script:runtime = Start-AdaptiveRuntime
-    try {
+    function Run-StockCase {
+        Select-PowerScheme $balancedGuid
+        $script:workerCpuSetSamples = @{}
         $result = Run-Case `
-            -Name 'adaptive_runtime' `
-            -Model 'Real Winderust Adaptive Engine runtime on a managed plan cloned from Windows Balanced.' `
+            -Name 'stock_balanced' `
+            -Model 'Windows Balanced with no Winderust runtime.' `
             -ForegroundPriority 'Normal' `
             -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
             -AffinitySelectedCount 0 `
             -AffinityMask 0 `
             -AssistControls (New-AssistControls) `
             -WarmupSeconds $WarmupSeconds
-        Assert-ValidCase -Result $result -Name 'Adaptive'
-        if (@($result.observed_worker_priorities | Where-Object { $_ -ne 'Normal' }).Count -eq 0) {
-            throw "Invalid runtime benchmark: Adaptive Engine did not change any generated worker priority."
+        Assert-ValidCase -Result $result -Name 'Stock'
+        if (@($result.observed_worker_cpu_sets | Where-Object { $_.cpu_set_ids.Count -gt 0 }).Count) {
+            throw 'Invalid Stock benchmark: generated workers already have CPU Sets.'
         }
-        $result | Add-Member -NotePropertyName runtime_control_observed -NotePropertyValue $true
-        $result | Add-Member -NotePropertyName adaptive_policy_after_load -NotePropertyValue (Read-ActiveProcessorPolicy)
         return $result
-    } finally {
-        Stop-AdaptiveRuntime -Runtime $script:runtime
-        $script:runtime = $null
     }
-}
 
-if (@(Get-Process winderust -ErrorAction SilentlyContinue).Count -gt 0) {
-    throw 'Close Winderust before running the runtime Adaptive Engine benchmark.'
-}
+    function Run-AdaptiveCase {
+        try {
+            $script:runtime = Start-AdaptiveRuntime
+            $script:workerCpuSetSamples = @{}
+            $result = Run-Case `
+                -Name 'adaptive_runtime' `
+                -Model 'Real Winderust Adaptive Engine runtime on a managed plan cloned from Windows Balanced.' `
+                -ForegroundPriority 'Normal' `
+                -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
+                -AffinitySelectedCount 0 `
+                -AffinityMask 0 `
+                -AssistControls (New-AssistControls) `
+                -WarmupSeconds $WarmupSeconds
+            Assert-ValidCase -Result $result -Name 'Adaptive'
+            $cpuSetsObserved = @($result.observed_worker_cpu_sets | Where-Object { $_.cpu_set_ids.Count -gt 0 }).Count -gt 0
+            $priorityObserved = @($result.observed_worker_priorities | Where-Object { $_ -ne 'Normal' }).Count -gt 0
+            $processControlObserved = $cpuSetsObserved -or $priorityObserved -or $result.worker_efficiency_coverage_percent -gt 0
+            if (($effectiveSettings.adaptive_engine_process.limit_background_processors_enabled -or $effectiveSettings.adaptive_engine_process.dynamic_resource_zones_enabled) -and !$cpuSetsObserved) {
+                throw 'Invalid runtime benchmark: no generated worker received native CPU Set allocation.'
+            }
+            if ($effectiveSettings.adaptive_engine_process.cpu_pressure_restraint_enabled -and !$processControlObserved) {
+                throw 'Invalid runtime benchmark: no native worker process control was observed.'
+            }
+            $result | Add-Member -NotePropertyName runtime_ready_observed -NotePropertyValue $true
+            $result | Add-Member -NotePropertyName runtime_control_observed -NotePropertyValue $processControlObserved
+            $result | Add-Member -NotePropertyName runtime_cpu_sets_observed -NotePropertyValue $cpuSetsObserved
+            $result | Add-Member -NotePropertyName adaptive_policy_after_load -NotePropertyValue (Read-ActiveProcessorPolicy)
+            return $result
+        } catch {
+            if (!$failures.Contains($_.Exception.Message)) { $failures.Add($_.Exception.Message) }
+            throw
+        } finally {
+            Stop-AdaptiveRuntime -Runtime $script:runtime
+            $script:runtime = $null
+        }
+    }
 
-Write-IsolatedSettings
-Initialize-PowerCounter
-$runs = @()
-try {
+    if (@(Get-Process winderust -ErrorAction SilentlyContinue).Count -gt 0) {
+        throw 'Close Winderust before running the runtime Adaptive Engine benchmark.'
+    }
+
+    $originalGuid = Get-ActiveSchemeGuid
+    Initialize-PowerCounter
+    $runs = @()
     for ($pass = 1; $pass -le $Passes; $pass++) {
         $order = if (($pass % 2) -eq 1) { @('stock', 'adaptive') } else { @('adaptive', 'stock') }
         $results = @{}
@@ -348,10 +406,42 @@ try {
             comparison_vs_stock = New-Comparison -Off $results.stock -Case $results.adaptive
         }
     }
+} catch {
+    if (!$failures.Contains($_.Exception.Message)) { $failures.Add($_.Exception.Message) }
 } finally {
-    Stop-AdaptiveRuntime -Runtime $runtime
-    powercfg /setactive $originalGuid | Out-Null
-    Remove-IsolatedConfig
+    $env:TEMP = $originalTemp
+    $env:TMP = $originalTmp
+    $hostExited = $true
+    if ($null -ne $runtime) {
+        if (!$runtime.shutdown_attempted) {
+            try { Stop-AdaptiveRuntime -Runtime $runtime }
+            catch { if (!$failures.Contains($_.Exception.Message)) { $failures.Add($_.Exception.Message) } }
+        }
+        try { $hostExited = $runtime.process.HasExited }
+        catch {
+            $hostExited = $false
+            $failures.Add($_.Exception.Message)
+        }
+    }
+    if ($hostExited -and $null -ne $originalGuid -and ($null -ne $runtime -or $failures.Count -gt 0)) {
+        try { Assert-IsolatedProcessesExited }
+        catch {
+            $hostExited = $false
+            $failures.Add($_.Exception.Message)
+        }
+    }
+    if (!$hostExited) { $failures.Add('Runtime shutdown remains unconfirmed.') }
+    if ($hostExited -and $null -ne $originalGuid) {
+        try { Select-PowerScheme $originalGuid }
+        catch { $failures.Add($_.Exception.Message) }
+    }
+    if ($failures.Count -eq 0 -and $hostExited) {
+        try { Remove-IsolatedConfig }
+        catch { $failures.Add($_.Exception.Message) }
+    }
+    if ($failures.Count -gt 0) {
+        throw (($failures -join '; ') + "; Benchmark files retained at $configDir.")
+    }
 }
 
 $comparisons = @($runs | ForEach-Object { $_.comparison_vs_stock })
@@ -364,7 +454,8 @@ $medianImprovement = Get-AverageProperty -Items $comparisons -Name 'median_impro
 $p95Improvement = Get-AverageProperty -Items $comparisons -Name 'p95_improvement_percent_vs_off'
 $backgroundRetained = Get-AverageProperty -Items $comparisons -Name 'background_throughput_retained_percent_vs_off'
 $powerSaving = Get-AverageProperty -Items $comparisons -Name 'package_power_saving_percent_vs_off'
-$activationPasses = @($adaptiveRows | Where-Object { $_.runtime_control_observed }).Count
+$activationPasses = @($adaptiveRows | Where-Object { $_.runtime_ready_observed }).Count
+$processControlPasses = @($adaptiveRows | Where-Object { $_.runtime_control_observed }).Count
 $powerGatePassed = $SkipPower -or ($null -ne $powerSaving -and $powerSaving -ge $MinimumPowerSavingPercent)
 $validationPassed = $activationPasses -eq $Passes `
     -and $medianImprovement -ge 3.0 `
@@ -373,7 +464,7 @@ $validationPassed = $activationPasses -eq $Passes `
     -and $powerGatePassed
 
 $report = [pscustomobject]@{
-    note = 'Counterbalanced release-binary A/B. Stock is Windows Balanced; Adaptive runs the isolated Winderust automation loop with the current Balanced and Low Impact presets.'
+    note = 'Counterbalanced release-binary A/B. Stock is Windows Balanced; Adaptive uses the production runtime with the built-in Balanced preset and only the listed explicit setting overrides. Runtime readiness and native worker process control are reported separately.'
     cpu_name = Get-CpuName
     logical_processors = $logicalProcessors
     worker_count = $workerCount
@@ -381,14 +472,21 @@ $report = [pscustomobject]@{
     rounds = $Rounds
     foreground_scenario = $ForegroundScenario
     foreground_iterations_per_round = $Iterations
-    background_pressure_ac_boost_policy = $BackgroundPressureAcBoostPolicy
-    background_pressure_ac_boost_mode = $BackgroundPressureAcBoostMode
-    dynamic_resource_zones_enabled = $EnableDynamicResourceZones.IsPresent
-    zone_foreground_share_percent = 75
-    limit_background_processors_enabled = $backgroundProcessorLimitEnabled
-    process_restraint_threshold_percent = $ProcessRestraintThresholdPercent
-    maximum_restrained_apps = $MaximumRestrainedApps
-    foreground_or_system_cpu_threshold_percent = $ForegroundOrSystemCpuThresholdPercent
+    preset = 'Balanced'
+    effective_settings = $effectiveSettings
+    effective_settings_toml = $settingsToml
+    binary_sha256 = $binarySha256
+    explicit_setting_overrides = $explicitOverrides
+    background_pressure_ac_boost_policy = $effectiveSettings.adaptive_engine.background_pressure_profile.ac_policy
+    background_pressure_ac_boost_mode = $effectiveSettings.adaptive_engine.background_pressure_profile.ac_mode
+    cpu_pressure_restraint_enabled = $effectiveSettings.adaptive_engine_process.cpu_pressure_restraint_enabled
+    dynamic_resource_zones_enabled = $effectiveSettings.adaptive_engine_process.dynamic_resource_zones_enabled
+    zone_foreground_share_percent = $effectiveSettings.adaptive_engine_process.dynamic_resource_zone_settings.foreground_share_percent
+    limit_background_processors_enabled = $effectiveSettings.adaptive_engine_process.limit_background_processors_enabled
+    processor_limit_percent = $effectiveSettings.adaptive_engine_process.processor_limit_percent
+    process_restraint_threshold_percent = $effectiveSettings.adaptive_engine_process.background_app_cpu_threshold_percent
+    maximum_restrained_apps = $effectiveSettings.adaptive_engine_process.maximum_restrained_apps
+    foreground_or_system_cpu_threshold_percent = $effectiveSettings.adaptive_engine_process.foreground_or_system_cpu_threshold_percent
     benchmark_foreground_host = $benchmarkHostPath
     warmup_seconds_per_case = $WarmupSeconds
     cooldown_seconds = $CooldownSeconds
@@ -399,6 +497,7 @@ $report = [pscustomobject]@{
         stock_first_passes = @($runs | Where-Object { $_.order[0] -eq 'stock' }).Count
         adaptive_first_passes = @($runs | Where-Object { $_.order[0] -eq 'adaptive' }).Count
         activation_passes = $activationPasses
+        native_process_control_passes = $processControlPasses
         median_improvement_percent = $medianImprovement
         p95_improvement_percent = $p95Improvement
         background_throughput_retained_percent = $backgroundRetained
@@ -437,7 +536,7 @@ $report = [pscustomobject]@{
     )
     runs = $runs
 }
-$json = $report | ConvertTo-Json -Depth 9
+$json = $report | ConvertTo-Json -Depth 20
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $OutputPath = Join-Path (Split-Path $PSScriptRoot -Parent) "benchmark\results\intel-core-5-210h-adaptive-runtime-$timestamp.json"
