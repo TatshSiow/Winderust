@@ -661,6 +661,7 @@ enum Message {
     Save,
     Cancel,
     PausePowerPlans(bool),
+    RestorePreviousPowerPlan(bool),
     SettingsFile(FileDialogMode),
     SettingsFileChosen(FileDialogMode, Option<PathBuf>),
     Stay,
@@ -1888,6 +1889,9 @@ impl WinderustApp {
             Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
                 settings.general.pause_power_plan_switching_while_plugged_in = value
             }),
+            Message::RestorePreviousPowerPlan(value) => self
+                .settings
+                .edit_global(|settings| settings.general.restore_previous_power_plan = value),
             Message::ShutdownFinished(result) => {
                 if let Err(error) = result {
                     crate::backend::diagnostics::error(&error);
@@ -3005,6 +3009,11 @@ impl WinderustApp {
                     "power_plan_control.pause_plugged",
                     general.pause_power_plan_switching_while_plugged_in,
                     Message::PausePowerPlans
+                ),
+                toggle(
+                    "power_plan_control.restore_previous_plan",
+                    general.restore_previous_power_plan,
+                    Message::RestorePreviousPowerPlan
                 ),
                 self.child_pages(),
             ]

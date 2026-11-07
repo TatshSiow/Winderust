@@ -460,8 +460,6 @@ pub(super) fn activity_power_plan_required(settings: &Settings) -> bool {
     settings.by_activity.enabled
         && (has_idle_plan(&settings.by_activity.power_plans)
             || (settings.by_activity.switch_to_performance_on_resume
-                && settings.by_activity.resume_action
-                    == crate::config::PowerPlanReturnAction::SelectedPlan
                 && settings.by_activity.input_detection.any_enabled()
                 && has_active_plan(&settings.by_activity.power_plans)))
 }
@@ -472,8 +470,6 @@ pub(super) fn controller_activity_poll_required(settings: &Settings) -> bool {
         && settings.by_activity.input_detection.controller
         && (has_idle_plan(&settings.by_activity.power_plans)
             || (settings.by_activity.switch_to_performance_on_resume
-                && settings.by_activity.resume_action
-                    == crate::config::PowerPlanReturnAction::SelectedPlan
                 && has_active_plan(&settings.by_activity.power_plans)))
 }
 
@@ -503,11 +499,7 @@ pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
         && settings.by_cpu_load.rules.iter().any(|rule| {
             rule.enabled
                 && (rule.power_plan_guid.is_some()
-                    || (rule.else_enabled
-                        && (rule.is_else()
-                            || rule.else_action
-                                == crate::config::PowerPlanReturnAction::SelectedPlan)
-                        && rule.else_power_plan_guid.is_some()))
+                    || (rule.else_enabled && rule.else_power_plan_guid.is_some()))
         })
 }
 

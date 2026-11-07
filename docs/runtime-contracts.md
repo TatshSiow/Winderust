@@ -106,19 +106,21 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans. Ownership starts immediately after duplication, before metadata or idle-state initialization. A never-activated clone whose source remains active preserves the ordinary restoration chain; genuine external plan changes still invalidate it.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global power-plan fallback or load-time mapping migration. The `power_plans` field on `ByActivitySettings` owns the visible Idle/Active selections.
-- By Focus, By Running App, and By Time offer a profile-local Restore previous
-  plan option, defaulting off. They release on confirmed focus loss, absence of
-  matching apps, or the end of the last matching time window respectively.
-  By CPU Load offers restoration as its conditional rule's Else action; By
-  Activity offers it as the resume action instead of a selected Active plan.
-  Dormant selected-plan GUIDs are retained for editing but never compete with
-  a selected restoration action. Standalone CPU Else rules select explicit plans.
-- Restoring rules share one temporary episode baseline, captured from the actual
-  plan before the first verified temporary switch and separate from the ordinary
-  controller's original automation baseline. Further restoring winners preserve
-  it across app and feature handoffs. A persistent winner ends the episode after
-  verification. Another selected rule wins before restoration; with no winner,
-  the controller restores through its existing verified recovery transaction.
+- Restore previous plan when no rule selects a plan is one global setting on the
+  Power Plan Control landing page. It defaults off, applies to both power
+  profiles, and is stored as `general.restore_previous_power_plan`. Target,
+  Else, Idle, and Active plans remain local selections and take precedence
+  whenever their rules are eligible. There are no per-mode restoration overrides.
+- While restoration is enabled, all ordinary power-plan winners share one
+  temporary episode baseline, captured from the actual plan before the first
+  verified automatic switch and separate from the ordinary controller's original
+  automation baseline. The episode survives app, feature, CPU Else, and Activity
+  Active plan handoffs. Only after every rule yields does the controller restore
+  through its existing verified recovery transaction. Turning the policy off
+  cancels temporary returns without changing the active plan. Any pending
+  journal transaction still requires acknowledgement before another mutation;
+  it cannot recreate the canceled baseline. Ordinary shutdown and recovery
+  safety ownership remain independent of this optional runtime return.
   External plan changes invalidate the baseline. Unavailable focus, plausible
   process matches, CPU samples, or activity observations do not prove a condition
   ended; they defer affected fallthrough while a known higher-priority rule can
@@ -151,16 +153,17 @@ Read the relevant section before changing feature policy, ownership, restoration
   observed external plan changes clear held By CPU Load state. A failed or
   unconfirmed application cannot start a hold. Active-plan observation precedes
   retained-rule evaluation, using the controller's existing observation cadence.
-  Release yields to other selected rules or the configured Else action. Restore
-  previous plan is eligible only after a primary rule actually took temporary
-  control; an Else action cannot manufacture a baseline before that acquisition.
+  Release yields to other selected rules or a configured Else plan. The global
+  restoration policy runs only when no plan is selected. An Else plan can begin
+  or continue the shared temporary episode like any other automatic selection.
 - Ordinary power-setting notifications preserve CPU qualification and holds;
   Winderust's own plan switch must not restart qualification and select Else.
   Actual power-source changes and suspend/resume restart qualification and holds,
   including when the two power profiles contain identical settings. They also
   discard cached CPU usage and prime a fresh sampling interval before any CPU rule,
   including a zero-duration rule, can select a plan.
-- The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
+- The global pause for power-plan switching on A/C and shared restoration policy
+  belong on the Power Plan Control landing page.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
   Startup cleanup rechecks the live active GUID after matching metadata and
   verifies restoration before deleting an active managed plan. It preserves

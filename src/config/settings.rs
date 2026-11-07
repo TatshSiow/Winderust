@@ -194,6 +194,8 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     #[serde(default)]
+    pub restore_previous_power_plan: bool,
+    #[serde(default)]
     pub search_hotkeys: super::SearchHotkeys,
     pub check_interval_ms: u64,
 }
@@ -316,21 +318,11 @@ pub struct PowerPlanSettings {
     pub performance_guid: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PowerPlanReturnAction {
-    #[default]
-    SelectedPlan,
-    RestorePreviousPlan,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByActivitySettings {
     pub enabled: bool,
     pub idle_timeout_seconds: u64,
     pub switch_to_performance_on_resume: bool,
-    #[serde(default)]
-    pub resume_action: PowerPlanReturnAction,
     #[serde(default)]
     pub input_detection: InputDetectionSettings,
     #[serde(default)]
@@ -352,8 +344,6 @@ pub struct ByFocusSettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub restore_previous_plan: bool,
-    #[serde(default)]
     pub rules: Vec<ByFocusRule>,
 }
 
@@ -372,8 +362,6 @@ pub struct ByFocusRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByTimeSettings {
     pub enabled: bool,
-    #[serde(default)]
-    pub restore_previous_plan: bool,
     pub rules: Vec<ByTimeRule>,
 }
 
@@ -996,8 +984,6 @@ impl CpuLimiterRule {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByRunningAppSettings {
     pub enabled: bool,
-    #[serde(default)]
-    pub restore_previous_plan: bool,
     #[serde(default)]
     pub rules: Vec<ByRunningAppRule>,
 }
@@ -1801,8 +1787,6 @@ pub struct ByCpuLoadRule {
     pub power_plan_guid: Option<String>,
     #[serde(default)]
     pub else_enabled: bool,
-    #[serde(default)]
-    pub else_action: PowerPlanReturnAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub else_power_plan_guid: Option<String>,
 }
@@ -1824,8 +1808,6 @@ struct ByCpuLoadRuleWire {
     #[serde(default)]
     else_enabled: bool,
     #[serde(default)]
-    else_action: PowerPlanReturnAction,
-    #[serde(default)]
     else_power_plan_guid: Option<String>,
 }
 
@@ -1843,7 +1825,6 @@ impl TryFrom<ByCpuLoadRuleWire> for ByCpuLoadRule {
             stability: wire.stability,
             power_plan_guid: wire.power_plan_guid,
             else_enabled: wire.else_enabled,
-            else_action: wire.else_action,
             else_power_plan_guid: wire.else_power_plan_guid,
         };
         rule.validate()?;
@@ -1863,7 +1844,6 @@ impl Default for ByCpuLoadRule {
             stability: None,
             power_plan_guid: None,
             else_enabled: false,
-            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
         }
     }
@@ -1916,6 +1896,7 @@ impl Default for Settings {
                 show_feature_status_on_cards: true,
                 animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
+                restore_previous_power_plan: false,
                 search_hotkeys: super::SearchHotkeys::default(),
                 check_interval_ms: 1000,
             },
@@ -1926,14 +1907,12 @@ impl Default for Settings {
                 enabled: false,
                 idle_timeout_seconds: 300,
                 switch_to_performance_on_resume: true,
-                resume_action: PowerPlanReturnAction::SelectedPlan,
                 input_detection: InputDetectionSettings::default(),
                 power_plans: PowerPlanSettings::default(),
             },
             by_focus: ByFocusSettings::default(),
             by_time: ByTimeSettings {
                 enabled: false,
-                restore_previous_plan: false,
                 rules: vec![ByTimeRule {
                     enabled: true,
                     name: "Night Idle Plan".to_owned(),
@@ -2011,7 +1990,6 @@ impl Default for ByCpuLoadSettings {
                     stability: None,
                     power_plan_guid: None,
                     else_enabled: false,
-                    else_action: PowerPlanReturnAction::SelectedPlan,
                     else_power_plan_guid: None,
                 },
                 ByCpuLoadRule {
@@ -2024,7 +2002,6 @@ impl Default for ByCpuLoadSettings {
                     stability: None,
                     power_plan_guid: None,
                     else_enabled: false,
-                    else_action: PowerPlanReturnAction::SelectedPlan,
                     else_power_plan_guid: None,
                 },
             ],

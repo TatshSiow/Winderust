@@ -196,19 +196,47 @@ fn visible_window_priority_override_is_not_an_exclusion() {
 }
 
 #[test]
+fn restore_previous_power_plan_is_shared_without_replacing_local_plans() {
+    use crate::application::SettingsEditor;
+
+    for existing_battery in [false, true] {
+        let mut initial = Settings::default();
+        initial.by_activity.power_plans.performance_guid = Some("ac-active".into());
+        if existing_battery {
+            initial
+                .battery_profile_mut()
+                .by_activity
+                .power_plans
+                .performance_guid = Some("battery-active".into());
+        }
+        let mut settings = SettingsEditor::with_settings(initial.clone());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        settings.edit_global(|settings| settings.general.restore_previous_power_plan = true);
+        assert!(settings.general.restore_previous_power_plan);
+        assert!(settings.global().general.restore_previous_power_plan);
+        assert_eq!(
+            settings.by_activity.power_plans.performance_guid.as_deref(),
+            Some(if existing_battery {
+                "battery-active"
+            } else {
+                "ac-active"
+            })
+        );
+        settings.select_power_source(PowerSourceProfile::PluggedIn);
+        assert!(settings.general.restore_previous_power_plan);
+        assert_eq!(
+            settings.by_activity.power_plans.performance_guid.as_deref(),
+            Some("ac-active")
+        );
+        settings.cancel();
+        assert_eq!(settings.global(), &initial);
+    }
+}
+
+#[test]
 fn first_run_rule_modules_are_disabled() {
     let settings = Settings::default();
-    assert!(!settings.by_focus.restore_previous_plan);
-    assert!(!settings.by_running_app.restore_previous_plan);
-    assert!(!settings.by_time.restore_previous_plan);
-    assert_eq!(
-        settings.by_activity.resume_action,
-        PowerPlanReturnAction::SelectedPlan
-    );
-    assert_eq!(
-        ByCpuLoadRule::default().else_action,
-        PowerPlanReturnAction::SelectedPlan
-    );
+    assert!(!settings.general.restore_previous_power_plan);
 
     assert!(![
         settings.adaptive_engine.enabled,

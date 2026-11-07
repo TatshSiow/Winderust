@@ -583,7 +583,9 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("home.intro_2"),
         ),
         Page::PowerPlanControl => format!(
-            "{label} {section} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
+            "{label} {section} {} {} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
+            t!("power_plan_control.restore_previous_plan"),
+            t!("power_plan_control.restore_previous_plan_help"),
         ),
         Page::WinderustFeatures => format!(
             "{label} {section} winderust features background efficiency background_efficiency Adaptive Engine foreground interactivity memory trim working set memory ram background restraint",
@@ -612,11 +614,10 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("by_activity.enable"),
         ),
         Page::ByFocus => format!(
-            "{label} {section} {} {} {} {} focus focused app process window power plan priority rule",
+            "{label} {section} {} {} {} focus focused app process window power plan priority rule",
             t!("by_focus.intro_1"),
             t!("by_focus.intro_2"),
             t!("by_focus.enable"),
-            t!("by_focus.restore_previous_plan"),
         ),
         Page::ByTime => format!(
             "{label} {section} {} {} {} time schedule clock date weekday overnight power plan",

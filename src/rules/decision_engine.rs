@@ -80,42 +80,23 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
         });
     let cpu_load_known = input.cpu_load_known
         || !settings.by_cpu_load.enabled
-        || !settings
-            .by_cpu_load
-            .rules
-            .iter()
-            .any(|rule| rule.enabled && rule.power_plan_guid.is_some());
+        || !settings.by_cpu_load.rules.iter().any(|rule| {
+            rule.enabled
+                && (rule.power_plan_guid.is_some()
+                    || (rule.else_enabled && rule.else_power_plan_guid.is_some()))
+        });
     let activity_known = input.activity_state != ActivityState::Unknown
         || !settings.by_activity.enabled
-        || settings.by_activity.power_plans.power_save_guid.is_none();
-    let cpu_restore = input.by_cpu_load.as_ref().is_some_and(|decision| {
-        !decision.is_else
-            && settings
-                .by_cpu_load
-                .rules
-                .get(decision.rule_index)
-                .is_some_and(|rule| {
-                    rule.else_enabled
-                        && rule.else_action
-                            == crate::config::PowerPlanReturnAction::RestorePreviousPlan
-                })
-    });
+        || (settings.by_activity.power_plans.power_save_guid.is_none()
+            && (!settings.by_activity.switch_to_performance_on_resume
+                || !settings.by_activity.input_detection.any_enabled()
+                || settings.by_activity.power_plans.performance_guid.is_none()));
     let mut outcome = decide_plan(settings, input);
     outcome.focus = focus;
     outcome.running_app_known = running_app_known;
     outcome.cpu_load_known = cpu_load_known;
     outcome.activity_known = activity_known;
-    outcome.restore_previous_plan = match outcome.state {
-        DecisionState::ByFocus => settings.by_focus.restore_previous_plan,
-        DecisionState::ByRunningApp => settings.by_running_app.restore_previous_plan,
-        DecisionState::ByTime => settings.by_time.restore_previous_plan,
-        DecisionState::ByCpuLoad => cpu_restore,
-        DecisionState::ByActivityIdle => {
-            settings.by_activity.resume_action
-                == crate::config::PowerPlanReturnAction::RestorePreviousPlan
-        }
-        _ => false,
-    };
+    outcome.restore_previous_plan = settings.general.restore_previous_power_plan;
     outcome
 }
 
@@ -198,15 +179,6 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 DecisionState::ByActivityIdle,
                 "User input has been idle past the configured timeout.",
             ),
-            ActivityState::Active
-                if settings.by_activity.resume_action
-                    == crate::config::PowerPlanReturnAction::RestorePreviousPlan =>
-            {
-                DecisionOutcome::without_power_plan(
-                    DecisionState::ByActivityActive,
-                    "Recent user input detected; releasing the Idle plan.",
-                )
-            }
             ActivityState::Active
                 if settings.by_activity.switch_to_performance_on_resume
                     && settings.by_activity.input_detection.any_enabled() =>
@@ -316,7 +288,6 @@ mod tests {
         settings.by_time.rules.clear();
         settings.by_focus = ByFocusSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: Vec::new(),
         };
         settings
@@ -337,92 +308,123 @@ mod tests {
     }
 
     #[test]
-    fn restoration_policy_follows_the_selected_running_time_or_cpu_mode() {
+    fn global_restoration_policy_applies_to_every_selected_plan() {
         for restore in [false, true] {
-            let mut settings = test_settings();
-            settings.by_activity.enabled = false;
-            settings.by_running_app.restore_previous_plan = restore;
-            settings.by_time.restore_previous_plan = restore;
-            settings.by_cpu_load.rules = vec![crate::config::ByCpuLoadRule {
-                else_enabled: restore,
-                else_action: crate::config::PowerPlanReturnAction::RestorePreviousPlan,
-                ..crate::config::ByCpuLoadRule::default()
-            }];
-            for state in [
-                DecisionState::ByRunningApp,
-                DecisionState::ByTime,
-                DecisionState::ByCpuLoad,
+            for (state, is_else, expected_plan) in [
+                (DecisionState::ByFocus, false, "focused-plan"),
+                (DecisionState::ByRunningApp, false, "app-plan"),
+                (DecisionState::ByTime, false, "time-plan"),
+                (DecisionState::ByCpuLoad, false, "cpu-plan"),
+                (DecisionState::ByCpuLoad, true, "else-plan"),
+                (DecisionState::ByActivityIdle, false, "idle-guid"),
+                (DecisionState::ByActivityActive, false, "active-guid"),
             ] {
+                let mut settings = test_settings();
+                settings.general.restore_previous_power_plan = restore;
+                settings.by_activity.enabled = matches!(
+                    state,
+                    DecisionState::ByActivityIdle | DecisionState::ByActivityActive
+                );
+                settings.by_focus.rules.push(ByFocusRule {
+                    enabled: true,
+                    executable_path: "focused.exe".into(),
+                    power_plan_guid: Some("focused-plan".into()),
+                    ..ByFocusRule::default()
+                });
                 let mut input = inactive_input();
                 match state {
+                    DecisionState::ByFocus => {
+                        input.foreground_executable_path = Some("focused.exe".into());
+                    }
                     DecisionState::ByRunningApp => {
                         input.by_running_app = Some(ByRunningAppDecision {
                             rule_index: 0,
                             rule_name: "App".into(),
                             process_name: "app.exe".into(),
-                            power_plan_guid: "app-plan".into(),
-                        })
+                            power_plan_guid: expected_plan.into(),
+                        });
                     }
                     DecisionState::ByTime => {
                         input.by_time = Some(ByTimeDecision {
                             rule_index: 0,
                             rule_name: "Window".into(),
-                            power_plan_guid: "time-plan".into(),
-                        })
+                            power_plan_guid: expected_plan.into(),
+                        });
                     }
                     DecisionState::ByCpuLoad => {
                         input.by_cpu_load = Some(ByCpuLoadDecision {
                             rule_index: 0,
                             rule_name: "Load".into(),
-                            power_plan_guid: "cpu-plan".into(),
+                            power_plan_guid: expected_plan.into(),
                             usage_percent: 80.0,
-                            is_else: false,
-                        })
+                            is_else,
+                        });
                     }
+                    DecisionState::ByActivityIdle => input.activity_state = ActivityState::Idle,
+                    DecisionState::ByActivityActive => {}
                     _ => unreachable!(),
                 }
-                let outcome = decide(&settings, input.clone());
+                let outcome = decide(&settings, input);
                 assert_eq!(outcome.state, state);
+                assert_eq!(outcome.power_plan_guid.as_deref(), Some(expected_plan));
                 assert_eq!(outcome.restore_previous_plan, restore);
-                if let Some(cpu) = &mut input.by_cpu_load {
-                    cpu.is_else = true;
-                    assert!(!decide(&settings, input).restore_previous_plan);
-                }
             }
         }
     }
 
     #[test]
-    fn activity_restore_captures_only_idle_and_ignores_the_dormant_active_plan() {
+    fn restoration_policy_is_retained_when_all_rules_yield_or_automation_stops() {
         let mut settings = test_settings();
-        settings.by_activity.resume_action =
-            crate::config::PowerPlanReturnAction::RestorePreviousPlan;
-        for state in [
-            ActivityState::Idle,
-            ActivityState::Active,
-            ActivityState::Unknown,
-        ] {
-            let mut input = inactive_input();
-            input.activity_state = state;
-            let outcome = decide(&settings, input);
-            assert_eq!(outcome.restore_previous_plan, state == ActivityState::Idle);
-            assert_eq!(outcome.activity_known, state != ActivityState::Unknown);
-            assert_eq!(
-                outcome.power_plan_guid.as_deref(),
-                (state == ActivityState::Idle).then_some("idle-guid")
-            );
+        settings.by_activity.enabled = false;
+        for restore in [false, true] {
+            settings.general.restore_previous_power_plan = restore;
+            for (enabled, pause, expected_state) in [
+                (true, false, DecisionState::NoPowerPlanSelected),
+                (false, false, DecisionState::Disabled),
+                (true, true, DecisionState::PausedWhilePluggedIn),
+            ] {
+                settings.general.enabled = enabled;
+                settings.general.pause_power_plan_switching_while_plugged_in = pause;
+                let mut input = inactive_input();
+                input.plugged_in = Some(true);
+                let outcome = decide(&settings, input);
+                assert_eq!(outcome.state, expected_state);
+                assert!(outcome.power_plan_guid.is_none());
+                assert_eq!(outcome.restore_previous_plan, restore);
+            }
         }
-        settings.by_activity.resume_action = crate::config::PowerPlanReturnAction::SelectedPlan;
-        let outcome = decide(&settings, inactive_input());
-        assert_eq!(outcome.power_plan_guid.as_deref(), Some("active-guid"));
-        assert!(!outcome.restore_previous_plan);
+    }
+
+    #[test]
+    fn active_and_else_only_plans_still_require_known_observations() {
+        let mut settings = test_settings();
+        settings.by_activity.power_plans.power_save_guid = None;
+        settings.by_cpu_load.enabled = true;
+        settings.by_cpu_load.rules = vec![crate::config::ByCpuLoadRule {
+            power_plan_guid: None,
+            else_enabled: true,
+            else_power_plan_guid: Some("else-plan".into()),
+            ..crate::config::ByCpuLoadRule::default()
+        }];
+        let mut input = inactive_input();
+        input.activity_state = ActivityState::Unknown;
+        input.cpu_load_known = false;
+        let outcome = decide(&settings, input.clone());
+        assert!(!outcome.activity_known);
+        assert!(!outcome.cpu_load_known);
+
+        settings.by_activity.switch_to_performance_on_resume = false;
+        settings.by_cpu_load.rules[0].else_enabled = false;
+        let outcome = decide(&settings, input);
+        assert!(outcome.activity_known);
+        assert!(outcome.cpu_load_known);
     }
 
     #[test]
     fn focus_context_distinguishes_unreadable_windows_from_edited_or_disabled_rules() {
         let mut settings = test_settings();
         settings.by_activity.enabled = false;
-        settings.by_focus.restore_previous_plan = true;
+        settings.general.restore_previous_power_plan = true;
         settings.by_focus.rules.push(ByFocusRule {
             enabled: true,
             executable_path: "focused.exe".into(),
@@ -452,10 +454,7 @@ mod tests {
             assert!(outcome.focus.enabled);
             assert_eq!(outcome.focus.known, known);
             assert_eq!(outcome.focus.process_id, Some(10));
-            assert_eq!(
-                outcome.restore_previous_plan,
-                expected_state == DecisionState::ByFocus
-            );
+            assert!(outcome.restore_previous_plan);
         }
         settings.by_focus.rules[0].power_plan_guid = None;
         let outcome = decide(

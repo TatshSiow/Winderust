@@ -247,7 +247,6 @@ mod tests {
     fn matching_rule_uses_selected_plan() {
         let settings = ByRunningAppSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game".to_owned(),
@@ -277,7 +276,6 @@ mod tests {
     fn matching_rule_ignores_disabled_and_missing_plan_rules() {
         let settings = ByRunningAppSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![
                 ByRunningAppRule {
                     enabled: false,
@@ -312,7 +310,6 @@ mod tests {
     fn matching_rule_continues_past_unmatched_rules() {
         let settings = ByRunningAppSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![
                 ByRunningAppRule {
                     enabled: true,
@@ -377,7 +374,6 @@ mod tests {
     fn matching_observation_distinguishes_unknown_candidates_from_confirmed_nonmatches() {
         let settings = ByRunningAppSettings {
             enabled: true,
-            restore_previous_plan: true,
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game".into(),

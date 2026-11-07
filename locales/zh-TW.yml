@@ -423,14 +423,10 @@ by_activity:
   timing: "時間設定"
   invalid_timing: "請輸入 1 至 3600 秒的閒置逾時，以及 250 至 60000 毫秒的檢查間隔。"
   intro_1: "操作狀態排程會根據鍵盤、滑鼠與控制器活動切換電源計畫。"
-  intro_2: "選擇閒置電源計畫，再選擇恢復活動時使用指定的活動電源計畫，或還原閒置前的電源計畫。輸入偵測會控制狀態切換。"
+  intro_2: "選擇閒置與活動狀態各自使用的電源計畫。輸入偵測會控制狀態切換。"
   enable: "啟用操作狀態排程"
   idle_plan: "閒置電源計畫"
   active_plan: "活動電源計畫"
-  resume_action: "恢復活動時"
-  resume_action_help: "恢復活動且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
-  use_active_plan: "使用活動電源計畫"
-  restore_pre_idle_plan: "還原閒置前的電源計畫"
   keyboard_input: "鍵盤輸入偵測"
   mouse_input: "滑鼠輸入偵測"
   controller_input: "控制器輸入偵測"
@@ -441,8 +437,6 @@ by_focus:
   intro_1: "焦點電源計畫會在特定應用程式取得焦點時切換電源計畫。"
   intro_2: "符合條件且已選擇電源計畫的規則，優先於執行中應用程式、CPU 負載、操作狀態與時間規則。"
   enable: "啟用焦點電源計畫"
-  restore_previous_plan: "還原先前電源計畫"
-  restore_previous_plan_help: "應用程式失去焦點且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
 
 by_time:
   hour: "時（0–23）"
@@ -451,8 +445,6 @@ by_time:
   intro_1: "時間規則會根據目前日期與時間切換電源計畫。"
   intro_2: "每個規則都可使用自己的目標電源計畫，並支援跨夜時段。"
   enable: "啟用時間規則"
-  restore_previous_plan: "還原先前電源計畫"
-  restore_previous_plan_help: "沒有符合的時段且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
   new_rule: "新增時間規則"
   start: "開始"
   end: "結束"
@@ -488,11 +480,7 @@ by_cpu_load:
   comparison_between: "介於"
   target_plan: "目標電源計畫"
   else: "否則"
-  else_help: "選擇沒有 CPU 規則符合條件或仍在維持時要執行的動作。"
-  else_action: "否則動作"
-  else_action_help: "負載規則釋放控制且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
-  use_selected_plan: "使用選定的電源計畫"
-  restore_previous_plan: "還原先前電源計畫"
+  else_help: "沒有 CPU 規則符合條件或仍在維持時，使用選定的否則電源計畫。"
   else_plan: "否則電源計畫"
 
 background_efficiency:
@@ -859,10 +847,8 @@ action_log:
 
 by_running_app:
   enable: "啟用執行中應用程式電源計畫"
-  restore_previous_plan: "還原先前電源計畫"
-  restore_previous_plan_help: "沒有相符的應用程式執行且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
   intro_1: "執行中應用程式電源計畫會在相符程序執行時切換到選取的電源計畫。"
-  intro_2: "啟用「還原先前電源計畫」後，當沒有相符的應用程式繼續執行，且沒有其他規則選擇電源計畫時，便還原此功能接管前的電源計畫。"
+  intro_2: "符合條件且已選擇電源計畫的規則，優先於 CPU 負載、操作狀態與時間規則。"
   intro_3: "作用中的執行中應用程式電源計畫程序會排除於背景優先順序降低之外。"
   rules_help: "新增應在執行期間暫時維持指定電源計畫的執行檔名稱。"
   power_plan: "電源計畫"
@@ -913,6 +899,8 @@ update_channel:
 power_plan_control:
   automation: "自動化"
   pause_plugged: "使用 AC 電源時暫停切換電源計畫"
+  restore_previous_plan: "沒有規則選擇電源計畫時，還原先前的計畫"
+  restore_previous_plan_help: "所有規則都不再選擇電源計畫時，還原自動切換開始前的計畫。否則與活動電源計畫的選擇優先；將這些選項設為「無」即可允許還原。保留外部電源計畫變更。此設定適用於兩種電源設定檔。"
 power_source:
   plugged_in: "已插電"
   on_battery: "使用電池"

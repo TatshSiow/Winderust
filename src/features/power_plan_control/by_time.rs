@@ -314,7 +314,6 @@ mod tests {
     fn clock_rollback_rechecks_rules_during_both_clock_occurrences() {
         let settings = ByTimeSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Repeated hour".into(),
@@ -367,7 +366,6 @@ mod tests {
         };
         let settings = ByTimeSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![
                 rule.clone(),
                 ByTimeRule {
@@ -426,7 +424,6 @@ mod tests {
         };
         let settings = ByTimeSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![rule.clone()],
         };
         let now = Local.with_ymd_and_hms(2026, 5, 29, 12, 0, 0).unwrap();
@@ -438,7 +435,6 @@ mod tests {
     fn next_change_wakes_at_overnight_rule_end() {
         let settings = ByTimeSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Night".to_owned(),
@@ -460,7 +456,6 @@ mod tests {
     fn next_rule_start_finds_next_enabled_day() {
         let settings = ByTimeSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Work".to_owned(),
@@ -485,7 +480,6 @@ mod tests {
 
         let settings = ByTimeSettings {
             enabled: true,
-            restore_previous_plan: false,
             rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Morning".into(),

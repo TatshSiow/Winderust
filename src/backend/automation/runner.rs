@@ -441,6 +441,9 @@ impl RuntimeCore {
         events: AutomationWakeEvents,
         plugged_in: Option<bool>,
     ) -> bool {
+        if !settings.general.restore_previous_power_plan {
+            self.power_plan_controller.cancel_temporary_restoration();
+        }
         self.action_log.set_mode(settings.advanced.action_log_mode);
         set_execution_failure_suppression_threshold(
             settings.advanced.execution_failure_suppression_threshold(),
@@ -1716,6 +1719,31 @@ mod settings_tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop, preventing struct update.
+    fn settings_cancel_restoration_even_while_adaptive_checks_are_paused() {
+        let mut runner = RuntimeCore::default();
+        // The fixture contains synthetic plan IDs and must never run native shutdown.
+        runner.shutdown_started = true;
+        runner.power_plan_controller = PowerPlanController::temporary_adaptive_fixture();
+        let mut settings = Settings::default();
+        settings.general.restore_previous_power_plan = true;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(runner.has_temporary_power_plan());
+        settings.general.restore_previous_power_plan = false;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(!runner.has_temporary_power_plan());
+        settings.general.restore_previous_power_plan = true;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(runner
+            .run_check(&settings, &mut CycleObservations::default())
+            .is_ok());
+        assert!(!runner.has_temporary_power_plan());
+        assert!(runner.power_plan_controller.adaptive_active());
+        assert!(runner.next_cpu_usage_refresh.is_none());
+        runner.power_plan_controller = PowerPlanController::default();
+    }
+
+    #[test]
     fn cpu_load_source_boundaries_discard_cached_usage_before_zero_duration_rules() {
         use crate::config::{ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison};
 
@@ -1962,7 +1990,6 @@ mod settings_tests {
             }),
             power_plan_guid: Some("high-load-plan".into()),
             else_enabled: false,
-            else_action: crate::config::PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
         }];
         settings.battery_profile_mut().by_cpu_load.enabled = false;

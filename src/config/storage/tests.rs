@@ -673,6 +673,7 @@ fn toml_round_trip_preserves_settings() {
             show_feature_status_on_cards: false,
             animation_mode: crate::config::AnimationMode::Off,
             pause_power_plan_switching_while_plugged_in: true,
+            restore_previous_power_plan: true,
             search_hotkeys: crate::config::SearchHotkeys::default(),
             check_interval_ms: 2_500,
         },
@@ -715,7 +716,6 @@ fn toml_round_trip_preserves_settings() {
             enabled: true,
             idle_timeout_seconds: 12,
             switch_to_performance_on_resume: true,
-            resume_action: crate::config::PowerPlanReturnAction::RestorePreviousPlan,
             input_detection: InputDetectionSettings {
                 keyboard: true,
                 mouse: false,
@@ -728,7 +728,6 @@ fn toml_round_trip_preserves_settings() {
         },
         by_focus: ByFocusSettings {
             enabled: true,
-            restore_previous_plan: true,
             rules: vec![
                 ByFocusRule {
                     enabled: true,
@@ -746,7 +745,6 @@ fn toml_round_trip_preserves_settings() {
         },
         by_time: ByTimeSettings {
             enabled: true,
-            restore_previous_plan: true,
             rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Work hours".to_owned(),
@@ -768,7 +766,6 @@ fn toml_round_trip_preserves_settings() {
                 stability: None,
                 power_plan_guid: Some("low-cpu-guid".to_owned()),
                 else_enabled: true,
-                else_action: crate::config::PowerPlanReturnAction::RestorePreviousPlan,
                 else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
             }],
         },
@@ -892,7 +889,6 @@ fn toml_round_trip_preserves_settings() {
         },
         by_running_app: ByRunningAppSettings {
             enabled: true,
-            restore_previous_plan: true,
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game performance".to_owned(),

@@ -182,11 +182,6 @@ fn matches_exit_condition(rule: &ByCpuLoadRule, usage_percent: f32) -> bool {
 
 fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String, String)> {
     if rule.else_enabled {
-        if !rule.is_else()
-            && rule.else_action == crate::config::PowerPlanReturnAction::RestorePreviousPlan
-        {
-            return None;
-        }
         return Some((
             format!("{} else", rule.name),
             rule.else_power_plan_guid.clone()?,

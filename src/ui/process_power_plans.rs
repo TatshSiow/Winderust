@@ -14,7 +14,6 @@ pub(super) enum Kind {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    RestorePreviousPlan(bool),
     Path(String),
     Browse,
     Add,
@@ -42,7 +41,6 @@ impl Editor {
                 let settings = &mut settings.$field;
                 match message {
                     Message::Enabled(value) => settings.enabled = value,
-                    Message::RestorePreviousPlan(value) => settings.restore_previous_plan = value,
                     Message::Path(path) => self.path = path,
                     Message::Browse => {}
                     Message::Add => {
@@ -99,7 +97,7 @@ impl Editor {
             Kind::RunningApp => crate::rules::DecisionState::ByRunningApp,
         };
         macro_rules! render_rules {
-            ($field:ident, $can_add:ident, $enable:literal, $restore:literal) => {{
+            ($field:ident, $can_add:ident, $enable:literal) => {{
                 let settings = &settings.$field;
                 let mut body = column![super::widgets::toggle_card(
                     $enable,
@@ -107,11 +105,6 @@ impl Editor {
                     Some(Message::Enabled)
                 ),]
                 .spacing(super::widgets::CARD_GAP);
-                body = body.push(widgets::toggle_card(
-                    $restore,
-                    settings.restore_previous_plan,
-                    Some(Message::RestorePreviousPlan),
-                ));
                 let mut rules_body = column![super::app_picker::view(
                     &self.path,
                     candidates,
@@ -177,17 +170,11 @@ impl Editor {
             }};
         }
         match kind {
-            Kind::Focus => render_rules!(
-                by_focus,
-                can_add_by_focus_process,
-                "by_focus.enable",
-                "by_focus.restore_previous_plan"
-            ),
+            Kind::Focus => render_rules!(by_focus, can_add_by_focus_process, "by_focus.enable"),
             Kind::RunningApp => render_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
-                "by_running_app.enable",
-                "by_running_app.restore_previous_plan"
+                "by_running_app.enable"
             ),
         }
     }
@@ -196,39 +183,6 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn previous_plan_options_stay_with_their_feature() {
-        let mut settings = Settings::default();
-        settings.by_running_app.enabled = true;
-        let running_app = settings.by_running_app.clone();
-        let mut editor = Editor::default();
-        editor.update(
-            Kind::Focus,
-            &mut settings,
-            &[],
-            Message::RestorePreviousPlan(true),
-        );
-        assert!(settings.by_focus.restore_previous_plan);
-        editor.update(
-            Kind::Focus,
-            &mut settings,
-            &[],
-            Message::RestorePreviousPlan(false),
-        );
-        assert!(!settings.by_focus.restore_previous_plan);
-        assert_eq!(settings.by_running_app, running_app);
-        assert!(settings.by_focus.rules.is_empty());
-        editor.update(
-            Kind::RunningApp,
-            &mut settings,
-            &[],
-            Message::RestorePreviousPlan(true),
-        );
-        assert!(settings.by_running_app.restore_previous_plan);
-        assert!(!settings.by_focus.restore_previous_plan);
-        assert!(settings.by_running_app.rules.is_empty());
-    }
 
     #[test]
     fn process_plan_status_requires_selected_rule_and_confirmed_plan() {

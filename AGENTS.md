@@ -14,7 +14,9 @@ switch branches only when the user explicitly requests it.
   Log entries in memory and export them only to a user-selected CSV path. Do not
   restore an AppData fallback or migration unless explicitly requested.
 - Power-plan ownership is local: By Activity owns its Idle/Active selections; By Focus, By Running App, By CPU Load, and By Time rules each own their selected plan. There is no global plan fallback.
-- The global A/C scheduler pause belongs on the Power Plan Control landing page.
+- The global A/C scheduler pause and shared Restore previous plan policy belong
+  on the Power Plan Control landing page. Restoration uses a captured plan only
+  after all rules yield; it does not introduce a global selected fallback plan.
 - Only recover temporary managed plans whose name and description identify the current `Winderust Adaptive` plan.
 
 ## Change Checklist
