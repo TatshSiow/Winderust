@@ -162,7 +162,7 @@ use crate::config::{
     AdaptiveEngineSettings, AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage,
     AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
     BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
-    ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule, ByForegroundSettings,
+    ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings,
     ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod,
     CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule,
     CpuLimiterSettings, CpuUsageComparison, DynamicPriorityBoostSettings, GeneralSettings,
@@ -715,6 +715,7 @@ fn toml_round_trip_preserves_settings() {
             enabled: true,
             idle_timeout_seconds: 12,
             switch_to_performance_on_resume: true,
+            resume_action: crate::config::PowerPlanReturnAction::RestorePreviousPlan,
             input_detection: InputDetectionSettings {
                 keyboard: true,
                 mouse: false,
@@ -725,16 +726,17 @@ fn toml_round_trip_preserves_settings() {
                 performance_guid: Some("activity-active-guid".to_owned()),
             },
         },
-        by_foreground: ByForegroundSettings {
+        by_focus: ByFocusSettings {
             enabled: true,
+            restore_previous_plan: true,
             rules: vec![
-                ByForegroundRule {
+                ByFocusRule {
                     enabled: true,
                     name: "Game plan".to_owned(),
                     executable_path: "game.exe".to_owned(),
                     power_plan_guid: Some("gaming-guid".to_owned()),
                 },
-                ByForegroundRule {
+                ByFocusRule {
                     enabled: false,
                     name: "Backup plan".to_owned(),
                     executable_path: "backup\\tool.exe".to_owned(),
@@ -744,6 +746,7 @@ fn toml_round_trip_preserves_settings() {
         },
         by_time: ByTimeSettings {
             enabled: true,
+            restore_previous_plan: true,
             rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Work hours".to_owned(),
@@ -765,6 +768,7 @@ fn toml_round_trip_preserves_settings() {
                 stability: None,
                 power_plan_guid: Some("low-cpu-guid".to_owned()),
                 else_enabled: true,
+                else_action: crate::config::PowerPlanReturnAction::RestorePreviousPlan,
                 else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
             }],
         },
@@ -888,6 +892,7 @@ fn toml_round_trip_preserves_settings() {
         },
         by_running_app: ByRunningAppSettings {
             enabled: true,
+            restore_previous_plan: true,
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game performance".to_owned(),

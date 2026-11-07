@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn cpu_else_actions_are_exclusive_and_preserve_the_selected_plan_in_drafts() {
+    let mut editor = Editor::default();
+    let mut settings = Settings::default();
+    settings.by_cpu_load.rules[0].else_enabled = true;
+    settings.by_cpu_load.rules[0].else_power_plan_guid = Some("selected".into());
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Edit(0));
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::ElseAction(0, PowerPlanReturnAction::RestorePreviousPlan),
+    );
+    assert_eq!(
+        settings.by_cpu_load.rules[0].else_action,
+        PowerPlanReturnAction::SelectedPlan
+    );
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Save);
+    assert_eq!(
+        settings.by_cpu_load.rules[0].else_action,
+        PowerPlanReturnAction::RestorePreviousPlan
+    );
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Edit(0));
+    editor.update(
+        Kind::CpuLoad,
+        &mut settings,
+        &[],
+        Message::ElseAction(0, PowerPlanReturnAction::SelectedPlan),
+    );
+    editor.update(Kind::CpuLoad, &mut settings, &[], Message::Save);
+    assert_eq!(
+        settings.by_cpu_load.rules[0].else_action,
+        PowerPlanReturnAction::SelectedPlan
+    );
+    assert_eq!(
+        settings.by_cpu_load.rules[0]
+            .else_power_plan_guid
+            .as_deref(),
+        Some("selected")
+    );
+}
+
+#[test]
+fn time_restore_option_stays_separate_from_rule_drafts_and_cpu_settings() {
+    let mut editor = Editor::default();
+    let mut settings = Settings::default();
+    let cpu_load = settings.by_cpu_load.clone();
+    editor.update(Kind::Time, &mut settings, &[], Message::Edit(0));
+    editor.update(
+        Kind::Time,
+        &mut settings,
+        &[],
+        Message::RestorePreviousPlan(true),
+    );
+    editor.update(Kind::Time, &mut settings, &[], Message::Cancel);
+    assert!(settings.by_time.restore_previous_plan);
+    assert_eq!(settings.by_cpu_load, cpu_load);
+}
+
+#[test]
 fn cpu_duration_editor_accepts_only_values_that_round_trip_in_toml() {
     let mut editor = Editor::default();
     let mut settings = Settings::default();
@@ -145,7 +204,12 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
     use iced::advanced::{layout, widget::Tree, Layout, Shell};
     use iced::{mouse, Event, Rectangle, Size};
     fn find_table(layout: Layout<'_>, count: usize) -> Option<Layout<'_>> {
-        if layout.children().len() == count {
+        let cells: Vec<_> = layout.children().collect();
+        if cells.len() == count
+            && cells[0].bounds().width == 48.0
+            && cells[1].bounds().width == 140.0
+            && cells[3].bounds().width == 80.0
+        {
             Some(layout)
         } else {
             layout.children().find_map(|child| find_table(child, count))
@@ -177,6 +241,7 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
             stability: None,
             power_plan_guid: Some("plan".into()),
             else_enabled: false,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
         })
         .collect();
@@ -250,6 +315,10 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
                     if action != 0 && width == 430 {
                         continue;
                     }
+                    assert!(
+                        bounds.contains(cursor),
+                        "visible rule control: {kind:?}/{width}/{action}"
+                    );
                     let mut messages = Vec::new();
                     for event in [
                         mouse::Event::ButtonPressed(mouse::Button::Left),
@@ -287,6 +356,7 @@ fn cpu_rule_status_tracks_selected_else_plan_and_failed_switches() {
         enabled: true,
         power_plan_guid: Some("main".into()),
         else_enabled: true,
+        else_action: PowerPlanReturnAction::SelectedPlan,
         else_power_plan_guid: Some("else".into()),
         name: "Rule".into(),
         comparison: CpuUsageComparison::AtOrAbove,

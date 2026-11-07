@@ -106,6 +106,25 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans. Ownership starts immediately after duplication, before metadata or idle-state initialization. A never-activated clone whose source remains active preserves the ordinary restoration chain; genuine external plan changes still invalidate it.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global power-plan fallback or load-time mapping migration. The `power_plans` field on `ByActivitySettings` owns the visible Idle/Active selections.
+- By Focus, By Running App, and By Time offer a profile-local Restore previous
+  plan option, defaulting off. They release on confirmed focus loss, absence of
+  matching apps, or the end of the last matching time window respectively.
+  By CPU Load offers restoration as its conditional rule's Else action; By
+  Activity offers it as the resume action instead of a selected Active plan.
+  Dormant selected-plan GUIDs are retained for editing but never compete with
+  a selected restoration action. Standalone CPU Else rules select explicit plans.
+- Restoring rules share one temporary episode baseline, captured from the actual
+  plan before the first verified temporary switch and separate from the ordinary
+  controller's original automation baseline. Further restoring winners preserve
+  it across app and feature handoffs. A persistent winner ends the episode after
+  verification. Another selected rule wins before restoration; with no winner,
+  the controller restores through its existing verified recovery transaction.
+  External plan changes invalidate the baseline. Unavailable focus, plausible
+  process matches, CPU samples, or activity observations do not prove a condition
+  ended; they defer affected fallthrough while a known higher-priority rule can
+  still take over. Pending restoration keeps the worker alive and retries
+  independently of feature enablement. Failed or no-op returns never log a
+  successful switch.
 - By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
   Invalid clock values fail settings load or import; raw incomplete edits stay in the UI editor.
   Repeated local clock boundaries retain both occurrences. A maximum 60-second
@@ -132,7 +151,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   observed external plan changes clear held By CPU Load state. A failed or
   unconfirmed application cannot start a hold. Active-plan observation precedes
   retained-rule evaluation, using the controller's existing observation cadence.
-  Release yields to other selected rules or Else; it does not add baseline restoration.
+  Release yields to other selected rules or the configured Else action. Restore
+  previous plan is eligible only after a primary rule actually took temporary
+  control; an Else action cannot manufacture a baseline before that acquisition.
 - Ordinary power-setting notifications preserve CPU qualification and holds;
   Winderust's own plan switch must not restart qualification and select Else.
   Actual power-source changes and suspend/resume restart qualification and holds,

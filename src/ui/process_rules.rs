@@ -2,9 +2,7 @@ use crate::config::{
     AppSuspensionRule, AppSuspensionSettings, MemoryTrimSettings, NetworkThresholdUnit,
     ProcessExclusionRule, TimerResolutionRule, TimerResolutionSettings,
 };
-use crate::config::{
-    ByForegroundRule, ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings,
-};
+use crate::config::{ByFocusRule, ByFocusSettings, ByRunningAppRule, ByRunningAppSettings};
 use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
 use crate::cpu_limiter;
 use crate::foreground::executable_path_key;
@@ -61,7 +59,7 @@ pub(crate) fn process_setting_matches(configured_process: &str, process_name: &s
         )
 }
 
-pub(crate) fn can_add_foreground_process(settings: &ByForegroundSettings, process: &str) -> bool {
+pub(crate) fn can_add_by_focus_process(settings: &ByFocusSettings, process: &str) -> bool {
     can_add_process_candidate(
         process,
         |process| {
@@ -74,12 +72,9 @@ pub(crate) fn can_add_foreground_process(settings: &ByForegroundSettings, proces
     )
 }
 
-pub(crate) fn new_foreground_rule(
-    process: &str,
-    power_plan_guid: Option<String>,
-) -> ByForegroundRule {
+pub(crate) fn new_by_focus_rule(process: &str, power_plan_guid: Option<String>) -> ByFocusRule {
     let executable_path = executable_path_key(Path::new(process));
-    ByForegroundRule {
+    ByFocusRule {
         enabled: true,
         name: Path::new(process)
             .file_name()

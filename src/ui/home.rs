@@ -1217,13 +1217,9 @@ fn enabled_features(
         };
     }
     feature!(
-        ByForeground,
-        by_foreground,
-        t!(
-            "common.rule_count",
-            count = settings.by_foreground.rules.len()
-        )
-        .to_string()
+        ByFocus,
+        by_focus,
+        t!("common.rule_count", count = settings.by_focus.rules.len()).to_string()
     );
     feature!(
         ByRunningApp,
@@ -1430,7 +1426,7 @@ mod tests {
         use crate::ui::navigation::feature_toggle;
 
         let pages = [
-            Page::ByForeground,
+            Page::ByFocus,
             Page::ByRunningApp,
             Page::ByCpuLoad,
             Page::ByActivity,

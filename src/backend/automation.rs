@@ -1123,7 +1123,8 @@ fn run_background_automation(
             }
         }
         let now = Instant::now();
-        let power_plan_checks_required = power_plan_checks_required(settings);
+        let power_plan_checks_required =
+            power_plan_checks_required(settings) || runner.has_temporary_power_plan();
         let scan_process_appearance = process_appearance_scan_required(settings);
         let background_efficiency_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.background_efficiency.enabled);
@@ -1138,7 +1139,8 @@ fn run_background_automation(
         let cpu_limiter_refresh_required =
             settings_changed || feature_refresh_required(settings, cpu_limiter_required(settings));
         let by_running_app_refresh_required = settings_changed
-            || feature_refresh_required(settings, by_running_app_required(settings));
+            || feature_refresh_required(settings, by_running_app_required(settings))
+            || runner.has_temporary_power_plan();
         let adaptive_engine_process_refresh_required = settings_changed
             || feature_refresh_required(settings, adaptive_engine_process_required(settings));
         let bottleneck_classifier_refresh_required = settings_changed
@@ -1470,11 +1472,14 @@ fn run_background_automation(
                 if let Err(error) = runner.run_check(settings, &mut observations) {
                     update_worker_error(&shared, Some(error));
                 }
-                power_plan_check_delay(
+                let delay = power_plan_check_delay(
                     settings,
                     windows_event_watcher_active,
                     runner.activity_snapshot(settings, Instant::now()).idle_for,
-                )
+                );
+                runner
+                    .temporary_power_plan_retry_delay()
+                    .map_or(delay, |retry| Some(min_worker_wait(delay, retry)))
             })
         } else {
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);

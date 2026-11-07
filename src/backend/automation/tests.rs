@@ -7,7 +7,7 @@ use crate::action_log::{
 };
 use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
-    AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
+    AppSuspensionRule, ByFocusRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
     CpuLimiterRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
     ProcessGpuPrioritySetting, ProcessRuleMode, ProcessThreadPrioritySetting, TimerResolutionRule,
     WeekdaySetting,
@@ -189,8 +189,8 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
 #[test]
 fn power_plan_action_logs_are_attributed_to_the_winning_rule_family() {
     assert_eq!(
-        power_plan_action_log_feature(DecisionState::ByForeground),
-        Some(ActionLogFeature::ByForeground)
+        power_plan_action_log_feature(DecisionState::ByFocus),
+        Some(ActionLogFeature::ByFocus)
     );
     assert_eq!(
         power_plan_action_log_feature(DecisionState::ByRunningApp),
@@ -813,15 +813,15 @@ fn process_appearance_scan_sleeps_when_process_features_are_off() {
 }
 
 #[test]
-fn foreground_lookup_runs_only_for_configured_by_foreground() {
+fn foreground_lookup_runs_only_for_configured_by_focus() {
     let mut settings = Settings::default();
 
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.enabled = true;
+    settings.by_focus.enabled = true;
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "editor.exe".to_owned(),
         executable_path: String::new(),
@@ -829,13 +829,13 @@ fn foreground_lookup_runs_only_for_configured_by_foreground() {
     });
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules[0].power_plan_guid = Some("active-guid".to_owned());
+    settings.by_focus.rules[0].power_plan_guid = Some("active-guid".to_owned());
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules[0].executable_path = r"C:\Apps\editor.exe".to_owned();
+    settings.by_focus.rules[0].executable_path = r"C:\Apps\editor.exe".to_owned();
     assert!(foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules[0].enabled = false;
+    settings.by_focus.rules[0].enabled = false;
     assert!(!foreground_lookup_required(&settings));
 }
 
@@ -847,7 +847,7 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.cpu_limiter.enabled = true;
     settings.by_running_app.enabled = true;
     settings.timer_resolution.enabled = true;
-    settings.by_foreground.enabled = true;
+    settings.by_focus.enabled = true;
 
     assert!(!automation_worker_required(&settings));
 
@@ -883,7 +883,7 @@ fn enabled_empty_rule_features_do_not_poll() {
         executable_path: " ".to_owned(),
         desired_100ns: 5_000,
     });
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "Empty".to_owned(),
         executable_path: " ".to_owned(),
@@ -941,8 +941,8 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
         executable_path: r"C:\Apps\chat.exe".to_owned(),
         desired_100ns: 5_000,
     });
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.enabled = true;
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "Chat".to_owned(),
         executable_path: r"C:\Apps\chat.exe".to_owned(),
@@ -1049,7 +1049,7 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
 fn automation_worker_runs_for_adaptive_power_plan_alone() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
-    settings.by_foreground.enabled = false;
+    settings.by_focus.enabled = false;
     settings.adaptive_engine.enabled = true;
     settings.adaptive_engine.processor_power_policy_enabled = true;
 
@@ -1060,7 +1060,7 @@ fn automation_worker_runs_for_adaptive_power_plan_alone() {
 fn automation_worker_runs_for_bottleneck_classifier_alone() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
-    settings.by_foreground.enabled = false;
+    settings.by_focus.enabled = false;
     settings.adaptive_engine.enabled = true;
     settings.adaptive_engine.processor_power_policy_enabled = false;
 
@@ -1989,11 +1989,11 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
 }
 
 #[test]
-fn event_driven_power_checks_drop_idle_polling_for_foreground_only_rules() {
+fn event_driven_power_checks_drop_idle_polling_for_focus_only_rules() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.enabled = true;
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "chat.exe".to_owned(),
         executable_path: r"C:\Apps\chat.exe".to_owned(),
@@ -2472,8 +2472,8 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             power_plan_guid: Some("time-plan".into()),
             ..Default::default()
         });
-        profile.by_foreground.enabled = true;
-        profile.by_foreground.rules.push(ByForegroundRule {
+        profile.by_focus.enabled = true;
+        profile.by_focus.rules.push(ByFocusRule {
             enabled: true,
             executable_path: r"C:\Apps\test.exe".into(),
             power_plan_guid: Some("test-plan".into()),
@@ -2503,7 +2503,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         } else {
             &mut settings
         };
-        profile.by_foreground.enabled = false;
+        profile.by_focus.enabled = false;
         profile.process_priority.enabled = true;
         lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
         notify_windows_event(&shared, WindowsAutomationEvent::PowerChanged);
@@ -2580,8 +2580,8 @@ fn idle_battery_worker_survives_source_changes_without_settings_updates() {
         on_battery: Some(Box::new(Settings::default())),
         ..Default::default()
     };
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.enabled = true;
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "nonexistent audit target".into(),
         executable_path: r"C:\WinderustAuditNonexistent	arget.exe".into(),

@@ -342,7 +342,7 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::CpuLimiter => ("cpu_limiter", 5),
         Page::ByActivity => ("by_activity", 2),
         Page::ByCpuLoad => ("by_cpu_load", 2),
-        Page::ByForeground => ("by_foreground", 2),
+        Page::ByFocus => ("by_focus", 2),
         Page::ByRunningApp => ("by_running_app", 3),
         Page::ByTime => ("by_time", 2),
         Page::ProcessPriority => ("process_priority", 2),
@@ -366,7 +366,7 @@ pub(super) fn page_feature_info(page: Page) -> String {
         .join("\n\n");
     if matches!(
         page,
-        Page::ByActivity | Page::ByCpuLoad | Page::ByForeground | Page::ByRunningApp | Page::ByTime
+        Page::ByActivity | Page::ByCpuLoad | Page::ByFocus | Page::ByRunningApp | Page::ByTime
     ) {
         for key in [
             "common.power_plan_priority",
@@ -447,7 +447,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::MemoryTrim => "icons/scissors.svg",
         Page::Watchdog => "icons/square-activity.svg",
         Page::ProcessorAffinityHard => "icons/monitor-x.svg",
-        Page::ByForeground => "icons/bring-to-front.svg",
+        Page::ByFocus => "icons/bring-to-front.svg",
         Page::ByTime => "icons/calendar-days.svg",
         Page::ActionLog => "icons/square-menu.svg",
         Page::WinderustBehaviour => "icons/settings.svg",
@@ -464,7 +464,7 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
         Page::BackgroundEfficiency => settings.background_efficiency.enabled,
         Page::MemoryTrim => settings.memory_trim.enabled,
         Page::Watchdog => settings.watchdog.enabled,
-        Page::ByForeground => settings.by_foreground.enabled,
+        Page::ByFocus => settings.by_focus.enabled,
         Page::ByRunningApp => settings.by_running_app.enabled,
         Page::ByCpuLoad => settings.by_cpu_load.enabled,
         Page::ByActivity => settings.by_activity.enabled,
@@ -490,7 +490,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
         Page::BackgroundEfficiency => |settings| &mut settings.background_efficiency.enabled,
         Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
         Page::Watchdog => |settings| &mut settings.watchdog.enabled,
-        Page::ByForeground => |settings| &mut settings.by_foreground.enabled,
+        Page::ByFocus => |settings| &mut settings.by_focus.enabled,
         Page::ByRunningApp => |settings| &mut settings.by_running_app.enabled,
         Page::ByCpuLoad => |settings| &mut settings.by_cpu_load.enabled,
         Page::ByActivity => |settings| &mut settings.by_activity.enabled,
@@ -611,11 +611,12 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("by_activity.intro_2"),
             t!("by_activity.enable"),
         ),
-        Page::ByForeground => format!(
-            "{label} {section} {} {} {} foreground focused app process window power plan priority rule",
-            t!("by_foreground.intro_1"),
-            t!("by_foreground.intro_2"),
-            t!("by_foreground.enable"),
+        Page::ByFocus => format!(
+            "{label} {section} {} {} {} {} focus focused app process window power plan priority rule",
+            t!("by_focus.intro_1"),
+            t!("by_focus.intro_2"),
+            t!("by_focus.enable"),
+            t!("by_focus.restore_previous_plan"),
         ),
         Page::ByTime => format!(
             "{label} {section} {} {} {} time schedule clock date weekday overnight power plan",

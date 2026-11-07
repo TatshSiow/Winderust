@@ -1,5 +1,7 @@
 use super::*;
-use crate::config::{ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison};
+use crate::config::{
+    ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison, PowerPlanReturnAction,
+};
 use std::time::Duration;
 
 fn rule_with_else(comparison: CpuUsageComparison) -> ByCpuLoadRule {
@@ -12,9 +14,32 @@ fn rule_with_else(comparison: CpuUsageComparison) -> ByCpuLoadRule {
         duration_seconds: 0,
         power_plan_guid: Some("matched-plan".into()),
         else_enabled: true,
+        else_action: PowerPlanReturnAction::SelectedPlan,
         else_power_plan_guid: Some("else-plan".into()),
         stability: None,
     }
+}
+
+#[test]
+fn restore_action_ignores_dormant_else_plan_and_yields_to_another_primary() {
+    let mut first = rule_with_else(CpuUsageComparison::AtOrAbove);
+    first.else_action = PowerPlanReturnAction::RestorePreviousPlan;
+    let mut settings = ByCpuLoadSettings {
+        enabled: true,
+        rules: vec![first],
+    };
+    let mut scheduler = ByCpuLoadScheduler::default();
+    let primary = scheduler.current_decision(&settings, Some(80.0)).unwrap();
+    assert!(!primary.is_else);
+    assert!(scheduler.current_decision(&settings, Some(20.0)).is_none());
+
+    let mut second = rule_with_else(CpuUsageComparison::AtOrBelow);
+    second.power_plan_guid = Some("other-primary".into());
+    second.else_enabled = false;
+    settings.rules.push(second);
+    let selected = scheduler.current_decision(&settings, Some(20.0)).unwrap();
+    assert_eq!(selected.power_plan_guid, "other-primary");
+    assert!(!selected.is_else);
 }
 
 #[test]
@@ -115,6 +140,7 @@ fn selected_rule_index_survives_else_branch_and_arbitration() {
             duration_seconds: 0,
             power_plan_guid: Some("main".into()),
             else_enabled: true,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: Some("else".into()),
             stability: None,
             upper_threshold_percent: None,
@@ -132,8 +158,11 @@ fn selected_rule_index_survives_else_branch_and_arbitration() {
             crate::rules::DecisionInput {
                 activity_state: crate::activity::ActivityState::Unknown,
                 foreground_executable_path: None,
+                foreground_process_id: None,
                 plugged_in: Some(false),
                 by_running_app: None,
+                by_running_app_known: true,
+                cpu_load_known: true,
                 by_time: None,
                 by_cpu_load: Some(decision),
             },
@@ -157,6 +186,7 @@ fn by_cpu_load_returns_matching_zero_duration_rule() {
             duration_seconds: 0,
             power_plan_guid: Some("high-cpu-guid".to_owned()),
             else_enabled: false,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
             stability: None,
         }],
@@ -182,6 +212,7 @@ fn ignores_non_matching_rule() {
             duration_seconds: 0,
             power_plan_guid: Some("low-cpu-guid".to_owned()),
             else_enabled: false,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
             stability: None,
         }],
@@ -204,6 +235,7 @@ fn matching_rule_without_selected_plan_does_not_decide() {
             duration_seconds: 0,
             power_plan_guid: None,
             else_enabled: false,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
             stability: None,
         }],
@@ -226,6 +258,7 @@ fn returns_between_rule_when_usage_is_in_range() {
             duration_seconds: 0,
             power_plan_guid: Some("medium-cpu-guid".to_owned()),
             else_enabled: false,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
             stability: None,
         }],
@@ -251,6 +284,7 @@ fn else_branch_applies_until_condition_duration_is_met() {
             duration_seconds: 30,
             power_plan_guid: Some("high-cpu-guid".to_owned()),
             else_enabled: true,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: Some("else-guid".to_owned()),
             stability: None,
         }],
@@ -279,6 +313,7 @@ fn editing_a_rule_resets_its_duration_timer() {
             duration_seconds: 30,
             power_plan_guid: Some("high-cpu-guid".to_owned()),
             else_enabled: false,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
             stability: None,
         }],
@@ -306,6 +341,7 @@ fn selected_rule_does_not_leave_later_rule_timers_stale() {
                 duration_seconds: 0,
                 power_plan_guid: Some("high-cpu-guid".to_owned()),
                 else_enabled: false,
+                else_action: PowerPlanReturnAction::SelectedPlan,
                 else_power_plan_guid: None,
                 stability: None,
             },
@@ -318,6 +354,7 @@ fn selected_rule_does_not_leave_later_rule_timers_stale() {
                 duration_seconds: 30,
                 power_plan_guid: Some("low-cpu-guid".to_owned()),
                 else_enabled: false,
+                else_action: PowerPlanReturnAction::SelectedPlan,
                 else_power_plan_guid: None,
                 stability: None,
             },
@@ -348,6 +385,7 @@ fn disabled_rule_is_ignored() {
             duration_seconds: 0,
             power_plan_guid: Some("high-cpu-guid".to_owned()),
             else_enabled: true,
+            else_action: PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: Some("else-guid".to_owned()),
             stability: None,
         }],

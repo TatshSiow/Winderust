@@ -360,7 +360,7 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
 pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (activity_power_plan_required(settings)
-            || by_foreground_required(settings)
+            || by_focus_required(settings)
             || by_time_rules_required(settings)
             || by_cpu_load_rules_required(settings)
             || by_running_app_required(settings))
@@ -460,6 +460,8 @@ pub(super) fn activity_power_plan_required(settings: &Settings) -> bool {
     settings.by_activity.enabled
         && (has_idle_plan(&settings.by_activity.power_plans)
             || (settings.by_activity.switch_to_performance_on_resume
+                && settings.by_activity.resume_action
+                    == crate::config::PowerPlanReturnAction::SelectedPlan
                 && settings.by_activity.input_detection.any_enabled()
                 && has_active_plan(&settings.by_activity.power_plans)))
 }
@@ -470,19 +472,21 @@ pub(super) fn controller_activity_poll_required(settings: &Settings) -> bool {
         && settings.by_activity.input_detection.controller
         && (has_idle_plan(&settings.by_activity.power_plans)
             || (settings.by_activity.switch_to_performance_on_resume
+                && settings.by_activity.resume_action
+                    == crate::config::PowerPlanReturnAction::SelectedPlan
                 && has_active_plan(&settings.by_activity.power_plans)))
 }
 
-pub(super) fn by_foreground_required(settings: &Settings) -> bool {
-    settings.by_foreground.enabled
-        && (settings.by_foreground.rules.iter().any(|rule| {
+pub(super) fn by_focus_required(settings: &Settings) -> bool {
+    settings.by_focus.enabled
+        && (settings.by_focus.rules.iter().any(|rule| {
             enabled_executable_path_rule(rule.enabled, &rule.executable_path)
                 && rule.power_plan_guid.is_some()
         }))
 }
 
 pub(super) fn foreground_lookup_required(settings: &Settings) -> bool {
-    by_foreground_required(settings)
+    by_focus_required(settings)
 }
 
 pub(super) fn by_time_rules_required(settings: &Settings) -> bool {
@@ -499,7 +503,11 @@ pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
         && settings.by_cpu_load.rules.iter().any(|rule| {
             rule.enabled
                 && (rule.power_plan_guid.is_some()
-                    || (rule.else_enabled && rule.else_power_plan_guid.is_some()))
+                    || (rule.else_enabled
+                        && (rule.is_else()
+                            || rule.else_action
+                                == crate::config::PowerPlanReturnAction::SelectedPlan)
+                        && rule.else_power_plan_guid.is_some()))
         })
 }
 

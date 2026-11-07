@@ -246,7 +246,7 @@ enabled = false
 idle_timeout_seconds = 300
 switch_to_performance_on_resume = false
 
-[by_foreground]
+[by_focus]
 enabled = false
 rules = []
 

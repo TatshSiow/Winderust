@@ -45,7 +45,7 @@ pub(super) fn view<'a>(
     let settings = saved_runtime_settings(settings, crate::backend::power_source::is_plugged_in());
     let power_feature = match page {
         Page::ByActivity => Some(ActionLogFeature::ByActivity),
-        Page::ByForeground => Some(ActionLogFeature::ByForeground),
+        Page::ByFocus => Some(ActionLogFeature::ByFocus),
         Page::ByRunningApp => Some(ActionLogFeature::ByRunningApp),
         Page::ByCpuLoad => Some(ActionLogFeature::ByCpuLoad),
         Page::ByTime => Some(ActionLogFeature::ByTime),
@@ -348,7 +348,7 @@ fn sidebar_state(
             plan.decision_state,
             Some(DecisionState::ByActivityIdle | DecisionState::ByActivityActive)
         )),
-        Page::ByForeground => Some(plan.decision_state == Some(DecisionState::ByForeground)),
+        Page::ByFocus => Some(plan.decision_state == Some(DecisionState::ByFocus)),
         Page::ByRunningApp => Some(plan.decision_state == Some(DecisionState::ByRunningApp)),
         Page::ByCpuLoad => Some(plan.decision_state == Some(DecisionState::ByCpuLoad)),
         Page::ByTime => Some(plan.decision_state == Some(DecisionState::ByTime)),

@@ -1380,6 +1380,7 @@ impl RuntimeCore {
     pub(super) fn has_managed_process_control_state(&self) -> bool {
         let app_suspension_active = self.app_suspension_active();
         self.power_plan_controller.has_pending_cleanup()
+            || self.power_plan_controller.has_temporary_plan()
             || self.cpu_allocation_coordinator.has_managed_state()
             || self.cpu_allocation_coordinator.has_pending_reconciliation()
             || self.dynamic_priority_boost_controller.has_managed_state()
@@ -1406,6 +1407,14 @@ impl RuntimeCore {
 
     pub(super) fn adaptive_power_plan_active(&self) -> bool {
         self.power_plan_controller.adaptive_active()
+    }
+
+    pub(super) fn has_temporary_power_plan(&self) -> bool {
+        self.power_plan_controller.has_temporary_plan()
+    }
+
+    pub(super) fn temporary_power_plan_retry_delay(&self) -> Option<Duration> {
+        self.power_plan_controller.temporary_release_retry_delay()
     }
 
     pub(super) fn run_gpu_priority_update(
@@ -1531,7 +1540,12 @@ impl RuntimeCore {
 
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
-        let foreground_executable_path = foreground_lookup_required(settings)
+        let observe_foreground =
+            foreground_lookup_required(settings) || self.power_plan_controller.has_focus_plan();
+        let foreground_process_id = observe_foreground
+            .then(|| observations.foreground_process_id())
+            .flatten();
+        let foreground_executable_path = observe_foreground
             .then(|| observations.foreground_process())
             .flatten()
             .filter(|process| process_is_critical(process.id) == Some(false))
@@ -1559,6 +1573,12 @@ impl RuntimeCore {
         let decision_input = DecisionInput {
             activity_state: activity.state,
             foreground_executable_path,
+            foreground_process_id,
+            by_running_app_known: self.by_running_app_manager.observation_known(),
+            cpu_load_known: self
+                .cpu_usage
+                .percent
+                .is_some_and(|usage| usage.is_finite() && (0.0..=100.0).contains(&usage)),
             plugged_in: power_source::is_plugged_in(),
             by_running_app,
             by_time: by_time_decision,
@@ -1576,13 +1596,16 @@ impl RuntimeCore {
         ) {
             self.by_cpu_load_scheduler.reset();
         }
-        let feature = power_plan_action_log_feature(decision.state);
-        let target_guid = decision.power_plan_guid.clone().unwrap_or_default();
-        let reason = decision.reason.clone();
-        match self
+        let result = self
             .power_plan_controller
-            .reconcile_ordinary(decision, Instant::now())
-        {
+            .reconcile_ordinary(decision, Instant::now());
+        let status = self.power_plan_controller.status();
+        let feature = status
+            .decision_state
+            .and_then(power_plan_action_log_feature);
+        let target_guid = status.target_guid.unwrap_or_default();
+        let reason = status.reason.unwrap_or_default();
+        match result {
             Ok(applied) => {
                 self.by_cpu_load_scheduler.confirm_applied_rule(
                     winning_cpu_load_rule_index,
@@ -1639,7 +1662,7 @@ impl RuntimeCore {
 
 pub(super) fn power_plan_action_log_feature(state: DecisionState) -> Option<ActionLogFeature> {
     match state {
-        DecisionState::ByForeground => Some(ActionLogFeature::ByForeground),
+        DecisionState::ByFocus => Some(ActionLogFeature::ByFocus),
         DecisionState::ByRunningApp => Some(ActionLogFeature::ByRunningApp),
         DecisionState::ByTime => Some(ActionLogFeature::ByTime),
         DecisionState::ByCpuLoad => Some(ActionLogFeature::ByCpuLoad),
@@ -1922,7 +1945,7 @@ mod settings_tests {
         let mut settings = Settings::default();
         settings.by_activity.enabled = false;
         settings.by_time.enabled = false;
-        settings.by_foreground.enabled = false;
+        settings.by_focus.enabled = false;
         settings.by_running_app.enabled = false;
         settings.by_cpu_load.enabled = true;
         settings.by_cpu_load.rules = vec![ByCpuLoadRule {
@@ -1939,6 +1962,7 @@ mod settings_tests {
             }),
             power_plan_guid: Some("high-load-plan".into()),
             else_enabled: false,
+            else_action: crate::config::PowerPlanReturnAction::SelectedPlan,
             else_power_plan_guid: None,
         }];
         settings.battery_profile_mut().by_cpu_load.enabled = false;

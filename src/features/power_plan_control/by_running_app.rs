@@ -1,13 +1,14 @@
-use std::collections::BTreeSet;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     config::{ByRunningAppRule, ByRunningAppSettings},
     foreground::{
-        contains_process_name, process_matches_executable_path, process_session_id,
+        contains_process_name, process_executable_path, process_session_id, same_executable_path,
         same_process_name, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     runtime::observations::CycleObservations,
@@ -17,6 +18,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ByRunningAppSnapshot {
+    pub observation_known: bool,
     pub active_rule: Option<String>,
     pub active_process: Option<String>,
     pub target_guid: Option<String>,
@@ -25,6 +27,7 @@ pub struct ByRunningAppSnapshot {
 #[derive(Default)]
 pub struct ByRunningAppManager {
     active: Option<ActiveByRunningApp>,
+    observation_known: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,45 +46,47 @@ impl ByRunningAppManager {
         automation_enabled: bool,
         observations: &mut CycleObservations,
     ) -> ByRunningAppSnapshot {
-        if !automation_enabled {
+        self.observation_known = true;
+        if !automation_enabled
+            || !settings.enabled
+            || !settings.rules.iter().any(|rule| {
+                rule.enabled
+                    && !rule.executable_path.trim().is_empty()
+                    && rule.power_plan_guid.is_some()
+            })
+        {
             self.release();
-            return ByRunningAppSnapshot::default();
+            return self.snapshot();
         }
 
-        if !settings.enabled {
-            self.release();
-            return ByRunningAppSnapshot::default();
-        }
-
+        self.observation_known = false;
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             self.release();
-            return ByRunningAppSnapshot::default();
+            return self.snapshot();
         };
 
         let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(_) => {
                 self.release();
-                return ByRunningAppSnapshot::default();
+                return self.snapshot();
             }
         };
-        let eligible_processes = processes
-            .iter()
-            .filter(|process| {
-                process.id != 0
-                    && process.is_critical == Some(false)
-                    && process.id != current_process_id
-                    && !is_builtin_excluded(&process.name)
-                    && process_session_id(process.id) == Some(current_session_id)
-            })
-            .collect::<Vec<_>>();
-        let matched = matching_rule_process(settings, &eligible_processes);
+        let (matched, known) = matching_rule_process(
+            settings,
+            &processes,
+            current_process_id,
+            current_session_id,
+            process_session_id,
+            process_executable_path,
+        );
+        self.observation_known = known;
 
         let Some(matched) = matched else {
             self.release();
-            return ByRunningAppSnapshot::default();
+            return self.snapshot();
         };
 
         if self.active_matches(&matched) {
@@ -90,6 +95,10 @@ impl ByRunningAppManager {
 
         self.active = Some(matched);
         self.snapshot()
+    }
+
+    pub(crate) fn observation_known(&self) -> bool {
+        self.observation_known
     }
 
     pub fn active_process_ids(&self) -> BTreeSet<u32> {
@@ -127,15 +136,18 @@ impl ByRunningAppManager {
     }
 
     fn snapshot(&self) -> ByRunningAppSnapshot {
-        self.active
-            .as_ref()
-            .map_or_else(ByRunningAppSnapshot::default, |active| {
-                ByRunningAppSnapshot {
-                    active_rule: Some(active.rule_name.clone()),
-                    active_process: Some(active.process_name.clone()),
-                    target_guid: Some(active.target_guid.clone()),
-                }
-            })
+        self.active.as_ref().map_or_else(
+            || ByRunningAppSnapshot {
+                observation_known: self.observation_known,
+                ..ByRunningAppSnapshot::default()
+            },
+            |active| ByRunningAppSnapshot {
+                observation_known: self.observation_known,
+                active_rule: Some(active.rule_name.clone()),
+                active_process: Some(active.process_name.clone()),
+                target_guid: Some(active.target_guid.clone()),
+            },
+        )
     }
 }
 
@@ -145,8 +157,13 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 
 fn matching_rule_process(
     settings: &ByRunningAppSettings,
-    processes: &[&ProcessInfo],
-) -> Option<ActiveByRunningApp> {
+    processes: &[ProcessInfo],
+    current_process_id: u32,
+    current_session_id: u32,
+    mut session_id: impl FnMut(u32) -> Option<u32>,
+    mut executable_path: impl FnMut(&ProcessInfo) -> Option<PathBuf>,
+) -> (Option<ActiveByRunningApp>, bool) {
+    let mut known = true;
     for (rule_index, rule) in settings.rules.iter().enumerate() {
         if !rule.enabled || rule.executable_path.trim().is_empty() {
             continue;
@@ -154,23 +171,49 @@ fn matching_rule_process(
         let Some(target_guid) = rule.power_plan_guid.as_ref() else {
             continue;
         };
-        let Some(process) = processes
-            .iter()
-            .find(|process| process_matches_executable_path(process, &rule.executable_path))
-        else {
+        let configured_path = Path::new(rule.executable_path.trim());
+        let Some(file_name) = configured_path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
 
-        return Some(ActiveByRunningApp {
-            rule_index,
-            rule_name: performance_rule_name(rule),
-            process_id: process.id,
-            process_name: process.name.clone(),
-            target_guid: target_guid.clone(),
-        });
+        for process in processes {
+            if process.id == 0
+                || process.id == current_process_id
+                || is_builtin_excluded(&process.name)
+                || process.is_critical == Some(true)
+                || !same_process_name(&process.name, file_name)
+            {
+                continue;
+            }
+            let session = session_id(process.id);
+            if session.is_some_and(|session| session != current_session_id) {
+                continue;
+            }
+            let Some(actual_path) = executable_path(process) else {
+                known = false;
+                continue;
+            };
+            if !same_executable_path(&actual_path, configured_path) {
+                continue;
+            }
+            if process.is_critical.is_none() || session.is_none() {
+                known = false;
+                continue;
+            }
+            return (
+                Some(ActiveByRunningApp {
+                    rule_index,
+                    rule_name: performance_rule_name(rule),
+                    process_id: process.id,
+                    process_name: process.name.clone(),
+                    target_guid: target_guid.clone(),
+                }),
+                true,
+            );
+        }
     }
 
-    None
+    (None, known)
 }
 
 fn performance_rule_name(rule: &ByRunningAppRule) -> String {
@@ -186,10 +229,25 @@ fn performance_rule_name(rule: &ByRunningAppRule) -> String {
 mod tests {
     use super::*;
 
+    fn match_processes(
+        settings: &ByRunningAppSettings,
+        processes: &[ProcessInfo],
+    ) -> (Option<ActiveByRunningApp>, bool) {
+        matching_rule_process(
+            settings,
+            processes,
+            u32::MAX,
+            1,
+            |_| Some(1),
+            |process| process.image_path.clone(),
+        )
+    }
+
     #[test]
     fn matching_rule_uses_selected_plan() {
         let settings = ByRunningAppSettings {
             enabled: true,
+            restore_previous_plan: false,
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game".to_owned(),
@@ -209,9 +267,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
-        let processes = processes.iter().collect::<Vec<_>>();
-
-        let matched = matching_rule_process(&settings, &processes).unwrap();
+        let matched = match_processes(&settings, &processes).0.unwrap();
 
         assert_eq!(matched.rule_name, "Game");
         assert_eq!(matched.target_guid, "custom-guid");
@@ -221,6 +277,7 @@ mod tests {
     fn matching_rule_ignores_disabled_and_missing_plan_rules() {
         let settings = ByRunningAppSettings {
             enabled: true,
+            restore_previous_plan: false,
             rules: vec![
                 ByRunningAppRule {
                     enabled: false,
@@ -248,15 +305,14 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
-        let processes = processes.iter().collect::<Vec<_>>();
-
-        assert!(matching_rule_process(&settings, &processes).is_none());
+        assert!(match_processes(&settings, &processes).0.is_none());
     }
 
     #[test]
     fn matching_rule_continues_past_unmatched_rules() {
         let settings = ByRunningAppSettings {
             enabled: true,
+            restore_previous_plan: false,
             rules: vec![
                 ByRunningAppRule {
                     enabled: true,
@@ -284,9 +340,7 @@ mod tests {
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
-        let processes = processes.iter().collect::<Vec<_>>();
-
-        let matched = matching_rule_process(&settings, &processes).unwrap();
+        let matched = match_processes(&settings, &processes).0.unwrap();
 
         assert_eq!(matched.rule_name, "Game");
         assert_eq!(matched.target_guid, "game-guid");
@@ -303,6 +357,7 @@ mod tests {
         };
         let manager = ByRunningAppManager {
             active: Some(active.clone()),
+            observation_known: true,
         };
         let reordered = ActiveByRunningApp {
             rule_index: 1,
@@ -317,6 +372,104 @@ mod tests {
 
         assert!(!manager.active_matches(&renamed));
     }
+
+    #[test]
+    fn matching_observation_distinguishes_unknown_candidates_from_confirmed_nonmatches() {
+        let settings = ByRunningAppSettings {
+            enabled: true,
+            restore_previous_plan: true,
+            rules: vec![ByRunningAppRule {
+                enabled: true,
+                name: "Game".into(),
+                executable_path: r"C:\Games\game.exe".into(),
+                power_plan_guid: Some("game-plan".into()),
+            }],
+        };
+        for (name, critical, session, path, known, matched) in [
+            (
+                "game.exe",
+                Some(false),
+                Some(1),
+                Some(r"C:\Games\game.exe"),
+                true,
+                true,
+            ),
+            (
+                "game.exe",
+                None,
+                Some(1),
+                Some(r"C:\Games\game.exe"),
+                false,
+                false,
+            ),
+            (
+                "game.exe",
+                Some(false),
+                None,
+                Some(r"C:\Games\game.exe"),
+                false,
+                false,
+            ),
+            ("game.exe", Some(false), Some(1), None, false, false),
+            ("game.exe", Some(true), None, None, true, false),
+            ("game.exe", Some(false), Some(2), None, true, false),
+            ("other.exe", None, None, None, true, false),
+            (
+                "game.exe",
+                None,
+                None,
+                Some(r"C:\Other\game.exe"),
+                true,
+                false,
+            ),
+        ] {
+            let process = ProcessInfo {
+                id: 42,
+                creation_time: Some(1),
+                parent_id: None,
+                session_id: session,
+                user_name: None,
+                is_service_account: None,
+                is_critical: critical,
+                can_set_information: true,
+                name: name.into(),
+                image_path: path.map(PathBuf::from),
+            };
+            let (selected, observation_known) = matching_rule_process(
+                &settings,
+                &[process],
+                99,
+                1,
+                |_| session,
+                |process| process.image_path.clone(),
+            );
+            assert_eq!(
+                observation_known, known,
+                "{name}, {critical:?}, {session:?}, {path:?}"
+            );
+            assert_eq!(selected.is_some(), matched);
+        }
+        let (selected, known) = match_processes(&settings, &[]);
+        assert!(selected.is_none());
+        assert!(known);
+    }
+
+    #[test]
+    fn disabled_or_unconfigured_matching_is_known_without_windows_observations() {
+        let mut manager = ByRunningAppManager::default();
+        let mut observations = CycleObservations::default();
+        for enabled in [false, true] {
+            let settings = ByRunningAppSettings {
+                enabled,
+                ..ByRunningAppSettings::default()
+            };
+            let snapshot = manager.update(&settings, true, &mut observations);
+            assert!(snapshot.observation_known);
+            assert!(manager.observation_known());
+            assert!(snapshot.target_guid.is_none());
+        }
+    }
+
     #[test]
     fn builtin_exclusions_cover_sensitive_windows_processes() {
         assert!(is_builtin_excluded("csrss.exe"));

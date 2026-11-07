@@ -48,7 +48,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(3) => Page::Home,
             Some(4..=10) => Page::AdaptiveEngine,
             Some(11) => Page::MemoryTrim,
-            Some(12) => Page::ByForeground,
+            Some(12) => Page::ByFocus,
             Some(13) => Page::Home,
             Some(14) => Page::ProcessList,
             Some(15) => Page::PowerPlanControl,
@@ -318,12 +318,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     });
                 let _ = app.update(Message::Trim(memory_trim::Message::Collapse(0)));
             } else {
-                app.settings.by_foreground.rules.push(
-                    crate::ui::process_rules::new_foreground_rule(
+                app.settings
+                    .by_focus
+                    .rules
+                    .push(crate::ui::process_rules::new_by_focus_rule(
                         r"C:\Apps\Example\example.exe",
                         None,
-                    ),
-                );
+                    ));
             }
         }
         if extra == Some(9) {

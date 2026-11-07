@@ -79,8 +79,20 @@ User-facing behavior:
 - Winderust enumerates available Windows power schemes.
 - It reads each scheme's friendly display name.
 - It reads the currently active scheme GUID.
-- By Activity maps its visible `Idle plan` and `Active plan` settings to Windows power scheme GUIDs.
-- By Foreground, By Running App, By CPU Load, and By Time store a selected GUID on each rule; missing selections do not fall back to a global plan.
+- By Activity maps its visible `Idle plan` and selected `Active plan` resume action to Windows power scheme GUIDs.
+- By Focus, By Running App, By CPU Load, and By Time store a selected GUID on each rule; missing selections do not fall back to a global plan.
+- By Focus resolves the app with input focus through `src/foreground/active_window.rs`
+  and [GetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow).
+  A temporarily null window is an unavailable observation.
+- Restore previous plan behavior belongs to `src/control/power_plan.rs` for By
+  Focus, By Running App, By Time, By CPU Load's restoration Else action, and By
+  Activity's restoration resume action. Capture the actual active GUID before
+  the first verified temporary switch, preserve it across restoring feature
+  handoffs, and restore only while the expected GUID is still owned and no other
+  rule selects a plan. Unavailable process, CPU, and activity observations defer
+  affected fallthrough; they are not confirmed exits. Restoration uses the
+  existing power-scheme APIs and recovery transaction; it adds no native mutation
+  owner or persistent power-plan tuning.
 - When automation decides to switch mode, Winderust calls the Windows API to set the selected scheme as active.
 - Adaptive Engine creates a temporary plan named `Winderust Adaptive`; startup recovery only recognizes that exact current Winderust name/description pair.
 - Ordinary automation and the temporary Adaptive plan are mutually exclusive typed controller owners. Window visibility changes cadence, not ownership.

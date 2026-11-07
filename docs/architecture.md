@@ -216,7 +216,7 @@ Pages are grouped in `src/ui.rs`:
 - Home: dashboard.
 - Process List: process table and per-process policy surface.
 - Winderust Features: Adaptive Engine, Background Efficiency, Memory Trim, Watchdog.
-- Power Plan Control: By Foreground, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
+- Power Plan Control: By Focus, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
 - Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
   IO Priority, GPU Priority, Memory Priority.
 - CPU Control: CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard).

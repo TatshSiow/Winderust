@@ -7,13 +7,14 @@ use rust_i18n::t;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
-    Foreground,
+    Focus,
     RunningApp,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    RestorePreviousPlan(bool),
     Path(String),
     Browse,
     Add,
@@ -41,6 +42,7 @@ impl Editor {
                 let settings = &mut settings.$field;
                 match message {
                     Message::Enabled(value) => settings.enabled = value,
+                    Message::RestorePreviousPlan(value) => settings.restore_previous_plan = value,
                     Message::Path(path) => self.path = path,
                     Message::Browse => {}
                     Message::Add => {
@@ -74,11 +76,7 @@ impl Editor {
             }};
         }
         match kind {
-            Kind::Foreground => update_rules!(
-                by_foreground,
-                can_add_foreground_process,
-                new_foreground_rule
-            ),
+            Kind::Focus => update_rules!(by_focus, can_add_by_focus_process, new_by_focus_rule),
             Kind::RunningApp => update_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
@@ -97,11 +95,11 @@ impl Editor {
     ) -> Element<'a, Message> {
         let master_enabled = settings.general.enabled;
         let state = match kind {
-            Kind::Foreground => crate::rules::DecisionState::ByForeground,
+            Kind::Focus => crate::rules::DecisionState::ByFocus,
             Kind::RunningApp => crate::rules::DecisionState::ByRunningApp,
         };
         macro_rules! render_rules {
-            ($field:ident, $can_add:ident, $enable:literal) => {{
+            ($field:ident, $can_add:ident, $enable:literal, $restore:literal) => {{
                 let settings = &settings.$field;
                 let mut body = column![super::widgets::toggle_card(
                     $enable,
@@ -109,6 +107,11 @@ impl Editor {
                     Some(Message::Enabled)
                 ),]
                 .spacing(super::widgets::CARD_GAP);
+                body = body.push(widgets::toggle_card(
+                    $restore,
+                    settings.restore_previous_plan,
+                    Some(Message::RestorePreviousPlan),
+                ));
                 let mut rules_body = column![super::app_picker::view(
                     &self.path,
                     candidates,
@@ -174,15 +177,17 @@ impl Editor {
             }};
         }
         match kind {
-            Kind::Foreground => render_rules!(
-                by_foreground,
-                can_add_foreground_process,
-                "by_foreground.enable"
+            Kind::Focus => render_rules!(
+                by_focus,
+                can_add_by_focus_process,
+                "by_focus.enable",
+                "by_focus.restore_previous_plan"
             ),
             Kind::RunningApp => render_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
-                "by_running_app.enable"
+                "by_running_app.enable",
+                "by_running_app.restore_previous_plan"
             ),
         }
     }
@@ -191,13 +196,47 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previous_plan_options_stay_with_their_feature() {
+        let mut settings = Settings::default();
+        settings.by_running_app.enabled = true;
+        let running_app = settings.by_running_app.clone();
+        let mut editor = Editor::default();
+        editor.update(
+            Kind::Focus,
+            &mut settings,
+            &[],
+            Message::RestorePreviousPlan(true),
+        );
+        assert!(settings.by_focus.restore_previous_plan);
+        editor.update(
+            Kind::Focus,
+            &mut settings,
+            &[],
+            Message::RestorePreviousPlan(false),
+        );
+        assert!(!settings.by_focus.restore_previous_plan);
+        assert_eq!(settings.by_running_app, running_app);
+        assert!(settings.by_focus.rules.is_empty());
+        editor.update(
+            Kind::RunningApp,
+            &mut settings,
+            &[],
+            Message::RestorePreviousPlan(true),
+        );
+        assert!(settings.by_running_app.restore_previous_plan);
+        assert!(!settings.by_focus.restore_previous_plan);
+        assert!(settings.by_running_app.rules.is_empty());
+    }
+
     #[test]
     fn process_plan_status_requires_selected_rule_and_confirmed_plan() {
         use crate::{
             control::power_plan::{PowerPlanOwner, PowerPlanStatus},
             rules::DecisionState,
         };
-        for state in [DecisionState::ByForeground, DecisionState::ByRunningApp] {
+        for state in [DecisionState::ByFocus, DecisionState::ByRunningApp] {
             let mut status = PowerPlanStatus {
                 owner: Some(PowerPlanOwner::OrdinaryAutomation),
                 decision_state: Some(state),
@@ -227,27 +266,27 @@ mod tests {
     fn rules_stay_with_their_feature_and_duplicates_are_rejected() {
         let mut settings = Settings::default();
         let mut editor = Editor::default();
-        editor.update(Kind::Foreground, &mut settings, &[], Message::Enabled(true));
+        editor.update(Kind::Focus, &mut settings, &[], Message::Enabled(true));
         for _ in 0..2 {
             editor.update(
-                Kind::Foreground,
+                Kind::Focus,
                 &mut settings,
                 &[],
                 Message::Path(r"C:\Apps\game.exe".into()),
             );
-            editor.update(Kind::Foreground, &mut settings, &[], Message::Add);
+            editor.update(Kind::Focus, &mut settings, &[], Message::Add);
         }
-        assert_eq!(settings.by_foreground.rules.len(), 1);
+        assert_eq!(settings.by_focus.rules.len(), 1);
         assert!(settings.by_running_app.rules.is_empty());
-        assert_eq!(settings.by_foreground.rules[0].power_plan_guid, None);
+        assert_eq!(settings.by_focus.rules[0].power_plan_guid, None);
         editor.update(
-            Kind::Foreground,
+            Kind::Focus,
             &mut settings,
             &[],
             Message::Plan(0, Some("selected".into())),
         );
         assert_eq!(
-            settings.by_foreground.rules[0].power_plan_guid.as_deref(),
+            settings.by_focus.rules[0].power_plan_guid.as_deref(),
             Some("selected")
         );
     }

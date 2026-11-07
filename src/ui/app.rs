@@ -306,7 +306,7 @@ pub(crate) fn run(
                 power_plans_loading: false,
                 power_plans_loaded: false,
                 power_plans_reload_pending: false,
-                foreground_plans: process_power_plans::Editor::default(),
+                focus_plans: process_power_plans::Editor::default(),
                 running_app_plans: process_power_plans::Editor::default(),
                 activity_inputs: by_activity::Inputs::default(),
             };
@@ -599,7 +599,7 @@ struct WinderustApp {
     power_plans_loading: bool,
     power_plans_loaded: bool,
     power_plans_reload_pending: bool,
-    foreground_plans: process_power_plans::Editor,
+    focus_plans: process_power_plans::Editor,
     running_app_plans: process_power_plans::Editor,
     activity_inputs: by_activity::Inputs,
 }
@@ -1441,9 +1441,9 @@ impl WinderustApp {
                                 return self
                                     .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)))
                             }
-                            Page::ByForeground => {
+                            Page::ByFocus => {
                                 return self.update(Message::ProcessPowerPlans(
-                                    process_power_plans::Kind::Foreground,
+                                    process_power_plans::Kind::Focus,
                                     process_power_plans::Message::Path(path),
                                 ))
                             }
@@ -1460,13 +1460,13 @@ impl WinderustApp {
             }
             Message::ProcessPowerPlans(kind, process_power_plans::Message::Browse) => {
                 return self.browse(match kind {
-                    process_power_plans::Kind::Foreground => Page::ByForeground,
+                    process_power_plans::Kind::Focus => Page::ByFocus,
                     process_power_plans::Kind::RunningApp => Page::ByRunningApp,
                 })
             }
             Message::ProcessPowerPlans(kind, message) => {
                 let editor = match kind {
-                    process_power_plans::Kind::Foreground => &mut self.foreground_plans,
+                    process_power_plans::Kind::Focus => &mut self.focus_plans,
                     process_power_plans::Kind::RunningApp => &mut self.running_app_plans,
                 };
                 editor.update(kind, &mut self.settings, &self.power_plans, message);
@@ -2020,7 +2020,7 @@ impl WinderustApp {
         self.power_tuning.discard_editor();
         self.cpu_limiter = Default::default();
         self.activity_inputs = Default::default();
-        self.foreground_plans = Default::default();
+        self.focus_plans = Default::default();
         self.running_app_plans = Default::default();
         self.priority = Default::default();
         self.efficiency = Default::default();
@@ -2934,17 +2934,17 @@ impl WinderustApp {
                 )
                 .map(|m| Message::Priority(priority_control::Kind::DynamicBoost, m)),
 
-            Page::ByForeground => self
-                .foreground_plans
+            Page::ByFocus => self
+                .focus_plans
                 .view(
-                    process_power_plans::Kind::Foreground,
+                    process_power_plans::Kind::Focus,
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
                     &self.status.power_plan_status,
                 )
                 .map(|message| {
-                    Message::ProcessPowerPlans(process_power_plans::Kind::Foreground, message)
+                    Message::ProcessPowerPlans(process_power_plans::Kind::Focus, message)
                 }),
             Page::ByRunningApp => self
                 .running_app_plans

@@ -111,9 +111,9 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                     });
             }
         }
-        Message::Power(foreground, guid) => {
-            if foreground {
-                let rules = &mut s.by_foreground.rules;
+        Message::Power(focus, guid) => {
+            if focus {
+                let rules = &mut s.by_focus.rules;
                 if let Some(guid) = guid {
                     if let Some(r) = rules
                         .iter_mut()
@@ -122,7 +122,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                         r.enabled = true;
                         r.power_plan_guid = Some(guid);
                     } else {
-                        rules.push(crate::ui::process_rules::new_foreground_rule(
+                        rules.push(crate::ui::process_rules::new_by_focus_rule(
                             &path,
                             Some(guid),
                         ));
@@ -312,9 +312,9 @@ pub(super) fn view<'a>(
     ));
     if let PlanCatalog::Loaded(plans) = plans {
         let mut power = Vec::new();
-        for foreground in [true, false] {
-            let selected = if foreground {
-                s.by_foreground
+        for focus in [true, false] {
+            let selected = if focus {
+                s.by_focus
                     .rules
                     .iter()
                     .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
@@ -343,12 +343,12 @@ pub(super) fn view<'a>(
             let selected = options.iter().find(|p| p.0 == selected).cloned();
             power.push(
                 setting_row(
-                    if foreground {
-                        "process_list.power_plan_foreground"
+                    if focus {
+                        "process_list.power_plan_focus"
                     } else {
                         "process_list.power_plan_running"
                     },
-                    pick_list(options, selected, move |p| Message::Power(foreground, p.0))
+                    pick_list(options, selected, move |p| Message::Power(focus, p.0))
                         .width(design::SELECT_WIDTH),
                 )
                 .into(),

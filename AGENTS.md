@@ -13,7 +13,7 @@ switch branches only when the user explicitly requests it.
 - Runtime data is portable: keep settings beside the executable; keep Action
   Log entries in memory and export them only to a user-selected CSV path. Do not
   restore an AppData fallback or migration unless explicitly requested.
-- Power-plan ownership is local: By Activity owns its Idle/Active selections; By Foreground, By Running App, By CPU Load, and By Time rules each own their selected plan. There is no global plan fallback.
+- Power-plan ownership is local: By Activity owns its Idle/Active selections; By Focus, By Running App, By CPU Load, and By Time rules each own their selected plan. There is no global plan fallback.
 - The global A/C scheduler pause belongs on the Power Plan Control landing page.
 - Only recover temporary managed plans whose name and description identify the current `Winderust Adaptive` plan.
 

@@ -198,11 +198,22 @@ fn visible_window_priority_override_is_not_an_exclusion() {
 #[test]
 fn first_run_rule_modules_are_disabled() {
     let settings = Settings::default();
+    assert!(!settings.by_focus.restore_previous_plan);
+    assert!(!settings.by_running_app.restore_previous_plan);
+    assert!(!settings.by_time.restore_previous_plan);
+    assert_eq!(
+        settings.by_activity.resume_action,
+        PowerPlanReturnAction::SelectedPlan
+    );
+    assert_eq!(
+        ByCpuLoadRule::default().else_action,
+        PowerPlanReturnAction::SelectedPlan
+    );
 
     assert!(![
         settings.adaptive_engine.enabled,
         settings.by_activity.enabled,
-        settings.by_foreground.enabled,
+        settings.by_focus.enabled,
         settings.by_time.enabled,
         settings.by_cpu_load.enabled,
         settings.background_efficiency.enabled,

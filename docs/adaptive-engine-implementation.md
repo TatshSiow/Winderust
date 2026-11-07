@@ -130,7 +130,7 @@ name and description identify the current `Winderust Adaptive` plan may be recov
 abnormal exit. Other power plans remain owned by Windows or the user.
 
 Power-plan automation remains separate: By Activity owns its Idle and Active
-selections, while By Foreground, By Running App, By CPU Load, and By Time rules
+selections, while By Focus, By Running App, By CPU Load, and By Time rules
 own their selected plan GUIDs. There is no global plan fallback.
 
 ## Validation

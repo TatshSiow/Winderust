@@ -40,7 +40,7 @@ nav:
   memory_trim: "記憶體修剪"
   by_running_app: "執行中應用程式電源計畫"
   processor_affinity_hard: "處理器親和性（硬性）"
-  by_foreground: "前景電源計畫"
+  by_focus: "焦點電源計畫"
   by_time: "時間規則"
   action_log: "記錄"
   settings: "設定"
@@ -122,7 +122,7 @@ common:
   all: "全部"
   rule_count: "%{count} 個規則"
   seconds_ago: "%{count} 秒前"
-  power_plan_priority: "優先順序：前景電源計畫 > 執行中應用程式電源計畫 > CPU 負載偵測 > 操作狀態排程 > 時間規則。"
+  power_plan_priority: "優先順序：焦點電源計畫 > 執行中應用程式電源計畫 > CPU 負載偵測 > 操作狀態排程 > 時間規則。"
   power_plan_pause_priority: "停止條件會覆蓋所有偵測：主開關關閉、手動覆蓋，或插電時暫停。"
 
 theme:
@@ -238,7 +238,7 @@ process_list:
   status_efficiency_mode: "效率模式"
   cpu_usage: "CPU"
   memory_usage: "記憶體"
-  power_plan_foreground: "前景電源計畫"
+  power_plan_focus: "焦點電源計畫"
   power_plan_running: "執行中應用程式電源計畫"
   background: "背景"
 
@@ -423,20 +423,26 @@ by_activity:
   timing: "時間設定"
   invalid_timing: "請輸入 1 至 3600 秒的閒置逾時，以及 250 至 60000 毫秒的檢查間隔。"
   intro_1: "操作狀態排程會根據鍵盤、滑鼠與控制器活動切換電源計畫。"
-  intro_2: "可在下方選擇閒置與活動時的電源計畫；輸入偵測會控制應用程式何時切換狀態。"
+  intro_2: "選擇閒置電源計畫，再選擇恢復活動時使用指定的活動電源計畫，或還原閒置前的電源計畫。輸入偵測會控制狀態切換。"
   enable: "啟用操作狀態排程"
   idle_plan: "閒置電源計畫"
   active_plan: "活動電源計畫"
+  resume_action: "恢復活動時"
+  resume_action_help: "恢復活動且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
+  use_active_plan: "使用活動電源計畫"
+  restore_pre_idle_plan: "還原閒置前的電源計畫"
   keyboard_input: "鍵盤輸入偵測"
   mouse_input: "滑鼠輸入偵測"
   controller_input: "控制器輸入偵測"
   idle_timeout: "閒置逾時"
   check_interval: "檢查間隔"
 
-by_foreground:
-  intro_1: "前景電源計畫會在特定應用程式取得焦點時切換電源計畫。"
-  intro_2: "已選擇電源計畫的規則會覆蓋較低優先順序的自動化；繼承或預設規則會與時間、CPU 負載與操作狀態規則組合。"
-  enable: "啟用前景電源計畫"
+by_focus:
+  intro_1: "焦點電源計畫會在特定應用程式取得焦點時切換電源計畫。"
+  intro_2: "符合條件且已選擇電源計畫的規則，優先於執行中應用程式、CPU 負載、操作狀態與時間規則。"
+  enable: "啟用焦點電源計畫"
+  restore_previous_plan: "還原先前電源計畫"
+  restore_previous_plan_help: "應用程式失去焦點且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
 
 by_time:
   hour: "時（0–23）"
@@ -445,6 +451,8 @@ by_time:
   intro_1: "時間規則會根據目前日期與時間切換電源計畫。"
   intro_2: "每個規則都可使用自己的目標電源計畫，並支援跨夜時段。"
   enable: "啟用時間規則"
+  restore_previous_plan: "還原先前電源計畫"
+  restore_previous_plan_help: "沒有符合的時段且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
   new_rule: "新增時間規則"
   start: "開始"
   end: "結束"
@@ -470,7 +478,7 @@ by_cpu_load:
   invalid_range: "門檻不得超過上限門檻。"
   duration: "持續時間"
   stability: "切換穩定性"
-  stability_help: "啟用此電源計畫後，會維持到負載超出釋放門檻，且最短維持時間已過。排序較前的 CPU 規則、前景應用程式偵測、執行中應用程式偵測及自適應引擎仍可優先接管。"
+  stability_help: "啟用此電源計畫後，會維持到負載超出釋放門檻，且最短維持時間已過。排序較前的 CPU 規則、焦點電源計畫、執行中應用程式電源計畫及自適應引擎仍可優先接管。"
   release_below: "低於此值時釋放"
   release_above: "高於此值時釋放"
   minimum_hold: "最短維持時間"
@@ -480,7 +488,11 @@ by_cpu_load:
   comparison_between: "介於"
   target_plan: "目標電源計畫"
   else: "否則"
-  else_help: "沒有 CPU 規則符合條件或仍在維持時，使用選定的否則電源計畫，不會自動還原先前的電源計畫。"
+  else_help: "選擇沒有 CPU 規則符合條件或仍在維持時要執行的動作。"
+  else_action: "否則動作"
+  else_action_help: "負載規則釋放控制且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
+  use_selected_plan: "使用選定的電源計畫"
+  restore_previous_plan: "還原先前電源計畫"
   else_plan: "否則電源計畫"
 
 background_efficiency:
@@ -847,8 +859,10 @@ action_log:
 
 by_running_app:
   enable: "啟用執行中應用程式電源計畫"
+  restore_previous_plan: "還原先前電源計畫"
+  restore_previous_plan_help: "沒有相符的應用程式執行且沒有其他規則選擇電源計畫時，還原原先的計畫。多個還原規則重疊時，共用它們接管前的計畫。保留外部變更。"
   intro_1: "執行中應用程式電源計畫會在相符程序執行時切換到選取的電源計畫。"
-  intro_2: "當觸發程序結束或功能停用時，Winderust 會還原先前的電源計畫。"
+  intro_2: "啟用「還原先前電源計畫」後，當沒有相符的應用程式繼續執行，且沒有其他規則選擇電源計畫時，便還原此功能接管前的電源計畫。"
   intro_3: "作用中的執行中應用程式電源計畫程序會排除於背景優先順序降低之外。"
   rules_help: "新增應在執行期間暫時維持指定電源計畫的執行檔名稱。"
   power_plan: "電源計畫"

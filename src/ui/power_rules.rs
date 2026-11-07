@@ -5,7 +5,7 @@ use crate::ui::scrolling::scrollable;
 use crate::{
     config::{
         ByCpuLoadRule, ByCpuLoadStability, ByTimeRule, CpuLoadPercent, CpuUsageComparison,
-        RuleTime, Settings, WeekdaySetting,
+        PowerPlanReturnAction, RuleTime, Settings, WeekdaySetting,
     },
     power::PowerPlan,
 };
@@ -21,6 +21,7 @@ pub(super) enum Kind {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
+    RestorePreviousPlan(bool),
     Add,
     RuleEnabled(usize, bool),
     Name(usize, String),
@@ -49,6 +50,7 @@ pub(super) enum Message {
     ExitUpper(usize, String),
     MinimumHold(usize, String),
     Else(usize, bool),
+    ElseAction(usize, PowerPlanReturnAction),
     ElsePlan(usize, Option<String>),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -119,6 +121,11 @@ impl Editor {
         plans: &[PowerPlan],
         message: Message,
     ) {
+        if let Message::RestorePreviousPlan(value) = message {
+            assert_eq!(kind, Kind::Time, "RestorePreviousPlan belongs to By Time");
+            s.by_time.restore_previous_plan = value;
+            return;
+        }
         match message {
             Message::OpenTimePicker(start) => {
                 if kind != Kind::Time || self.draft.is_none() {
@@ -277,6 +284,9 @@ impl Editor {
         }
         let active = || plans.iter().find(|p| p.active).map(|p| p.guid.clone());
         match message {
+            Message::RestorePreviousPlan(_) => {
+                unreachable!("page restoration is handled before rule dispatch")
+            }
             Message::Enabled(v) => match kind {
                 Kind::Time => s.by_time.enabled = v,
                 Kind::CpuLoad => s.by_cpu_load.enabled = v,
@@ -484,7 +494,21 @@ impl Editor {
             Message::Else(i, v) => {
                 if let Some(r) = s.by_cpu_load.rules.get_mut(i) {
                     r.else_enabled = v;
-                    if v && r.else_power_plan_guid.is_none() {
+                    if v && r.else_action == PowerPlanReturnAction::SelectedPlan
+                        && r.else_power_plan_guid.is_none()
+                    {
+                        r.else_power_plan_guid = active();
+                    }
+                }
+            }
+            Message::ElseAction(i, action) => {
+                assert_eq!(kind, Kind::CpuLoad, "ElseAction belongs to By CPU Load");
+                if let Some(r) = s.by_cpu_load.rules.get_mut(i) {
+                    r.else_action = action;
+                    if r.else_enabled
+                        && action == PowerPlanReturnAction::SelectedPlan
+                        && r.else_power_plan_guid.is_none()
+                    {
                         r.else_power_plan_guid = active();
                     }
                 }
@@ -513,6 +537,13 @@ impl Editor {
             Some(Message::Enabled)
         )]
         .spacing(super::widgets::CARD_GAP);
+        if kind == Kind::Time {
+            body = body.push(widgets::toggle_card(
+                "by_time.restore_previous_plan",
+                s.by_time.restore_previous_plan,
+                Some(Message::RestorePreviousPlan),
+            ));
+        }
         let rules = match kind {
             Kind::Time => s
                 .by_time
@@ -855,7 +886,7 @@ impl Editor {
                             Message::MinimumHold,
                         ));
                 }
-                let plans = widgets::settings_rows([
+                let mut plan_controls = widgets::settings_rows([
                     widgets::setting_row(
                         "by_cpu_load.target_plan",
                         widgets::plan(guid.as_deref(), plans, move |v| Message::Plan(index, v)),
@@ -866,8 +897,35 @@ impl Editor {
                         widgets::switch(r.else_enabled, Some(move |v| Message::Else(index, v))),
                     )
                     .into(),
-                ])
-                .push(widgets::optional_content(
+                ]);
+                if r.comparison != CpuUsageComparison::Else {
+                    let actions = vec![
+                        Choice(
+                            PowerPlanReturnAction::SelectedPlan,
+                            t!("by_cpu_load.use_selected_plan").to_string(),
+                        ),
+                        Choice(
+                            PowerPlanReturnAction::RestorePreviousPlan,
+                            t!("by_cpu_load.restore_previous_plan").to_string(),
+                        ),
+                    ];
+                    let selected = actions.iter().find(|c| c.0 == r.else_action).cloned();
+                    plan_controls = plan_controls.push(widgets::optional_content(
+                        column![
+                            widgets::settings_divider(),
+                            widgets::setting_row(
+                                "by_cpu_load.else_action",
+                                pick_list(actions, selected, move |action| {
+                                    Message::ElseAction(index, action.0)
+                                })
+                                .width(design::SELECT_WIDTH)
+                            )
+                        ]
+                        .spacing(design::space::MEDIUM),
+                        r.else_enabled,
+                    ));
+                }
+                plan_controls = plan_controls.push(widgets::optional_content(
                     column![
                         widgets::settings_divider(),
                         widgets::setting_row(
@@ -878,7 +936,9 @@ impl Editor {
                         )
                     ]
                     .spacing(design::space::MEDIUM),
-                    r.else_enabled,
+                    r.else_enabled
+                        && (r.comparison == CpuUsageComparison::Else
+                            || r.else_action == PowerPlanReturnAction::SelectedPlan),
                 ));
                 controls = controls
                     .push(widgets::heading(
@@ -910,7 +970,7 @@ impl Editor {
                         t!("common.power_plan_selection").to_string(),
                         design::typography::BODY,
                     ))
-                    .push(widgets::settings_card(plans));
+                    .push(widgets::settings_card(plan_controls));
             }
         }
 

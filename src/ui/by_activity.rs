@@ -1,10 +1,12 @@
 use super::design;
-use super::widgets::{self, slider};
+use super::widgets::{self, pick_list, slider, Choice};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row};
 use iced::{Element, Fill};
 
-use crate::config::{Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS};
+use crate::config::{
+    PowerPlanReturnAction, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+};
 use crate::power::PowerPlan;
 
 #[derive(Debug, Clone)]
@@ -17,6 +19,7 @@ pub(super) enum Message {
     CheckInterval(String),
     IdlePlan(Option<String>),
     ActivePlan(Option<String>),
+    ResumeAction(PowerPlanReturnAction),
 }
 
 pub(super) fn update(settings: &mut crate::application::SettingsEditor, message: Message) {
@@ -58,6 +61,7 @@ pub(super) fn update(settings: &mut crate::application::SettingsEditor, message:
         }
         Message::IdlePlan(guid) => activity.power_plans.power_save_guid = guid,
         Message::ActivePlan(guid) => activity.power_plans.performance_guid = guid,
+        Message::ResumeAction(action) => activity.resume_action = action,
     }
     if input_changed {
         settings.by_activity.switch_to_performance_on_resume =
@@ -129,6 +133,54 @@ pub(super) fn view<'a>(
         .spacing(design::space::SMALL)
         .into()
     };
+    let resume_actions = vec![
+        Choice(
+            PowerPlanReturnAction::SelectedPlan,
+            rust_i18n::t!("by_activity.use_active_plan").to_string(),
+        ),
+        Choice(
+            PowerPlanReturnAction::RestorePreviousPlan,
+            rust_i18n::t!("by_activity.restore_pre_idle_plan").to_string(),
+        ),
+    ];
+    let selected = resume_actions
+        .iter()
+        .find(|action| action.0 == activity.resume_action)
+        .cloned();
+    let power_plans = widgets::settings_rows([
+        widgets::setting_row(
+            "by_activity.idle_plan",
+            iced::widget::container(plan_picker(
+                &activity.power_plans.power_save_guid,
+                Message::IdlePlan,
+            ))
+            .width(design::SELECT_WIDTH),
+        )
+        .into(),
+        widgets::setting_row(
+            "by_activity.resume_action",
+            pick_list(resume_actions, selected, |action| {
+                Message::ResumeAction(action.0)
+            })
+            .width(design::SELECT_WIDTH),
+        )
+        .into(),
+    ])
+    .push(widgets::optional_content(
+        column![
+            widgets::settings_divider(),
+            widgets::setting_row(
+                "by_activity.active_plan",
+                iced::widget::container(plan_picker(
+                    &activity.power_plans.performance_guid,
+                    Message::ActivePlan,
+                ))
+                .width(design::SELECT_WIDTH)
+            )
+        ]
+        .spacing(design::space::MEDIUM),
+        activity.resume_action == PowerPlanReturnAction::SelectedPlan,
+    ));
     scrollable(
         column![
             widgets::toggle_card(
@@ -140,26 +192,7 @@ pub(super) fn view<'a>(
                 rust_i18n::t!("by_activity.power_plans").to_string(),
                 design::typography::BODY
             ),
-            widgets::settings_card(widgets::settings_rows([
-                widgets::setting_row(
-                    "by_activity.idle_plan",
-                    iced::widget::container(plan_picker(
-                        &activity.power_plans.power_save_guid,
-                        Message::IdlePlan
-                    ))
-                    .width(design::SELECT_WIDTH)
-                )
-                .into(),
-                widgets::setting_row(
-                    "by_activity.active_plan",
-                    iced::widget::container(plan_picker(
-                        &activity.power_plans.performance_guid,
-                        Message::ActivePlan
-                    ))
-                    .width(design::SELECT_WIDTH)
-                )
-                .into(),
-            ])),
+            widgets::settings_card(power_plans),
             widgets::heading(
                 rust_i18n::t!("by_activity.input_detection").to_string(),
                 design::typography::BODY
@@ -222,6 +255,34 @@ pub(super) fn view<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_action_preserves_the_active_plan_and_other_power_profile() {
+        let mut initial = Settings::default();
+        initial.by_activity.power_plans.performance_guid = Some("active".into());
+        let mut settings = crate::application::SettingsEditor::with_settings(initial);
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
+        update(
+            &mut settings,
+            Message::ResumeAction(PowerPlanReturnAction::RestorePreviousPlan),
+        );
+        assert_eq!(
+            settings.by_activity.resume_action,
+            PowerPlanReturnAction::RestorePreviousPlan
+        );
+        assert_eq!(
+            settings.global().by_activity.resume_action,
+            PowerPlanReturnAction::SelectedPlan
+        );
+        update(
+            &mut settings,
+            Message::ResumeAction(PowerPlanReturnAction::SelectedPlan),
+        );
+        assert_eq!(
+            settings.by_activity.power_plans.performance_guid.as_deref(),
+            Some("active")
+        );
+    }
 
     #[test]
     fn battery_interval_messages_edit_shared_settings_without_flattening_policies() {

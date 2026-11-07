@@ -68,7 +68,7 @@ pub enum Page {
     MemoryTrim,
     Watchdog,
     ProcessorAffinityHard,
-    ByForeground,
+    ByFocus,
     ByTime,
     ActionLog,
     WinderustBehaviour,
@@ -87,7 +87,7 @@ pub struct PageSection {
 const HOME_PAGES: [Page; 1] = [Page::Home];
 const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
 const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
-    Page::ByForeground,
+    Page::ByFocus,
     Page::ByRunningApp,
     Page::ByCpuLoad,
     Page::ByActivity,
@@ -188,7 +188,7 @@ impl Page {
                 | Self::MemoryPriority
                 | Self::MemoryTrim
                 | Self::ProcessorAffinityHard
-                | Self::ByForeground
+                | Self::ByFocus
                 | Self::ByTime
                 | Self::TimerResolution
         )
@@ -222,7 +222,7 @@ impl Page {
             Self::MemoryTrim => t!("nav.memory_trim"),
             Self::Watchdog => t!("nav.watchdog"),
             Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
-            Self::ByForeground => t!("nav.by_foreground"),
+            Self::ByFocus => t!("nav.by_focus"),
             Self::ByTime => t!("nav.by_time"),
             Self::ActionLog => t!("nav.action_log"),
             Self::WinderustBehaviour => t!("settings.winderust_behaviour"),
@@ -251,7 +251,7 @@ impl Page {
             Self::PowerPlanControl
             | Self::ByActivity
             | Self::ByTime
-            | Self::ByForeground
+            | Self::ByFocus
             | Self::ByRunningApp
             | Self::ByCpuLoad
             | Self::AdvancedPowerPlanTuning => Self::PowerPlanControl,
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn power_source_profiles_are_limited_to_configurable_feature_pages() {
         assert!(Page::AdaptiveEngine.supports_power_source_profiles());
-        assert!(Page::ByForeground.supports_power_source_profiles());
+        assert!(Page::ByFocus.supports_power_source_profiles());
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());
         assert!(!Page::Watchdog.supports_power_source_profiles());

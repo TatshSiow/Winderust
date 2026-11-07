@@ -164,11 +164,19 @@ hover/press; background shading supplies feedback.
   em dash rather than a fabricated zero. Action counts and latest outcomes are runtime telemetry,
   independent of Action Log visibility mode and its bounded visible history; clearing the Action
   Log resets both.
-- By Foreground, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
+- By Focus, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
-- By CPU Load labels its selectors Target plan and Else plan. Else selects an
-  explicitly configured plan; it does not automatically restore the previous plan.
+- By Focus, By Running App, and By Time expose a page-level Restore previous plan
+  switch, defaulting off. Release occurs on focus loss, the last matching app
+  closing, or the last matching time window ending. Help explains that another
+  selected rule takes over first and external plan changes are preserved.
+- By CPU Load labels its selectors Target plan and Else plan. Its Else action
+  selects either Use selected plan or Restore previous plan; only the first shows
+  the Else plan picker. Standalone Else rules remain explicit plan selections.
+- By Activity's Resume action selects Use Active plan or Restore pre-idle plan;
+  only the first shows the Active plan picker. Returning to a selected-plan action
+  retains its previous choice. The Idle plan remains explicitly selected.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
   tabs, alongside Info in the shared docked panel.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
