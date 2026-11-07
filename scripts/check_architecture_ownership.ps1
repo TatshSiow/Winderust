@@ -359,7 +359,17 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'CPU allocation Windows adapter imports no policy layer' `
     -Pattern 'crate::(?:control|features|foreground|rules|ui)' `
-    -Paths @('src/platform/windows/cpu_allocation.rs')
+    -Paths @('src/platform/windows/cpu_allocation.rs', 'src/platform/windows/cpu_allocation/topology.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'CPU Allocation topology model contains no raw Windows APIs' `
+    -Pattern 'windows_sys|unsafe|GetLogicalProcessorInformationEx' `
+    -Paths @('src/cpu_topology.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'CPU Allocation policy does not parse native topology' `
+    -Pattern 'GetLogicalProcessorInformationEx|SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX|PROCESSOR_RELATIONSHIP|GROUP_AFFINITY' `
+    -Paths @('src/features/cpu_control/cpu_allocation.rs', 'src/control/cpu_allocation.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'legacy CPU allocation feature mutation or restore owner' `

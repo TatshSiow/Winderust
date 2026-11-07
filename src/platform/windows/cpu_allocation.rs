@@ -4,12 +4,12 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::ERROR_INSUFFICIENT_BUFFER,
+    Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_SUPPORTED},
     System::{
         SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION},
         Threading::{
-            GetProcessAffinityMask, GetProcessDefaultCpuSets, SetProcessAffinityMask,
-            SetProcessDefaultCpuSets,
+            GetProcessAffinityMask, GetProcessDefaultCpuSets, GetProcessGroupAffinity,
+            SetProcessAffinityMask, SetProcessDefaultCpuSets,
         },
     },
 };
@@ -17,6 +17,34 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use super::ProcessOperationError;
+
+pub(crate) mod topology;
+
+pub(crate) fn validate_group_zero_affinity(
+    process: &WinHandle,
+) -> Result<(), ProcessOperationError> {
+    let mut group_count = 1;
+    let mut group = 0;
+    // SAFETY: process is a verified live handle; the array has capacity for one group,
+    // and group_count communicates that capacity and receives the required count.
+    let ok = unsafe { GetProcessGroupAffinity(process.raw(), &mut group_count, &mut group) };
+    if ok == 0 {
+        let error = last_error();
+        if error != ERROR_INSUFFICIENT_BUFFER {
+            return Err(ProcessOperationError::from_code(
+                "GetProcessGroupAffinity",
+                error,
+            ));
+        }
+    }
+    if ok == 0 || group_count != 1 || group != 0 {
+        return Err(ProcessOperationError::Failed {
+            operation: "Processor Affinity (Hard) requires a single processor group (group 0)",
+            code: ERROR_NOT_SUPPORTED,
+        });
+    }
+    Ok(())
+}
 
 pub(crate) fn query_affinity(process: &WinHandle) -> Result<(usize, usize), ProcessOperationError> {
     let mut process_affinity = 0;
@@ -187,7 +215,13 @@ fn cpu_set_inventory_from_bytes(buffer: &[u8]) -> Result<Vec<(u8, u32)>, Process
             };
             // SAFETY: cpu_set_type zero selects the CpuSet union member.
             let cpu_set = unsafe { info.Anonymous.CpuSet };
-            if cpu_set.Group == 0 && cpu_set.LogicalProcessorIndex < 64 {
+            if cpu_set.Group == 0 {
+                if cpu_set.LogicalProcessorIndex >= 64 {
+                    return Err(ProcessOperationError::Failed {
+                        operation: "CPU Set inventory processor index",
+                        code: windows_sys::Win32::Foundation::ERROR_INVALID_DATA,
+                    });
+                }
                 ids.push((cpu_set.LogicalProcessorIndex, cpu_set.Id));
             }
         }
@@ -231,6 +265,25 @@ mod tests {
     fn partial_cpu_set_inventory_is_rejected() {
         assert!(cpu_set_inventory_from_bytes(&[0; 3]).is_err());
         assert!(cpu_set_inventory_from_bytes(&[0; 8]).is_err());
+    }
+
+    #[test]
+    fn cpu_set_inventory_rejects_out_of_range_group_zero_processors() {
+        use std::mem::offset_of;
+        use windows_sys::Win32::System::SystemInformation::SYSTEM_CPU_SET_INFORMATION_0_0;
+
+        let size = size_of::<SYSTEM_CPU_SET_INFORMATION>();
+        let mut buffer = vec![0; size];
+        buffer[..4].copy_from_slice(&(size as u32).to_le_bytes());
+        let index = offset_of!(SYSTEM_CPU_SET_INFORMATION, Anonymous)
+            + offset_of!(SYSTEM_CPU_SET_INFORMATION_0_0, LogicalProcessorIndex);
+        buffer[index] = 63;
+        assert_eq!(
+            cpu_set_inventory_from_bytes(&buffer).unwrap(),
+            vec![(63, 0)]
+        );
+        buffer[index] = 64;
+        assert!(cpu_set_inventory_from_bytes(&buffer).is_err());
     }
 
     #[test]

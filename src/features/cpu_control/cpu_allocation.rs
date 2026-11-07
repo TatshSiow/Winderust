@@ -1,20 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    mem::size_of,
     path::{Path, PathBuf},
-    ptr::{null_mut, read_unaligned},
-    slice,
     time::{Duration, Instant},
 };
 
-use windows_sys::Win32::System::{
-    SystemInformation::{
-        GetLogicalProcessorInformationEx, RelationProcessorCore, GROUP_AFFINITY,
-        LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
-        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-    },
-    Threading::{GetActiveProcessorGroupCount, GetCurrentProcessId},
-};
+use windows_sys::Win32::System::Threading::{GetActiveProcessorGroupCount, GetCurrentProcessId};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -78,11 +68,12 @@ pub struct LogicalProcessorInfo {
     pub efficiency_class: u8,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct LogicalProcessorInformationHeader {
-    relationship: LOGICAL_PROCESSOR_RELATIONSHIP,
-    size: u32,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CacheDomainMask {
+    pub index: usize,
+    pub group: u16,
+    pub size_bytes: u32,
+    pub mask: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1023,7 +1014,7 @@ fn cpu_allocation_message(mode: CpuAllocationMode) -> String {
 
 fn processor_affinity_hard_message_for_group_count(group_count: u16) -> String {
     if group_count > 1 {
-        "Processor Affinity (Hard) active. Multi-group CPU detected: affinity can only control CPUs in the process primary processor group. Apps that are not processor-group-aware may not use the full CPU."
+        "Processor Affinity (Hard) active. Multi-group CPU detected: new allocations require an app assigned only to processor group 0. Other or uncertain group assignments are unavailable."
             .to_owned()
     } else {
         "Processor Affinity (Hard) active.".to_owned()
@@ -1035,118 +1026,80 @@ fn active_processor_group_count() -> u16 {
     unsafe { GetActiveProcessorGroupCount() }
 }
 
-fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
-    let mut returned_length = 0;
-    // SAFETY: A null buffer with zero length requests the required byte count in returned_length.
-    unsafe {
-        GetLogicalProcessorInformationEx(RelationProcessorCore, null_mut(), &mut returned_length);
-    }
-
-    if returned_length == 0 {
-        return None;
-    }
-
-    let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
-    let mut buffer = vec![0_usize; word_count];
-    // SAFETY: buffer provides at least returned_length writable bytes and returned_length remains
-    // writable for the actual result size.
-    let ok = unsafe {
-        GetLogicalProcessorInformationEx(
-            RelationProcessorCore,
-            buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-            &mut returned_length,
-        )
-    };
-    if ok == 0 || returned_length == 0 {
-        return None;
-    }
-
-    // SAFETY: The successful topology query initialized returned_length bytes within buffer.
-    let bytes =
-        unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) };
-
-    logical_processors_from_topology_bytes(bytes)
+pub(crate) fn processor_topology() -> Result<crate::cpu_topology::CpuTopology, String> {
+    crate::platform::windows::cpu_allocation::topology::query()
+        .map_err(|error| format!("CPU topology discovery failed: {error:?}"))
 }
 
-fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalProcessorInfo>> {
-    let mut processors = Vec::new();
-    let mut seen_processor_mask = 0_u64;
-    let mut core_index = 0;
-    let mut offset = 0;
-    let header_size = size_of::<LogicalProcessorInformationHeader>();
-    let processor_size = size_of::<PROCESSOR_RELATIONSHIP>();
-    let group_mask_offset = header_size + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask);
+fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
+    let topology = processor_topology().ok()?;
+    let processors = logical_processors_for_group_zero(&topology);
+    (!processors.is_empty()).then_some(processors)
+}
 
-    while offset < buffer.len() {
-        if buffer.len() - offset < header_size {
-            return None;
-        }
-        // SAFETY: The header bounds check above guarantees enough bytes; unaligned reads are used
-        // because the Win32 records are byte-packed.
-        let header = unsafe {
-            read_unaligned(buffer.as_ptr().add(offset) as *const LogicalProcessorInformationHeader)
-        };
-        let record_size = header.size as usize;
-        let record_end = offset.checked_add(record_size)?;
-        if record_size < header_size || record_end > buffer.len() {
-            return None;
-        }
+fn logical_processors_for_group_zero(
+    topology: &crate::cpu_topology::CpuTopology,
+) -> Vec<LogicalProcessorInfo> {
+    let cores = topology
+        .processors()
+        .iter()
+        .map(|processor| processor.core)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .enumerate()
+        .map(|(index, core)| (core, index))
+        .collect::<BTreeMap<_, _>>();
+    let minimum = topology
+        .processors()
+        .iter()
+        .map(|processor| processor.efficiency_class)
+        .min()
+        .unwrap_or(0);
+    let maximum = topology
+        .processors()
+        .iter()
+        .map(|processor| processor.efficiency_class)
+        .max()
+        .unwrap_or(minimum);
+    topology
+        .group_zero_processors()
+        .map(|processor| LogicalProcessorInfo {
+            index: usize::from(processor.id.number),
+            core_index: cores[&processor.core],
+            kind: processor_kind(processor.efficiency_class, minimum, maximum),
+            efficiency_class: processor.efficiency_class,
+        })
+        .collect()
+}
 
-        if header.relationship == RelationProcessorCore {
-            if record_size < header_size + processor_size {
-                return None;
-            }
-            // SAFETY: record_size was validated against the buffer and includes a complete
-            // PROCESSOR_RELATIONSHIP.
-            let processor = unsafe {
-                read_unaligned(
-                    buffer.as_ptr().add(offset + header_size) as *const PROCESSOR_RELATIONSHIP
-                )
-            };
-            if processor.GroupCount != 1 {
-                return None;
-            }
-            // SAFETY: The validated PROCESSOR_RELATIONSHIP includes its single core
-            // GROUP_AFFINITY, and read_unaligned permits the byte buffer's alignment.
-            let group_affinity = unsafe {
-                read_unaligned(
-                    buffer.as_ptr().add(offset + group_mask_offset) as *const GROUP_AFFINITY
-                )
-            };
-            if group_affinity.Mask == 0 {
-                return None;
-            }
-            if group_affinity.Group == 0 {
-                let mask = group_affinity.Mask as u64;
-                if seen_processor_mask & mask != 0 {
-                    return None;
-                }
-                seen_processor_mask |= mask;
+pub(crate) fn cache_domain_masks() -> Result<Vec<CacheDomainMask>, String> {
+    processor_topology().map(|topology| cache_domain_masks_for_topology(&topology))
+}
 
-                for bit in 0..usize::BITS as usize {
-                    if (group_affinity.Mask & (1_usize << bit)) != 0 && bit < 64 {
-                        processors.push(LogicalProcessorInfo {
-                            index: bit,
-                            core_index,
-                            kind: LogicalProcessorKind::Standard,
-                            efficiency_class: processor.EfficiencyClass,
-                        });
-                    }
-                }
-            }
-            core_index += 1;
-        }
-
-        offset = record_end;
-    }
-
-    if processors.is_empty() {
-        None
-    } else {
-        classify_logical_processors(&mut processors);
-        processors.sort_by_key(|processor| processor.index);
-        Some(processors)
-    }
+fn cache_domain_masks_for_topology(
+    topology: &crate::cpu_topology::CpuTopology,
+) -> Vec<CacheDomainMask> {
+    use crate::cpu_topology::CacheKind;
+    topology
+        .caches()
+        .iter()
+        .filter(|cache| {
+            cache.level == 3 && matches!(cache.kind, CacheKind::Unified | CacheKind::Data)
+        })
+        .enumerate()
+        .filter_map(|(index, cache)| {
+            // A shared domain is useful only when its entire membership fits this editor.
+            topology
+                .group_zero_mask(&cache.processors)
+                .ok()
+                .map(|mask| CacheDomainMask {
+                    index: index + 1,
+                    group: 0,
+                    size_bytes: cache.size_bytes,
+                    mask,
+                })
+        })
+        .collect()
 }
 
 fn fallback_logical_processors() -> Vec<LogicalProcessorInfo> {
@@ -1163,29 +1116,6 @@ fn fallback_logical_processors() -> Vec<LogicalProcessorInfo> {
             efficiency_class: 0,
         })
         .collect()
-}
-
-fn classify_logical_processors(processors: &mut [LogicalProcessorInfo]) {
-    let Some(min_efficiency_class) = processors
-        .iter()
-        .map(|processor| processor.efficiency_class)
-        .min()
-    else {
-        return;
-    };
-    let max_efficiency_class = processors
-        .iter()
-        .map(|processor| processor.efficiency_class)
-        .max()
-        .unwrap_or(min_efficiency_class);
-
-    for processor in processors {
-        processor.kind = processor_kind(
-            processor.efficiency_class,
-            min_efficiency_class,
-            max_efficiency_class,
-        );
-    }
 }
 
 fn processor_kind(
@@ -1514,7 +1444,7 @@ mod tests {
         );
         let message = processor_affinity_hard_message_for_group_count(2);
         assert!(message.contains("Multi-group CPU detected"));
-        assert!(message.contains("processor-group-aware"));
+        assert!(message.contains("only to processor group 0"));
     }
 
     #[test]
@@ -1525,169 +1455,12 @@ mod tests {
     }
 
     #[test]
-    fn homogeneous_topology_is_standard() {
-        let mut processors = vec![
-            LogicalProcessorInfo {
-                index: 0,
-                core_index: 0,
-                kind: LogicalProcessorKind::Performance,
-                efficiency_class: 0,
-            },
-            LogicalProcessorInfo {
-                index: 1,
-                core_index: 1,
-                kind: LogicalProcessorKind::Efficiency,
-                efficiency_class: 0,
-            },
-        ];
-
-        classify_logical_processors(&mut processors);
-
-        assert!(processors
-            .iter()
-            .all(|processor| processor.kind == LogicalProcessorKind::Standard));
-    }
-
-    #[test]
     fn hybrid_topology_classifies_min_and_max_efficiency_classes() {
         assert_eq!(processor_kind(0, 0, 1), LogicalProcessorKind::Efficiency);
         assert_eq!(processor_kind(1, 0, 1), LogicalProcessorKind::Performance);
         assert_eq!(processor_kind(2, 0, 3), LogicalProcessorKind::Standard);
     }
-
-    #[test]
-    fn topology_parser_reads_final_minimal_processor_record() {
-        let mut buffer = Vec::new();
-        append_processor_record(&mut buffer, 1, 1);
-        append_processor_record(&mut buffer, 1_usize << 11, 0);
-
-        let processors = logical_processors_from_topology_bytes(&buffer).unwrap();
-
-        assert_eq!(
-            processors
-                .iter()
-                .map(|processor| processor.index)
-                .collect::<Vec<_>>(),
-            vec![0, 11]
-        );
-        assert_eq!(processors[0].kind, LogicalProcessorKind::Performance);
-        assert_eq!(processors[1].kind, LogicalProcessorKind::Efficiency);
-    }
-
-    #[test]
-    fn topology_parser_rejects_malformed_records_after_a_valid_prefix() {
-        let mut prefix = Vec::new();
-        append_processor_record(&mut prefix, 1, 0);
-
-        let mut trailing_header = prefix.clone();
-        trailing_header.extend_from_slice(&[0; 3]);
-
-        let mut truncated_record = prefix.clone();
-        append_processor_record(&mut truncated_record, 2, 0);
-        truncated_record.pop();
-
-        let mut undersized_core = prefix.clone();
-        let header_size = size_of::<LogicalProcessorInformationHeader>();
-        let start = undersized_core.len();
-        undersized_core.resize(start + header_size, 0);
-        let size_offset = start + std::mem::offset_of!(LogicalProcessorInformationHeader, size);
-        undersized_core[size_offset..size_offset + size_of::<u32>()]
-            .copy_from_slice(&(header_size as u32).to_ne_bytes());
-
-        let mut invalid_size = prefix;
-        invalid_size.extend_from_slice(&[0; size_of::<LogicalProcessorInformationHeader>()]);
-
-        for buffer in [
-            trailing_header,
-            truncated_record,
-            undersized_core,
-            invalid_size,
-        ] {
-            assert!(logical_processors_from_topology_bytes(&buffer).is_none());
-        }
-    }
-
-    #[test]
-    fn topology_parser_rejects_invalid_core_group_counts() {
-        for group_count in [0_u16, 2] {
-            let mut buffer = Vec::new();
-            append_processor_record(&mut buffer, 1, 0);
-            let start = buffer.len();
-            append_processor_record(&mut buffer, 2, 0);
-            let count_offset = start
-                + size_of::<LogicalProcessorInformationHeader>()
-                + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupCount);
-            buffer[count_offset..count_offset + size_of::<u16>()]
-                .copy_from_slice(&group_count.to_ne_bytes());
-
-            assert!(logical_processors_from_topology_bytes(&buffer).is_none());
-        }
-    }
-
-    #[test]
-    fn topology_parser_rejects_processors_assigned_to_multiple_cores() {
-        let mut buffer = Vec::new();
-        append_processor_record(&mut buffer, 1, 1);
-        append_processor_record(&mut buffer, 3, 0);
-
-        assert!(logical_processors_from_topology_bytes(&buffer).is_none());
-        let mut empty_core = Vec::new();
-        append_processor_record(&mut empty_core, 1, 0);
-        append_processor_record(&mut empty_core, 0, 0);
-        assert!(logical_processors_from_topology_bytes(&empty_core).is_none());
-    }
-
-    #[test]
-    fn topology_parser_keeps_group_zero_selection() {
-        let mut buffer = Vec::new();
-        append_processor_record(&mut buffer, 1, 0);
-        let start = buffer.len();
-        append_processor_record(&mut buffer, 1, 0);
-        let group_offset = start
-            + size_of::<LogicalProcessorInformationHeader>()
-            + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask)
-            + std::mem::offset_of!(GROUP_AFFINITY, Group);
-        buffer[group_offset..group_offset + size_of::<u16>()].copy_from_slice(&1_u16.to_ne_bytes());
-
-        let processors = logical_processors_from_topology_bytes(&buffer).unwrap();
-        assert_eq!(processors.len(), 1);
-        assert_eq!(processors[0].index, 0);
-        assert_eq!(processors[0].core_index, 0);
-    }
-
-    fn append_processor_record(buffer: &mut Vec<u8>, mask: usize, efficiency_class: u8) {
-        let header_size = size_of::<LogicalProcessorInformationHeader>();
-        let processor_size = size_of::<PROCESSOR_RELATIONSHIP>();
-        let record_size = header_size + processor_size;
-        let start = buffer.len();
-        buffer.resize(start + record_size, 0);
-
-        let header = LogicalProcessorInformationHeader {
-            relationship: RelationProcessorCore,
-            size: record_size as u32,
-        };
-        let processor = PROCESSOR_RELATIONSHIP {
-            EfficiencyClass: efficiency_class,
-            GroupCount: 1,
-            GroupMask: [GROUP_AFFINITY {
-                Mask: mask,
-                Group: 0,
-                Reserved: [0; 3],
-            }],
-            ..Default::default()
-        };
-
-        // SAFETY: buffer was allocated for the complete header and processor records, and
-        // write_unaligned matches their byte-packed representation.
-        unsafe {
-            std::ptr::write_unaligned(
-                buffer.as_mut_ptr().add(start) as *mut LogicalProcessorInformationHeader,
-                header,
-            );
-            std::ptr::write_unaligned(
-                buffer.as_mut_ptr().add(start + header_size) as *mut PROCESSOR_RELATIONSHIP,
-                processor,
-            );
-        }
-    }
 }
+
+#[cfg(test)]
+mod topology_tests;

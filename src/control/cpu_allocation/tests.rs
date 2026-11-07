@@ -30,6 +30,8 @@ struct FakeState {
     next_affinity_error: Option<ProcessControlError>,
     fail_next_cpu_sets_apply: bool,
     fail_inventory: bool,
+    cpu_set_entries: Option<Vec<(u8, u32)>>,
+    reject_group_zero_affinity: bool,
     fail_next_commit: bool,
     fail_next_affinity_relinquish: bool,
     fail_next_cpu_sets_relinquish: bool,
@@ -118,6 +120,19 @@ impl CpuAllocationPlatform for FakePlatform {
         Ok((process.affinity, process.system_affinity))
     }
 
+    fn validate_group_zero_affinity(
+        &mut self,
+        _process: &Self::Process,
+    ) -> Result<(), ProcessControlError> {
+        if self.state.borrow().reject_group_zero_affinity {
+            Err(ProcessControlError::Failed(
+                "target processor group is unsupported".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     fn query_cpu_sets(&mut self, process: &Self::Process) -> Result<Vec<u32>, ProcessControlError> {
         let mut state = self.state.borrow_mut();
         if state.cpu_sets_query_failures.pop_front() == Some(true) {
@@ -141,6 +156,9 @@ impl CpuAllocationPlatform for FakePlatform {
             return Err(ProcessControlError::Failed(
                 "CPU Set discovery failed".into(),
             ));
+        }
+        if let Some(entries) = &self.state.borrow().cpu_set_entries {
+            return Ok(entries.clone());
         }
         Ok((0..64u8).map(|bit| (bit, 100 + u32::from(bit))).collect())
     }
@@ -345,6 +363,186 @@ fn allocation_target(id: u32, mask: u64, hard: bool) -> crate::cpu_allocation::C
         } else {
             crate::cpu_allocation::CpuAllocationMode::SoftCpuSets
         },
+    }
+}
+
+#[test]
+fn unsupported_hard_group_does_not_release_the_previous_soft_assignment() {
+    let mut coordinator = coordinator();
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            claim(
+                ControlOwner::AdaptiveEngine,
+                CpuAllocationRequest::SoftCpuSets {
+                    logical_processor_mask: 0b0010,
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.events.clear();
+        state.reject_group_zero_affinity = true;
+    }
+    let result = coordinator.apply_policy_claim(
+        &mut CpuSetInventory::default(),
+        claim(
+            ControlOwner::ProcessorAffinityHard,
+            CpuAllocationRequest::HardAffinity {
+                logical_processor_mask: 0b0110,
+            },
+            7,
+        ),
+        true,
+    );
+    assert!(matches!(result, Err(CpuAllocationApplyError::Target(_))));
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![101]);
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(coordinator.managed_cpu_sets.len(), 1);
+    assert!(coordinator.platform.state.borrow().events.is_empty());
+}
+
+#[test]
+fn hard_group_acquisition_guard_does_not_block_release_or_shutdown() {
+    for shutdown in [false, true] {
+        let mut coordinator = coordinator();
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                claim(
+                    ControlOwner::ProcessorAffinityHard,
+                    CpuAllocationRequest::HardAffinity {
+                        logical_processor_mask: 0b0011,
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .reject_group_zero_affinity = true;
+        if shutdown {
+            coordinator.shutdown().unwrap();
+        } else {
+            let release = coordinator.release_all_policy(ControlOwner::ProcessorAffinityHard);
+            assert!(release.failures.is_empty());
+        }
+        assert_eq!(process_state(&coordinator).affinity, 0b1111);
+        assert!(!coordinator.has_managed_state());
+    }
+}
+
+#[test]
+fn missing_soft_processors_do_not_shrink_a_selection_or_release_hard_affinity() {
+    let mut coordinator = coordinator();
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            claim(
+                ControlOwner::AdaptiveEngine,
+                CpuAllocationRequest::HardAffinity {
+                    logical_processor_mask: 0b0011,
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.events.clear();
+        state.cpu_set_entries = Some(vec![(0, 100)]);
+    }
+    let mut inventory = CpuSetInventory::default();
+    let mut soft = claim(
+        ControlOwner::CpuSetsSoft,
+        CpuAllocationRequest::SoftCpuSets {
+            logical_processor_mask: 0b0011,
+        },
+        7,
+    );
+    assert!(matches!(
+        coordinator.apply_policy_claim(&mut inventory, soft.clone(), true),
+        Err(CpuAllocationApplyError::Discovery(_))
+    ));
+    assert!(!inventory.failed());
+    assert_eq!(process_state(&coordinator).affinity, 0b0011);
+    assert!(process_state(&coordinator).cpu_sets.is_empty());
+    assert_eq!(
+        coordinator.platform.state.borrow().events,
+        vec!["cpu-set-inventory"]
+    );
+
+    soft.request = CpuAllocationRequest::SoftCpuSets {
+        logical_processor_mask: 0b0001,
+    };
+    coordinator
+        .apply_policy_claim(&mut inventory, soft, true)
+        .unwrap();
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![100]);
+    assert!(inventory
+        .ids(&mut coordinator.platform, 0)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn invalid_soft_inventory_is_cached_before_any_mode_switch() {
+    for entries in [
+        vec![(0, 100), (0, 101)],
+        vec![(0, 100), (1, 100)],
+        vec![(64, 100)],
+    ] {
+        let mut coordinator = coordinator();
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                claim(
+                    ControlOwner::AdaptiveEngine,
+                    CpuAllocationRequest::HardAffinity {
+                        logical_processor_mask: 0b0011,
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        {
+            let mut state = coordinator.platform.state.borrow_mut();
+            state.events.clear();
+            state.cpu_set_entries = Some(entries);
+        }
+        let mut inventory = CpuSetInventory::default();
+        assert!(matches!(
+            coordinator.apply_policy_claim(
+                &mut inventory,
+                claim(
+                    ControlOwner::CpuSetsSoft,
+                    CpuAllocationRequest::SoftCpuSets {
+                        logical_processor_mask: 1,
+                    },
+                    7,
+                ),
+                true,
+            ),
+            Err(CpuAllocationApplyError::Discovery(_))
+        ));
+        assert!(inventory.failed());
+        coordinator.platform.state.borrow_mut().cpu_set_entries = None;
+        assert!(inventory.ids(&mut coordinator.platform, 1).is_err());
+        assert_eq!(process_state(&coordinator).affinity, 0b0011);
+        assert!(process_state(&coordinator).cpu_sets.is_empty());
+        assert_eq!(
+            coordinator.platform.state.borrow().events,
+            vec!["cpu-set-inventory"]
+        );
     }
 }
 

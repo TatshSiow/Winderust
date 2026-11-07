@@ -252,6 +252,16 @@ impl Editor {
                 if self.draft.is_some() && self.read_only {
                     return;
                 }
+                if let Message::Mask(mask) | Message::ZoneMask(mask) = &edit {
+                    let available = crate::cpu_allocation::logical_processor_mask(
+                        &crate::cpu_allocation::logical_processors(),
+                    );
+                    if !super::cpu_allocation::mask_is_available(*mask, available) {
+                        self.error = t!("cpu_allocation.selection_unavailable").to_string();
+                        return;
+                    }
+                    self.error.clear();
+                }
                 let target = self.draft.as_mut().unwrap_or(s);
                 match edit {
                     Message::Toggle(f, v) => f(target, v),
@@ -517,6 +527,23 @@ impl Editor {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
             TuningTab::CpuBehaviour => {
+                let custom_selection = editable
+                    && (s.adaptive_engine_process.background_processor_selection
+                        == BackgroundProcessorSelection::Custom
+                        || s.adaptive_engine_process
+                            .dynamic_resource_zone_settings
+                            .background_processor_selection
+                            == BackgroundProcessorSelection::Custom);
+                let processors = if custom_selection {
+                    crate::cpu_allocation::logical_processors()
+                } else {
+                    Vec::new()
+                };
+                let cpu_presets = if custom_selection {
+                    super::cpu_allocation::core_presets(&processors)
+                } else {
+                    Vec::new()
+                };
                 let pressure = super::widgets::settings_rows([
                     number!(
                         "adaptive_engine_process.background_app_cpu_threshold",
@@ -639,7 +666,8 @@ impl Editor {
                     allocation = allocation.push(super::widgets::settings_divider()).push(
                         super::cpu_allocation::mask_selector(
                             mask,
-                            &crate::cpu_allocation::logical_processors(),
+                            &processors,
+                            &cpu_presets,
                             &s.cpu_allocation_presets,
                             Message::Mask,
                         ),
@@ -713,7 +741,8 @@ impl Editor {
                                 crate::cpu_allocation::logical_processor_indices_mask(
                                     &zones.specific_processors,
                                 ),
-                                &crate::cpu_allocation::logical_processors(),
+                                &processors,
+                                &cpu_presets,
                                 &s.cpu_allocation_presets,
                                 Message::ZoneMask,
                             ),
@@ -1934,6 +1963,9 @@ impl Editor {
 
         if let Some(error) = self.validation_error() {
             body = body.push(text(error));
+        }
+        if !preset && !self.error.is_empty() {
+            body = body.push(text(self.error.clone()).style(text::danger));
         }
         scrollable(header.push(super::motion::wrap(
             body,

@@ -181,6 +181,11 @@ hover/press; background shading supplies feedback.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
   delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
   edit, and view use the existing full-window modal style.
+- Verified, fully representable L3 selections appear as Cache Domain presets
+  with group and cache-size labels. Missing cache metadata creates no inferred
+  preset. Unsupported saved selections remain visible; selection controls do
+  not quietly shrink them to the processors currently available. Preset edits
+  require review if discovery fails or topology changes while the dialog is open.
 - Rule tables use Active, App Name, Executable Path, Focus, Visible Window, Background, and Actions
   columns. Each policy column selects a Core or custom preset; do not restore expandable per-rule
   CPU grids.

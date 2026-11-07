@@ -793,7 +793,7 @@ processor_affinity_hard:
   intro_1: "處理器親和性（硬性）會將應用程式限制在所選的邏輯處理器上。"
   intro_2: "僅在需要嚴格 CPU 邊界時使用。"
   enable: "啟用處理器親和性（硬性）"
-  warning: "硬性親和性可能降低效能或回應速度。在多處理器群組系統上，它只會套用至程序的主要群組。"
+  warning: "硬性親和性可能降低效能或回應速度。Winderust 僅會將其套用至確認只使用處理器群組 0 的程序。"
 
 cpu_allocation:
   custom_rules: "自訂規則"
@@ -811,6 +811,13 @@ cpu_allocation:
   p_cores_no_smt: "P 核心（每核心單執行緒）"
   custom: "自訂"
   core_presets: "核心預設"
+  cache_domain: "快取網域 %{index}（群組 %{group}，%{size}）"
+  cache_domains_help: "快取網域依據處理器群組 0 中已驗證的共用 L3 快取成員建立。選取時會複製目前的 CPU 選擇；硬體變更後，已儲存的遮罩不會自動追蹤快取網域。"
+  selection_unavailable: "此選擇包含處理器群組 0 中無法使用的 CPU。請選取有效預設或檢查已選取的 CPU。"
+  unavailable_selection: "無法使用的選擇"
+  topology_changed: "開啟此預設後 CPU 拓撲已變更。請關閉並重新開啟，以檢查目前的 CPU。"
+  topology_summary: "偵測到 %{processors} 個邏輯 CPU、%{cores} 個實體核心、%{groups} 個處理器群組及 %{numa_nodes} 個 NUMA 節點。"
+  topology_unavailable: "無法驗證 CPU 拓撲：%{error}。儲存前請關閉並重新開啟此預設。"
   no_logical_cpus: "未選取邏輯處理器"
   no_custom_presets: "尚未建立自訂預設。"
   add_preset: "新增預設"

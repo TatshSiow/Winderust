@@ -194,10 +194,12 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                 .iter_mut()
                 .find(|r| process_setting_matches(&r.executable_path, &path))
             {
-                let mask = mask
-                    & crate::cpu_allocation::logical_processor_mask(
-                        &crate::cpu_allocation::logical_processors(),
-                    );
+                let available = crate::cpu_allocation::logical_processor_mask(
+                    &crate::cpu_allocation::logical_processors(),
+                );
+                if !cpu_allocation::mask_is_available(mask, available) {
+                    return;
+                }
                 match tier {
                     Tier::Focus => r.focus_core_mask = mask,
                     Tier::VisibleWindow => r.visible_window_core_mask = mask,
@@ -436,6 +438,22 @@ pub(super) fn view<'a>(
         body = body.push(text(t!("cpu_sets_soft.warning").to_string()));
     }
     body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
+    let has_cpu_rule = s
+        .cpu_sets_soft
+        .rules
+        .iter()
+        .chain(&s.processor_affinity_hard.rules)
+        .any(|rule| process_setting_matches(&rule.executable_path, path));
+    let processors = if has_cpu_rule {
+        crate::cpu_allocation::logical_processors()
+    } else {
+        Vec::new()
+    };
+    let presets = if has_cpu_rule {
+        cpu_allocation::core_presets(&processors)
+    } else {
+        Vec::new()
+    };
     for soft in [true, false] {
         let settings = if soft {
             &s.cpu_sets_soft
@@ -456,7 +474,6 @@ pub(super) fn view<'a>(
         )]
         .spacing(widgets::CARD_GAP);
         if let Some(rule) = rule {
-            let processors = crate::cpu_allocation::logical_processors();
             for tier in Tier::ALL {
                 let mask = match tier {
                     Tier::Focus => rule.focus_core_mask,
@@ -469,6 +486,7 @@ pub(super) fn view<'a>(
                     .push(cpu_allocation::mask_selector(
                         mask,
                         &processors,
+                        &presets,
                         &s.cpu_allocation_presets,
                         move |v| Message::CpuMask(soft, tier, v),
                     ));

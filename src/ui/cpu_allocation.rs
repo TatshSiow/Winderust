@@ -66,6 +66,8 @@ pub(super) struct Editor {
     editing_preset: Option<usize>,
     preset_open: bool,
     preset_read_only: bool,
+    preset_topology: Option<Result<crate::cpu_topology::CpuTopology, String>>,
+    error: String,
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -113,10 +115,15 @@ impl Editor {
                 }
             }
             Message::Mask(i, tier, choice) => {
+                if !mask_is_available(choice.0, available()) {
+                    self.error = t!("cpu_allocation.selection_unavailable").to_string();
+                    return;
+                }
                 if let Some(r) = settings_mut(s, k).rules.get_mut(i) {
-                    tier.set(r, choice.0 & available());
+                    tier.set(r, choice.0);
                     self.selected_presets
                         .insert((r.executable_path.clone(), tier as usize), choice);
+                    self.error.clear();
                 }
             }
             Message::Remove(i) => {
@@ -132,7 +139,8 @@ impl Editor {
                 self.preset_open = true;
                 self.preset_read_only = true;
                 self.preset_name = name;
-                self.preset_mask = mask & available();
+                self.preset_mask = mask;
+                self.error.clear();
             }
             Message::NewPreset => {
                 self.preset_read_only = false;
@@ -140,6 +148,8 @@ impl Editor {
                 self.editing_preset = None;
                 self.preset_name.clear();
                 self.preset_mask = available();
+                self.preset_topology = Some(cpu_allocation::processor_topology());
+                self.error.clear();
             }
             Message::EditPreset(i) => {
                 self.preset_read_only = false;
@@ -147,17 +157,33 @@ impl Editor {
                     self.preset_open = true;
                     self.editing_preset = Some(i);
                     self.preset_name = p.name.clone();
-                    self.preset_mask = p.core_mask & available();
+                    self.preset_mask = p.core_mask;
+                    self.preset_topology = Some(cpu_allocation::processor_topology());
+                    self.error.clear();
                 }
             }
             Message::PresetName(v) if !self.preset_read_only => self.preset_name = v,
-            Message::PresetMask(v) if !self.preset_read_only => self.preset_mask = v & available(),
+            Message::PresetMask(v) if !self.preset_read_only => {
+                if mask_is_available(v, available()) {
+                    self.preset_mask = v;
+                    self.error.clear();
+                } else {
+                    self.error = t!("cpu_allocation.selection_unavailable").to_string();
+                }
+            }
             Message::PresetName(_) | Message::PresetMask(_) => {}
             Message::SavePreset => {
+                if self.preset_read_only {
+                    return;
+                }
+                if let Err(error) =
+                    self.validate_preset_selection(&cpu_allocation::processor_topology())
+                {
+                    self.error = error;
+                    return;
+                }
                 let name = self.preset_name.trim();
-                if !self.preset_read_only
-                    && !name.is_empty()
-                    && self.preset_mask != 0
+                if !name.is_empty()
                     && !s.cpu_allocation_presets.iter().enumerate().any(|(i, p)| {
                         Some(i) != self.editing_preset && p.name.trim().eq_ignore_ascii_case(name)
                     })
@@ -174,6 +200,7 @@ impl Editor {
                         s.cpu_allocation_presets.push(p);
                     }
                     self.preset_open = false;
+                    self.error.clear();
                 }
             }
             Message::DeletePreset(i) => {
@@ -182,8 +209,41 @@ impl Editor {
                     self.preset_open = false;
                 }
             }
-            Message::ClosePreset => self.preset_open = false,
+            Message::ClosePreset => {
+                self.preset_open = false;
+                self.error.clear();
+            }
         }
+    }
+
+    fn validate_preset_selection(
+        &self,
+        current: &Result<crate::cpu_topology::CpuTopology, String>,
+    ) -> Result<(), String> {
+        let unavailable =
+            |error: &String| t!("cpu_allocation.topology_unavailable", error = error).to_string();
+        let current = current.as_ref().map_err(unavailable)?;
+        let captured = self
+            .preset_topology
+            .as_ref()
+            .ok_or_else(|| t!("cpu_allocation.topology_changed").to_string())?
+            .as_ref()
+            .map_err(unavailable)?;
+        if current != captured {
+            return Err(t!("cpu_allocation.topology_changed").to_string());
+        }
+        let available = current
+            .groups()
+            .iter()
+            .find(|group| group.number == 0)
+            .map_or(0, |group| group.active_mask);
+        if !mask_is_available(self.preset_mask, available) {
+            return Err(t!("cpu_allocation.selection_unavailable").to_string());
+        }
+        if self.preset_mask == 0 {
+            return Err(t!("cpu_allocation.no_logical_cpus").to_string());
+        }
+        Ok(())
     }
     fn selected_preset(
         &self,
@@ -221,6 +281,12 @@ impl Editor {
         } else {
             cpu_allocation::logical_processors()
         };
+        let available = cpu_allocation::logical_processor_mask(&processors);
+        let presets = if processors.is_empty() {
+            Vec::new()
+        } else {
+            core_presets(&processors)
+        };
         let mut body = column![
             super::widgets::toggle_card(
                 match k {
@@ -252,26 +318,44 @@ impl Editor {
                 .into_iter()
                 .map(|tier| {
                     let mask = tier.mask(r);
-                    let mut choices = core_presets(&processors);
+                    let mut choices = presets.clone();
                     choices.extend(
                         s.cpu_allocation_presets
                             .iter()
                             .map(|p| super::widgets::Choice(p.core_mask, p.name.clone())),
                     );
-                    choices.retain(|p| p.0 != 0);
+                    choices.retain(|p| p.0 != 0 && mask_is_available(p.0, available));
                     let selected = self
                         .selected_preset(&r.executable_path, tier, mask, &choices)
                         .unwrap_or_else(|| {
-                            super::widgets::Choice(mask, t!("common.custom").to_string())
+                            super::widgets::Choice(
+                                mask,
+                                t!(if mask_is_available(mask, available) {
+                                    "common.custom"
+                                } else {
+                                    "cpu_allocation.unavailable_selection"
+                                })
+                                .to_string(),
+                            )
                         });
                     if !choices.contains(&selected) {
                         choices.push(selected.clone());
                     }
-                    super::widgets::pick_list(choices, Some(selected), move |v| {
-                        Message::Mask(i, tier, v)
-                    })
-                    .width(Fill)
-                    .into()
+                    let mut control =
+                        column![
+                            super::widgets::pick_list(choices, Some(selected), move |v| {
+                                Message::Mask(i, tier, v)
+                            })
+                            .width(Fill)
+                        ]
+                        .spacing(design::space::TIGHT);
+                    if !mask_is_available(mask, available) {
+                        control = control.push(
+                            text(t!("cpu_allocation.selection_unavailable").to_string())
+                                .style(text::danger),
+                        );
+                    }
+                    control.into()
                 })
                 .collect();
             rules.push((
@@ -292,6 +376,9 @@ impl Editor {
             rules,
             t!("common.no_custom_rules").to_string(),
         ));
+        if !self.error.is_empty() {
+            body = body.push(text(self.error.clone()).style(text::danger));
+        }
 
         scrollable(body).width(Fill).height(Fill).into()
     }
@@ -315,11 +402,17 @@ impl Editor {
             icon_button("icons/x.svg").on_press(Message::ClosePreset)
         ]
         .align_y(iced::Center);
+        let processors = cpu_allocation::logical_processors();
+        let available = cpu_allocation::logical_processor_mask(&processors);
+        let topology = cpu_allocation::processor_topology();
+        let validation_error = if self.preset_read_only {
+            (!mask_is_available(self.preset_mask, available))
+                .then(|| t!("cpu_allocation.selection_unavailable").to_string())
+        } else {
+            self.validate_preset_selection(&topology).err()
+        };
         let mut cpus = row![].spacing(design::space::CONTROL);
-        for cpu in cpu_allocation::logical_processors()
-            .iter()
-            .filter(|cpu| cpu.index < 64)
-        {
+        for cpu in processors.iter().filter(|cpu| cpu.index < 64) {
             let bit = 1u64 << cpu.index;
             let selected = self.preset_mask & bit != 0;
             let kind = t!(match cpu.kind {
@@ -378,16 +471,52 @@ impl Editor {
                 .into(),
                 column![
                     text(t!("cpu_allocation.selected_logical_cpus").to_string()),
-                    cpus.wrap()
+                    cpus.wrap(),
+                    text(format!("0x{:016X}", self.preset_mask))
                 ]
                 .spacing(design::space::SMALL)
                 .into(),
             ]))
         ]
         .spacing(design::space::MEDIUM);
-        if self.preset_mask == 0 {
-            body = body
-                .push(text(t!("cpu_allocation.no_logical_cpus").to_string()).style(text::danger));
+        if let Ok(topology) = &topology {
+            let cores = topology
+                .processors()
+                .iter()
+                .map(|cpu| cpu.core)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
+            body = body.push(
+                text(
+                    t!(
+                        "cpu_allocation.topology_summary",
+                        processors = topology.processors().len(),
+                        cores = cores,
+                        groups = topology.groups().len(),
+                        numa_nodes = topology.numa_nodes().len()
+                    )
+                    .to_string(),
+                )
+                .style(text::secondary),
+            );
+        }
+        if !self.preset_read_only {
+            let mut choices = row![].spacing(design::space::TIGHT);
+            for preset in core_presets(&processors) {
+                choices = choices.push(
+                    button(text(preset.1)).on_press_maybe(
+                        (preset.0 != 0 && mask_is_available(preset.0, available))
+                            .then_some(Message::PresetMask(preset.0)),
+                    ),
+                );
+            }
+            body = body.push(choices.wrap());
+        }
+        if let Some(error) = &validation_error {
+            body = body.push(text(error.clone()).style(text::danger));
+        }
+        if !self.error.is_empty() && validation_error.as_deref() != Some(self.error.as_str()) {
+            body = body.push(text(self.error.clone()).style(text::danger));
         }
         if !self.preset_read_only && !self.preset_name.trim().is_empty() && !valid_name {
             body = body.push(
@@ -413,7 +542,7 @@ impl Editor {
                 action_button(t!("common.save").to_string())
                     .style(super::widgets::primary_button)
                     .on_press_maybe(
-                        (valid_name && self.preset_mask != 0).then_some(Message::SavePreset),
+                        (valid_name && validation_error.is_none()).then_some(Message::SavePreset),
                     ),
             );
         }
@@ -435,6 +564,8 @@ impl Editor {
         ),]
         .spacing(design::space::MEDIUM)
         .padding([0, design::space::MEDIUM as u16]);
+        rail = rail
+            .push(text(t!("cpu_allocation.cache_domains_help").to_string()).style(text::secondary));
         for preset in core_presets(&processors).into_iter().filter(|p| p.0 != 0) {
             let message = Message::ViewPreset(preset.1.clone(), preset.0);
             rail = rail.push(
@@ -498,14 +629,16 @@ fn can_add(s: &Settings, path: &str) -> bool {
         cpu_allocation::is_builtin_excluded,
     )
 }
-fn core_presets(processors: &[LogicalProcessorInfo]) -> Vec<super::widgets::Choice<u64>> {
+pub(super) fn core_presets(
+    processors: &[LogicalProcessorInfo],
+) -> Vec<super::widgets::Choice<u64>> {
     let all = cpu_allocation::logical_processor_mask(processors);
     let p =
         cpu_allocation::logical_processor_kind_mask(processors, LogicalProcessorKind::Performance);
     let e =
         cpu_allocation::logical_processor_kind_mask(processors, LogicalProcessorKind::Efficiency);
     let smt = cpu_allocation::logical_processor_no_smt_mask(processors);
-    [
+    let mut presets = [
         ("cpu_allocation.all", all),
         ("cpu_allocation.p_cores", p),
         ("cpu_allocation.e_cores", e),
@@ -515,25 +648,66 @@ fn core_presets(processors: &[LogicalProcessorInfo]) -> Vec<super::widgets::Choi
     ]
     .into_iter()
     .map(|(key, mask)| super::widgets::Choice(mask, t!(key).to_string()))
-    .collect()
+    .collect::<Vec<_>>();
+    if let Ok(domains) = cpu_allocation::cache_domain_masks() {
+        presets.extend(cache_presets(all, &domains));
+    }
+    presets
 }
+
+fn cache_presets(
+    available: u64,
+    domains: &[cpu_allocation::CacheDomainMask],
+) -> Vec<super::widgets::Choice<u64>> {
+    domains
+        .iter()
+        .filter(|domain| {
+            domain.group == 0 && domain.mask != 0 && mask_is_available(domain.mask, available)
+        })
+        .map(|domain| {
+            let size = if domain.size_bytes >= 1_000_000 {
+                format!("{:.1} MB", f64::from(domain.size_bytes) / 1_000_000.0)
+            } else {
+                format!("{:.1} KB", f64::from(domain.size_bytes) / 1_000.0)
+            };
+            super::widgets::Choice(
+                domain.mask,
+                t!(
+                    "cpu_allocation.cache_domain",
+                    index = domain.index,
+                    group = domain.group,
+                    size = size
+                )
+                .to_string(),
+            )
+        })
+        .collect()
+}
+
+pub(super) fn mask_is_available(mask: u64, available: u64) -> bool {
+    mask & !available == 0
+}
+
 pub(super) fn mask_selector<'a, M: Clone + 'a>(
     mask: u64,
     processors: &[LogicalProcessorInfo],
+    core_presets: &[super::widgets::Choice<u64>],
     custom: &[CpuAllocationPreset],
     message: impl Fn(u64) -> M + Clone + 'a,
 ) -> Element<'a, M> {
     let all = cpu_allocation::logical_processor_mask(processors);
     let mut presets = row![].spacing(design::space::TIGHT);
-    for preset in core_presets(processors) {
-        presets = presets.push(
-            button(text(preset.1)).on_press_maybe((preset.0 != 0).then(|| message(preset.0))),
-        );
+    for preset in core_presets {
+        presets = presets.push(button(text(preset.1.clone())).on_press_maybe(
+            (preset.0 != 0 && mask_is_available(preset.0, all)).then(|| message(preset.0)),
+        ));
     }
     for preset in custom {
-        let m = preset.core_mask & all;
-        presets = presets
-            .push(button(text(preset.name.clone())).on_press_maybe((m != 0).then(|| message(m))));
+        let m = preset.core_mask;
+        presets = presets.push(
+            button(text(preset.name.clone()))
+                .on_press_maybe((m != 0 && mask_is_available(m, all)).then(|| message(m))),
+        );
     }
     let mut cpus = row![].spacing(design::space::CONTROL);
     for cpu in processors.iter().filter(|p| p.index < 64) {
@@ -550,13 +724,128 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
                 .on_toggle(move |v| msg(if v { mask | bit } else { mask & !bit })),
         );
     }
-    column![presets.wrap(), cpus.wrap(), text(format!("0x{mask:016X}"))]
-        .spacing(design::space::SMALL)
-        .into()
+    let mut selector = column![presets.wrap(), cpus.wrap(), text(format!("0x{mask:016X}"))]
+        .spacing(design::space::SMALL);
+    if !mask_is_available(mask, all) {
+        selector = selector
+            .push(text(t!("cpu_allocation.selection_unavailable").to_string()).style(text::danger));
+    }
+    selector.into()
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_choices_keep_complete_masks_and_decimal_sizes() {
+        let domains = [
+            cpu_allocation::CacheDomainMask {
+                index: 1,
+                group: 0,
+                size_bytes: 32_000_000,
+                mask: 0b0011,
+            },
+            cpu_allocation::CacheDomainMask {
+                index: 2,
+                group: 0,
+                size_bytes: 512_000,
+                mask: 0b1100,
+            },
+            cpu_allocation::CacheDomainMask {
+                index: 3,
+                group: 1,
+                size_bytes: 32_000_000,
+                mask: 0b0011,
+            },
+            cpu_allocation::CacheDomainMask {
+                index: 4,
+                group: 0,
+                size_bytes: 32_000_000,
+                mask: 0b10001,
+            },
+        ];
+        let choices = cache_presets(0b1111, &domains);
+        assert_eq!(
+            choices.iter().map(|choice| choice.0).collect::<Vec<_>>(),
+            [3, 12]
+        );
+        assert!(choices[0].1.contains("32.0 MB"));
+        assert!(choices[1].1.contains("512.0 KB"));
+    }
+
+    #[test]
+    fn preset_save_requires_captured_topology_and_rejects_absent_cpus() {
+        use crate::cpu_topology::{
+            CacheDomain, CacheKind, CpuTopology, LogicalProcessor, ProcessorGroup, ProcessorId,
+        };
+
+        let id = ProcessorId {
+            group: 0,
+            number: 0,
+        };
+        let topology = CpuTopology::new(
+            vec![LogicalProcessor {
+                id,
+                core: id,
+                efficiency_class: 0,
+            }],
+            vec![ProcessorGroup {
+                number: 0,
+                active_mask: 1,
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut editor = Editor {
+            preset_mask: 1,
+            preset_topology: Some(Ok(topology.clone())),
+            ..Editor::default()
+        };
+        assert!(editor
+            .validate_preset_selection(&Ok(topology.clone()))
+            .is_ok());
+        editor.preset_mask = 3;
+        assert!(editor
+            .validate_preset_selection(&Ok(topology.clone()))
+            .is_err());
+        assert_eq!(editor.preset_mask, 3);
+        editor.preset_mask = 1;
+        let changed = CpuTopology::new(
+            topology.processors().to_vec(),
+            topology.groups().to_vec(),
+            vec![CacheDomain {
+                level: 3,
+                kind: CacheKind::Unified,
+                size_bytes: 32_000_000,
+                processors: vec![id],
+            }],
+            topology.numa_nodes().to_vec(),
+        )
+        .unwrap();
+        assert!(editor.validate_preset_selection(&Ok(changed)).is_err());
+        assert!(editor
+            .validate_preset_selection(&Err("unavailable".into()))
+            .is_err());
+        editor.preset_topology = Some(Err("unavailable at open".into()));
+        assert!(editor.validate_preset_selection(&Ok(topology)).is_err());
+    }
+
+    #[test]
+    fn opening_a_saved_preset_preserves_unavailable_bits_for_review() {
+        let mut settings = Settings::default();
+        settings.cpu_allocation_presets.push(CpuAllocationPreset {
+            name: "saved".into(),
+            core_mask: u64::MAX,
+        });
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Kind::Soft, Message::EditPreset(0));
+        assert_eq!(editor.preset_mask, u64::MAX);
+        assert_eq!(settings.cpu_allocation_presets[0].core_mask, u64::MAX);
+        editor.update(&mut settings, Kind::Soft, Message::ClosePreset);
+        assert_eq!(settings.cpu_allocation_presets[0].core_mask, u64::MAX);
+    }
+
     #[test]
     fn identical_masks_keep_explicit_selection_per_rule_and_tier() {
         for kind in [Kind::Soft, Kind::Hard] {

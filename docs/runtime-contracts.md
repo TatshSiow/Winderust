@@ -281,6 +281,21 @@ Read the relevant section before changing feature policy, ownership, restoration
   including logical processor 63. Parsing requires `0x` and 16 hexadecimal digits;
   serialization uses lowercase. Numeric masks and malformed strings fail settings
   load or import before any file is rewritten.
+- CPU Allocation topology discovery retains group-qualified logical processors,
+  physical-core membership, efficiency classes, NUMA nodes, and cache domains.
+  `src/cpu_topology.rs` validates these facts; the Windows adapter alone parses
+  native variable-length records. Existing masks and Adaptive per-processor
+  sampling remain explicitly limited to group 0. A cache preset requires its
+  entire verified L3 data/unified-cache domain to fit that group; no partial
+  domain or inferred CCD is offered. Presets copy processor-number selections,
+  not durable hardware identities. Saved selections require review after a
+  hardware/topology change; this format does not detect changes across sessions.
+- Unavailable processor bits are not silently removed from selections. Editors
+  preserve unsupported saved masks and require an explicit valid replacement;
+  topology changes during preset editing require review before saving. Soft
+  allocation rejects incomplete or ambiguous CPU Set mappings before mutation.
+  New hard-affinity claims require a verified single group-0 target; group
+  validation does not gate compensation, release, or crash restoration.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 

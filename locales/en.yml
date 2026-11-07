@@ -790,7 +790,7 @@ processor_affinity_hard:
   intro_1: "Processor Affinity (Hard) limits an app to the selected logical CPUs."
   intro_2: "Use this only when a strict CPU boundary is required."
   enable: "Enable Processor Affinity (Hard)"
-  warning: "Hard affinity can reduce performance or responsiveness. On multi-group systems it applies only to the process primary group."
+  warning: "Hard affinity can reduce performance or responsiveness. Winderust applies it only to processes confirmed to use processor group 0 alone."
 
 cpu_allocation:
   custom_rules: "Custom Rules"
@@ -808,6 +808,13 @@ cpu_allocation:
   p_cores_no_smt: "P-cores no SMT"
   custom: "Custom"
   core_presets: "Core presets"
+  cache_domain: "Cache Domain %{index} (Group %{group}, %{size})"
+  cache_domains_help: "Cache domains use verified shared L3 cache membership in processor group 0. Selecting one copies its current CPUs; saved masks do not track cache domains after hardware changes."
+  selection_unavailable: "This selection includes CPUs unavailable in processor group 0. Choose a valid preset or review the selected CPUs."
+  unavailable_selection: "Unavailable selection"
+  topology_changed: "CPU topology changed while this preset was open. Close and reopen it to review the current CPUs."
+  topology_summary: "%{processors} logical CPUs; %{cores} physical cores; %{groups} processor groups; %{numa_nodes} NUMA nodes reported."
+  topology_unavailable: "Cannot verify CPU topology: %{error}. Close and reopen this preset before saving."
   no_logical_cpus: "No logical CPUs selected"
   no_custom_presets: "No custom presets yet."
   add_preset: "Add preset"

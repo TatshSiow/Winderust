@@ -13,6 +13,7 @@ mod bottleneck_classifier;
 mod config;
 mod control;
 mod cpu;
+mod cpu_topology;
 mod features;
 mod foreground;
 mod platform;

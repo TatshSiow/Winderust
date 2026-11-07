@@ -44,15 +44,37 @@ impl CpuSetInventory {
         platform: &mut P,
         mask: u64,
     ) -> Result<Vec<u32>, ProcessControlError> {
-        match self
-            .result
-            .get_or_insert_with(|| platform.cpu_set_inventory())
-        {
-            Ok(entries) => Ok(entries
-                .iter()
-                .filter(|(bit, _)| *bit < 64 && mask & (1u64 << bit) != 0)
-                .map(|(_, id)| *id)
-                .collect()),
+        match self.result.get_or_insert_with(|| {
+            let entries = platform.cpu_set_inventory()?;
+            let mut processors = 0_u64;
+            let mut ids = BTreeSet::new();
+            for &(bit, id) in &entries {
+                if bit >= 64 || processors & (1_u64 << bit) != 0 || !ids.insert(id) {
+                    return Err(ProcessControlError::Failed(
+                        "CPU Set discovery returned duplicate or invalid processor mappings."
+                            .to_owned(),
+                    ));
+                }
+                processors |= 1_u64 << bit;
+            }
+            Ok(entries)
+        }) {
+            Ok(entries) => {
+                let available = entries
+                    .iter()
+                    .fold(0_u64, |available, (bit, _)| available | (1_u64 << bit));
+                if mask & !available != 0 {
+                    return Err(ProcessControlError::Failed(
+                        "CPU Sets (Soft) selection contains unavailable group-0 processors."
+                            .to_owned(),
+                    ));
+                }
+                Ok(entries
+                    .iter()
+                    .filter(|(bit, _)| mask & (1_u64 << bit) != 0)
+                    .map(|(_, id)| *id)
+                    .collect())
+            }
             Err(error) => Err(error.clone()),
         }
     }
@@ -171,6 +193,10 @@ pub(crate) trait CpuAllocationPlatform {
         &mut self,
         process: &Self::Process,
     ) -> Result<(usize, usize), ProcessControlError>;
+    fn validate_group_zero_affinity(
+        &mut self,
+        process: &Self::Process,
+    ) -> Result<(), ProcessControlError>;
     fn query_cpu_sets(&mut self, process: &Self::Process) -> Result<Vec<u32>, ProcessControlError>;
     fn cpu_set_inventory(&mut self) -> Result<Vec<(u8, u32)>, ProcessControlError>;
     fn begin_affinity_change(
@@ -225,6 +251,14 @@ impl CpuAllocationPlatform for WindowsCpuAllocationPlatform {
         process: &Self::Process,
     ) -> Result<(usize, usize), ProcessControlError> {
         windows_cpu_allocation::query_affinity(process).map_err(map_cpu_allocation_error)
+    }
+
+    fn validate_group_zero_affinity(
+        &mut self,
+        process: &Self::Process,
+    ) -> Result<(), ProcessControlError> {
+        windows_cpu_allocation::validate_group_zero_affinity(process)
+            .map_err(map_cpu_allocation_error)
     }
 
     fn query_cpu_sets(&mut self, process: &Self::Process) -> Result<Vec<u32>, ProcessControlError> {
@@ -453,6 +487,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         owner: ControlOwner,
         request: HardAffinityRequest,
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
+        self.platform.validate_group_zero_affinity(process)?;
         let (current, system) = self.platform.query_affinity(process)?;
         let desired = match request {
             HardAffinityRequest::Exact(mask) => target_affinity_mask(mask, system),
