@@ -596,7 +596,8 @@ fn processor_selection_resolves_topology_and_custom_masks() {
         selected_background_processor_mask(
             &processors,
             BackgroundProcessorSelection::EfficiencyCores,
-            &[],
+            &CpuSelection::default(),
+            &crate::cpu_topology::test_topology(),
         ),
         Some(0b1100)
     );
@@ -604,7 +605,8 @@ fn processor_selection_resolves_topology_and_custom_masks() {
         selected_background_processor_mask(
             &processors,
             BackgroundProcessorSelection::AllCoresNoSmt,
-            &[],
+            &CpuSelection::default(),
+            &crate::cpu_topology::test_topology(),
         ),
         Some(0b1101)
     );
@@ -612,9 +614,62 @@ fn processor_selection_resolves_topology_and_custom_masks() {
         selected_background_processor_mask(
             &processors,
             BackgroundProcessorSelection::Custom,
-            &[1, 4],
+            &crate::cpu_topology::test_selection(0b10010),
+            &crate::cpu_topology::test_topology(),
         ),
-        Some(0b0010)
+        None
+    );
+}
+
+#[test]
+fn saved_custom_processors_require_their_topology_while_current_topology_presets_remain_available()
+{
+    let original = crate::cpu_topology::test_topology();
+    let mut members = original.processors().to_vec();
+    members[0].efficiency_class = 1;
+    let changed =
+        CpuTopology::new(members, original.groups().to_vec(), Vec::new(), Vec::new()).unwrap();
+    let processors = cpu_allocation::logical_processors_for_group_zero(&changed);
+    let saved = CpuSelection::from_group_zero_mask(&original, 3).unwrap();
+    assert!(saved_processor_selection_error(
+        BackgroundProcessorSelection::Custom,
+        &saved,
+        Ok(&changed)
+    )
+    .is_some());
+    assert_eq!(
+        selected_background_processor_mask(
+            &processors,
+            BackgroundProcessorSelection::Custom,
+            &saved,
+            &changed
+        ),
+        None
+    );
+    assert_eq!(
+        selected_background_processor_mask(
+            &processors,
+            BackgroundProcessorSelection::PerformanceCores,
+            &saved,
+            &changed
+        ),
+        Some(1)
+    );
+    assert!(saved_processor_selection_error(
+        BackgroundProcessorSelection::PerformanceCores,
+        &saved,
+        Err("topology unavailable")
+    )
+    .is_some());
+    let reviewed = saved.rebind(&changed).unwrap();
+    assert_eq!(
+        selected_background_processor_mask(
+            &processors,
+            BackgroundProcessorSelection::Custom,
+            &reviewed,
+            &changed
+        ),
+        Some(3)
     );
 }
 

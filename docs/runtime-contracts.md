@@ -274,26 +274,35 @@ Read the relevant section before changing feature policy, ownership, restoration
   topology-derived Core Presets are read-only: All, P-cores, E-cores, All cores no SMT, P-cores no
   SMT, and E-cores no SMT. Custom presets remain editable. Every rule independently selects Focus,
   Visible Window, and Background masks with Focus > Visible Window > Background precedence.
-  Selecting a preset copies its current mask into that tier; later preset edits or deletion do not
-  silently rewrite configured rules.
-- CPU-selection rule and preset masks serialize as quoted, fixed-width 64-bit
-  hexadecimal strings, such as `"0x8000000000000000"`. All 64 bits round-trip,
-  including logical processor 63. Parsing requires `0x` and 16 hexadecimal digits;
-  serialization uses lowercase. Numeric masks and malformed strings fail settings
-  load or import before any file is rewritten.
+  Selecting a preset copies its complete selection and topology signature into that tier;
+  later preset edits or deletion do not silently rewrite configured rules.
+- CPU-selection rules, custom presets, and Adaptive Engine custom selections store
+  explicit `{ group, number }` members and an optional exact canonical topology
+  snapshot. This signature describes scheduling layout, not permanent hardware
+  identity. Its active-group masks use fixed-width hexadecimal strings to preserve
+  logical processor 63. Malformed members or snapshots fail load/import without
+  rewriting files. Old scalar masks and index arrays are not migrated or aliased.
+  Missing signatures, changed topology, absent processors, and unsupported groups
+  remain preserved for review; saving or importing them never binds them implicitly.
 - CPU Allocation topology discovery retains group-qualified logical processors,
   physical-core membership, efficiency classes, NUMA nodes, and cache domains.
   `src/cpu_topology.rs` validates these facts; the Windows adapter alone parses
-  native variable-length records. Existing masks and Adaptive per-processor
+  native variable-length records. Native writes and Adaptive per-processor
   sampling remain explicitly limited to group 0. A cache preset requires its
   entire verified L3 data/unified-cache domain to fit that group; no partial
-  domain or inferred CCD is offered. Presets copy processor-number selections,
-  not durable hardware identities. Saved selections require review after a
-  hardware/topology change; this format does not detect changes across sessions.
+  domain or inferred CCD is offered. Persisted selections are checked against a
+  verified current snapshot on activation, including cached claims and pending
+  ownership handoffs. Unresolved allocations restore owned state without gating
+  unrelated Adaptive Engine controls or restoration itself. Discovery has no
+  synthetic topology fallback on this path.
 - Unavailable processor bits are not silently removed from selections. Editors
   preserve unsupported saved masks and require an explicit valid replacement;
-  topology changes during preset editing require review before saving. Soft
+  explicit review rebinds the entire saved membership only when every processor
+  remains available and representable. Topology changes during preset editing
+  block Save until the current selection is explicitly reviewed or replaced. Soft
   allocation rejects incomplete or ambiguous CPU Set mappings before mutation.
+  Hard allocation requires the entire requested mask to fit the target's system
+  affinity mask; it never applies a partial intersection.
   New hard-affinity claims require a verified single group-0 target; group
   validation does not gate compensation, release, or crash restoration.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.

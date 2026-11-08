@@ -30,6 +30,7 @@ use crate::{
         self, CpuAllocationManager, CpuAllocationMode, CpuAllocationTarget, LogicalProcessorInfo,
         LogicalProcessorKind,
     },
+    cpu_topology::{CpuSelection, CpuTopology},
     foreground::{
         contains_process_name, process_count_label, process_executable_path, process_failure_key,
         process_session_id, same_executable_path, same_process_name, unique_app_names, ProcessInfo,
@@ -606,6 +607,8 @@ impl AdaptiveEngineProcessManager {
                 });
             }
         }
+        let topology = observations.cpu_topology();
+        let mut allocation_error = None;
         if background_pressure_applies || dynamic_resource_zones_apply {
             if cpu_pressure_restraint_applies {
                 for (process_id, (_, tier)) in &restrainable_processes {
@@ -645,17 +648,35 @@ impl AdaptiveEngineProcessManager {
             }
 
             let now = Instant::now();
-            let zone_processors = dynamic_resource_zones_apply
-                .then(cpu_allocation::zone_logical_processors)
-                .flatten();
-            let zone_domain_available = zone_processors.is_some();
-            let processors = zone_processors.unwrap_or_else(|| {
-                if cpu_allocation_applies {
-                    cpu_allocation::logical_processors()
-                } else {
-                    Vec::new()
-                }
+            let processors = topology
+                .as_ref()
+                .map(|topology| cpu_allocation::logical_processors_for_group_zero(topology))
+                .unwrap_or_default();
+            let zone_domain_available = topology.as_ref().is_ok_and(|topology| {
+                topology.groups().len() == 1
+                    && cpu_allocation::zone_domain_supported(1, &processors)
             });
+            let limiter_error = cpu_allocation_applies
+                .then(|| {
+                    saved_processor_selection_error(
+                        settings.background_processor_selection,
+                        &settings.specific_processors,
+                        topology.as_deref().map_err(String::as_str),
+                    )
+                })
+                .flatten();
+            let zone_error = dynamic_resource_zones_apply
+                .then(|| {
+                    saved_processor_selection_error(
+                        settings
+                            .dynamic_resource_zone_settings
+                            .background_processor_selection,
+                        &settings.dynamic_resource_zone_settings.specific_processors,
+                        topology.as_deref().map_err(String::as_str),
+                    )
+                })
+                .flatten();
+            allocation_error = limiter_error.clone().or_else(|| zone_error.clone());
             let needs_load = (cpu_allocation_applies
                 && settings.background_processor_selection.uses_percentage())
                 || (dynamic_resource_zones_apply
@@ -666,11 +687,12 @@ impl AdaptiveEngineProcessManager {
             let usages = needs_load
                 .then(|| self.per_processor_usage.sample())
                 .flatten();
-            let cpu_allocation_mask = cpu_allocation_applies
+            let cpu_allocation_mask = (cpu_allocation_applies && limiter_error.is_none())
                 .then(|| {
                     self.cpu_allocation_mask(
                         settings.background_processor_selection,
                         &settings.specific_processors,
+                        topology.as_deref().ok()?,
                         settings.processor_limit_percent,
                         false,
                         &processors,
@@ -686,15 +708,8 @@ impl AdaptiveEngineProcessManager {
                     .is_err()
                 {
                     None
-                } else if zone_domain_available {
+                } else if zone_domain_available && zone_error.is_none() {
                     let config = &settings.dynamic_resource_zone_settings;
-                    let domain = cpu_allocation::logical_processor_mask(&processors);
-                    let custom_valid = config.background_processor_selection
-                        != BackgroundProcessorSelection::Custom
-                        || config
-                            .specific_processors
-                            .iter()
-                            .all(|index| domain & (1_u64 << index) != 0);
                     let load_complete = !config.background_processor_selection.uses_percentage()
                         || usages.as_ref().is_some_and(|loads| {
                             processors.iter().all(|processor| {
@@ -703,11 +718,12 @@ impl AdaptiveEngineProcessManager {
                                     .is_some_and(|load| load.is_finite())
                             })
                         });
-                    let background = (custom_valid && load_complete)
+                    let background = load_complete
                         .then(|| {
                             self.cpu_allocation_mask(
                                 config.background_processor_selection,
                                 &config.specific_processors,
+                                topology.as_deref().ok()?,
                                 dynamic_background_zone_percent(config.foreground_share_percent),
                                 true,
                                 &processors,
@@ -728,6 +744,16 @@ impl AdaptiveEngineProcessManager {
             } else {
                 None
             };
+            let cpu_allocation_selection = cpu_allocation_mask.and_then(|mask| {
+                CpuSelection::from_group_zero_mask(topology.as_deref().ok()?, mask).ok()
+            });
+            let zone_selections = zone_masks.and_then(|(foreground, background)| {
+                let topology = topology.as_deref().ok()?;
+                Some((
+                    CpuSelection::from_group_zero_mask(topology, foreground).ok()?,
+                    CpuSelection::from_group_zero_mask(topology, background).ok()?,
+                ))
+            });
             if dynamic_resource_zones_apply && zone_masks.is_none() {
                 zones.status = ZoneStatus::Unavailable;
                 zones.reason = "zone_unavailable";
@@ -830,13 +856,13 @@ impl AdaptiveEngineProcessManager {
                     if cpu_allocation_applies
                         && candidate.decision == AdaptiveEngineProcessDecision::LimitProcessors
                     {
-                        if let Some(core_mask) = cpu_allocation_mask {
+                        if let Some(selection) = &cpu_allocation_selection {
                             cpu_allocation_targets.push(CpuAllocationTarget {
                                 process_id: candidate.process_id,
                                 process_name: candidate.process_name.clone(),
                                 executable_path: executable_path.clone(),
                                 mode: cpu_allocation_method(settings),
-                                core_mask,
+                                selection: selection.clone(),
                                 creation_time,
                             });
                         }
@@ -854,23 +880,24 @@ impl AdaptiveEngineProcessManager {
                                 })
                         });
                     if hot {
-                        if let Some((foreground_mask, core_mask)) = zone_masks {
-                            zones.foreground_processors = foreground_mask.count_ones();
-                            zones.background_processors = core_mask.count_ones();
+                        if let Some((foreground, background)) = &zone_selections {
+                            zones.foreground_processors = foreground.processors().len() as u32;
+                            zones.background_processors = background.processors().len() as u32;
                             zone_background_targets.push(CpuAllocationTarget {
                                 process_id: candidate.process_id,
                                 process_name: candidate.process_name.clone(),
                                 executable_path,
                                 mode: CpuAllocationMode::SoftCpuSets,
-                                core_mask,
+                                selection: background.clone(),
                                 creation_time,
                             });
                         }
                     }
                 }
             }
-            if let Some((foreground_mask, _)) =
-                zone_masks.filter(|_| !zone_background_targets.is_empty())
+            if let Some((foreground_selection, _)) = zone_selections
+                .as_ref()
+                .filter(|_| !zone_background_targets.is_empty())
             {
                 for process_id in &foreground_process_group_ids {
                     let Some(process) = processes_by_id.get(process_id) else {
@@ -909,7 +936,7 @@ impl AdaptiveEngineProcessManager {
                         process_name: process.name.clone(),
                         executable_path,
                         mode: CpuAllocationMode::SoftCpuSets,
-                        core_mask: foreground_mask,
+                        selection: foreground_selection.clone(),
                         creation_time,
                     });
                 }
@@ -940,6 +967,7 @@ impl AdaptiveEngineProcessManager {
         }
         let allocation = self.cpu_allocation.reconcile_targets(
             cpu_allocation_coordinator,
+            topology.as_deref().map_err(String::as_str),
             ControlOwner::AdaptiveEngine,
             cpu_allocation_targets,
             attempted_zones.then_some((zone_background_targets, zone_foreground_targets)),
@@ -948,7 +976,10 @@ impl AdaptiveEngineProcessManager {
             allow_cross_session_process_control,
             action_log,
         );
-        let cpu_allocation_snapshot = allocation.snapshot;
+        let mut cpu_allocation_snapshot = allocation.snapshot;
+        if let Some(error) = allocation_error {
+            cpu_allocation_snapshot.last_error.get_or_insert(error);
+        }
         if let Some((foreground, background)) = allocation.zone_counts {
             zones.status = ZoneStatus::Active;
             zones.reason = "zone_active";
@@ -1382,13 +1413,10 @@ impl AdaptiveEngineProcessManager {
         self.background_pressure_active = false;
         self.last_background_apply_summary_logged_at = None;
         self.unavailable_power_targets.clear();
-        let cpu_allocation_snapshot = self.cpu_allocation.update_discovered_targets(
+        let cpu_allocation_snapshot = self.cpu_allocation.clear_discovered_targets(
             cpu_allocation_coordinator,
             ControlOwner::AdaptiveEngine,
-            Vec::new(),
-            0,
             "Adaptive Engine disabled.",
-            true,
             action_log,
         );
         failures.count += cpu_allocation_snapshot.failed_processes;
@@ -1896,7 +1924,8 @@ impl AdaptiveEngineProcessManager {
     fn cpu_allocation_mask(
         &mut self,
         selection: BackgroundProcessorSelection,
-        specific_processors: &[u8],
+        specific_processors: &CpuSelection,
+        topology: &CpuTopology,
         percent: u8,
         zones: bool,
         processors: &[LogicalProcessorInfo],
@@ -1933,7 +1962,7 @@ impl AdaptiveEngineProcessManager {
         }
 
         self.cpu_allocation_selection[usize::from(zones)] = None;
-        selected_background_processor_mask(processors, selection, specific_processors)
+        selected_background_processor_mask(processors, selection, specific_processors, topology)
     }
 
     fn load_aware_cpu_allocation_mask(

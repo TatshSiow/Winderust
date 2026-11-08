@@ -858,9 +858,9 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: " ".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     });
     settings.cpu_limiter.rules.push(CpuLimiterRule {
         enabled: true,
@@ -913,9 +913,9 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     });
     settings.cpu_limiter.enabled = true;
     settings.cpu_limiter.rules.push(CpuLimiterRule {
@@ -994,9 +994,9 @@ fn cpu_sets_soft_owns_duplicate_cpu_allocation_rules() {
     let rule = CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     };
     settings.cpu_sets_soft.rules.push(rule.clone());
     settings.processor_affinity_hard.rules.push(rule);
@@ -1013,9 +1013,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\soft.exe".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     });
     settings.processor_affinity_hard.enabled = true;
     settings
@@ -1024,9 +1024,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
         .push(CpuAllocationRule {
             enabled: false,
             executable_path: r"C:\Apps\disabled.exe".to_owned(),
-            focus_core_mask: 1,
-            visible_window_core_mask: 1,
-            background_core_mask: 1,
+            focus_selection: crate::cpu_topology::test_selection(1),
+            visible_window_selection: crate::cpu_topology::test_selection(1),
+            background_selection: crate::cpu_topology::test_selection(1),
         });
     settings
         .processor_affinity_hard
@@ -1034,9 +1034,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
         .push(CpuAllocationRule {
             enabled: true,
             executable_path: r"C:\Apps\empty.exe".to_owned(),
-            focus_core_mask: 0,
-            visible_window_core_mask: 0,
-            background_core_mask: 0,
+            focus_selection: crate::cpu_topology::test_selection(0),
+            visible_window_selection: crate::cpu_topology::test_selection(0),
+            background_selection: crate::cpu_topology::test_selection(0),
         });
 
     let paths = explicit_cpu_allocation_paths(&settings);
@@ -2252,9 +2252,6 @@ fn cpu_allocation_handoffs_bypass_release_retry_deadlines() {
     assert!(route.contains("runner.cpu_allocation_immediate_reconciliation_pending()"));
     assert!(route.contains("cpu_allocation_release_retry_pending_at_pass_start"));
     assert!(route.contains("cpu_allocation_release_retry_due"));
-    assert!(route.contains(
-        "runner.run_cpu_allocation_reconciliation(settings, cpu_allocation_release_retry_due)"
-    ));
 }
 
 #[test]

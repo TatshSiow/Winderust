@@ -184,8 +184,11 @@ hover/press; background shading supplies feedback.
 - Verified, fully representable L3 selections appear as Cache Domain presets
   with group and cache-size labels. Missing cache metadata creates no inferred
   preset. Unsupported saved selections remain visible; selection controls do
-  not quietly shrink them to the processors currently available. Preset edits
-  require review if discovery fails or topology changes while the dialog is open.
+  not quietly shrink them to the processors currently available or replace
+  their saved topology signature on load, opening an editor, or copying a preset.
+  A separate explicit review action confirms the entire selection against the
+  current topology. A topology change while editing blocks Save until explicit
+  review or replacement; discovery failure disables confirmation.
 - Rule tables use Active, App Name, Executable Path, Focus, Visible Window, Background, and Actions
   columns. Each policy column selects a Core or custom preset; do not restore expandable per-rule
   CPU grids.

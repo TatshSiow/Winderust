@@ -155,10 +155,29 @@ pub(super) fn select_adaptive_engine_process_candidates(
     candidates
 }
 
+pub(super) fn saved_processor_selection_error(
+    selection: BackgroundProcessorSelection,
+    specific_processors: &CpuSelection,
+    topology: Result<&CpuTopology, &str>,
+) -> Option<String> {
+    let topology = match topology {
+        Ok(topology) => topology,
+        Err(error) => return Some(error.to_owned()),
+    };
+    if selection == BackgroundProcessorSelection::Custom {
+        return specific_processors
+            .resolve_group_zero(topology)
+            .err()
+            .map(|error| error.to_string());
+    }
+    None
+}
+
 pub(super) fn selected_background_processor_mask(
     processors: &[LogicalProcessorInfo],
     selection: BackgroundProcessorSelection,
-    specific_processors: &[u8],
+    specific_processors: &CpuSelection,
+    topology: &CpuTopology,
 ) -> Option<u64> {
     let all_mask = cpu_allocation::logical_processor_mask(processors);
     let no_smt_mask = cpu_allocation::logical_processor_no_smt_mask(processors);
@@ -178,7 +197,11 @@ pub(super) fn selected_background_processor_mask(
             kind_mask(LogicalProcessorKind::Performance) & no_smt_mask
         }
         BackgroundProcessorSelection::Custom => {
-            cpu_allocation::logical_processor_indices_mask(specific_processors) & all_mask
+            let mask = specific_processors.resolve_group_zero(topology).ok()?;
+            if mask & !all_mask != 0 {
+                return None;
+            }
+            mask
         }
     };
     (mask != 0 && mask != all_mask).then_some(mask)

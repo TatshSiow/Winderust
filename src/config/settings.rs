@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::RuleTime;
 
+use crate::cpu_topology::CpuSelection;
 use crate::foreground::same_executable_path;
 use crate::power::plan::{
     AdaptivePowerBoostValues, AdvancedPowerPlanTuningValues, ProcessorBoostMode,
@@ -606,10 +607,10 @@ pub struct CpuAllocationSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CpuAllocationPreset {
     pub name: String,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub core_mask: u64,
+    pub selection: CpuSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -917,23 +918,21 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CpuAllocationRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub focus_core_mask: u64,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub visible_window_core_mask: u64,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub background_core_mask: u64,
+    pub focus_selection: CpuSelection,
+    pub visible_window_selection: CpuSelection,
+    pub background_selection: CpuSelection,
 }
 
 impl CpuAllocationRule {
     pub fn has_cpu_selection(&self) -> bool {
-        self.focus_core_mask != 0
-            || self.visible_window_core_mask != 0
-            || self.background_core_mask != 0
+        !self.focus_selection.is_empty()
+            || !self.visible_window_selection.is_empty()
+            || !self.background_selection.is_empty()
     }
 }
 
@@ -1047,7 +1046,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub cpu_allocation_method: CpuAllocationMethod,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
-    pub specific_processors: Vec<u8>,
+    pub specific_processors: CpuSelection,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1107,7 +1106,7 @@ struct AdaptiveEngineProcessSettingsWire {
     pub cpu_allocation_method: CpuAllocationMethod,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
-    pub specific_processors: Vec<u8>,
+    pub specific_processors: CpuSelection,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1189,14 +1188,14 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
 pub struct DynamicResourceZoneSettings {
     pub foreground_share_percent: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
-    pub specific_processors: Vec<u8>,
+    pub specific_processors: CpuSelection,
 }
 impl Default for DynamicResourceZoneSettings {
     fn default() -> Self {
         Self {
             foreground_share_percent: 75,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
-            specific_processors: Vec::new(),
+            specific_processors: CpuSelection::default(),
         }
     }
 }
@@ -1205,12 +1204,6 @@ impl DynamicResourceZoneSettings {
         if !(1..=99).contains(&self.foreground_share_percent) {
             return Err(
                 "Dynamic Resource Zones foreground share must be between 1 and 99 percent.".into(),
-            );
-        }
-        if self.specific_processors.iter().any(|index| *index >= 64) {
-            return Err(
-                "Dynamic Resource Zones supports logical processor indices 0 through 63 only."
-                    .into(),
             );
         }
         if enabled
@@ -2287,7 +2280,7 @@ impl Default for AdaptiveEngineProcessSettings {
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
-            specific_processors: Vec::new(),
+            specific_processors: CpuSelection::default(),
             foreground_or_system_cpu_threshold_percent: 75,
             background_app_cpu_threshold_percent: 30,
             cpu_recovery_threshold_percent: 10,

@@ -41,6 +41,7 @@ struct ObservationSources {
     process_from_id: fn(u32) -> Option<ForegroundProcess>,
     visible_window_process_ids: fn() -> Option<BTreeSet<u32>>,
     top_level_window_process_ids: fn() -> BTreeSet<u32>,
+    cpu_topology: fn() -> Result<crate::cpu_topology::CpuTopology, String>,
 }
 
 impl Default for ObservationSources {
@@ -52,6 +53,7 @@ impl Default for ObservationSources {
             process_from_id,
             visible_window_process_ids,
             top_level_window_process_ids,
+            cpu_topology: crate::features::cpu_control::cpu_allocation::processor_topology,
         }
     }
 }
@@ -69,6 +71,7 @@ pub(crate) struct CycleObservations {
     foreground_process: Observation<Option<ForegroundProcess>>,
     visible_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
     top_level_window_process_ids: Observation<Arc<BTreeSet<u32>>>,
+    cpu_topology: Observation<Arc<crate::cpu_topology::CpuTopology>>,
 }
 
 impl Default for CycleObservations {
@@ -88,6 +91,21 @@ impl CycleObservations {
             foreground_process: Observation::NotRequested,
             visible_window_process_ids: Observation::NotRequested,
             top_level_window_process_ids: Observation::NotRequested,
+            cpu_topology: Observation::NotRequested,
+        }
+    }
+
+    pub(crate) fn cpu_topology(&mut self) -> Result<Arc<crate::cpu_topology::CpuTopology>, String> {
+        if matches!(self.cpu_topology, Observation::NotRequested) {
+            self.cpu_topology = match (self.sources.cpu_topology)() {
+                Ok(topology) => Observation::Available(Arc::new(topology)),
+                Err(error) => Observation::Unavailable(error),
+            };
+        }
+        match &self.cpu_topology {
+            Observation::Available(topology) => Ok(Arc::clone(topology)),
+            Observation::Unavailable(error) => Err(error.clone()),
+            Observation::NotRequested => unreachable!("CPU topology observation was initialized"),
         }
     }
 
@@ -347,6 +365,61 @@ mod tests {
     static FOREGROUND_PROCESS_CALLS: AtomicUsize = AtomicUsize::new(0);
     static VISIBLE_WINDOW_CALLS: AtomicUsize = AtomicUsize::new(0);
     static TOP_LEVEL_WINDOW_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TOPOLOGY_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn topology() -> Result<crate::cpu_topology::CpuTopology, String> {
+        use crate::cpu_topology::{CpuTopology, LogicalProcessor, ProcessorGroup, ProcessorId};
+        TOPOLOGY_CALLS.fetch_add(1, Ordering::Relaxed);
+        let id = ProcessorId {
+            group: 0,
+            number: 0,
+        };
+        CpuTopology::new(
+            vec![LogicalProcessor {
+                id,
+                core: id,
+                efficiency_class: 0,
+            }],
+            vec![ProcessorGroup {
+                number: 0,
+                active_mask: 1,
+            }],
+            Vec::new(),
+            Vec::new(),
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn topology_success_and_failure_are_shared_only_within_a_cycle() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        TOPOLOGY_CALLS.store(0, Ordering::Relaxed);
+        let mut observations = CycleObservations::with_sources(ObservationSources {
+            cpu_topology: topology,
+            ..ObservationSources::default()
+        });
+        let first = observations.cpu_topology().unwrap();
+        assert!(Arc::ptr_eq(&first, &observations.cpu_topology().unwrap()));
+        assert_eq!(TOPOLOGY_CALLS.load(Ordering::Relaxed), 1);
+
+        fn unavailable() -> Result<crate::cpu_topology::CpuTopology, String> {
+            TOPOLOGY_CALLS.fetch_add(1, Ordering::Relaxed);
+            Err("topology unavailable".to_owned())
+        }
+        let mut failed = CycleObservations::with_sources(ObservationSources {
+            cpu_topology: unavailable,
+            ..ObservationSources::default()
+        });
+        assert_eq!(failed.cpu_topology().unwrap_err(), "topology unavailable");
+        assert_eq!(failed.cpu_topology().unwrap_err(), "topology unavailable");
+        assert_eq!(TOPOLOGY_CALLS.load(Ordering::Relaxed), 2);
+        let mut next = CycleObservations::with_sources(ObservationSources {
+            cpu_topology: topology,
+            ..ObservationSources::default()
+        });
+        assert!(next.cpu_topology().is_ok());
+        assert_eq!(TOPOLOGY_CALLS.load(Ordering::Relaxed), 3);
+    }
 
     fn processes() -> Result<Vec<ProcessInfo>, String> {
         PROCESS_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -397,6 +470,7 @@ mod tests {
             process_from_id: foreground_process,
             visible_window_process_ids: visible_windows,
             top_level_window_process_ids: top_level_windows,
+            cpu_topology: topology,
         });
         let before = observations.processes().unwrap();
         let workload = observations.adaptive_workload(&before);
@@ -649,6 +723,7 @@ mod tests {
             process_from_id: foreground_process,
             visible_window_process_ids: visible_windows,
             top_level_window_process_ids: top_level_windows,
+            cpu_topology: topology,
         });
         assert_eq!(
             observations.availability(),
@@ -745,6 +820,7 @@ mod tests {
             process_from_id: foreground_process,
             visible_window_process_ids: visible_windows,
             top_level_window_process_ids: top_level_windows,
+            cpu_topology: topology,
         });
         let settings = AppSuspensionSettings {
             enabled: true,
@@ -849,6 +925,7 @@ mod tests {
             process_from_id: foreground_process,
             visible_window_process_ids: unavailable_visible_windows,
             top_level_window_process_ids: top_level_windows,
+            cpu_topology: topology,
         });
 
         assert_eq!(

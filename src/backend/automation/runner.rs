@@ -750,9 +750,12 @@ impl RuntimeCore {
     pub(super) fn run_cpu_allocation_reconciliation(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
         include_release_retries: bool,
     ) {
+        let topology = observations.cpu_topology();
         let summary = self.cpu_allocation_coordinator.reconcile_pending(
+            topology.as_deref().map_err(String::as_str),
             settings.general.allow_cross_session_process_control,
             include_release_retries,
         );

@@ -80,7 +80,7 @@ The status rail reports eligibility, effective foreground/background counts, and
 [adaptive_engine_process.dynamic_resource_zone_settings]
 foreground_share_percent = 75
 background_processor_selection = "least_used"
-specific_processors = []
+specific_processors = { processors = [] }
 ```
 
 The share accepts 1?99. Existing files with zoning disabled may omit this block; defaults are

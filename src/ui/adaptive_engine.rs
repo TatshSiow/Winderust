@@ -73,8 +73,8 @@ pub(super) enum Message {
         &'static str,
     ),
     Choice(fn(&mut Settings, usize), usize),
-    Mask(u64),
-    ZoneMask(u64),
+    Mask(crate::cpu_topology::CpuSelection),
+    ZoneMask(crate::cpu_topology::CpuSelection),
     BuiltIn(BuiltInAdaptiveEnginePreset),
     ViewBuiltIn(BuiltInAdaptiveEnginePreset),
     Apply(usize),
@@ -252,15 +252,14 @@ impl Editor {
                 if self.draft.is_some() && self.read_only {
                     return;
                 }
-                if let Message::Mask(mask) | Message::ZoneMask(mask) = &edit {
-                    let available = crate::cpu_allocation::logical_processor_mask(
-                        &crate::cpu_allocation::logical_processors(),
+                if let Message::Mask(selection) | Message::ZoneMask(selection) = &edit {
+                    self.set_cpu_selection(
+                        s,
+                        matches!(edit, Message::ZoneMask(_)),
+                        selection.clone(),
+                        &crate::cpu_allocation::processor_topology(),
                     );
-                    if !super::cpu_allocation::mask_is_available(*mask, available) {
-                        self.error = t!("cpu_allocation.selection_unavailable").to_string();
-                        return;
-                    }
-                    self.error.clear();
+                    return;
                 }
                 let target = self.draft.as_mut().unwrap_or(s);
                 match edit {
@@ -302,21 +301,35 @@ impl Editor {
                         }
                     }
                     Message::Choice(f, v) => f(target, v),
-                    Message::ZoneMask(mask) => {
-                        target
-                            .adaptive_engine_process
-                            .dynamic_resource_zone_settings
-                            .specific_processors =
-                            (0..64).filter(|i| mask & (1u64 << i) != 0).collect()
-                    }
-                    Message::Mask(mask) => {
-                        target.adaptive_engine_process.specific_processors =
-                            (0..64).filter(|i| mask & (1u64 << i) != 0).collect()
-                    }
                     _ => {}
                 }
             }
         }
+    }
+    fn set_cpu_selection(
+        &mut self,
+        s: &mut Settings,
+        zone: bool,
+        selection: crate::cpu_topology::CpuSelection,
+        topology: &Result<crate::cpu_topology::CpuTopology, String>,
+    ) {
+        if self.draft.is_some() && self.read_only {
+            return;
+        }
+        if let Err(error) = super::cpu_allocation::verify_selection_against(&selection, topology) {
+            self.error = error;
+            return;
+        }
+        let target = self.draft.as_mut().unwrap_or(s);
+        if zone {
+            target
+                .adaptive_engine_process
+                .dynamic_resource_zone_settings
+                .specific_processors = selection;
+        } else {
+            target.adaptive_engine_process.specific_processors = selection;
+        }
+        self.error.clear();
     }
     fn selected_preset(&self, live: &Settings, options: &[Choice<usize>]) -> Option<Choice<usize>> {
         let current = capture_adaptive_engine_preset(live, String::new());
@@ -534,16 +547,8 @@ impl Editor {
                             .dynamic_resource_zone_settings
                             .background_processor_selection
                             == BackgroundProcessorSelection::Custom);
-                let processors = if custom_selection {
-                    crate::cpu_allocation::logical_processors()
-                } else {
-                    Vec::new()
-                };
-                let cpu_presets = if custom_selection {
-                    super::cpu_allocation::core_presets(&processors)
-                } else {
-                    Vec::new()
-                };
+                let cpu_catalog =
+                    custom_selection.then(super::cpu_allocation::SelectionCatalog::capture);
                 let pressure = super::widgets::settings_rows([
                     number!(
                         "adaptive_engine_process.background_app_cpu_threshold",
@@ -657,21 +662,16 @@ impl Editor {
                     == BackgroundProcessorSelection::Custom
                     && editable
                 {
-                    let mask = s
-                        .adaptive_engine_process
-                        .specific_processors
-                        .iter()
-                        .filter(|i| **i < 64)
-                        .fold(0u64, |m, i| m | (1u64 << i));
-                    allocation = allocation.push(super::widgets::settings_divider()).push(
-                        super::cpu_allocation::mask_selector(
-                            mask,
-                            &processors,
-                            &cpu_presets,
-                            &s.cpu_allocation_presets,
-                            Message::Mask,
-                        ),
-                    );
+                    if let Some(catalog) = &cpu_catalog {
+                        allocation = allocation.push(super::widgets::settings_divider()).push(
+                            super::cpu_allocation::mask_selector(
+                                &s.adaptive_engine_process.specific_processors,
+                                catalog,
+                                &s.cpu_allocation_presets,
+                                Message::Mask,
+                            ),
+                        );
+                    }
                 }
                 if s.adaptive_engine_process.background_processor_selection
                     == BackgroundProcessorSelection::Custom
@@ -680,9 +680,11 @@ impl Editor {
                     allocation = allocation
                         .push(super::widgets::settings_divider())
                         .push(text(format!(
-                            "{}: {:?}",
+                            "{}: {}",
                             t!("adaptive_engine_process.specific_processors"),
-                            s.adaptive_engine_process.specific_processors
+                            super::cpu_allocation::selection_text(
+                                &s.adaptive_engine_process.specific_processors
+                            )
                         )));
                 }
                 body = body.push(super::widgets::setting_group(
@@ -736,25 +738,26 @@ impl Editor {
                 }
                 if zones.background_processor_selection == BackgroundProcessorSelection::Custom {
                     if editable {
-                        zone_content = zone_content.push(super::widgets::settings_divider()).push(
-                            super::cpu_allocation::mask_selector(
-                                crate::cpu_allocation::logical_processor_indices_mask(
+                        if let Some(catalog) = &cpu_catalog {
+                            zone_content = zone_content
+                                .push(super::widgets::settings_divider())
+                                .push(super::cpu_allocation::mask_selector(
                                     &zones.specific_processors,
-                                ),
-                                &processors,
-                                &cpu_presets,
-                                &s.cpu_allocation_presets,
-                                Message::ZoneMask,
-                            ),
-                        );
+                                    catalog,
+                                    &s.cpu_allocation_presets,
+                                    Message::ZoneMask,
+                                ));
+                        }
                     } else {
                         zone_content =
                             zone_content
                                 .push(super::widgets::settings_divider())
                                 .push(text(format!(
-                                    "{}: {:?}",
+                                    "{}: {}",
                                     t!("adaptive_engine_process.specific_processors"),
-                                    zones.specific_processors
+                                    super::cpu_allocation::selection_text(
+                                        &zones.specific_processors
+                                    )
                                 )));
                     }
                 }
@@ -2122,6 +2125,47 @@ fn boost_label(boost_mode: ProcessorBoostMode) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preset_copies_keep_stale_bindings_and_raced_edits_leave_them_intact() {
+        let selection = crate::cpu_topology::test_selection(3);
+        let mut settings = Settings::default();
+        settings.adaptive_engine_process.specific_processors = selection.clone();
+        settings
+            .adaptive_engine_process
+            .dynamic_resource_zone_settings
+            .specific_processors = selection.clone();
+        let preset = capture_adaptive_engine_preset(&settings, "Saved".into());
+        let mut applied = Settings::default();
+        apply_adaptive_engine_preset(&mut applied, &preset);
+        assert_eq!(
+            applied.adaptive_engine_process.specific_processors,
+            selection
+        );
+        assert_eq!(
+            applied
+                .adaptive_engine_process
+                .dynamic_resource_zone_settings
+                .specific_processors,
+            selection
+        );
+        let original = crate::cpu_topology::test_topology();
+        let mut processors = original.processors().to_vec();
+        processors[0].efficiency_class = 1;
+        let changed = crate::cpu_topology::CpuTopology::new(
+            processors,
+            original.groups().to_vec(),
+            original.caches().to_vec(),
+            original.numa_nodes().to_vec(),
+        )
+        .unwrap();
+        let before = applied.clone();
+        let mut editor = Editor::default();
+        for zone in [false, true] {
+            editor.set_cpu_selection(&mut applied, zone, selection.clone(), &Ok(changed.clone()));
+            assert_eq!(applied, before);
+            assert!(!editor.error.is_empty());
+        }
+    }
 
     #[test]
     fn zone_preset_editing_is_independent_and_speed_keeps_background_limiting() {
@@ -2151,7 +2195,12 @@ mod tests {
         let before = settings.clone();
         editor.update(&mut settings, Message::New);
         editor.update(&mut settings, Message::Collapse(2));
-        editor.update(&mut settings, Message::ZoneMask(10));
+        editor.set_cpu_selection(
+            &mut settings,
+            true,
+            crate::cpu_topology::test_selection(10),
+            &Ok(crate::cpu_topology::test_topology()),
+        );
         editor.update(
             &mut settings,
             Message::Number(
@@ -2181,7 +2230,7 @@ mod tests {
                 .adaptive_engine_process
                 .dynamic_resource_zone_settings
                 .specific_processors,
-            vec![1, 3]
+            crate::cpu_topology::test_selection(10)
         );
         assert_eq!(editor.expanded[0], [false; 3]);
         let preset = capture_adaptive_engine_preset(draft, "Zones".into());
@@ -2200,7 +2249,12 @@ mod tests {
             Message::ViewBuiltIn(BuiltInAdaptiveEnginePreset::Performance),
         );
         let preview = editor.draft.clone();
-        editor.update(&mut settings, Message::ZoneMask(1));
+        editor.set_cpu_selection(
+            &mut settings,
+            true,
+            crate::cpu_topology::test_selection(1),
+            &Ok(crate::cpu_topology::test_topology()),
+        );
         assert_eq!(editor.draft, preview);
         assert!(
             preview

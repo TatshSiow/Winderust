@@ -1385,7 +1385,11 @@ fn run_background_automation(
         let cpu_allocation_release_retry_due = cpu_allocation_release_retry_pending_at_pass_start
             && scheduler.is_due(RefreshDomain::CpuAllocationReconciliation, now);
         if immediate_cpu_allocation_reconciliation || cpu_allocation_release_retry_due {
-            runner.run_cpu_allocation_reconciliation(settings, cpu_allocation_release_retry_due);
+            runner.run_cpu_allocation_reconciliation(
+                settings,
+                &mut observations,
+                cpu_allocation_release_retry_due,
+            );
         }
         let cpu_allocation_release_retry_pending = runner.cpu_allocation_release_retry_pending();
         if cpu_allocation_release_retry_due {

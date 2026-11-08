@@ -164,6 +164,7 @@ remain available in Git history rather than in the active documentation set.
   packed system CPU Set topology conversion.
 - `src/cpu_topology.rs`: validated, canonical read-only processor-group, core,
   efficiency, NUMA, and cache facts with checked group-0 selection projection.
+  Saved selections retain group-qualified members and an exact validated topology signature.
   `src/platform/windows/cpu_allocation/topology.rs` owns native topology capture
   and packed-record validation; topology discovery grants no mutation authority.
 - `src/control/memory_trim.rs` and `src/control/process_termination.rs`: sole

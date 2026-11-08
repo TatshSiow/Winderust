@@ -716,13 +716,12 @@ fn app_suspension_rule(path: &str) -> crate::config::AppSuspensionRule {
 }
 
 fn cpu_allocation_rule(path: &str) -> crate::config::CpuAllocationRule {
-    let core_mask = crate::features::cpu_control::cpu_allocation::default_cpu_mask();
     crate::config::CpuAllocationRule {
         enabled: false,
         executable_path: path.to_owned(),
-        focus_core_mask: core_mask,
-        visible_window_core_mask: core_mask,
-        background_core_mask: core_mask,
+        focus_selection: crate::cpu_topology::CpuSelection::default(),
+        visible_window_selection: crate::cpu_topology::CpuSelection::default(),
+        background_selection: crate::cpu_topology::CpuSelection::default(),
     }
 }
 

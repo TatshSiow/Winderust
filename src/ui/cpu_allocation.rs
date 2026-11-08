@@ -2,6 +2,7 @@ use super::design;
 use super::widgets::{action_button, button, checkbox, icon_button, text_input};
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
+use crate::cpu_topology::{CpuSelection, CpuTopology};
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::can_add_process_candidate;
 use crate::ui::scrolling::scrollable;
@@ -42,27 +43,28 @@ impl Tier {
         })
         .to_string()
     }
-    fn mask(self, r: &CpuAllocationRule) -> u64 {
+    fn selection(self, r: &CpuAllocationRule) -> &CpuSelection {
         match self {
-            Self::Focus => r.focus_core_mask,
-            Self::Visible => r.visible_window_core_mask,
-            Self::Background => r.background_core_mask,
+            Self::Focus => &r.focus_selection,
+            Self::Visible => &r.visible_window_selection,
+            Self::Background => &r.background_selection,
         }
     }
-    fn set(self, r: &mut CpuAllocationRule, m: u64) {
+    fn set(self, r: &mut CpuAllocationRule, selection: CpuSelection) {
         match self {
-            Self::Focus => r.focus_core_mask = m,
-            Self::Visible => r.visible_window_core_mask = m,
-            Self::Background => r.background_core_mask = m,
+            Self::Focus => r.focus_selection = selection,
+            Self::Visible => r.visible_window_selection = selection,
+            Self::Background => r.background_selection = selection,
         }
     }
 }
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    selected_presets: std::collections::BTreeMap<(String, usize), super::widgets::Choice<u64>>,
+    selected_presets:
+        std::collections::BTreeMap<(String, usize), super::widgets::Choice<CpuSelection>>,
     preset_name: String,
-    preset_mask: u64,
+    preset_selection: CpuSelection,
     editing_preset: Option<usize>,
     preset_open: bool,
     preset_read_only: bool,
@@ -76,35 +78,39 @@ pub(super) enum Message {
     Browse,
     Add,
     RuleEnabled(usize, bool),
-    Mask(usize, Tier, super::widgets::Choice<u64>),
+    Mask(usize, Tier, super::widgets::Choice<CpuSelection>),
     Remove(usize),
 
     NewPreset,
-    ViewPreset(String, u64),
+    ViewPreset(String, CpuSelection),
     EditPreset(usize),
     PresetName(String),
-    PresetMask(u64),
+    PresetSelection(CpuSelection),
     SavePreset,
     DeletePreset(usize),
     ClosePreset,
 }
 impl Editor {
     pub(super) fn update(&mut self, s: &mut Settings, k: Kind, m: Message) {
-        let available =
-            || cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
         match m {
             Message::Enabled(v) => settings_mut(s, k).enabled = v,
             Message::Path(v) => self.path = v,
             Message::Browse => {}
             Message::Add => {
                 if can_add(s, &self.path) {
-                    let available = available();
+                    let selection = match SelectionCatalog::capture().all_selection() {
+                        Ok(selection) => selection,
+                        Err(error) => {
+                            self.error = error;
+                            return;
+                        }
+                    };
                     settings_mut(s, k).rules.push(CpuAllocationRule {
                         enabled: true,
                         executable_path: executable_path_key(Path::new(&self.path)),
-                        focus_core_mask: available,
-                        visible_window_core_mask: available,
-                        background_core_mask: available,
+                        focus_selection: selection.clone(),
+                        visible_window_selection: selection.clone(),
+                        background_selection: selection,
                     });
                     self.path.clear();
                 }
@@ -115,16 +121,14 @@ impl Editor {
                 }
             }
             Message::Mask(i, tier, choice) => {
-                if !mask_is_available(choice.0, available()) {
-                    self.error = t!("cpu_allocation.selection_unavailable").to_string();
-                    return;
-                }
-                if let Some(r) = settings_mut(s, k).rules.get_mut(i) {
-                    tier.set(r, choice.0);
-                    self.selected_presets
-                        .insert((r.executable_path.clone(), tier as usize), choice);
-                    self.error.clear();
-                }
+                self.set_rule_selection(
+                    s,
+                    k,
+                    i,
+                    tier,
+                    choice,
+                    &cpu_allocation::processor_topology(),
+                );
             }
             Message::Remove(i) => {
                 let rules = &mut settings_mut(s, k).rules;
@@ -135,11 +139,11 @@ impl Editor {
                 }
             }
 
-            Message::ViewPreset(name, mask) => {
+            Message::ViewPreset(name, selection) => {
                 self.preset_open = true;
                 self.preset_read_only = true;
                 self.preset_name = name;
-                self.preset_mask = mask;
+                self.preset_selection = selection;
                 self.error.clear();
             }
             Message::NewPreset => {
@@ -147,8 +151,9 @@ impl Editor {
                 self.preset_open = true;
                 self.editing_preset = None;
                 self.preset_name.clear();
-                self.preset_mask = available();
-                self.preset_topology = Some(cpu_allocation::processor_topology());
+                let catalog = SelectionCatalog::capture();
+                self.preset_selection = catalog.all_selection().unwrap_or_default();
+                self.preset_topology = Some(catalog.topology);
                 self.error.clear();
             }
             Message::EditPreset(i) => {
@@ -157,21 +162,23 @@ impl Editor {
                     self.preset_open = true;
                     self.editing_preset = Some(i);
                     self.preset_name = p.name.clone();
-                    self.preset_mask = p.core_mask;
+                    self.preset_selection = p.selection.clone();
                     self.preset_topology = Some(cpu_allocation::processor_topology());
                     self.error.clear();
                 }
             }
             Message::PresetName(v) if !self.preset_read_only => self.preset_name = v,
-            Message::PresetMask(v) if !self.preset_read_only => {
-                if mask_is_available(v, available()) {
-                    self.preset_mask = v;
-                    self.error.clear();
+            Message::PresetSelection(selection) if !self.preset_read_only => {
+                let topology = cpu_allocation::processor_topology();
+                if let Err(error) = verify_selection_against(&selection, &topology) {
+                    self.error = error;
                 } else {
-                    self.error = t!("cpu_allocation.selection_unavailable").to_string();
+                    self.preset_selection = selection;
+                    self.preset_topology = Some(topology);
+                    self.error.clear();
                 }
             }
-            Message::PresetName(_) | Message::PresetMask(_) => {}
+            Message::PresetName(_) | Message::PresetSelection(_) => {}
             Message::SavePreset => {
                 if self.preset_read_only {
                     return;
@@ -190,7 +197,7 @@ impl Editor {
                 {
                     let p = CpuAllocationPreset {
                         name: name.into(),
-                        core_mask: self.preset_mask,
+                        selection: self.preset_selection.clone(),
                     };
                     if let Some(i) = self.editing_preset {
                         if let Some(old) = s.cpu_allocation_presets.get_mut(i) {
@@ -216,12 +223,34 @@ impl Editor {
         }
     }
 
+    fn set_rule_selection(
+        &mut self,
+        s: &mut Settings,
+        kind: Kind,
+        index: usize,
+        tier: Tier,
+        choice: super::widgets::Choice<CpuSelection>,
+        topology: &Result<CpuTopology, String>,
+    ) {
+        if let Err(error) = verify_selection_against(&choice.0, topology) {
+            self.error = error;
+            return;
+        }
+        if let Some(rule) = settings_mut(s, kind).rules.get_mut(index) {
+            tier.set(rule, choice.0.clone());
+            self.selected_presets
+                .insert((rule.executable_path.clone(), tier as usize), choice);
+            self.error.clear();
+        }
+    }
+
     fn validate_preset_selection(
         &self,
         current: &Result<crate::cpu_topology::CpuTopology, String>,
     ) -> Result<(), String> {
-        let unavailable =
-            |error: &String| t!("cpu_allocation.topology_unavailable", error = error).to_string();
+        let unavailable = |error: &String| {
+            t!("cpu_allocation.preset_topology_unavailable", error = error).to_string()
+        };
         let current = current.as_ref().map_err(unavailable)?;
         let captured = self
             .preset_topology
@@ -232,15 +261,10 @@ impl Editor {
         if current != captured {
             return Err(t!("cpu_allocation.topology_changed").to_string());
         }
-        let available = current
-            .groups()
-            .iter()
-            .find(|group| group.number == 0)
-            .map_or(0, |group| group.active_mask);
-        if !mask_is_available(self.preset_mask, available) {
-            return Err(t!("cpu_allocation.selection_unavailable").to_string());
-        }
-        if self.preset_mask == 0 {
+        self.preset_selection
+            .resolve_group_zero(current)
+            .map_err(saved_selection_error)?;
+        if self.preset_selection.is_empty() {
             return Err(t!("cpu_allocation.no_logical_cpus").to_string());
         }
         Ok(())
@@ -249,13 +273,13 @@ impl Editor {
         &self,
         path: &str,
         tier: Tier,
-        mask: u64,
-        choices: &[super::widgets::Choice<u64>],
-    ) -> Option<super::widgets::Choice<u64>> {
+        selection: &CpuSelection,
+        choices: &[super::widgets::Choice<CpuSelection>],
+    ) -> Option<super::widgets::Choice<CpuSelection>> {
         self.selected_presets
             .get(&(path.to_owned(), tier as usize))
-            .filter(|choice| choice.0 == mask && choices.contains(choice))
-            .or_else(|| choices.iter().find(|choice| choice.0 == mask))
+            .filter(|choice| &choice.0 == selection && choices.contains(choice))
+            .or_else(|| choices.iter().find(|choice| &choice.0 == selection))
             .cloned()
     }
 
@@ -276,17 +300,7 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let feature = settings(s, k);
-        let processors = if feature.rules.is_empty() {
-            Vec::new()
-        } else {
-            cpu_allocation::logical_processors()
-        };
-        let available = cpu_allocation::logical_processor_mask(&processors);
-        let presets = if processors.is_empty() {
-            Vec::new()
-        } else {
-            core_presets(&processors)
-        };
+        let catalog = SelectionCatalog::capture();
         let mut body = column![
             super::widgets::toggle_card(
                 match k {
@@ -317,20 +331,20 @@ impl Editor {
             let controls = [Tier::Focus, Tier::Visible, Tier::Background]
                 .into_iter()
                 .map(|tier| {
-                    let mask = tier.mask(r);
-                    let mut choices = presets.clone();
+                    let selection = tier.selection(r);
+                    let mut choices = catalog.presets.clone();
                     choices.extend(
                         s.cpu_allocation_presets
                             .iter()
-                            .map(|p| super::widgets::Choice(p.core_mask, p.name.clone())),
+                            .map(|p| super::widgets::Choice(p.selection.clone(), p.name.clone())),
                     );
-                    choices.retain(|p| p.0 != 0 && mask_is_available(p.0, available));
+                    choices.retain(|p| !p.0.is_empty() && catalog.error(&p.0).is_none());
                     let selected = self
-                        .selected_preset(&r.executable_path, tier, mask, &choices)
+                        .selected_preset(&r.executable_path, tier, selection, &choices)
                         .unwrap_or_else(|| {
                             super::widgets::Choice(
-                                mask,
-                                t!(if mask_is_available(mask, available) {
+                                selection.clone(),
+                                t!(if catalog.error(selection).is_none() {
                                     "common.custom"
                                 } else {
                                     "cpu_allocation.unavailable_selection"
@@ -349,11 +363,22 @@ impl Editor {
                             .width(Fill)
                         ]
                         .spacing(design::space::TIGHT);
-                    if !mask_is_available(mask, available) {
-                        control = control.push(
-                            text(t!("cpu_allocation.selection_unavailable").to_string())
-                                .style(text::danger),
-                        );
+                    if let Some(error) = catalog.error(selection) {
+                        control = control.push(text(error).style(text::danger));
+                        control = control.push(text(selection_text(selection)));
+                        if let Some(reviewed) = catalog.reviewed(selection) {
+                            control = control.push(
+                                button(text(t!("cpu_allocation.use_this_selection").to_string()))
+                                    .on_press(Message::Mask(
+                                        i,
+                                        tier,
+                                        super::widgets::Choice(
+                                            reviewed,
+                                            t!("common.custom").to_string(),
+                                        ),
+                                    )),
+                            );
+                        }
                     }
                     control.into()
                 })
@@ -402,19 +427,21 @@ impl Editor {
             icon_button("icons/x.svg").on_press(Message::ClosePreset)
         ]
         .align_y(iced::Center);
-        let processors = cpu_allocation::logical_processors();
-        let available = cpu_allocation::logical_processor_mask(&processors);
-        let topology = cpu_allocation::processor_topology();
+        let catalog = SelectionCatalog::capture();
+        let processors = &catalog.processors;
         let validation_error = if self.preset_read_only {
-            (!mask_is_available(self.preset_mask, available))
-                .then(|| t!("cpu_allocation.selection_unavailable").to_string())
+            catalog.error(&self.preset_selection)
         } else {
-            self.validate_preset_selection(&topology).err()
+            self.validate_preset_selection(&catalog.topology).err()
         };
         let mut cpus = row![].spacing(design::space::CONTROL);
         for cpu in processors.iter().filter(|cpu| cpu.index < 64) {
             let bit = 1u64 << cpu.index;
-            let selected = self.preset_mask & bit != 0;
+            let selected = self
+                .preset_selection
+                .processors()
+                .iter()
+                .any(|id| id.group == 0 && usize::from(id.number) == cpu.index);
             let kind = t!(match cpu.kind {
                 LogicalProcessorKind::Performance => "cpu_allocation.p_core",
                 LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
@@ -443,7 +470,10 @@ impl Editor {
                     }
                 })
                 .on_press_maybe(
-                    (!self.preset_read_only).then_some(Message::PresetMask(self.preset_mask ^ bit)),
+                    (!self.preset_read_only)
+                        .then(|| catalog.toggled(&self.preset_selection, bit))
+                        .flatten()
+                        .map(Message::PresetSelection),
                 ),
             );
         }
@@ -472,14 +502,14 @@ impl Editor {
                 column![
                     text(t!("cpu_allocation.selected_logical_cpus").to_string()),
                     cpus.wrap(),
-                    text(format!("0x{:016X}", self.preset_mask))
+                    text(selection_text(&self.preset_selection))
                 ]
                 .spacing(design::space::SMALL)
                 .into(),
             ]))
         ]
         .spacing(design::space::MEDIUM);
-        if let Ok(topology) = &topology {
+        if let Ok(topology) = &catalog.topology {
             let cores = topology
                 .processors()
                 .iter()
@@ -502,15 +532,21 @@ impl Editor {
         }
         if !self.preset_read_only {
             let mut choices = row![].spacing(design::space::TIGHT);
-            for preset in core_presets(&processors) {
+            for preset in &catalog.presets {
                 choices = choices.push(
-                    button(text(preset.1)).on_press_maybe(
-                        (preset.0 != 0 && mask_is_available(preset.0, available))
-                            .then_some(Message::PresetMask(preset.0)),
-                    ),
+                    button(text(preset.1.clone()))
+                        .on_press(Message::PresetSelection(preset.0.clone())),
                 );
             }
             body = body.push(choices.wrap());
+            if catalog.error(&self.preset_selection).is_some() {
+                if let Some(reviewed) = catalog.reviewed(&self.preset_selection) {
+                    body = body.push(
+                        button(text(t!("cpu_allocation.use_this_selection").to_string()))
+                            .on_press(Message::PresetSelection(reviewed)),
+                    );
+                }
+            }
         }
         if let Some(error) = &validation_error {
             body = body.push(text(error.clone()).style(text::danger));
@@ -557,7 +593,7 @@ impl Editor {
         &'a self,
         s: &'a crate::application::SettingsEditor,
     ) -> Element<'a, Message> {
-        let processors = cpu_allocation::logical_processors();
+        let catalog = SelectionCatalog::capture();
         let mut rail = column![super::widgets::heading(
             t!("cpu_allocation.core_presets").to_string(),
             design::typography::SECONDARY
@@ -566,7 +602,7 @@ impl Editor {
         .padding([0, design::space::MEDIUM as u16]);
         rail = rail
             .push(text(t!("cpu_allocation.cache_domains_help").to_string()).style(text::secondary));
-        for preset in core_presets(&processors).into_iter().filter(|p| p.0 != 0) {
+        for preset in catalog.presets {
             let message = Message::ViewPreset(preset.1.clone(), preset.0);
             rail = rail.push(
                 row![
@@ -629,15 +665,119 @@ fn can_add(s: &Settings, path: &str) -> bool {
         cpu_allocation::is_builtin_excluded,
     )
 }
-pub(super) fn core_presets(
-    processors: &[LogicalProcessorInfo],
-) -> Vec<super::widgets::Choice<u64>> {
-    let all = cpu_allocation::logical_processor_mask(processors);
+pub(super) struct SelectionCatalog {
+    topology: Result<CpuTopology, String>,
+    processors: Vec<LogicalProcessorInfo>,
+    presets: Vec<super::widgets::Choice<CpuSelection>>,
+}
+impl SelectionCatalog {
+    pub(super) fn capture() -> Self {
+        Self::from_topology(cpu_allocation::processor_topology())
+    }
+
+    fn from_topology(topology: Result<CpuTopology, String>) -> Self {
+        let processors = topology
+            .as_ref()
+            .map(cpu_allocation::logical_processors_for_group_zero)
+            .unwrap_or_default();
+        let presets = topology.as_ref().map(core_presets).unwrap_or_default();
+        Self {
+            topology,
+            processors,
+            presets,
+        }
+    }
+
+    pub(super) fn all_selection(&self) -> Result<CpuSelection, String> {
+        let topology = self.topology.as_ref().map_err(|error| {
+            t!("cpu_allocation.topology_unavailable", error = error).to_string()
+        })?;
+        CpuSelection::from_group_zero_mask(
+            topology,
+            cpu_allocation::logical_processor_mask(&self.processors),
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn error(&self, selection: &CpuSelection) -> Option<String> {
+        match &self.topology {
+            Ok(_) => verify_selection_against(selection, &self.topology).err(),
+            Err(error) => {
+                Some(t!("cpu_allocation.topology_unavailable", error = error).to_string())
+            }
+        }
+    }
+
+    fn reviewed(&self, selection: &CpuSelection) -> Option<CpuSelection> {
+        let topology = self.topology.as_ref().ok()?;
+        let rebound = selection.rebind(topology).ok()?;
+        rebound.resolve_group_zero(topology).ok()?;
+        Some(rebound)
+    }
+
+    fn toggled(&self, selection: &CpuSelection, bit: u64) -> Option<CpuSelection> {
+        let topology = self.topology.as_ref().ok()?;
+        let mask = selection.group_zero_members_mask().ok()?;
+        CpuSelection::from_group_zero_mask(topology, mask ^ bit).ok()
+    }
+}
+
+pub(super) fn verify_selection(selection: &CpuSelection) -> Result<(), String> {
+    verify_selection_against(selection, &cpu_allocation::processor_topology())
+}
+
+pub(super) fn verify_selection_against(
+    selection: &CpuSelection,
+    topology: &Result<CpuTopology, String>,
+) -> Result<(), String> {
+    let topology = topology
+        .as_ref()
+        .map_err(|error| t!("cpu_allocation.topology_unavailable", error = error).to_string())?;
+    selection
+        .resolve_group_zero(topology)
+        .map(|_| ())
+        .map_err(saved_selection_error)
+}
+
+fn saved_selection_error(error: crate::cpu_topology::SavedSelectionError) -> String {
+    use crate::cpu_topology::{SavedSelectionError, SelectionError};
+    let key = match error {
+        SavedSelectionError::MissingTopology => "cpu_allocation.selection_missing_topology",
+        SavedSelectionError::TopologyChanged => "cpu_allocation.selection_topology_changed",
+        SavedSelectionError::Selection(SelectionError::Empty) => "cpu_allocation.no_logical_cpus",
+        SavedSelectionError::Selection(SelectionError::Unknown) => {
+            "cpu_allocation.selection_unavailable"
+        }
+        SavedSelectionError::Selection(SelectionError::UnsupportedGroup) => {
+            "cpu_allocation.selection_group_unsupported"
+        }
+        SavedSelectionError::Selection(
+            SelectionError::Duplicate | SelectionError::InvalidNumber,
+        ) => "cpu_allocation.selection_invalid",
+    };
+    t!("cpu_allocation.selection_needs_review", reason = t!(key)).to_string()
+}
+
+pub(super) fn selection_text(selection: &CpuSelection) -> String {
+    if selection.is_empty() {
+        return t!("cpu_allocation.no_logical_cpus").to_string();
+    }
+    selection
+        .processors()
+        .iter()
+        .map(|id| format!("G{}:CPU {}", id.group, id.number))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn core_presets(topology: &CpuTopology) -> Vec<super::widgets::Choice<CpuSelection>> {
+    let processors = cpu_allocation::logical_processors_for_group_zero(topology);
+    let all = cpu_allocation::logical_processor_mask(&processors);
     let p =
-        cpu_allocation::logical_processor_kind_mask(processors, LogicalProcessorKind::Performance);
+        cpu_allocation::logical_processor_kind_mask(&processors, LogicalProcessorKind::Performance);
     let e =
-        cpu_allocation::logical_processor_kind_mask(processors, LogicalProcessorKind::Efficiency);
-    let smt = cpu_allocation::logical_processor_no_smt_mask(processors);
+        cpu_allocation::logical_processor_kind_mask(&processors, LogicalProcessorKind::Efficiency);
+    let smt = cpu_allocation::logical_processor_no_smt_mask(&processors);
     let mut presets = [
         ("cpu_allocation.all", all),
         ("cpu_allocation.p_cores", p),
@@ -649,10 +789,19 @@ pub(super) fn core_presets(
     .into_iter()
     .map(|(key, mask)| super::widgets::Choice(mask, t!(key).to_string()))
     .collect::<Vec<_>>();
-    if let Ok(domains) = cpu_allocation::cache_domain_masks() {
-        presets.extend(cache_presets(all, &domains));
-    }
+    presets.extend(cache_presets(
+        all,
+        &cpu_allocation::cache_domain_masks_for_topology(topology),
+    ));
     presets
+        .into_iter()
+        .filter(|choice| choice.0 != 0)
+        .filter_map(|choice| {
+            CpuSelection::from_group_zero_mask(topology, choice.0)
+                .ok()
+                .map(|selection| super::widgets::Choice(selection, choice.1))
+        })
+        .collect()
 }
 
 fn cache_presets(
@@ -689,46 +838,53 @@ pub(super) fn mask_is_available(mask: u64, available: u64) -> bool {
 }
 
 pub(super) fn mask_selector<'a, M: Clone + 'a>(
-    mask: u64,
-    processors: &[LogicalProcessorInfo],
-    core_presets: &[super::widgets::Choice<u64>],
+    selection: &CpuSelection,
+    catalog: &SelectionCatalog,
     custom: &[CpuAllocationPreset],
-    message: impl Fn(u64) -> M + Clone + 'a,
+    message: impl Fn(CpuSelection) -> M + Clone + 'a,
 ) -> Element<'a, M> {
-    let all = cpu_allocation::logical_processor_mask(processors);
     let mut presets = row![].spacing(design::space::TIGHT);
-    for preset in core_presets {
-        presets = presets.push(button(text(preset.1.clone())).on_press_maybe(
-            (preset.0 != 0 && mask_is_available(preset.0, all)).then(|| message(preset.0)),
-        ));
+    for preset in &catalog.presets {
+        presets = presets.push(button(text(preset.1.clone())).on_press(message(preset.0.clone())));
     }
     for preset in custom {
-        let m = preset.core_mask;
         presets = presets.push(
-            button(text(preset.name.clone()))
-                .on_press_maybe((m != 0 && mask_is_available(m, all)).then(|| message(m))),
+            button(text(preset.name.clone())).on_press_maybe(
+                (catalog.error(&preset.selection).is_none() && !preset.selection.is_empty())
+                    .then(|| message(preset.selection.clone())),
+            ),
         );
     }
     let mut cpus = row![].spacing(design::space::CONTROL);
-    for cpu in processors.iter().filter(|p| p.index < 64) {
+    for cpu in &catalog.processors {
         let bit = 1u64 << cpu.index;
+        let selected = selection
+            .processors()
+            .iter()
+            .any(|id| id.group == 0 && usize::from(id.number) == cpu.index);
         let msg = message.clone();
+        let candidate = catalog.toggled(selection, bit);
         let kind = t!(match cpu.kind {
             LogicalProcessorKind::Performance => "cpu_allocation.p_core",
             LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
             LogicalProcessorKind::Standard => "cpu_allocation.core",
         });
         cpus = cpus.push(
-            checkbox(mask & bit != 0)
+            checkbox(selected)
                 .label(format!("{} ({kind} {})", cpu.index, cpu.core_index))
-                .on_toggle(move |v| msg(if v { mask | bit } else { mask & !bit })),
+                .on_toggle_maybe(candidate.map(|candidate| move |_| msg(candidate.clone()))),
         );
     }
-    let mut selector = column![presets.wrap(), cpus.wrap(), text(format!("0x{mask:016X}"))]
+    let mut selector = column![presets.wrap(), cpus.wrap(), text(selection_text(selection))]
         .spacing(design::space::SMALL);
-    if !mask_is_available(mask, all) {
-        selector = selector
-            .push(text(t!("cpu_allocation.selection_unavailable").to_string()).style(text::danger));
+    if let Some(error) = catalog.error(selection) {
+        selector = selector.push(text(error).style(text::danger));
+        if let Some(reviewed) = catalog.reviewed(selection) {
+            selector = selector.push(
+                button(text(t!("cpu_allocation.use_this_selection").to_string()))
+                    .on_press(message(reviewed)),
+            );
+        }
     }
     selector.into()
 }
@@ -773,12 +929,35 @@ mod tests {
         assert!(choices[1].1.contains("512.0 KB"));
     }
 
-    #[test]
-    fn preset_save_requires_captured_topology_and_rejects_absent_cpus() {
-        use crate::cpu_topology::{
-            CacheDomain, CacheKind, CpuTopology, LogicalProcessor, ProcessorGroup, ProcessorId,
-        };
+    fn rule(selection: CpuSelection) -> CpuAllocationRule {
+        CpuAllocationRule {
+            enabled: true,
+            executable_path: "app.exe".into(),
+            focus_selection: selection.clone(),
+            visible_window_selection: selection.clone(),
+            background_selection: selection,
+        }
+    }
 
+    fn changed_topology() -> CpuTopology {
+        let original = crate::cpu_topology::test_topology();
+        CpuTopology::new(
+            original.processors().to_vec(),
+            original.groups().to_vec(),
+            vec![crate::cpu_topology::CacheDomain {
+                level: 3,
+                kind: crate::cpu_topology::CacheKind::Unified,
+                size_bytes: 32_000_000,
+                processors: original.processors().iter().map(|cpu| cpu.id).collect(),
+            }],
+            original.numa_nodes().to_vec(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn preset_save_requires_captured_topology_and_every_saved_member() {
+        use crate::cpu_topology::{LogicalProcessor, ProcessorGroup, ProcessorId};
         let id = ProcessorId {
             group: 0,
             number: 0,
@@ -798,32 +977,19 @@ mod tests {
         )
         .unwrap();
         let mut editor = Editor {
-            preset_mask: 1,
+            preset_selection: CpuSelection::from_group_zero_mask(&topology, 1).unwrap(),
             preset_topology: Some(Ok(topology.clone())),
             ..Editor::default()
         };
         assert!(editor
             .validate_preset_selection(&Ok(topology.clone()))
             .is_ok());
-        editor.preset_mask = 3;
+        editor.preset_selection = crate::cpu_topology::test_selection(3);
+        let saved = editor.preset_selection.clone();
         assert!(editor
             .validate_preset_selection(&Ok(topology.clone()))
             .is_err());
-        assert_eq!(editor.preset_mask, 3);
-        editor.preset_mask = 1;
-        let changed = CpuTopology::new(
-            topology.processors().to_vec(),
-            topology.groups().to_vec(),
-            vec![CacheDomain {
-                level: 3,
-                kind: CacheKind::Unified,
-                size_bytes: 32_000_000,
-                processors: vec![id],
-            }],
-            topology.numa_nodes().to_vec(),
-        )
-        .unwrap();
-        assert!(editor.validate_preset_selection(&Ok(changed)).is_err());
+        assert_eq!(editor.preset_selection, saved);
         assert!(editor
             .validate_preset_selection(&Err("unavailable".into()))
             .is_err());
@@ -832,66 +998,136 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_saved_preset_preserves_unavailable_bits_for_review() {
-        let mut settings = Settings::default();
-        settings.cpu_allocation_presets.push(CpuAllocationPreset {
-            name: "saved".into(),
-            core_mask: u64::MAX,
-        });
-        let mut editor = Editor::default();
-        editor.update(&mut settings, Kind::Soft, Message::EditPreset(0));
-        assert_eq!(editor.preset_mask, u64::MAX);
-        assert_eq!(settings.cpu_allocation_presets[0].core_mask, u64::MAX);
-        editor.update(&mut settings, Kind::Soft, Message::ClosePreset);
-        assert_eq!(settings.cpu_allocation_presets[0].core_mask, u64::MAX);
+    fn same_members_on_changed_topology_require_explicit_review() {
+        let saved = crate::cpu_topology::test_selection(3);
+        let catalog = SelectionCatalog::from_topology(Ok(changed_topology()));
+        assert!(catalog.error(&saved).is_some());
+        assert!(verify_selection_against(&saved, &catalog.topology).is_err());
+        let reviewed = catalog.reviewed(&saved).unwrap();
+        assert_eq!(saved.processors(), reviewed.processors());
+        assert_ne!(saved.topology(), reviewed.topology());
+        assert!(verify_selection_against(&reviewed, &catalog.topology).is_ok());
+        assert_eq!(saved, crate::cpu_topology::test_selection(3));
+        assert!(SelectionCatalog::from_topology(Err("unavailable".into()))
+            .reviewed(&saved)
+            .is_none());
     }
 
     #[test]
-    fn identical_masks_keep_explicit_selection_per_rule_and_tier() {
+    fn review_never_drops_missing_or_nonzero_group_members() {
+        use crate::cpu_topology::{LogicalProcessor, ProcessorGroup, ProcessorId};
+        let zero = ProcessorId {
+            group: 0,
+            number: 0,
+        };
+        let one = ProcessorId {
+            group: 1,
+            number: 0,
+        };
+        let topology = CpuTopology::new(
+            vec![
+                LogicalProcessor {
+                    id: zero,
+                    core: zero,
+                    efficiency_class: 0,
+                },
+                LogicalProcessor {
+                    id: one,
+                    core: one,
+                    efficiency_class: 0,
+                },
+            ],
+            vec![
+                ProcessorGroup {
+                    number: 0,
+                    active_mask: 1,
+                },
+                ProcessorGroup {
+                    number: 1,
+                    active_mask: 1,
+                },
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let unsupported = CpuSelection::bind(&topology, vec![zero, one]).unwrap();
+        let catalog = SelectionCatalog::from_topology(Ok(topology));
+        assert!(catalog
+            .reviewed(&crate::cpu_topology::test_selection(3))
+            .is_none());
+        assert!(catalog.reviewed(&unsupported).is_none());
+        assert!(catalog.toggled(&unsupported, 1).is_none());
+        assert_eq!(unsupported.processors(), &[zero, one]);
+    }
+
+    #[test]
+    fn opening_a_saved_preset_preserves_its_binding_and_members() {
+        let mut settings = Settings::default();
+        let selection = crate::cpu_topology::test_selection(u64::MAX);
+        settings.cpu_allocation_presets.push(CpuAllocationPreset {
+            name: "saved".into(),
+            selection: selection.clone(),
+        });
+        let mut editor = Editor::default();
+        editor.update(&mut settings, Kind::Soft, Message::EditPreset(0));
+        assert_eq!(editor.preset_selection, selection);
+        assert_eq!(settings.cpu_allocation_presets[0].selection, selection);
+        editor.update(&mut settings, Kind::Soft, Message::ClosePreset);
+        assert_eq!(settings.cpu_allocation_presets[0].selection, selection);
+    }
+
+    #[test]
+    fn rule_copies_preserve_bindings_and_reject_a_stale_catalog() {
+        let topology = crate::cpu_topology::test_topology();
+        let selection = crate::cpu_topology::test_selection(3);
         for kind in [Kind::Soft, Kind::Hard] {
             let mut editor = Editor::default();
-            let mut s = Settings::default();
-            let mask =
-                cpu_allocation::logical_processor_mask(&cpu_allocation::logical_processors());
+            let mut settings = Settings::default();
+            settings_mut(&mut settings, kind)
+                .rules
+                .push(rule(selection.clone()));
             let options = vec![
-                super::super::widgets::Choice(mask, "All".into()),
-                super::super::widgets::Choice(mask, "Mine".into()),
+                super::super::widgets::Choice(selection.clone(), "All".into()),
+                super::super::widgets::Choice(selection.clone(), "Mine".into()),
             ];
-            settings_mut(&mut s, kind).rules.push(CpuAllocationRule {
-                enabled: true,
-                executable_path: "app.exe".into(),
-                focus_core_mask: mask,
-                visible_window_core_mask: mask,
-                background_core_mask: mask,
-            });
-            editor.update(
-                &mut s,
+            editor.set_rule_selection(
+                &mut settings,
                 kind,
-                Message::Mask(0, Tier::Focus, options[1].clone()),
+                0,
+                Tier::Focus,
+                options[1].clone(),
+                &Ok(topology.clone()),
             );
             assert_eq!(
-                editor.selected_preset("app.exe", Tier::Focus, mask, &options),
+                editor.selected_preset("app.exe", Tier::Focus, &selection, &options),
                 Some(options[1].clone())
             );
             assert_eq!(
-                editor.selected_preset("app.exe", Tier::Background, mask, &options),
+                editor.selected_preset("app.exe", Tier::Background, &selection, &options),
                 Some(options[0].clone())
             );
             editor.reset_drafts();
             assert_eq!(
-                editor.selected_preset("app.exe", Tier::Focus, mask, &options),
+                editor.selected_preset("app.exe", Tier::Focus, &selection, &options),
                 Some(options[1].clone())
             );
-            editor.update(
-                &mut s,
+            let before = settings.clone();
+            editor.set_rule_selection(
+                &mut settings,
                 kind,
-                Message::Mask(0, Tier::Focus, options[0].clone()),
+                0,
+                Tier::Focus,
+                options[0].clone(),
+                &Ok(changed_topology()),
             );
+            assert_eq!(settings, before);
+            assert!(!editor.error.is_empty());
             assert_eq!(
-                editor.selected_preset("app.exe", Tier::Focus, mask, &options),
-                Some(options[0].clone())
+                super::settings(&before, kind).rules[0].focus_selection,
+                selection
             );
-            editor.update(&mut s, kind, Message::Remove(0));
+            editor.update(&mut settings, kind, Message::Remove(0));
             assert!(editor.selected_presets.is_empty());
         }
     }
@@ -899,46 +1135,46 @@ mod tests {
     #[test]
     fn builtin_preview_is_read_only_and_cancel_discards_new_preset() {
         let mut editor = Editor::default();
-        let mut s = Settings::default();
-        let before = s.clone();
+        let mut settings = Settings::default();
+        let before = settings.clone();
+        let selection = crate::cpu_topology::test_selection(u64::MAX);
         editor.update(
-            &mut s,
+            &mut settings,
             Kind::Soft,
-            Message::ViewPreset("All".into(), u64::MAX),
+            Message::ViewPreset("All".into(), selection.clone()),
         );
-        let mask = editor.preset_mask;
-        editor.update(&mut s, Kind::Soft, Message::PresetMask(0));
-        editor.update(&mut s, Kind::Soft, Message::PresetName("Changed".into()));
-        editor.update(&mut s, Kind::Soft, Message::SavePreset);
-        assert_eq!(editor.preset_mask, mask);
+        editor.update(
+            &mut settings,
+            Kind::Soft,
+            Message::PresetSelection(CpuSelection::default()),
+        );
+        editor.update(
+            &mut settings,
+            Kind::Soft,
+            Message::PresetName("Changed".into()),
+        );
+        editor.update(&mut settings, Kind::Soft, Message::SavePreset);
+        assert_eq!(editor.preset_selection, selection);
         assert_eq!(editor.preset_name, "All");
-        assert_eq!(s, before);
-        editor.update(&mut s, Kind::Hard, Message::NewPreset);
-        editor.update(&mut s, Kind::Hard, Message::PresetName("Draft".into()));
-        editor.update(&mut s, Kind::Hard, Message::ClosePreset);
-        assert_eq!(s, before);
-        assert!(!editor.preset_open);
+        assert_eq!(settings, before);
+        editor.update(&mut settings, Kind::Hard, Message::NewPreset);
+        assert!(editor.has_pending_editor());
+        editor.update(&mut settings, Kind::Hard, Message::ClosePreset);
+        assert!(!editor.has_pending_editor());
+        assert_eq!(settings, before);
     }
 
     #[test]
-    fn preset_edits_do_not_rewrite_rules() {
-        let mut s = Settings::default();
-        s.cpu_sets_soft.rules.push(CpuAllocationRule {
-            enabled: true,
-            executable_path: r"C:\App\app.exe".into(),
-            focus_core_mask: 1,
-            visible_window_core_mask: 2,
-            background_core_mask: 3,
+    fn preset_edits_do_not_rewrite_copied_rule_selections() {
+        let mut settings = Settings::default();
+        let selection = crate::cpu_topology::test_selection(1);
+        settings.cpu_sets_soft.rules.push(rule(selection.clone()));
+        settings.cpu_allocation_presets.push(CpuAllocationPreset {
+            name: "Shared".into(),
+            selection: selection.clone(),
         });
-        s.cpu_allocation_presets.push(CpuAllocationPreset {
-            name: "one".into(),
-            core_mask: 1,
-        });
-        let mut e = Editor::default();
-        e.update(&mut s, Kind::Soft, Message::DeletePreset(0));
-        assert_eq!(s.cpu_sets_soft.rules[0].focus_core_mask, 1);
-        assert!(s.cpu_allocation_presets.is_empty());
-        e.update(&mut s, Kind::Soft, Message::Remove(0));
-        assert!(s.cpu_sets_soft.rules.is_empty());
+        Editor::default().update(&mut settings, Kind::Soft, Message::DeletePreset(0));
+        assert_eq!(settings.cpu_sets_soft.rules[0].focus_selection, selection);
+        assert!(settings.cpu_allocation_presets.is_empty());
     }
 }

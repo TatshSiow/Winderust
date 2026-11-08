@@ -548,7 +548,7 @@ Implementation entry points:
 
 ## CPU Sets (Soft) and Processor Affinity (Hard)
 
-Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask. New claims require GetProcessGroupAffinity to report exactly group 0 before any ownership handoff, preventing group-0 selections from being reinterpreted in another primary group. Compensation, release, and recovery do not depend on this new-claim guard. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Adaptive Engine. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. Adaptive Engine may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
+Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask. New claims require GetProcessGroupAffinity to report exactly group 0 before any ownership handoff, preventing group-0 selections from being reinterpreted in another primary group. Compensation, release, and recovery do not depend on this new-claim guard. Persisted selections retain group-qualified members and their verified layout, while native writes cover processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Adaptive Engine. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. Adaptive Engine may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
 
 Background Efficiency exposes Foreground Detection and Visible Window Detection. CPU Limiter,
 CPU Sets (Soft), and Processor Affinity (Hard) classify each matched process as Focus, Visible
@@ -570,7 +570,7 @@ Implementation paths:
 - `src/platform/windows/cpu_allocation/topology.rs`: read-only `RelationAll` capture and
   packed core, active-group, cache, and NUMA relationship validation.
 - `src/cpu_topology.rs`: canonical, validated group-qualified topology facts and
-  fallible group-0 selection projection; no native APIs or mutation ownership.
+  topology-bound saved selections and fallible group-0 projection; no native APIs or mutation ownership.
 - `src/features/cpu_control/cpu_allocation.rs`: explicit-rule discovery,
   Focus/Visible Window/Background tier selection, topology policy, failure suppression,
   status, and Action Log reporting.

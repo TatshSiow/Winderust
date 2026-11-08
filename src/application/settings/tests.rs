@@ -568,7 +568,7 @@ fn runtime_settings_projection_keeps_live_general_and_advanced_only() {
         .cpu_allocation_presets
         .push(crate::config::CpuAllocationPreset {
             name: "Gaming".to_owned(),
-            core_mask: 0b11,
+            selection: crate::cpu_topology::test_selection(0b11),
         });
     let runtime = runtime_settings_for(&current, &persisted);
     assert!(runtime.general.enabled);
@@ -607,7 +607,7 @@ fn preset_edits_survive_profile_switching_and_save() {
                 .cpu_allocation_presets
                 .push(crate::config::CpuAllocationPreset {
                     name: "Saved".into(),
-                    core_mask: 3,
+                    selection: crate::cpu_topology::test_selection(3),
                 });
             settings.advanced_power_plan_tuning_presets.push(
                 crate::config::AdvancedPowerPlanTuningPreset {
@@ -640,7 +640,10 @@ fn preset_edits_survive_profile_switching_and_save() {
         for selected in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
             editor.select_power_source(selected);
             assert_eq!(editor.adaptive_engine_presets[0].name, "Saved");
-            assert_eq!(editor.cpu_allocation_presets[0].core_mask, 3);
+            assert_eq!(
+                editor.cpu_allocation_presets[0].selection,
+                crate::cpu_topology::test_selection(3)
+            );
             assert_eq!(editor.advanced_power_plan_tuning_presets[0].name, "Saved");
         }
         editor.select_power_source(profile);

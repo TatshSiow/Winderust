@@ -8,6 +8,7 @@ use crate::{
         forget_affinity_change, forget_cpu_sets_change, record_process_change, ProcessValue,
         RecoveryIntent,
     },
+    cpu_topology::{CpuSelection, CpuTopology},
     platform::windows::{cpu_allocation as windows_cpu_allocation, ProcessOperationError},
     win_util::WinHandle,
 };
@@ -19,6 +20,8 @@ use super::process::{
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CpuAllocationApplyError {
+    #[error("{0}")]
+    Topology(ProcessControlError),
     #[error("{0}")]
     Discovery(ProcessControlError),
     #[error("{0}")]
@@ -80,10 +83,10 @@ impl CpuSetInventory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CpuAllocationRequest {
-    SoftCpuSets { logical_processor_mask: u64 },
-    HardAffinity { logical_processor_mask: u64 },
+    SoftCpuSets { selection: CpuSelection },
+    HardAffinity { selection: CpuSelection },
 }
 
 #[derive(Debug, Clone)]
@@ -139,13 +142,13 @@ pub(crate) struct CpuAllocationReconciliationSummary {
     pub(crate) releases: CpuAllocationReleaseSummary,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CpuAllocationClaimFingerprint {
     owner: ControlOwner,
     request: CpuAllocationRequest,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PendingReconciliation {
     Handoff,
     HandoffRetry,
@@ -367,12 +370,49 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     pub(crate) fn apply_policy_claim(
         &mut self,
         inventory: &mut CpuSetInventory,
+        topology: Result<&CpuTopology, &str>,
         claim: CpuAllocationClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<CpuAllocationApplyOutcome, CpuAllocationApplyError> {
         validate_owner(claim.owner)?;
         let owner = claim.owner;
         let key = claim.target.key();
+        if let Err(mut error) = resolve_request(&claim.request, topology) {
+            if let Some(claims) = self.claims.get_mut(&owner) {
+                claims.remove(&key);
+            }
+            let mut release = CpuAllocationReleaseSummary::default();
+            let mut invalid_owners = self
+                .remove_unresolved_claims(&key, topology)
+                .into_iter()
+                .map(|(claim, _)| claim.owner)
+                .collect::<BTreeSet<_>>();
+            invalid_owners.insert(owner);
+            if self.release_unresolved_assignment(&key, &invalid_owners, &mut release) {
+                self.reconcile_policy_key(&key, &mut release);
+            }
+            if let Some(failure) = release.failures.first() {
+                error = ProcessControlError::Failed(format!(
+                    "{error} Restoration remains pending: {}",
+                    failure.error
+                ));
+            }
+            return Err(CpuAllocationApplyError::Topology(error));
+        }
+        let invalid_owners = self
+            .remove_unresolved_claims(&key, topology)
+            .into_iter()
+            .map(|(claim, _)| claim.owner)
+            .collect();
+        let mut release = CpuAllocationReleaseSummary::default();
+        if !self.release_unresolved_assignment(&key, &invalid_owners, &mut release) {
+            return Err(CpuAllocationApplyError::Topology(
+                ProcessControlError::Failed(
+                    "CPU topology changed; restoration of the previous allocation remains pending."
+                        .to_owned(),
+                ),
+            ));
+        }
         let previous = self
             .claims
             .entry(owner)
@@ -386,8 +426,12 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         }
 
         let failed_claim = claim_fingerprint(&effective);
-        let result =
-            self.apply_effective_claim(inventory, effective, allow_cross_session_process_control);
+        let result = self.apply_effective_claim(
+            inventory,
+            topology,
+            effective,
+            allow_cross_session_process_control,
+        );
         if result.is_err() {
             let owner_claims = self.claims.entry(owner).or_default();
             if let Some(previous) = previous {
@@ -416,6 +460,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     fn apply_effective_claim(
         &mut self,
         inventory: &mut CpuSetInventory,
+        topology: Result<&CpuTopology, &str>,
         claim: CpuAllocationClaim,
         allow_cross_session_process_control: bool,
     ) -> Result<CpuAllocationApplyOutcome, CpuAllocationApplyError> {
@@ -424,19 +469,17 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             .open(&claim.target, allow_cross_session_process_control)?;
         self.relinquish_stale_identities(&identity)?;
 
+        let logical_processor_mask =
+            resolve_request(&claim.request, topology).map_err(CpuAllocationApplyError::Topology)?;
         match claim.request {
-            CpuAllocationRequest::SoftCpuSets {
-                logical_processor_mask,
-            } => {
+            CpuAllocationRequest::SoftCpuSets { .. } => {
                 let desired = inventory
                     .ids(&mut self.platform, logical_processor_mask)
                     .map_err(CpuAllocationApplyError::Discovery)?;
                 self.apply_soft_claim(&identity, &process, claim.owner, desired)
                     .map_err(Into::into)
             }
-            CpuAllocationRequest::HardAffinity {
-                logical_processor_mask,
-            } => self
+            CpuAllocationRequest::HardAffinity { .. } => self
                 .apply_hard_claim(
                     &identity,
                     &process,
@@ -952,12 +995,13 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
 
     pub(crate) fn reconcile_pending(
         &mut self,
+        topology: Result<&CpuTopology, &str>,
         allow_cross_session_process_control: bool,
         include_release_retries: bool,
     ) -> CpuAllocationReconciliationSummary {
         let mut inventory = CpuSetInventory::default();
+        let mut summary = self.reconcile_topology(topology);
         let pending = take(&mut self.pending_reconciliations);
-        let mut summary = CpuAllocationReconciliationSummary::default();
         for (key, reconciliation) in pending {
             if matches!(
                 reconciliation,
@@ -968,6 +1012,10 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 self.pending_reconciliations.insert(key, reconciliation);
                 continue;
             }
+            let first_release_attempt = matches!(
+                &reconciliation,
+                PendingReconciliation::ReleaseOnlyFirstAttempt { .. }
+            );
             if let PendingReconciliation::ReleaseOnlyFirstAttempt { failed_claim }
             | PendingReconciliation::ReleaseOnlyRetry { failed_claim } = reconciliation
             {
@@ -977,10 +1025,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     .releases
                     .restored_owners
                     .append(&mut release.restored_owners);
-                if matches!(
-                    reconciliation,
-                    PendingReconciliation::ReleaseOnlyFirstAttempt { .. }
-                ) {
+                if first_release_attempt {
                     summary.releases.failures.append(&mut release.failures);
                 }
                 if !completed {
@@ -994,6 +1039,16 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 continue;
             }
 
+            let invalid = self.remove_unresolved_claims(&key, topology);
+            let invalid_owners = invalid.iter().map(|(claim, _)| claim.owner).collect();
+            for (claim, error) in invalid {
+                summary
+                    .failures
+                    .push(reconciliation_failure_for_claim(&claim, error));
+            }
+            if !self.release_unresolved_assignment(&key, &invalid_owners, &mut summary.releases) {
+                continue;
+            }
             let Some(claim) = self.effective_claim(&key).cloned() else {
                 if !self.release_managed_key(&key, &mut summary.releases) {
                     self.pending_reconciliations.insert(
@@ -1006,6 +1061,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             let failed_claim = claim_fingerprint(&claim);
             match self.apply_effective_claim(
                 &mut inventory,
+                topology,
                 claim.clone(),
                 allow_cross_session_process_control,
             ) {
@@ -1041,6 +1097,15 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     self.pending_reconciliations
                         .insert(key, PendingReconciliation::HandoffRetry);
                 }
+                Err(CpuAllocationApplyError::Topology(error)) => {
+                    if let Some(claims) = self.claims.get_mut(&claim.owner) {
+                        claims.remove(&key);
+                    }
+                    summary
+                        .failures
+                        .push(reconciliation_failure_for_claim(&claim, error));
+                    self.reconcile_policy_key(&key, &mut summary.releases);
+                }
                 Err(CpuAllocationApplyError::Target(error)) => {
                     summary
                         .failures
@@ -1054,6 +1119,34 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                         );
                     }
                 }
+            }
+        }
+        summary
+    }
+
+    pub(crate) fn reconcile_topology(
+        &mut self,
+        topology: Result<&CpuTopology, &str>,
+    ) -> CpuAllocationReconciliationSummary {
+        let keys = self
+            .claims
+            .values()
+            .flat_map(|claims| claims.keys().cloned())
+            .collect::<BTreeSet<_>>();
+        let mut summary = CpuAllocationReconciliationSummary::default();
+        for key in keys {
+            let invalid = self.remove_unresolved_claims(&key, topology);
+            if invalid.is_empty() {
+                continue;
+            }
+            let invalid_owners = invalid.iter().map(|(claim, _)| claim.owner).collect();
+            for (claim, error) in invalid {
+                summary
+                    .failures
+                    .push(reconciliation_failure_for_claim(&claim, error));
+            }
+            if self.release_unresolved_assignment(&key, &invalid_owners, &mut summary.releases) {
+                self.reconcile_policy_key(&key, &mut summary.releases);
             }
         }
         summary
@@ -1083,6 +1176,46 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         })
     }
 
+    fn remove_unresolved_claims(
+        &mut self,
+        key: &ProcessTargetKey,
+        topology: Result<&CpuTopology, &str>,
+    ) -> Vec<(CpuAllocationClaim, ProcessControlError)> {
+        let mut invalid = Vec::new();
+        for claims in self.claims.values_mut() {
+            if let Some((claim, error)) = claims.get(key).and_then(|claim| {
+                resolve_request(&claim.request, topology)
+                    .err()
+                    .map(|error| (claim.clone(), error))
+            }) {
+                claims.remove(key);
+                invalid.push((claim, error));
+            }
+        }
+        invalid
+    }
+
+    fn release_unresolved_assignment(
+        &mut self,
+        key: &ProcessTargetKey,
+        invalid_owners: &BTreeSet<ControlOwner>,
+        summary: &mut CpuAllocationReleaseSummary,
+    ) -> bool {
+        let owned = self.managed_affinity.iter().any(|(identity, value)| {
+            identity.key() == *key && invalid_owners.contains(&value.owner)
+        }) || self.managed_cpu_sets.iter().any(|(identity, value)| {
+            identity.key() == *key && invalid_owners.contains(&value.owner)
+        });
+        if !owned || self.release_managed_key(key, summary) {
+            return true;
+        }
+        self.pending_reconciliations.insert(
+            key.clone(),
+            PendingReconciliation::ReleaseOnlyRetry { failed_claim: None },
+        );
+        false
+    }
+
     fn reconcile_policy_key(
         &mut self,
         key: &ProcessTargetKey,
@@ -1099,7 +1232,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     | PendingReconciliation::ReleaseOnlyRetry {
                         failed_claim: Some(failed),
                     },
-                ) => *failed != effective,
+                ) => failed != &effective,
                 Some(
                     PendingReconciliation::ReleaseOnlyFirstAttempt { failed_claim: None }
                     | PendingReconciliation::ReleaseOnlyRetry { failed_claim: None },
@@ -1740,11 +1873,22 @@ fn validate_owner(owner: ControlOwner) -> Result<(), ProcessControlError> {
 }
 
 fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize> {
-    let mut mask = (rule_mask & usize::MAX as u64) as usize;
-    if system_affinity != 0 {
-        mask &= system_affinity;
-    }
-    (mask != 0).then_some(mask)
+    let mask = usize::try_from(rule_mask).ok()?;
+    (mask != 0 && mask & system_affinity == mask).then_some(mask)
+}
+
+fn resolve_request(
+    request: &CpuAllocationRequest,
+    topology: Result<&CpuTopology, &str>,
+) -> Result<u64, ProcessControlError> {
+    let topology = topology.map_err(|error| ProcessControlError::Failed(error.to_owned()))?;
+    let selection = match request {
+        CpuAllocationRequest::SoftCpuSets { selection }
+        | CpuAllocationRequest::HardAffinity { selection } => selection,
+    };
+    selection
+        .resolve_group_zero(topology)
+        .map_err(|error| ProcessControlError::Failed(error.to_string()))
 }
 
 fn normalize_cpu_set_ids(ids: &mut Vec<u32>) {
@@ -1774,14 +1918,14 @@ fn reconciled_application_for_claim(
         owner: claim.owner,
         process_id: claim.target.id,
         process_name: claim.target.name.clone(),
-        request: claim.request,
+        request: claim.request.clone(),
     }
 }
 
 fn claim_fingerprint(claim: &CpuAllocationClaim) -> CpuAllocationClaimFingerprint {
     CpuAllocationClaimFingerprint {
         owner: claim.owner,
-        request: claim.request,
+        request: claim.request.clone(),
     }
 }
 
