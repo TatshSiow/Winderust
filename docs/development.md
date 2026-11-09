@@ -65,6 +65,31 @@ process intents; they do not exercise machine-wide power-plan cleanup, jobs,
 threads, or GUI startup. Fixture modes are absent from default builds. If a
 running app locks the debug executable, add `--target-dir target/recovery-smoke`.
 
+## CPU Limiter mechanism comparison
+
+The `runtime-benchmark` feature also provides a disposable-worker comparison of
+unrestricted execution, production 50% Allowed CPU Time, and fixed half-pool
+Processor Affinity (Hard):
+
+```powershell
+cargo build --locked --release --features runtime-benchmark
+New-Item -ItemType Directory -Path target/limiter-comparison
+Start-Process target/release/winderust.exe -ArgumentList '--cpu-limiter-benchmark', 'target/limiter-comparison' -WindowStyle Hidden -Wait
+```
+
+Close Winderust first and use an existing output directory. The comparison needs
+one processor group, a reducible inherited affinity mask, no inherited CPU Sets,
+and no Winderust Adaptive plan. It does not load settings or change power plans.
+Four alternating passes take roughly three minutes. Confirm `finished.txt` is
+`ok`, `result.json` has `complete: true`, and all 24 samples verify restoration;
+the process exit code alone does not establish success.
+
+The report retains useful-work counts, CPU time, target response latency, exact
+placement readback, and counter-capture spans. Half-pool selection keeps eligible
+siblings together and halves physical cores within each efficiency class, rounding
+up. It limits concurrency rather than CPU time. This synthetic comparison does
+not establish foreground-app protection, energy savings, or an automatic policy.
+
 ## Rendering and performance
 
 - `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.

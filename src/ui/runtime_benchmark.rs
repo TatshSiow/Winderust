@@ -1,5 +1,8 @@
-//! Opt-in local benchmark host. Uses production presets, runtime, and recovery;
-//! never loads or saves the user's configuration and never starts the UI.
+//! Opt-in local benchmarks using production runtime/controllers and recovery;
+//! never load or save the user's configuration or start the UI.
+#[path = "runtime_benchmark/cpu_limiter.rs"]
+mod cpu_limiter;
+
 use super::presets::{apply_built_in_adaptive_engine_preset, BuiltInAdaptiveEnginePreset};
 use crate::{
     application::settings::RuntimeSettingsSnapshot,
@@ -154,6 +157,9 @@ fn write(path: &Path, name: &str, content: &str) -> Result<(), String> {
 }
 
 pub(crate) fn run_if_requested() -> bool {
+    if cpu_limiter::run_if_requested() {
+        return true;
+    }
     let args: Vec<_> = std::env::args_os().collect();
     let export_only = match args.get(1).and_then(|arg| arg.to_str()) {
         Some("--runtime-benchmark") => false,

@@ -1,5 +1,13 @@
 # Benchmarks
 
+For CPU Limiter duty cycling versus fixed half-pool Processor Affinity (Hard),
+use the [disposable-worker comparison](../docs/development.md#cpu-limiter-mechanism-comparison).
+It measures synthetic work, CPU time, and response latency inside the target,
+with exact placement restoration after each case. It does not require a focused
+window or change saved settings. Concurrency and CPU-time limits have different
+semantics; these results cannot establish an automatic policy or performance in
+an independent foreground application.
+
 For isolated single-thread/multithread throughput comparisons, run in **64-bit
 Windows PowerShell 5.1**:
 
@@ -103,6 +111,7 @@ These component timings are not ST/MT throughput results.
 - [Intel Core 5 210H counterbalanced Adaptive runtime matrix](intel-core-5-210h-adaptive-runtime-counterbalanced-20260807.md) - 2026-08-07 and 2026-08-10 validated CPU, I/O, and MessageLoop runtime results with foreground-host integrity, package power, and Windows priority activation
 - [Intel Core 5 210H CPU Scheduler redesign and context-aware power A/B](intel-core-5-210h-cpu-scheduler-redesign-20260818.md) - 2026-08-18 targeted-only, broad-policy, context-aware, and Limit Background Processors comparison with editable profile tuning, direct EcoQoS observation, and power-gate results
 - [Intel Core 5 210H Least-used vs E-core-preferred selector A/B](cpu-selector-least-used-vs-e-core-preferred-20260818.md) - 2026-08-18 release-runtime comparison of foreground latency, background capacity, and package power
+- [Intel Core 5 210H CPU Limiter mechanism comparison](intel-core-5-210h-cpu-limiter-mechanisms-20261109.md) - 2026-11-09 disposable-worker duty cycling versus fixed half-pool placement, with target response latency and verified restoration
 - [AMD Ryzen 7 7735HS](amd-ryzen-7-7735hs.md) - preset benchmark
 
 Run from the repository root:

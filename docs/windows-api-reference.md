@@ -691,6 +691,14 @@ multi-object wait. `src/control/suspension.rs` owns exact-process Job Object acq
 CPU Limiter and App Suspension owner phases into one effective frozen state. Recovery stays armed
 across limiter duty cycles and is forgotten only after the last owner releases the job.
 
+The opt-in mechanism comparison in `src/ui/runtime_benchmark/cpu_limiter.rs`
+uses these production controllers and the CPU allocation coordinator on disposable
+child processes. It reads process CPU time through the existing
+[`GetProcessTimes`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
+adapter, brackets counter reads with a monotonic clock, and verifies exact baseline
+affinity/CPU Sets restoration before each child exits. It adds no native mutation
+adapter or automatic CPU Limiter policy.
+
 | API or behavior | Used for | Reference |
 | --- | --- | --- |
 | `CreateWaitableTimerExW` | Creates the worker's high-resolution waitable timer with `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw |
