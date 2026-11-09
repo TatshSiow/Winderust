@@ -163,7 +163,8 @@ remain available in Git history rather than in the active documentation set.
   `src/platform/windows/cpu_allocation.rs` owns the raw affinity/CPU Set query and write calls plus
   packed system CPU Set topology conversion.
 - `src/cpu_topology.rs`: validated, canonical read-only processor-group, core,
-  efficiency, NUMA, and cache facts with checked group-0 selection projection.
+  efficiency, NUMA, and cache facts with exact group-qualified selection resolution
+  and checked group-0 projection for Processor Affinity (Hard) and Adaptive Engine.
   Saved selections retain group-qualified members and an exact validated topology signature.
   `src/platform/windows/cpu_allocation/topology.rs` owns native topology capture
   and packed-record validation; topology discovery grants no mutation authority.

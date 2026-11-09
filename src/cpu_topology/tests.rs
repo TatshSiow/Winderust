@@ -172,7 +172,6 @@ fn saved_selections_preserve_unresolved_members_until_explicit_rebind() {
     );
     assert_eq!(selection.rebind(&smaller), Err(SelectionError::Unknown));
     assert_eq!(selection.processors(), &[id(0, 0), id(0, 63)]);
-    assert_eq!(selection.group_zero_members_mask(), Ok(1 | (1_u64 << 63)));
 
     let mut changed = topology.clone();
     changed.caches[0].size_bytes += 1;
@@ -214,8 +213,8 @@ fn group_qualified_saved_selections_do_not_project_partially() {
         let selection = CpuSelection::bind(&topology, processors.clone()).unwrap();
         assert_eq!(selection.processors(), processors);
         assert_eq!(
-            selection.group_zero_members_mask(),
-            Err(SelectionError::UnsupportedGroup)
+            selection.resolve_processors(&topology),
+            Ok(processors.as_slice())
         );
         assert_eq!(
             selection.resolve_group_zero(&topology),
@@ -231,10 +230,38 @@ fn group_qualified_saved_selections_do_not_project_partially() {
     assert!(empty.is_empty());
     assert!(empty.topology().is_none());
     assert_eq!(empty.resolve_group_zero(&topology), Ok(0));
-    assert_eq!(empty.group_zero_members_mask(), Ok(0));
+    assert_eq!(empty.resolve_processors(&topology), Ok([].as_slice()));
     assert_eq!(
         CpuSelection::from_group_zero_mask(&topology, 2),
         Err(SelectionError::Unknown)
+    );
+}
+
+#[test]
+fn group_qualified_resolution_requires_current_topology_and_exact_members() {
+    let topology = topology();
+    let processors = vec![id(0, 63), id(1, 0)];
+    let unbound = CpuSelection::new(processors.clone(), None).unwrap();
+    assert_eq!(
+        unbound.resolve_processors(&topology),
+        Err(SavedSelectionError::MissingTopology)
+    );
+    let selection = CpuSelection::bind(&topology, processors.clone()).unwrap();
+    let restored: CpuSelection = toml::from_str(&toml::to_string(&selection).unwrap()).unwrap();
+    assert_eq!(
+        restored.resolve_processors(&topology),
+        Ok(processors.as_slice())
+    );
+    let mut changed = topology.clone();
+    changed.processors[0].efficiency_class = 2;
+    assert_eq!(
+        selection.resolve_processors(&changed),
+        Err(SavedSelectionError::TopologyChanged)
+    );
+    let unknown = CpuSelection::new(vec![id(1, 1)], Some(topology.signature())).unwrap();
+    assert_eq!(
+        unknown.resolve_processors(&topology),
+        Err(SelectionError::Unknown.into())
     );
 }
 

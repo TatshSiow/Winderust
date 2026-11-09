@@ -2,7 +2,7 @@ use super::design;
 use super::widgets::{action_button, button, checkbox, icon_button, text_input};
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
-use crate::cpu_topology::{CpuSelection, CpuTopology};
+use crate::cpu_topology::{CacheKind, CpuSelection, CpuTopology, ProcessorId, SavedSelectionError};
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::can_add_process_candidate;
 use crate::ui::scrolling::scrollable;
@@ -15,6 +15,18 @@ use std::path::Path;
 pub(super) enum Kind {
     Soft,
     Hard,
+}
+impl Kind {
+    fn verify(
+        self,
+        selection: &CpuSelection,
+        topology: &CpuTopology,
+    ) -> Result<(), SavedSelectionError> {
+        match self {
+            Self::Soft => selection.resolve_processors(topology).map(|_| ()),
+            Self::Hard => selection.resolve_group_zero(topology).map(|_| ()),
+        }
+    }
 }
 fn settings(s: &Settings, k: Kind) -> &CpuAllocationSettings {
     match k {
@@ -98,7 +110,7 @@ impl Editor {
             Message::Browse => {}
             Message::Add => {
                 if can_add(s, &self.path) {
-                    let selection = match SelectionCatalog::capture().all_selection() {
+                    let selection = match SelectionCatalog::capture(k).all_selection() {
                         Ok(selection) => selection,
                         Err(error) => {
                             self.error = error;
@@ -151,7 +163,7 @@ impl Editor {
                 self.preset_open = true;
                 self.editing_preset = None;
                 self.preset_name.clear();
-                let catalog = SelectionCatalog::capture();
+                let catalog = SelectionCatalog::capture(k);
                 self.preset_selection = catalog.all_selection().unwrap_or_default();
                 self.preset_topology = Some(catalog.topology);
                 self.error.clear();
@@ -170,7 +182,7 @@ impl Editor {
             Message::PresetName(v) if !self.preset_read_only => self.preset_name = v,
             Message::PresetSelection(selection) if !self.preset_read_only => {
                 let topology = cpu_allocation::processor_topology();
-                if let Err(error) = verify_selection_against(&selection, &topology) {
+                if let Err(error) = verify_selection_against(&selection, &topology, k) {
                     self.error = error;
                 } else {
                     self.preset_selection = selection;
@@ -184,7 +196,7 @@ impl Editor {
                     return;
                 }
                 if let Err(error) =
-                    self.validate_preset_selection(&cpu_allocation::processor_topology())
+                    self.validate_preset_selection(&cpu_allocation::processor_topology(), k)
                 {
                     self.error = error;
                     return;
@@ -232,7 +244,7 @@ impl Editor {
         choice: super::widgets::Choice<CpuSelection>,
         topology: &Result<CpuTopology, String>,
     ) {
-        if let Err(error) = verify_selection_against(&choice.0, topology) {
+        if let Err(error) = verify_selection_against(&choice.0, topology, kind) {
             self.error = error;
             return;
         }
@@ -247,6 +259,7 @@ impl Editor {
     fn validate_preset_selection(
         &self,
         current: &Result<crate::cpu_topology::CpuTopology, String>,
+        kind: Kind,
     ) -> Result<(), String> {
         let unavailable = |error: &String| {
             t!("cpu_allocation.preset_topology_unavailable", error = error).to_string()
@@ -261,8 +274,7 @@ impl Editor {
         if current != captured {
             return Err(t!("cpu_allocation.topology_changed").to_string());
         }
-        self.preset_selection
-            .resolve_group_zero(current)
+        kind.verify(&self.preset_selection, current)
             .map_err(saved_selection_error)?;
         if self.preset_selection.is_empty() {
             return Err(t!("cpu_allocation.no_logical_cpus").to_string());
@@ -300,7 +312,7 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let feature = settings(s, k);
-        let catalog = SelectionCatalog::capture();
+        let catalog = SelectionCatalog::capture(k);
         let mut body = column![
             super::widgets::toggle_card(
                 match k {
@@ -408,7 +420,7 @@ impl Editor {
         scrollable(body).width(Fill).height(Fill).into()
     }
 
-    pub(super) fn modal<'a>(&'a self, s: &Settings) -> Option<Element<'a, Message>> {
+    pub(super) fn modal<'a>(&'a self, s: &Settings, kind: Kind) -> Option<Element<'a, Message>> {
         if !self.preset_open {
             return None;
         }
@@ -427,21 +439,17 @@ impl Editor {
             icon_button("icons/x.svg").on_press(Message::ClosePreset)
         ]
         .align_y(iced::Center);
-        let catalog = SelectionCatalog::capture();
+        let catalog = SelectionCatalog::capture(kind);
         let processors = &catalog.processors;
         let validation_error = if self.preset_read_only {
             catalog.error(&self.preset_selection)
         } else {
-            self.validate_preset_selection(&catalog.topology).err()
+            self.validate_preset_selection(&catalog.topology, kind)
+                .err()
         };
         let mut cpus = row![].spacing(design::space::CONTROL);
-        for cpu in processors.iter().filter(|cpu| cpu.index < 64) {
-            let bit = 1u64 << cpu.index;
-            let selected = self
-                .preset_selection
-                .processors()
-                .iter()
-                .any(|id| id.group == 0 && usize::from(id.number) == cpu.index);
+        for (id, cpu) in processors {
+            let selected = self.preset_selection.processors().contains(id);
             let kind = t!(match cpu.kind {
                 LogicalProcessorKind::Performance => "cpu_allocation.p_core",
                 LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
@@ -453,7 +461,7 @@ impl Editor {
                     iced::widget::container(
                         column![
                             text(kind).size(design::typography::CAPTION),
-                            text(format!("CPU {}", cpu.index))
+                            text(format!("G{}:CPU {}", id.group, id.number))
                         ]
                         .align_x(iced::Center),
                     )
@@ -471,7 +479,7 @@ impl Editor {
                 })
                 .on_press_maybe(
                     (!self.preset_read_only)
-                        .then(|| catalog.toggled(&self.preset_selection, bit))
+                        .then(|| catalog.toggled(&self.preset_selection, *id))
                         .flatten()
                         .map(Message::PresetSelection),
                 ),
@@ -592,8 +600,9 @@ impl Editor {
     pub(super) fn presets_panel<'a>(
         &'a self,
         s: &'a crate::application::SettingsEditor,
+        kind: Kind,
     ) -> Element<'a, Message> {
-        let catalog = SelectionCatalog::capture();
+        let catalog = SelectionCatalog::capture(kind);
         let mut rail = column![super::widgets::heading(
             t!("cpu_allocation.core_presets").to_string(),
             design::typography::SECONDARY
@@ -667,22 +676,43 @@ fn can_add(s: &Settings, path: &str) -> bool {
 }
 pub(super) struct SelectionCatalog {
     topology: Result<CpuTopology, String>,
-    processors: Vec<LogicalProcessorInfo>,
+    kind: Kind,
+    processors: Vec<(ProcessorId, LogicalProcessorInfo)>,
     presets: Vec<super::widgets::Choice<CpuSelection>>,
 }
 impl SelectionCatalog {
-    pub(super) fn capture() -> Self {
-        Self::from_topology(cpu_allocation::processor_topology())
+    pub(super) fn capture(kind: Kind) -> Self {
+        Self::from_topology(cpu_allocation::processor_topology(), kind)
     }
 
-    fn from_topology(topology: Result<CpuTopology, String>) -> Self {
+    fn from_topology(topology: Result<CpuTopology, String>, kind: Kind) -> Self {
         let processors = topology
             .as_ref()
-            .map(cpu_allocation::logical_processors_for_group_zero)
+            .map(|topology| {
+                cpu_allocation::logical_processors_for_topology(topology)
+                    .into_iter()
+                    .filter(|(id, _)| matches!(kind, Kind::Soft) || id.group == 0)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
-        let presets = topology.as_ref().map(core_presets).unwrap_or_default();
+        let presets = match topology
+            .as_ref()
+            .map(|topology| core_presets(topology, &processors))
+        {
+            Ok(Ok(presets)) => presets,
+            Ok(Err(error)) => {
+                return Self {
+                    topology: Err(error.to_string()),
+                    kind,
+                    processors: Vec::new(),
+                    presets: Vec::new(),
+                }
+            }
+            Err(_) => Vec::new(),
+        };
         Self {
             topology,
+            kind,
             processors,
             presets,
         }
@@ -692,16 +722,16 @@ impl SelectionCatalog {
         let topology = self.topology.as_ref().map_err(|error| {
             t!("cpu_allocation.topology_unavailable", error = error).to_string()
         })?;
-        CpuSelection::from_group_zero_mask(
+        CpuSelection::bind(
             topology,
-            cpu_allocation::logical_processor_mask(&self.processors),
+            self.processors.iter().map(|(id, _)| *id).collect(),
         )
         .map_err(|error| error.to_string())
     }
 
     fn error(&self, selection: &CpuSelection) -> Option<String> {
         match &self.topology {
-            Ok(_) => verify_selection_against(selection, &self.topology).err(),
+            Ok(_) => verify_selection_against(selection, &self.topology, self.kind).err(),
             Err(error) => {
                 Some(t!("cpu_allocation.topology_unavailable", error = error).to_string())
             }
@@ -711,31 +741,50 @@ impl SelectionCatalog {
     fn reviewed(&self, selection: &CpuSelection) -> Option<CpuSelection> {
         let topology = self.topology.as_ref().ok()?;
         let rebound = selection.rebind(topology).ok()?;
-        rebound.resolve_group_zero(topology).ok()?;
+        self.kind.verify(&rebound, topology).ok()?;
         Some(rebound)
     }
 
-    fn toggled(&self, selection: &CpuSelection, bit: u64) -> Option<CpuSelection> {
+    fn toggled(&self, selection: &CpuSelection, id: ProcessorId) -> Option<CpuSelection> {
         let topology = self.topology.as_ref().ok()?;
-        let mask = selection.group_zero_members_mask().ok()?;
-        CpuSelection::from_group_zero_mask(topology, mask ^ bit).ok()
+        if !self
+            .processors
+            .iter()
+            .any(|(candidate, _)| *candidate == id)
+        {
+            return None;
+        }
+        if selection.processors().iter().any(|selected| {
+            !self
+                .processors
+                .iter()
+                .any(|(candidate, _)| candidate == selected)
+        }) {
+            return None;
+        }
+        let mut processors = selection.processors().to_vec();
+        if processors.contains(&id) {
+            processors.retain(|selected| *selected != id);
+        } else {
+            processors.push(id);
+        }
+        CpuSelection::bind(topology, processors).ok()
     }
 }
 
-pub(super) fn verify_selection(selection: &CpuSelection) -> Result<(), String> {
-    verify_selection_against(selection, &cpu_allocation::processor_topology())
+pub(super) fn verify_selection(selection: &CpuSelection, kind: Kind) -> Result<(), String> {
+    verify_selection_against(selection, &cpu_allocation::processor_topology(), kind)
 }
 
 pub(super) fn verify_selection_against(
     selection: &CpuSelection,
     topology: &Result<CpuTopology, String>,
+    kind: Kind,
 ) -> Result<(), String> {
     let topology = topology
         .as_ref()
         .map_err(|error| t!("cpu_allocation.topology_unavailable", error = error).to_string())?;
-    selection
-        .resolve_group_zero(topology)
-        .map(|_| ())
+    kind.verify(selection, topology)
         .map_err(saved_selection_error)
 }
 
@@ -770,71 +819,93 @@ pub(super) fn selection_text(selection: &CpuSelection) -> String {
         .join(", ")
 }
 
-fn core_presets(topology: &CpuTopology) -> Vec<super::widgets::Choice<CpuSelection>> {
-    let processors = cpu_allocation::logical_processors_for_group_zero(topology);
-    let all = cpu_allocation::logical_processor_mask(&processors);
-    let p =
-        cpu_allocation::logical_processor_kind_mask(&processors, LogicalProcessorKind::Performance);
-    let e =
-        cpu_allocation::logical_processor_kind_mask(&processors, LogicalProcessorKind::Efficiency);
-    let smt = cpu_allocation::logical_processor_no_smt_mask(&processors);
+fn core_presets(
+    topology: &CpuTopology,
+    processors: &[(ProcessorId, LogicalProcessorInfo)],
+) -> Result<Vec<super::widgets::Choice<CpuSelection>>, crate::cpu_topology::SelectionError> {
+    let all = processors.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let of_kind = |kind| {
+        processors
+            .iter()
+            .filter(|(_, cpu)| cpu.kind == kind)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+    };
+    let p = of_kind(LogicalProcessorKind::Performance);
+    let e = of_kind(LogicalProcessorKind::Efficiency);
+    let mut cores = std::collections::BTreeSet::new();
+    let smt = processors
+        .iter()
+        .filter(|(_, cpu)| cores.insert(cpu.core_index))
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    let without_smt = |members: &[ProcessorId]| {
+        members
+            .iter()
+            .filter(|id| smt.contains(id))
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let p_smt = without_smt(&p);
+    let e_smt = without_smt(&e);
     let mut presets = [
-        ("cpu_allocation.all", all),
+        ("cpu_allocation.all", all.clone()),
         ("cpu_allocation.p_cores", p),
         ("cpu_allocation.e_cores", e),
         ("cpu_allocation.all_cores_no_smt", smt),
-        ("cpu_allocation.p_cores_no_smt", p & smt),
-        ("cpu_allocation.e_cores_no_smt", e & smt),
+        ("cpu_allocation.p_cores_no_smt", p_smt),
+        ("cpu_allocation.e_cores_no_smt", e_smt),
     ]
     .into_iter()
-    .map(|(key, mask)| super::widgets::Choice(mask, t!(key).to_string()))
-    .collect::<Vec<_>>();
-    presets.extend(cache_presets(
-        all,
-        &cpu_allocation::cache_domain_masks_for_topology(topology),
-    ));
-    presets
-        .into_iter()
-        .filter(|choice| choice.0 != 0)
-        .filter_map(|choice| {
-            CpuSelection::from_group_zero_mask(topology, choice.0)
-                .ok()
-                .map(|selection| super::widgets::Choice(selection, choice.1))
-        })
-        .collect()
+    .filter(|(_, members)| !members.is_empty())
+    .map(|(key, members)| {
+        CpuSelection::bind(topology, members)
+            .map(|selection| super::widgets::Choice(selection, t!(key).to_string()))
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+    presets.extend(cache_presets(topology, &all)?);
+    Ok(presets)
 }
 
 fn cache_presets(
-    available: u64,
-    domains: &[cpu_allocation::CacheDomainMask],
-) -> Vec<super::widgets::Choice<u64>> {
-    domains
+    topology: &CpuTopology,
+    available: &[ProcessorId],
+) -> Result<Vec<super::widgets::Choice<CpuSelection>>, crate::cpu_topology::SelectionError> {
+    topology
+        .caches()
         .iter()
         .filter(|domain| {
-            domain.group == 0 && domain.mask != 0 && mask_is_available(domain.mask, available)
+            domain.level == 3 && matches!(domain.kind, CacheKind::Unified | CacheKind::Data)
         })
-        .map(|domain| {
+        .enumerate()
+        .filter(|(_, domain)| domain.processors.iter().all(|id| available.contains(id)))
+        .map(|(index, domain)| {
             let size = if domain.size_bytes >= 1_000_000 {
                 format!("{:.1} MB", f64::from(domain.size_bytes) / 1_000_000.0)
             } else {
                 format!("{:.1} KB", f64::from(domain.size_bytes) / 1_000.0)
             };
-            super::widgets::Choice(
-                domain.mask,
+            let groups = domain
+                .processors
+                .iter()
+                .map(|id| id.group)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .map(|group| format!("G{group}"))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            Ok(super::widgets::Choice(
+                CpuSelection::bind(topology, domain.processors.clone())?,
                 t!(
                     "cpu_allocation.cache_domain",
-                    index = domain.index,
-                    group = domain.group,
+                    index = index + 1,
+                    groups = groups,
                     size = size
                 )
                 .to_string(),
-            )
+            ))
         })
         .collect()
-}
-
-pub(super) fn mask_is_available(mask: u64, available: u64) -> bool {
-    mask & !available == 0
 }
 
 pub(super) fn mask_selector<'a, M: Clone + 'a>(
@@ -856,14 +927,10 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
         );
     }
     let mut cpus = row![].spacing(design::space::CONTROL);
-    for cpu in &catalog.processors {
-        let bit = 1u64 << cpu.index;
-        let selected = selection
-            .processors()
-            .iter()
-            .any(|id| id.group == 0 && usize::from(id.number) == cpu.index);
+    for (id, cpu) in &catalog.processors {
+        let selected = selection.processors().contains(id);
         let msg = message.clone();
-        let candidate = catalog.toggled(selection, bit);
+        let candidate = catalog.toggled(selection, *id);
         let kind = t!(match cpu.kind {
             LogicalProcessorKind::Performance => "cpu_allocation.p_core",
             LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
@@ -871,7 +938,10 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
         });
         cpus = cpus.push(
             checkbox(selected)
-                .label(format!("{} ({kind} {})", cpu.index, cpu.core_index))
+                .label(format!(
+                    "G{}:CPU {} ({kind} {})",
+                    id.group, id.number, cpu.core_index
+                ))
                 .on_toggle_maybe(candidate.map(|candidate| move |_| msg(candidate.clone()))),
         );
     }
@@ -892,41 +962,132 @@ pub(super) fn mask_selector<'a, M: Clone + 'a>(
 mod tests {
     use super::*;
 
+    fn multi_group_topology() -> CpuTopology {
+        use crate::cpu_topology::{CacheDomain, LogicalProcessor, ProcessorGroup};
+        let id = |group, number| ProcessorId { group, number };
+        let zero = vec![id(0, 0), id(0, 1)];
+        let one = vec![id(1, 0), id(1, 63)];
+        let all = [zero.clone(), one.clone()].concat();
+        let cache = |size_bytes, processors| CacheDomain {
+            level: 3,
+            kind: CacheKind::Unified,
+            size_bytes,
+            processors,
+        };
+        let mut instructions = cache(1_000_000, zero.clone());
+        instructions.kind = CacheKind::Instruction;
+        CpuTopology::new(
+            all.iter()
+                .map(|id| LogicalProcessor {
+                    id: *id,
+                    core: ProcessorId {
+                        group: id.group,
+                        number: 0,
+                    },
+                    efficiency_class: u8::from(id.group == 0),
+                })
+                .collect(),
+            vec![
+                ProcessorGroup {
+                    number: 0,
+                    active_mask: 3,
+                },
+                ProcessorGroup {
+                    number: 1,
+                    active_mask: 1 | (1_u64 << 63),
+                },
+            ],
+            vec![cache(32_000_000, zero), cache(512_000, one), instructions],
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn cache_choices_keep_complete_masks_and_decimal_sizes() {
-        let domains = [
-            cpu_allocation::CacheDomainMask {
-                index: 1,
-                group: 0,
-                size_bytes: 32_000_000,
-                mask: 0b0011,
-            },
-            cpu_allocation::CacheDomainMask {
-                index: 2,
-                group: 0,
-                size_bytes: 512_000,
-                mask: 0b1100,
-            },
-            cpu_allocation::CacheDomainMask {
-                index: 3,
-                group: 1,
-                size_bytes: 32_000_000,
-                mask: 0b0011,
-            },
-            cpu_allocation::CacheDomainMask {
-                index: 4,
-                group: 0,
-                size_bytes: 32_000_000,
-                mask: 0b10001,
-            },
-        ];
-        let choices = cache_presets(0b1111, &domains);
+    fn cache_choices_keep_complete_group_members_and_decimal_sizes() {
+        let topology = multi_group_topology();
+        let all = topology
+            .processors()
+            .iter()
+            .map(|cpu| cpu.id)
+            .collect::<Vec<_>>();
+        let choices = cache_presets(&topology, &all).unwrap();
+        assert_eq!(choices.len(), 2);
         assert_eq!(
-            choices.iter().map(|choice| choice.0).collect::<Vec<_>>(),
-            [3, 12]
+            choices
+                .iter()
+                .map(|choice| choice.0.processors())
+                .collect::<Vec<_>>(),
+            vec![&all[2..], &all[..2]]
         );
-        assert!(choices[0].1.contains("32.0 MB"));
-        assert!(choices[1].1.contains("512.0 KB"));
+        assert!(choices[0].1.contains("512.0 KB"));
+        assert!(choices[1].1.contains("32.0 MB"));
+        let hard = cache_presets(&topology, &all[..2]).unwrap();
+        assert_eq!(hard.len(), 1);
+        assert_eq!(hard[0].0.processors(), &all[..2]);
+        assert!(cache_presets(&topology, &all[..1]).unwrap().is_empty());
+        let spanning = CpuTopology::new(
+            topology.processors().to_vec(),
+            topology.groups().to_vec(),
+            vec![crate::cpu_topology::CacheDomain {
+                level: 3,
+                kind: CacheKind::Unified,
+                size_bytes: 64_000_000,
+                processors: all.clone(),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+        let spanning_choices = cache_presets(&spanning, &all).unwrap();
+        assert_eq!(spanning_choices.len(), 1);
+        assert_eq!(spanning_choices[0].0.processors(), all);
+        assert!(spanning_choices[0].1.contains("G0 / G1"));
+        assert!(cache_presets(&spanning, &all[..2]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn soft_catalog_edits_all_groups_while_hard_catalog_preserves_group_zero_limits() {
+        let topology = multi_group_topology();
+        let soft = SelectionCatalog::from_topology(Ok(topology.clone()), Kind::Soft);
+        let hard = SelectionCatalog::from_topology(Ok(topology), Kind::Hard);
+        let all = soft.all_selection().unwrap();
+        let zero = hard.all_selection().unwrap();
+        assert_eq!(all.processors().len(), 4);
+        assert_eq!(zero.processors().len(), 2);
+        assert!(soft.error(&all).is_none());
+        assert!(hard.error(&all).is_some());
+        let group_one = ProcessorId {
+            group: 1,
+            number: 0,
+        };
+        let toggled = soft.toggled(&zero, group_one).unwrap();
+        assert_eq!(toggled.processors().len(), 3);
+        assert!(toggled.processors().contains(&ProcessorId {
+            group: 0,
+            number: 0
+        }));
+        assert!(toggled.processors().contains(&group_one));
+        assert!(hard.toggled(&zero, group_one).is_none());
+        assert!(hard.reviewed(&all).is_none());
+        assert_eq!(soft.reviewed(&all), Some(all));
+        assert_eq!(
+            soft.presets[3].0.processors(),
+            &[
+                ProcessorId {
+                    group: 0,
+                    number: 0
+                },
+                ProcessorId {
+                    group: 1,
+                    number: 0
+                },
+            ]
+        );
+        assert!(hard.presets.iter().all(|preset| preset
+            .0
+            .processors()
+            .iter()
+            .all(|id| id.group == 0)));
     }
 
     fn rule(selection: CpuSelection) -> CpuAllocationRule {
@@ -982,35 +1143,39 @@ mod tests {
             ..Editor::default()
         };
         assert!(editor
-            .validate_preset_selection(&Ok(topology.clone()))
+            .validate_preset_selection(&Ok(topology.clone()), Kind::Hard)
             .is_ok());
         editor.preset_selection = crate::cpu_topology::test_selection(3);
         let saved = editor.preset_selection.clone();
         assert!(editor
-            .validate_preset_selection(&Ok(topology.clone()))
+            .validate_preset_selection(&Ok(topology.clone()), Kind::Hard)
             .is_err());
         assert_eq!(editor.preset_selection, saved);
         assert!(editor
-            .validate_preset_selection(&Err("unavailable".into()))
+            .validate_preset_selection(&Err("unavailable".into()), Kind::Hard)
             .is_err());
         editor.preset_topology = Some(Err("unavailable at open".into()));
-        assert!(editor.validate_preset_selection(&Ok(topology)).is_err());
+        assert!(editor
+            .validate_preset_selection(&Ok(topology), Kind::Hard)
+            .is_err());
     }
 
     #[test]
     fn same_members_on_changed_topology_require_explicit_review() {
         let saved = crate::cpu_topology::test_selection(3);
-        let catalog = SelectionCatalog::from_topology(Ok(changed_topology()));
+        let catalog = SelectionCatalog::from_topology(Ok(changed_topology()), Kind::Hard);
         assert!(catalog.error(&saved).is_some());
-        assert!(verify_selection_against(&saved, &catalog.topology).is_err());
+        assert!(verify_selection_against(&saved, &catalog.topology, Kind::Hard).is_err());
         let reviewed = catalog.reviewed(&saved).unwrap();
         assert_eq!(saved.processors(), reviewed.processors());
         assert_ne!(saved.topology(), reviewed.topology());
-        assert!(verify_selection_against(&reviewed, &catalog.topology).is_ok());
+        assert!(verify_selection_against(&reviewed, &catalog.topology, Kind::Hard).is_ok());
         assert_eq!(saved, crate::cpu_topology::test_selection(3));
-        assert!(SelectionCatalog::from_topology(Err("unavailable".into()))
-            .reviewed(&saved)
-            .is_none());
+        assert!(
+            SelectionCatalog::from_topology(Err("unavailable".into()), Kind::Hard)
+                .reviewed(&saved)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1052,12 +1217,12 @@ mod tests {
         )
         .unwrap();
         let unsupported = CpuSelection::bind(&topology, vec![zero, one]).unwrap();
-        let catalog = SelectionCatalog::from_topology(Ok(topology));
+        let catalog = SelectionCatalog::from_topology(Ok(topology), Kind::Hard);
         assert!(catalog
             .reviewed(&crate::cpu_topology::test_selection(3))
             .is_none());
         assert!(catalog.reviewed(&unsupported).is_none());
-        assert!(catalog.toggled(&unsupported, 1).is_none());
+        assert!(catalog.toggled(&unsupported, zero).is_none());
         assert_eq!(unsupported.processors(), &[zero, one]);
     }
 

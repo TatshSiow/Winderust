@@ -1559,16 +1559,10 @@ fn cpu_sets_recovery_restores_a_disposable_process() -> Result<(), String> {
     original_ids.dedup();
     let inventory = crate::platform::windows::cpu_allocation::cpu_set_inventory()
         .map_err(|error| format!("Recovery fixture CPU Set inventory failed: {error:?}."))?;
-    let expected_ids = (0..64).find_map(|bit| {
-        let mut ids = inventory
-            .iter()
-            .filter(|(index, _)| *index == bit)
-            .map(|(_, id)| *id)
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids.dedup();
-        (!ids.is_empty() && ids != original_ids).then_some(ids)
-    });
+    let expected_ids = inventory
+        .iter()
+        .map(|(_, id)| vec![*id])
+        .find(|ids| *ids != original_ids);
     let Some(expected_ids) = expected_ids else {
         return Ok(());
     };

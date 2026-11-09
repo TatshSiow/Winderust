@@ -2330,7 +2330,7 @@ impl WinderustApp {
         } else if page == Page::CpuSetsSoft && self.side_panel_tab == SidePanelTab::Presets {
             Some(
                 self.soft_allocation
-                    .presets_panel(&self.settings)
+                    .presets_panel(&self.settings, cpu_allocation::Kind::Soft)
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
             )
         } else if page == Page::ProcessorAffinityHard
@@ -2338,7 +2338,7 @@ impl WinderustApp {
         {
             Some(
                 self.hard_allocation
-                    .presets_panel(&self.settings)
+                    .presets_panel(&self.settings, cpu_allocation::Kind::Hard)
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
@@ -2726,11 +2726,11 @@ impl WinderustApp {
                 .map(|modal| modal.map(Message::Watchdog)),
             Page::CpuSetsSoft => self
                 .soft_allocation
-                .modal(&self.settings)
+                .modal(&self.settings, cpu_allocation::Kind::Soft)
                 .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m))),
             Page::ProcessorAffinityHard => self
                 .hard_allocation
-                .modal(&self.settings)
+                .modal(&self.settings, cpu_allocation::Kind::Hard)
                 .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m))),
             Page::CpuLimiter => self
                 .cpu_limiter

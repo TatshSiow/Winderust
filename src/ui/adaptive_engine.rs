@@ -316,7 +316,11 @@ impl Editor {
         if self.draft.is_some() && self.read_only {
             return;
         }
-        if let Err(error) = super::cpu_allocation::verify_selection_against(&selection, topology) {
+        if let Err(error) = super::cpu_allocation::verify_selection_against(
+            &selection,
+            topology,
+            super::cpu_allocation::Kind::Hard,
+        ) {
             self.error = error;
             return;
         }
@@ -547,8 +551,11 @@ impl Editor {
                             .dynamic_resource_zone_settings
                             .background_processor_selection
                             == BackgroundProcessorSelection::Custom);
-                let cpu_catalog =
-                    custom_selection.then(super::cpu_allocation::SelectionCatalog::capture);
+                let cpu_catalog = custom_selection.then(|| {
+                    super::cpu_allocation::SelectionCatalog::capture(
+                        super::cpu_allocation::Kind::Hard,
+                    )
+                });
                 let pressure = super::widgets::settings_rows([
                     number!(
                         "adaptive_engine_process.background_app_cpu_threshold",

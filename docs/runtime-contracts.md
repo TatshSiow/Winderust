@@ -282,15 +282,22 @@ Read the relevant section before changing feature policy, ownership, restoration
   identity. Its active-group masks use fixed-width hexadecimal strings to preserve
   logical processor 63. Malformed members or snapshots fail load/import without
   rewriting files. Old scalar masks and index arrays are not migrated or aliased.
-  Missing signatures, changed topology, absent processors, and unsupported groups
-  remain preserved for review; saving or importing them never binds them implicitly.
+  Missing signatures, changed topology, absent processors, and groups unsupported
+  by the selected control remain preserved for review; saving or importing them
+  never binds them implicitly.
 - CPU Allocation topology discovery retains group-qualified logical processors,
   physical-core membership, efficiency classes, NUMA nodes, and cache domains.
   `src/cpu_topology.rs` validates these facts; the Windows adapter alone parses
-  native variable-length records. Native writes and Adaptive per-processor
-  sampling remain explicitly limited to group 0. A cache preset requires its
-  entire verified L3 data/unified-cache domain to fit that group; no partial
-  domain or inferred CCD is offered. Persisted selections are checked against a
+  native variable-length records. CPU Sets (Soft) resolves complete group-qualified
+  selections to current CPU Set IDs across all discovered groups. Duplicate
+  processor mappings, duplicate IDs, or any missing selected member block the
+  entire request before an ownership handoff. Native readback verifies the
+  process-default ID assignment, not actual thread residency; thread-selected
+  CPU Sets, hard affinity, reservations, and Windows scheduling still apply.
+  Processor Affinity (Hard) and Adaptive per-processor sampling remain explicitly
+  limited to group 0. Cache presets require the entire verified L3 data/unified
+  domain to fit the selected control's supported processors; no partial domain or
+  inferred CCD is offered. Persisted selections are checked against a
   verified current snapshot on activation, including cached claims and pending
   ownership handoffs. Unresolved allocations restore owned state without gating
   unrelated Adaptive Engine controls or restoration itself. Discovery has no

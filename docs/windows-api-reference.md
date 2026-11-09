@@ -548,7 +548,36 @@ Implementation entry points:
 
 ## CPU Sets (Soft) and Processor Affinity (Hard)
 
-Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask. New claims require GetProcessGroupAffinity to report exactly group 0 before any ownership handoff, preventing group-0 selections from being reinterpreted in another primary group. Compensation, release, and recovery do not depend on this new-claim guard. Persisted selections retain group-qualified members and their verified layout, while native writes cover processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Adaptive Engine. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. Adaptive Engine may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
+Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies
+preferred Windows CPU Sets and is the recommended default. Its editor and
+coordinator retain group-qualified selections, resolving every selected
+`{ group, number }` to a current CPU Set ID. Processor Affinity (Hard) applies a
+strict process affinity mask and remains limited to group 0. New hard claims
+require GetProcessGroupAffinity to report exactly group 0 before any ownership
+handoff, preventing a group-0 mask from being reinterpreted in another primary
+group. Compensation, release, and recovery do not depend on this new-claim guard.
+All automatic CPU allocation shares one coordinator with this order: CPU Sets
+(Soft) > Processor Affinity (Hard) > Adaptive Engine. CPU Sets and affinity cannot
+remain simultaneously Winderust-owned for one exact process instance. Adaptive
+Engine retains group-0 selection and sampling; its policy choices do not create
+another mutation owner.
+
+`src/platform/windows/cpu_allocation.rs::cpu_set_inventory_from_bytes` retains
+`SYSTEM_CPU_SET_INFORMATION.CpuSet.Group` and `LogicalProcessorIndex` separately
+for every record. CPU Set IDs are runtime mappings, not saved processor identities.
+`src/control/cpu_allocation.rs::CpuSetInventory` rejects duplicate processor
+identities, duplicate IDs, and incomplete selected membership before changing
+ownership. CPU Set application, verification, compensation, and restoration still
+use the complete ID list through the existing process-default APIs; an empty
+baseline is restored as an empty list. No new setter, recovery schema, affinity
+override, or undocumented multi-group contract is introduced.
+
+Readback confirms the process-default assignment, not effective thread residency.
+Windows documents that thread-selected CPU Sets supersede process defaults, hard
+affinity takes precedence, reserved CPU Sets may be unavailable, and assignments
+outside a thread's hard-affinity groups may be ignored. Winderust does not alter
+thread affinity to work around these restrictions. See [CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
+and [SYSTEM_CPU_SET_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_cpu_set_information).
 
 Background Efficiency exposes Foreground Detection and Visible Window Detection. CPU Limiter,
 CPU Sets (Soft), and Processor Affinity (Hard) classify each matched process as Focus, Visible
@@ -611,7 +640,7 @@ retain restoration ownership.
 | --- | --- | --- |
 | `GetProcessAffinityMask` | `src/platform/windows/cpu_allocation.rs` reads the current process and system affinity masks before the coordinator changes them. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessaffinitymask |
 | `SetProcessAffinityMask` | The same adapter is the sole live writer for the coordinator's configured hard affinity mask; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessaffinitymask |
-| `GetSystemCpuSetInformation` | The adapter converts the packed variable-length topology buffer into group-zero logical-processor-to-CPU-Set IDs for soft mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
+| `GetSystemCpuSetInformation` | The adapter converts the packed variable-length topology buffer into group-qualified logical-processor-to-CPU-Set IDs for soft mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
 | `GetProcessGroupAffinity` | The adapter verifies new hard-affinity targets belong only to group 0 before releasing another allocation. Unknown, multiple, or nonzero groups decline new claims without preventing owned-state restoration. | https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-getprocessgroupaffinity |
 | `GetProcessDefaultCpuSets` | The adapter reads existing process default CPU Set IDs so the coordinator can capture and restore the exact baseline. The runtime benchmark helper also reads generated workers' IDs to verify real-runtime allocation. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
 | `SetProcessDefaultCpuSets` | The adapter is the sole live writer that applies or clears process default CPU Set IDs; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets |
@@ -961,11 +990,12 @@ bounded buffer retry. It advances by each record's declared size, validates
 relationship-specific array extents before unaligned reads, and rejects partial,
 empty, duplicate, or inconsistent core/group membership. Unknown relationship
 records are skipped only after their bounds are verified. Group-qualified
-processor numbers are retained; existing mask consumers receive an explicit
-group-0 projection, never flattened indices.
+processor numbers are retained; Processor Affinity (Hard) and Adaptive Engine
+mask consumers receive an explicit group-0 projection, never flattened indices.
 
 Cache records supply cache level, byte size, type, and full processor membership.
-Only fully group-0-representable L3 unified/data cache domains become presets.
+CPU Sets (Soft) offers complete L3 unified/data cache domains across discovered
+groups. Processor Affinity (Hard) offers only fully group-0-representable domains.
 Cache sharing does not establish CCD identity. NUMA membership remains a separate
 fact, including nodes spanning groups. `RelationAll` avoids the primary-group-only
 NUMA view on recent Windows; legacy NUMA zero `GroupCount` uses the documented
@@ -1021,7 +1051,7 @@ and recovery ownership. Missing-PID classification stays at the separate
 - `src/backend/win_util.rs::WinHandle::process_times` returns creation and CPU counters from one [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) call, preserving its native failure code. `src/control/process.rs` treats failed reads as unavailable rather than proof of exit.
 - `src/foreground/process_list.rs::query_process_image_path` preserves [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) errors. Successful path or creation mismatches remain identity failures.
 - `src/runtime/observations.rs::foreground_process_group_ids` validates creation times on ancestry edges. Parent PID can identify an exited or reused process: [Win32_Process](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process).
-- `src/platform/windows/cpu_allocation.rs::cpu_set_inventory` captures [GetSystemCpuSetInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation) with the existing null process argument. `src/control/cpu_allocation.rs::CpuSetInventory` shares one complete result or failure per operation. Partial records are rejected; the existing group-zero, 64-bit mask domain is unchanged. No undocumented API was introduced.
+- `src/platform/windows/cpu_allocation.rs::cpu_set_inventory` captures [GetSystemCpuSetInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation) with the existing null process argument. `src/control/cpu_allocation.rs::CpuSetInventory` shares one complete group-qualified mapping or failure per operation. Partial records, duplicate mappings, and incomplete selected membership are rejected. Processor Affinity (Hard) and Adaptive Engine retain group-0 limits. No undocumented API was introduced.
 
 ## Mixed-DPI window geometry
 

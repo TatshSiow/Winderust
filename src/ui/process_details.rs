@@ -171,10 +171,16 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
             } else if !setting.contains_rule_for(&path)
                 && !crate::cpu_allocation::is_builtin_excluded(&path)
             {
-                let selection = match cpu_allocation::SelectionCatalog::capture().all_selection() {
-                    Ok(selection) => selection,
-                    Err(error) => return Some(error),
+                let kind = if soft {
+                    cpu_allocation::Kind::Soft
+                } else {
+                    cpu_allocation::Kind::Hard
                 };
+                let selection =
+                    match cpu_allocation::SelectionCatalog::capture(kind).all_selection() {
+                        Ok(selection) => selection,
+                        Err(error) => return Some(error),
+                    };
                 setting.rules.push(CpuAllocationRule {
                     enabled: true,
                     executable_path: path,
@@ -195,7 +201,12 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                 .iter_mut()
                 .find(|r| process_setting_matches(&r.executable_path, &path))
             {
-                if let Err(error) = cpu_allocation::verify_selection(&selection) {
+                let kind = if soft {
+                    cpu_allocation::Kind::Soft
+                } else {
+                    cpu_allocation::Kind::Hard
+                };
+                if let Err(error) = cpu_allocation::verify_selection(&selection, kind) {
                     return Some(error);
                 }
                 match tier {
@@ -437,13 +448,6 @@ pub(super) fn view<'a>(
         body = body.push(text(t!("cpu_sets_soft.warning").to_string()));
     }
     body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
-    let has_cpu_rule = s
-        .cpu_sets_soft
-        .rules
-        .iter()
-        .chain(&s.processor_affinity_hard.rules)
-        .any(|rule| process_setting_matches(&rule.executable_path, path));
-    let catalog = has_cpu_rule.then(cpu_allocation::SelectionCatalog::capture);
     for soft in [true, false] {
         let settings = if soft {
             &s.cpu_sets_soft
@@ -454,6 +458,13 @@ pub(super) fn view<'a>(
             .rules
             .iter()
             .find(|r| process_setting_matches(&r.executable_path, path));
+        let catalog = rule.map(|_| {
+            cpu_allocation::SelectionCatalog::capture(if soft {
+                cpu_allocation::Kind::Soft
+            } else {
+                cpu_allocation::Kind::Hard
+            })
+        });
         let mut card = column![setting_row(
             if soft {
                 "nav.cpu_sets_soft"

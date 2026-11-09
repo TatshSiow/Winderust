@@ -17,7 +17,7 @@ use crate::{
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
-    cpu_topology::{CpuSelection, CpuTopology},
+    cpu_topology::{CpuSelection, CpuTopology, ProcessorId},
     features::priority_control::PriorityProcessTier,
     foreground::{
         contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
@@ -67,14 +67,6 @@ pub struct LogicalProcessorInfo {
     pub core_index: usize,
     pub kind: LogicalProcessorKind,
     pub efficiency_class: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CacheDomainMask {
-    pub index: usize,
-    pub group: u16,
-    pub size_bytes: u32,
-    pub mask: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -444,8 +436,12 @@ impl CpuAllocationManager {
         let mut apply = |target: CpuAllocationTarget, zone_role: Option<&str>| {
             let role = zone_role.unwrap_or(&fallback_label);
             let mut effective = false;
-            let selection_valid = topology
-                .is_ok_and(|topology| target.selection.resolve_group_zero(topology).is_ok());
+            let selection_valid = topology.is_ok_and(|topology| match target.mode {
+                CpuAllocationMode::SoftCpuSets if owner != ControlOwner::AdaptiveEngine => {
+                    target.selection.resolve_processors(topology).is_ok()
+                }
+                _ => target.selection.resolve_group_zero(topology).is_ok(),
+            });
             let suppression = if selection_valid {
                 self.check_process_suppression(
                     target.process_id,
@@ -1040,6 +1036,15 @@ fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
 pub(crate) fn logical_processors_for_group_zero(
     topology: &crate::cpu_topology::CpuTopology,
 ) -> Vec<LogicalProcessorInfo> {
+    logical_processors_for_topology(topology)
+        .into_iter()
+        .filter_map(|(id, processor)| (id.group == 0).then_some(processor))
+        .collect()
+}
+
+pub(crate) fn logical_processors_for_topology(
+    topology: &crate::cpu_topology::CpuTopology,
+) -> Vec<(ProcessorId, LogicalProcessorInfo)> {
     let cores = topology
         .processors()
         .iter()
@@ -1062,38 +1067,18 @@ pub(crate) fn logical_processors_for_group_zero(
         .max()
         .unwrap_or(minimum);
     topology
-        .group_zero_processors()
-        .map(|processor| LogicalProcessorInfo {
-            index: usize::from(processor.id.number),
-            core_index: cores[&processor.core],
-            kind: processor_kind(processor.efficiency_class, minimum, maximum),
-            efficiency_class: processor.efficiency_class,
-        })
-        .collect()
-}
-
-pub(crate) fn cache_domain_masks_for_topology(
-    topology: &crate::cpu_topology::CpuTopology,
-) -> Vec<CacheDomainMask> {
-    use crate::cpu_topology::CacheKind;
-    topology
-        .caches()
+        .processors()
         .iter()
-        .filter(|cache| {
-            cache.level == 3 && matches!(cache.kind, CacheKind::Unified | CacheKind::Data)
-        })
-        .enumerate()
-        .filter_map(|(index, cache)| {
-            // A shared domain is useful only when its entire membership fits this editor.
-            topology
-                .group_zero_mask(&cache.processors)
-                .ok()
-                .map(|mask| CacheDomainMask {
-                    index: index + 1,
-                    group: 0,
-                    size_bytes: cache.size_bytes,
-                    mask,
-                })
+        .map(|processor| {
+            (
+                processor.id,
+                LogicalProcessorInfo {
+                    index: usize::from(processor.id.number),
+                    core_index: cores[&processor.core],
+                    kind: processor_kind(processor.efficiency_class, minimum, maximum),
+                    efficiency_class: processor.efficiency_class,
+                },
+            )
         })
         .collect()
 }

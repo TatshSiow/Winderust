@@ -14,7 +14,10 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::win_util::{last_error, WinHandle};
+use crate::{
+    cpu_topology::ProcessorId,
+    win_util::{last_error, WinHandle},
+};
 
 use super::ProcessOperationError;
 
@@ -127,7 +130,7 @@ pub(crate) fn set_cpu_sets(process: &WinHandle, ids: &[u32]) -> Result<(), Proce
     }
 }
 
-pub(crate) fn cpu_set_inventory() -> Result<Vec<(u8, u32)>, ProcessOperationError> {
+pub(crate) fn cpu_set_inventory() -> Result<Vec<(ProcessorId, u32)>, ProcessOperationError> {
     let mut returned_length = 0;
     // SAFETY: a null buffer with zero length requests the required byte count.
     let probe_ok =
@@ -174,7 +177,9 @@ struct CpuSetInformationHeader {
     cpu_set_type: u32,
 }
 
-fn cpu_set_inventory_from_bytes(buffer: &[u8]) -> Result<Vec<(u8, u32)>, ProcessOperationError> {
+fn cpu_set_inventory_from_bytes(
+    buffer: &[u8],
+) -> Result<Vec<(ProcessorId, u32)>, ProcessOperationError> {
     let mut ids = Vec::new();
     let mut offset = 0_usize;
     let header_size = size_of::<CpuSetInformationHeader>();
@@ -215,15 +220,19 @@ fn cpu_set_inventory_from_bytes(buffer: &[u8]) -> Result<Vec<(u8, u32)>, Process
             };
             // SAFETY: cpu_set_type zero selects the CpuSet union member.
             let cpu_set = unsafe { info.Anonymous.CpuSet };
-            if cpu_set.Group == 0 {
-                if cpu_set.LogicalProcessorIndex >= 64 {
-                    return Err(ProcessOperationError::Failed {
-                        operation: "CPU Set inventory processor index",
-                        code: windows_sys::Win32::Foundation::ERROR_INVALID_DATA,
-                    });
-                }
-                ids.push((cpu_set.LogicalProcessorIndex, cpu_set.Id));
+            if cpu_set.LogicalProcessorIndex >= 64 {
+                return Err(ProcessOperationError::Failed {
+                    operation: "CPU Set inventory processor index",
+                    code: windows_sys::Win32::Foundation::ERROR_INVALID_DATA,
+                });
             }
+            ids.push((
+                ProcessorId {
+                    group: cpu_set.Group,
+                    number: cpu_set.LogicalProcessorIndex,
+                },
+                cpu_set.Id,
+            ));
         }
         offset += record_size;
     }
@@ -267,23 +276,66 @@ mod tests {
         assert!(cpu_set_inventory_from_bytes(&[0; 8]).is_err());
     }
 
-    #[test]
-    fn cpu_set_inventory_rejects_out_of_range_group_zero_processors() {
+    fn cpu_set_record(processor: ProcessorId, id: u32) -> Vec<u8> {
         use std::mem::offset_of;
         use windows_sys::Win32::System::SystemInformation::SYSTEM_CPU_SET_INFORMATION_0_0;
 
         let size = size_of::<SYSTEM_CPU_SET_INFORMATION>();
         let mut buffer = vec![0; size];
         buffer[..4].copy_from_slice(&(size as u32).to_le_bytes());
-        let index = offset_of!(SYSTEM_CPU_SET_INFORMATION, Anonymous)
-            + offset_of!(SYSTEM_CPU_SET_INFORMATION_0_0, LogicalProcessorIndex);
-        buffer[index] = 63;
-        assert_eq!(
-            cpu_set_inventory_from_bytes(&buffer).unwrap(),
-            vec![(63, 0)]
-        );
-        buffer[index] = 64;
-        assert!(cpu_set_inventory_from_bytes(&buffer).is_err());
+        let payload = offset_of!(SYSTEM_CPU_SET_INFORMATION, Anonymous);
+        let id_offset = payload + offset_of!(SYSTEM_CPU_SET_INFORMATION_0_0, Id);
+        buffer[id_offset..id_offset + 4].copy_from_slice(&id.to_le_bytes());
+        let group = payload + offset_of!(SYSTEM_CPU_SET_INFORMATION_0_0, Group);
+        buffer[group..group + 2].copy_from_slice(&processor.group.to_le_bytes());
+        let index = payload + offset_of!(SYSTEM_CPU_SET_INFORMATION_0_0, LogicalProcessorIndex);
+        buffer[index] = processor.number;
+        buffer
+    }
+
+    #[test]
+    fn cpu_set_inventory_retains_group_qualified_processors() {
+        let expected = vec![
+            (
+                ProcessorId {
+                    group: 0,
+                    number: 63,
+                },
+                100,
+            ),
+            (
+                ProcessorId {
+                    group: 2,
+                    number: 63,
+                },
+                200,
+            ),
+            (
+                ProcessorId {
+                    group: 2,
+                    number: 0,
+                },
+                300,
+            ),
+        ];
+        let buffer = expected
+            .iter()
+            .flat_map(|&(processor, id)| cpu_set_record(processor, id))
+            .collect::<Vec<_>>();
+        assert_eq!(cpu_set_inventory_from_bytes(&buffer).unwrap(), expected);
+    }
+
+    #[test]
+    fn cpu_set_inventory_rejects_out_of_range_processors_in_every_group() {
+        for group in [0, 2] {
+            let processor = ProcessorId { group, number: 63 };
+            assert_eq!(
+                cpu_set_inventory_from_bytes(&cpu_set_record(processor, 100)).unwrap(),
+                vec![(processor, 100)]
+            );
+            let invalid = ProcessorId { group, number: 64 };
+            assert!(cpu_set_inventory_from_bytes(&cpu_set_record(invalid, 100)).is_err());
+        }
     }
 
     #[test]

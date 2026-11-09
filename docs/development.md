@@ -260,9 +260,11 @@ to typed controllers and their narrow Windows adapters.
 - If a setting is edited through the UI, update the relevant page module and
   editor reset and message handling in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
-- CPU-selection masks use quoted `0x` plus 16 hexadecimal digits in TOML. Keep
-  the complete 64-bit value through rule, preset, and power-profile round trips;
-  TOML signed integers cannot represent a mask containing processor 63.
+- CPU selections store explicit `{ group, number }` members and a topology
+  snapshot. Active-group masks inside that snapshot use quoted `0x` plus 16
+  hexadecimal digits; TOML signed integers cannot represent processor 63. Keep
+  complete group identities and masks through rule, preset, and power-profile
+  round trips.
 
 ## Naming
 

@@ -8,7 +8,7 @@ use crate::{
         forget_affinity_change, forget_cpu_sets_change, record_process_change, ProcessValue,
         RecoveryIntent,
     },
-    cpu_topology::{CpuSelection, CpuTopology},
+    cpu_topology::{CpuSelection, CpuTopology, ProcessorId, SelectionError},
     platform::windows::{cpu_allocation as windows_cpu_allocation, ProcessOperationError},
     win_util::WinHandle,
 };
@@ -36,7 +36,7 @@ impl From<ProcessControlError> for CpuAllocationApplyError {
 
 #[derive(Default)]
 pub(crate) struct CpuSetInventory {
-    result: Option<Result<Vec<(u8, u32)>, ProcessControlError>>,
+    result: Option<Result<BTreeMap<ProcessorId, u32>, ProcessControlError>>,
 }
 impl CpuSetInventory {
     pub(crate) fn failed(&self) -> bool {
@@ -45,39 +45,36 @@ impl CpuSetInventory {
     fn ids<P: CpuAllocationPlatform>(
         &mut self,
         platform: &mut P,
-        mask: u64,
+        selection: &[ProcessorId],
     ) -> Result<Vec<u32>, ProcessControlError> {
         match self.result.get_or_insert_with(|| {
             let entries = platform.cpu_set_inventory()?;
-            let mut processors = 0_u64;
+            let mut processors = BTreeMap::new();
             let mut ids = BTreeSet::new();
-            for &(bit, id) in &entries {
-                if bit >= 64 || processors & (1_u64 << bit) != 0 || !ids.insert(id) {
+            for (processor, id) in entries {
+                if processor.number >= 64
+                    || processors.insert(processor, id).is_some()
+                    || !ids.insert(id)
+                {
                     return Err(ProcessControlError::Failed(
                         "CPU Set discovery returned duplicate or invalid processor mappings."
                             .to_owned(),
                     ));
                 }
-                processors |= 1_u64 << bit;
             }
-            Ok(entries)
+            Ok(processors)
         }) {
-            Ok(entries) => {
-                let available = entries
-                    .iter()
-                    .fold(0_u64, |available, (bit, _)| available | (1_u64 << bit));
-                if mask & !available != 0 {
-                    return Err(ProcessControlError::Failed(
-                        "CPU Sets (Soft) selection contains unavailable group-0 processors."
-                            .to_owned(),
-                    ));
-                }
-                Ok(entries
-                    .iter()
-                    .filter(|(bit, _)| mask & (1_u64 << bit) != 0)
-                    .map(|(_, id)| *id)
-                    .collect())
-            }
+            Ok(entries) => selection
+                .iter()
+                .map(|processor| {
+                    entries.get(processor).copied().ok_or_else(|| {
+                        ProcessControlError::Failed(format!(
+                            "CPU Sets (Soft) selection contains unavailable G{}:CPU #{}.",
+                            processor.group, processor.number
+                        ))
+                    })
+                })
+                .collect(),
             Err(error) => Err(error.clone()),
         }
     }
@@ -201,7 +198,7 @@ pub(crate) trait CpuAllocationPlatform {
         process: &Self::Process,
     ) -> Result<(), ProcessControlError>;
     fn query_cpu_sets(&mut self, process: &Self::Process) -> Result<Vec<u32>, ProcessControlError>;
-    fn cpu_set_inventory(&mut self) -> Result<Vec<(u8, u32)>, ProcessControlError>;
+    fn cpu_set_inventory(&mut self) -> Result<Vec<(ProcessorId, u32)>, ProcessControlError>;
     fn begin_affinity_change(
         &mut self,
         process: &Self::Process,
@@ -268,7 +265,7 @@ impl CpuAllocationPlatform for WindowsCpuAllocationPlatform {
         windows_cpu_allocation::query_cpu_sets(process).map_err(map_cpu_allocation_error)
     }
 
-    fn cpu_set_inventory(&mut self) -> Result<Vec<(u8, u32)>, ProcessControlError> {
+    fn cpu_set_inventory(&mut self) -> Result<Vec<(ProcessorId, u32)>, ProcessControlError> {
         windows_cpu_allocation::cpu_set_inventory().map_err(map_cpu_allocation_error)
     }
 
@@ -377,7 +374,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         validate_owner(claim.owner)?;
         let owner = claim.owner;
         let key = claim.target.key();
-        if let Err(mut error) = resolve_request(&claim.request, topology) {
+        if let Err(mut error) = resolve_request(&claim.request, topology, claim.owner) {
             if let Some(claims) = self.claims.get_mut(&owner) {
                 claims.remove(&key);
             }
@@ -469,22 +466,22 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             .open(&claim.target, allow_cross_session_process_control)?;
         self.relinquish_stale_identities(&identity)?;
 
-        let logical_processor_mask =
-            resolve_request(&claim.request, topology).map_err(CpuAllocationApplyError::Topology)?;
-        match claim.request {
-            CpuAllocationRequest::SoftCpuSets { .. } => {
+        let request = resolve_request(&claim.request, topology, claim.owner)
+            .map_err(CpuAllocationApplyError::Topology)?;
+        match request {
+            ResolvedCpuAllocation::SoftCpuSets(processors) => {
                 let desired = inventory
-                    .ids(&mut self.platform, logical_processor_mask)
+                    .ids(&mut self.platform, processors)
                     .map_err(CpuAllocationApplyError::Discovery)?;
                 self.apply_soft_claim(&identity, &process, claim.owner, desired)
                     .map_err(Into::into)
             }
-            CpuAllocationRequest::HardAffinity { .. } => self
+            ResolvedCpuAllocation::HardAffinity(mask) => self
                 .apply_hard_claim(
                     &identity,
                     &process,
                     claim.owner,
-                    HardAffinityRequest::Exact(logical_processor_mask),
+                    HardAffinityRequest::Exact(mask),
                 )
                 .map_err(Into::into),
         }
@@ -1184,7 +1181,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         let mut invalid = Vec::new();
         for claims in self.claims.values_mut() {
             if let Some((claim, error)) = claims.get(key).and_then(|claim| {
-                resolve_request(&claim.request, topology)
+                resolve_request(&claim.request, topology, claim.owner)
                     .err()
                     .map(|error| (claim.clone(), error))
             }) {
@@ -1877,18 +1874,33 @@ fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize>
     (mask != 0 && mask & system_affinity == mask).then_some(mask)
 }
 
-fn resolve_request(
-    request: &CpuAllocationRequest,
+enum ResolvedCpuAllocation<'a> {
+    SoftCpuSets(&'a [ProcessorId]),
+    HardAffinity(u64),
+}
+
+fn resolve_request<'a>(
+    request: &'a CpuAllocationRequest,
     topology: Result<&CpuTopology, &str>,
-) -> Result<u64, ProcessControlError> {
+    owner: ControlOwner,
+) -> Result<ResolvedCpuAllocation<'a>, ProcessControlError> {
     let topology = topology.map_err(|error| ProcessControlError::Failed(error.to_owned()))?;
-    let selection = match request {
-        CpuAllocationRequest::SoftCpuSets { selection }
-        | CpuAllocationRequest::HardAffinity { selection } => selection,
-    };
-    selection
-        .resolve_group_zero(topology)
-        .map_err(|error| ProcessControlError::Failed(error.to_string()))
+    match request {
+        CpuAllocationRequest::SoftCpuSets { selection } => selection
+            .resolve_processors(topology)
+            .and_then(|processors| {
+                if owner == ControlOwner::AdaptiveEngine
+                    && processors.iter().any(|processor| processor.group != 0)
+                {
+                    return Err(SelectionError::UnsupportedGroup.into());
+                }
+                Ok(ResolvedCpuAllocation::SoftCpuSets(processors))
+            }),
+        CpuAllocationRequest::HardAffinity { selection } => selection
+            .resolve_group_zero(topology)
+            .map(ResolvedCpuAllocation::HardAffinity),
+    }
+    .map_err(|error| ProcessControlError::Failed(error.to_string()))
 }
 
 fn normalize_cpu_set_ids(ids: &mut Vec<u32>) {

@@ -231,12 +231,12 @@ impl CpuSelection {
         self.topology.as_ref()
     }
 
-    pub(crate) fn resolve_group_zero(
+    pub(crate) fn resolve_processors(
         &self,
         topology: &CpuTopology,
-    ) -> Result<u64, SavedSelectionError> {
+    ) -> Result<&[ProcessorId], SavedSelectionError> {
         if self.is_empty() {
-            return Ok(0);
+            return Ok(&self.processors);
         }
         let signature = self
             .topology
@@ -245,24 +245,30 @@ impl CpuSelection {
         if signature.0 != *topology {
             return Err(SavedSelectionError::TopologyChanged);
         }
-        topology
-            .group_zero_mask(&self.processors)
-            .map_err(Into::into)
+        if self.processors.iter().any(|id| {
+            topology
+                .processors
+                .binary_search_by_key(id, |processor| processor.id)
+                .is_err()
+        }) {
+            return Err(SelectionError::Unknown.into());
+        }
+        Ok(&self.processors)
+    }
+
+    pub(crate) fn resolve_group_zero(
+        &self,
+        topology: &CpuTopology,
+    ) -> Result<u64, SavedSelectionError> {
+        let processors = self.resolve_processors(topology)?;
+        if processors.is_empty() {
+            return Ok(0);
+        }
+        topology.group_zero_mask(processors).map_err(Into::into)
     }
 
     pub(crate) fn rebind(&self, topology: &CpuTopology) -> Result<Self, SelectionError> {
         Self::bind(topology, self.processors.clone())
-    }
-
-    /// Represents saved members for display; it does not authorize applying the result.
-    pub(crate) fn group_zero_members_mask(&self) -> Result<u64, SelectionError> {
-        if self.processors.iter().any(|id| id.group != 0) {
-            return Err(SelectionError::UnsupportedGroup);
-        }
-        Ok(self
-            .processors
-            .iter()
-            .fold(0, |mask, id| mask | (1_u64 << id.number)))
     }
 }
 
@@ -374,6 +380,7 @@ impl CpuTopology {
         TopologySignature::from(self)
     }
 
+    #[cfg(test)]
     pub(crate) fn group_zero_processors(&self) -> impl Iterator<Item = &LogicalProcessor> {
         self.processors
             .iter()
