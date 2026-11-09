@@ -66,6 +66,16 @@ pub(super) fn view<'a>(
     let available = runtime.generation != 0;
     let state = sidebar_state(page, settings, runtime, &summary);
     let (state_label, detail, color) = match state {
+        FeatureRunState::Running if page == Page::SleepPrevention => (
+            "sleep_prevention.request_accepted",
+            "sleep_prevention.request_status_help",
+            "common.applied",
+        ),
+        FeatureRunState::Paused if page == Page::SleepPrevention => (
+            "sleep_prevention.requests_paused",
+            "sleep_prevention.paused_help",
+            "common.waiting",
+        ),
         FeatureRunState::Running => (
             "common.running",
             "sidebar_status.running_help",
@@ -121,6 +131,42 @@ pub(super) fn view<'a>(
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());
         body = body.push(section("common.current_power_plan", column![text(plan)]));
+    } else if page == Page::SleepPrevention {
+        let sleep = &runtime.feature_status.sleep_prevention;
+        let accepted = |requested| {
+            if !available {
+                t!("common.unknown")
+            } else if requested {
+                t!("sleep_prevention.request_accepted")
+            } else {
+                t!("sleep_prevention.not_requested")
+            }
+            .to_string()
+        };
+        body = body.push(section(
+            "sleep_prevention.requests",
+            column![
+                metric(
+                    "sleep_prevention.matching_rules",
+                    count((available && sleep.observation_known).then_some(sleep.matched_rules))
+                ),
+                metric(
+                    "sleep_prevention.matching_processes",
+                    count(
+                        (available && sleep.observation_known).then_some(sleep.matched_processes)
+                    )
+                ),
+                metric(
+                    "sleep_prevention.system_request",
+                    accepted(sleep.system_requested)
+                ),
+                metric(
+                    "sleep_prevention.display_request",
+                    accepted(sleep.display_requested)
+                ),
+            ]
+            .spacing(design::space::CONTROL),
+        ));
     } else {
         body = body.push(section(
             "common.process_activity",
@@ -374,6 +420,18 @@ fn sidebar_state(
         };
     }
     let features = &runtime.feature_status;
+    if page == Page::SleepPrevention {
+        let sleep = &features.sleep_prevention;
+        return if !sleep.observation_known {
+            FeatureRunState::Unknown
+        } else if sleep.system_requested {
+            FeatureRunState::Running
+        } else if !sleep.suppressed_apps.is_empty() && sleep.requesting_apps.is_empty() {
+            FeatureRunState::Paused
+        } else {
+            FeatureRunState::Waiting
+        };
+    }
     if (page == Page::BackgroundEfficiency && features.background_efficiency.unsupported)
         || (page == Page::AppSuspension && features.app_suspension.unsupported)
     {
@@ -618,6 +676,17 @@ fn feature_status_summary(
                 skipped: Some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::AppSuspension,
+            }
+        }
+        Page::SleepPrevention => {
+            let status = &runtime.feature_status.sleep_prevention;
+            FeatureStatusSummary {
+                scanned: status.observation_known.then_some(status.matched_processes),
+                adjusted: None,
+                protected_or_denied: None,
+                skipped: None,
+                last_error: status.last_error.as_deref(),
+                action_log_feature: ActionLogFeature::SleepPrevention,
             }
         }
         Page::TimerResolution => {

@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
+    let mut settings = Settings::default();
+    assert!(!settings.sleep_prevention.enabled);
+    assert!(settings.sleep_prevention.rules.is_empty());
+    assert!(!settings.battery_profile().sleep_prevention.enabled);
+    settings.battery_profile_mut();
+    settings.sleep_prevention.enabled = true;
+    settings.sleep_prevention.rules.push(SleepPreventionRule {
+        enabled: true,
+        executable_path: r"C:\Apps\worker.exe".into(),
+        keep_display_on: true,
+    });
+    assert!(!settings.battery_profile().sleep_prevention.enabled);
+    assert!(settings
+        .sleep_prevention
+        .contains_rule_for(r"c:/apps/WORKER.exe"));
+    assert!(!settings
+        .sleep_prevention
+        .contains_rule_for(r"C:\Other\worker.exe"));
+    let raw = toml::to_string(&settings).unwrap();
+    assert_eq!(toml::from_str::<Settings>(&raw).unwrap(), settings);
+    let rule: SleepPreventionRule =
+        toml::from_str("executable_path = 'C:\\Apps\\worker.exe'").unwrap();
+    assert!(rule.enabled);
+    assert!(!rule.keep_display_on);
+}
+
+#[test]
+fn sleep_prevention_rejects_unqualified_paths_in_both_power_profiles() {
+    for battery in [false, true] {
+        for path in ["", "worker.exe", r"C:\Apps\worker.exe\0"] {
+            let path = path.replace("\\0", "\0");
+            let mut settings = Settings::default();
+            let profile = if battery {
+                settings.battery_profile_mut()
+            } else {
+                &mut settings
+            };
+            profile.sleep_prevention.rules.push(SleepPreventionRule {
+                enabled: false,
+                executable_path: path,
+                keep_display_on: false,
+            });
+            assert!(settings
+                .validate()
+                .unwrap_err()
+                .contains("Sleep Prevention"));
+        }
+    }
+}
+
+#[test]
 fn cpu_load_percent_preserves_numeric_toml_and_rejects_out_of_range_values() {
     #[derive(Debug, Serialize, Deserialize)]
     struct Threshold {

@@ -1076,6 +1076,14 @@ fn toml_round_trip_preserves_settings() {
                 desired_100ns: 20_000,
             }],
         },
+        sleep_prevention: crate::config::SleepPreventionSettings {
+            enabled: true,
+            rules: vec![crate::config::SleepPreventionRule {
+                enabled: true,
+                executable_path: r"C:\Apps\encoder.exe".into(),
+                keep_display_on: true,
+            }],
+        },
         watchdog: crate::config::WatchdogSettings::default(),
         memory_trim: MemoryTrimSettings {
             enabled: true,
@@ -1094,6 +1102,7 @@ fn toml_round_trip_preserves_settings() {
         .battery_profile_mut()
         .memory_trim
         .system_memory_load_threshold_percent = 72;
+    settings.battery_profile_mut().sleep_prevention.enabled = false;
 
     for mode in AppThemeMode::ALL {
         settings.general.theme_mode = mode;

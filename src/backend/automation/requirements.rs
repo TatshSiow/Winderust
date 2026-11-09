@@ -147,6 +147,15 @@ pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
+pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
+    settings.sleep_prevention.enabled
+        && settings
+            .sleep_prevention
+            .rules
+            .iter()
+            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+}
+
 pub(super) fn io_priority_required(settings: &Settings) -> bool {
     settings.io_priority.enabled
         || (settings.adaptive_engine.enabled
@@ -382,7 +391,8 @@ fn automation_worker_required_for_profile(settings: &Settings) -> bool {
             || bottleneck_classifier_required(settings)
             || app_suspension_required(settings)
             || process_appearance_scan_required(settings)
-            || timer_resolution_required(settings))
+            || timer_resolution_required(settings)
+            || sleep_prevention_required(settings))
 }
 
 pub(super) fn bottleneck_classifier_required(settings: &Settings) -> bool {
@@ -408,7 +418,9 @@ fn windows_event_watcher_required_for_profile(settings: &Settings) -> bool {
 
 pub(super) fn automation_windows_event_watcher_required(settings: &Settings) -> bool {
     settings.general.enabled
-        && (power_plan_checks_required(settings) || event_driven_process_work_required(settings))
+        && (power_plan_checks_required(settings)
+            || event_driven_process_work_required(settings)
+            || sleep_prevention_required(settings))
 }
 
 pub(super) fn event_driven_process_work_required(settings: &Settings) -> bool {
@@ -438,7 +450,9 @@ fn windows_event_wake_required_for_profile(
             WindowsAutomationEvent::ForegroundChanged => {
                 power_plan_checks_required(settings) || event_driven_process_work_required(settings)
             }
-            WindowsAutomationEvent::WindowCreated => event_driven_process_work_required(settings),
+            WindowsAutomationEvent::WindowCreated => {
+                event_driven_process_work_required(settings) || sleep_prevention_required(settings)
+            }
             WindowsAutomationEvent::PowerChanged | WindowsAutomationEvent::SuspendResume => {
                 automation_worker_required_for_profile(settings)
             }

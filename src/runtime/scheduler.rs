@@ -24,11 +24,12 @@ pub(crate) enum RefreshDomain {
     MemoryTrim,
     Watchdog,
     TimerResolution,
+    SleepPrevention,
     ProcessAppearance,
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 23] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 24] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -50,6 +51,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 23] = [
     RefreshDomain::MemoryTrim,
     RefreshDomain::Watchdog,
     RefreshDomain::TimerResolution,
+    RefreshDomain::SleepPrevention,
     RefreshDomain::ProcessAppearance,
     RefreshDomain::ControllerActivity,
 ];
@@ -73,9 +75,10 @@ const FOREGROUND_DOMAINS: [RefreshDomain; 16] = [
     RefreshDomain::TimerResolution,
 ];
 
-const WINDOW_CREATED_DOMAINS: [RefreshDomain; 2] = [
+const WINDOW_CREATED_DOMAINS: [RefreshDomain; 3] = [
     RefreshDomain::ProcessAppearance,
     RefreshDomain::AppSuspension,
+    RefreshDomain::SleepPrevention,
 ];
 
 const APP_SWITCH_DOMAINS: [RefreshDomain; 2] = [
@@ -83,12 +86,13 @@ const APP_SWITCH_DOMAINS: [RefreshDomain; 2] = [
     RefreshDomain::TimerResolution,
 ];
 
-const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 13] = [
+const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 14] = [
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
     RefreshDomain::ByRunningApp,
+    RefreshDomain::SleepPrevention,
     RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,

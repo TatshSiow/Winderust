@@ -111,6 +111,8 @@ pub(super) struct RuntimeCore {
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
+    sleep_prevention_manager: SleepPreventionManager,
+    sleep_prevention_controller: SleepPreventionController,
     pub(super) known_process_ids: BTreeSet<u32>,
     published_action_log_revision: u64,
 }
@@ -352,6 +354,13 @@ impl RuntimeCore {
         // Priority, allocation, and timer controllers retry any state left by the disabled
         // feature update. Their final shutdown result is authoritative; keeping a transient
         // update error would report failure even after that retry restored everything.
+        collect_restore_error(
+            &mut errors,
+            "Sleep Prevention",
+            self.sleep_prevention_manager
+                .reset(&mut self.sleep_prevention_controller, &mut self.action_log)
+                .last_error,
+        );
         self.run_timer_resolution_update(&settings, &mut observations);
         if let Err(error) = self.timer_resolution_controller.shutdown() {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
@@ -453,6 +462,10 @@ impl RuntimeCore {
             .last_power_source
             .replace(plugged_in)
             .is_some_and(|previous| previous != plugged_in);
+        if events.suspend_resume {
+            self.sleep_prevention_manager
+                .suspend(&mut self.sleep_prevention_controller, &mut self.action_log);
+        }
         if source_changed || events.suspend_resume {
             self.cpu_usage = CpuUsageSnapshot::default();
             self.next_cpu_usage_refresh = None;
@@ -1489,6 +1502,27 @@ impl RuntimeCore {
             observations,
             &mut self.action_log,
         )
+    }
+
+    pub(super) fn run_sleep_prevention_update(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+        windows_event_watcher_active: bool,
+        plugged_in: Option<bool>,
+    ) -> SleepPreventionSnapshot {
+        self.sleep_prevention_manager.update(
+            &mut self.sleep_prevention_controller,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            observations,
+            &mut self.action_log,
+        )
+    }
+
+    pub(super) fn sleep_prevention_power_source(&self) -> Option<bool> {
+        self.sleep_prevention_manager.last_known_power_source()
     }
 
     pub(super) fn run_timer_resolution_update(

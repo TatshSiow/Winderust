@@ -348,6 +348,18 @@ pub(super) fn update_timer_resolution_status(
     );
 }
 
+pub(super) fn update_sleep_prevention_status(
+    shared: &SharedAutomationState,
+    status: SleepPreventionSnapshot,
+) {
+    update_feature_status(
+        shared,
+        status,
+        |feature_status| &feature_status.sleep_prevention,
+        |feature_status| &mut feature_status.sleep_prevention,
+    );
+}
+
 pub(super) fn update_worker_error(shared: &SharedAutomationState, error: Option<String>) {
     let mut state = lock_unpoisoned(&shared.state);
     if state.status.worker_error != error {

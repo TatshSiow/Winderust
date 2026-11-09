@@ -27,6 +27,7 @@ mod process_power_plans;
 mod scrolling;
 mod select;
 mod settings_pages;
+mod sleep_prevention;
 mod status_rail;
 mod tasks;
 mod timer_resolution;
@@ -61,6 +62,7 @@ pub enum Page {
     AdaptiveEngine,
     BackgroundEfficiency,
     AppSuspension,
+    SleepPrevention,
     ByRunningApp,
     IoPriority,
     GpuPriority,
@@ -120,8 +122,9 @@ const SETTINGS_PAGES: [Page; 3] = [
     Page::ExperimentalFeatures,
 ];
 const ABOUT_PAGES: [Page; 1] = [Page::About];
-const ADVANCED_CONTROLS_PAGES: [Page; 3] = [
+const ADVANCED_CONTROLS_PAGES: [Page; 4] = [
     Page::AppSuspension,
+    Page::SleepPrevention,
     Page::TimerResolution,
     Page::Win32PrioritySeparation,
 ];
@@ -182,6 +185,7 @@ impl Page {
                 | Self::AdaptiveEngine
                 | Self::BackgroundEfficiency
                 | Self::AppSuspension
+                | Self::SleepPrevention
                 | Self::ByRunningApp
                 | Self::IoPriority
                 | Self::GpuPriority
@@ -215,6 +219,7 @@ impl Page {
             Self::AdaptiveEngine => t!("nav.adaptive_engine"),
             Self::BackgroundEfficiency => t!("nav.background_efficiency"),
             Self::AppSuspension => t!("nav.app_suspension"),
+            Self::SleepPrevention => t!("nav.sleep_prevention"),
             Self::ByRunningApp => t!("nav.by_running_app"),
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
@@ -274,6 +279,7 @@ impl Page {
             Self::About => Self::About,
             Self::AdvancedControls
             | Self::AppSuspension
+            | Self::SleepPrevention
             | Self::TimerResolution
             | Self::Win32PrioritySeparation => Self::AdvancedControls,
         }

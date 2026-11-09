@@ -352,6 +352,34 @@ Read the relevant section before changing feature policy, ownership, restoration
   not retry-spam.
 - Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping Adaptive Engine claim, while non-overlapping Adaptive Engine claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
 
+## Sleep Prevention
+
+- Sleep Prevention is an explicit running-app rule under Advanced Controls. It
+  starts disabled, follows the existing Plugged In/On Battery profile selection,
+  and never changes power-plan timeouts. A matching eligible executable requests
+  idle system sleep prevention; keeping the display on is a separate opt-in that
+  also retains the system request. Focus does not affect matching.
+- The feature manager combines exact eligible process instances across rules.
+  One controller owns the shared Windows request object and changes only the
+  required request types. Removing one app cannot release another app's request.
+  Disable, confirmed last-app exit, profile handoff, and Exit release owned
+  requests. Process teardown closes the request object without a crash journal.
+- Accepted Windows requests are reported separately from app observations and
+  do not prove effective inhibition. Missing observations cannot establish new
+  requests or renew existing counts; explicit rule removal still releases them.
+  Normal reconciliation never renews an already accepted system request to defeat
+  Windows policy or Modern Standby battery expiry.
+- Suspend/resume releases requests and suppresses the observed exact instances
+  until they exit or the user explicitly disables/re-enables their rules or the
+  feature. Power-profile changes preserve this suppression. User sleep, lid
+  actions, critical-battery handling, and Windows policy remain authoritative.
+  A missing or stopped Windows event watcher blocks new requests, releases owned
+  requests, and suppresses the current cohort until explicitly rearmed.
+- Running-app reconciliation remains at one second in visible and tray modes;
+  Windows sleep and power-source notifications wake it independently of the UI.
+  Transient power-source read failures retain the last confirmed profile without
+  renewing request counts; before the first confirmed source, requests stay off.
+
 ## Timer Resolution
 
 - Timer Resolution does not use process failure suppression.

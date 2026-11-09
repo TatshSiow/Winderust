@@ -40,6 +40,7 @@ use crate::{
         priority_efficiency::PriorityEfficiencyController,
         process::ControlOwner,
         process_termination::{ProcessTerminationBatchResult, ProcessTerminationController},
+        sleep_prevention::SleepPreventionController,
         suspension::SuspensionController,
         thread_priority::ThreadPriorityController,
         timer_resolution::TimerResolutionController,
@@ -52,6 +53,9 @@ use crate::{
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
+    features::advanced_controls::sleep_prevention::{
+        SleepPreventionManager, SleepPreventionSnapshot,
+    },
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
     features::power_plan_control::{
         current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
@@ -117,6 +121,7 @@ const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_TRIM_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+const SLEEP_PREVENTION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -295,6 +300,7 @@ pub struct RuntimeFeatureStatus {
     pub memory_trim: MemoryTrimSnapshot,
     pub watchdog: WatchdogSnapshot,
     pub timer_resolution: TimerResolutionSnapshot,
+    pub sleep_prevention: SleepPreventionSnapshot,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -433,9 +439,9 @@ impl RuntimeHandle {
             self_power: Mutex::new(self_power),
             tray_visibility_watcher: Mutex::new(tray_visibility_watcher),
         };
-        automation.sync_worker(settings, false);
         automation.sync_windows_event_watcher(settings);
         automation.sync_input_hook(settings);
+        automation.sync_worker(settings, false);
         automation
     }
 
@@ -852,20 +858,40 @@ impl RuntimeHandle {
             return;
         }
         let mut watcher = lock_unpoisoned(&self.event_watcher);
+        if watcher
+            .as_ref()
+            .is_some_and(|watcher| !watcher.is_running())
+        {
+            *watcher = None;
+        }
 
         if windows_event_watcher_required(&settings.value) {
             if watcher.is_none() {
                 let shared = Arc::clone(&self.shared);
-                *watcher = WindowsEventWatcher::start(Arc::new(move |event| {
-                    notify_windows_event(&shared, event);
-                }))
+                let stopped_shared = Arc::clone(&self.shared);
+                *watcher = WindowsEventWatcher::start(
+                    Arc::new(move |event| notify_windows_event(&shared, event)),
+                    Arc::new(move || set_windows_event_watcher_active(&stopped_shared, false)),
+                )
                 .ok();
             }
         } else {
             *watcher = None;
         }
 
-        set_windows_event_watcher_active(&self.shared, watcher.is_some());
+        set_windows_event_watcher_active(
+            &self.shared,
+            watcher
+                .as_ref()
+                .is_some_and(WindowsEventWatcher::is_running),
+        );
+        // The watcher may stop between the liveness read and status publication.
+        if watcher
+            .as_ref()
+            .is_some_and(|watcher| !watcher.is_running())
+        {
+            set_windows_event_watcher_active(&self.shared, false);
+        }
     }
 
     fn sync_input_hook(&self, settings: &RuntimeSettingsSnapshot) {
@@ -1170,6 +1196,16 @@ fn run_background_automation(
             || feature_refresh_required(settings, settings.memory_trim.enabled);
         let timer_resolution_refresh_required = settings_changed
             || feature_refresh_required(settings, timer_resolution_required(settings));
+        let sleep_power_source = plugged_in.or(runner.sleep_prevention_power_source());
+        let sleep_settings = active_power_source_settings(&configured_settings, sleep_power_source);
+        let sleep_prevention_refresh_required = settings_changed
+            || feature_refresh_required(sleep_settings, sleep_prevention_required(sleep_settings))
+            || (sleep_power_source.is_none()
+                && std::iter::once(configured_settings.as_ref())
+                    .chain(configured_settings.on_battery.as_deref())
+                    .any(|settings| {
+                        feature_refresh_required(settings, sleep_prevention_required(settings))
+                    }));
         if app_suspension_command_requested {
             scheduler.invalidate(SchedulerEvent::AppSuspensionRequested, now);
         }
@@ -1467,6 +1503,23 @@ fn run_background_automation(
             );
         }
 
+        if sleep_prevention_refresh_required
+            && scheduler.is_due(RefreshDomain::SleepPrevention, now)
+        {
+            let status = runner.run_sleep_prevention_update(
+                configured_settings.as_ref(),
+                &mut observations,
+                windows_event_watcher_active,
+                plugged_in,
+            );
+            update_sleep_prevention_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::SleepPrevention,
+                now,
+                SLEEP_PREVENTION_REFRESH_INTERVAL,
+            );
+        }
+
         let wait_now = Instant::now();
         if let Some(error) = runner.retry_control_releases(wait_now) {
             update_worker_error(&shared, Some(error));
@@ -1590,6 +1643,11 @@ fn run_background_automation(
                     timer_resolution_refresh_required,
                     RefreshDomain::TimerResolution,
                     timer_resolution_refresh_interval,
+                ),
+                (
+                    sleep_prevention_refresh_required,
+                    RefreshDomain::SleepPrevention,
+                    SLEEP_PREVENTION_REFRESH_INTERVAL,
                 ),
                 (
                     scan_process_appearance,

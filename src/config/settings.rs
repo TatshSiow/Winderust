@@ -69,6 +69,8 @@ pub struct Settings {
     pub watchdog: super::WatchdogSettings,
     #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
+    #[serde(default)]
+    pub sleep_prevention: SleepPreventionSettings,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1359,6 +1361,23 @@ pub struct TimerResolutionSettings {
     pub rules: Vec<TimerResolutionRule>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepPreventionSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<SleepPreventionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepPreventionRule {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub executable_path: String,
+    #[serde(default)]
+    pub keep_display_on: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryTrimSettings {
     pub enabled: bool,
@@ -1933,6 +1952,7 @@ impl Default for Settings {
             memory_trim: MemoryTrimSettings::default(),
             watchdog: super::WatchdogSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
+            sleep_prevention: SleepPreventionSettings::default(),
             on_battery: None,
         }
     }
@@ -2567,6 +2587,14 @@ impl TimerResolutionSettings {
         self.rules
             .iter()
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
+    }
+}
+
+impl SleepPreventionSettings {
+    pub fn contains_rule_for(&self, executable_path: &str) -> bool {
+        self.rules
+            .iter()
+            .any(|rule| same_rule_executable_path(&rule.executable_path, executable_path))
     }
 }
 

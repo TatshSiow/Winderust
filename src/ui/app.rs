@@ -1,8 +1,9 @@
 use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
     by_activity, cpu_allocation, cpu_limiter, design, home, memory_trim, navigation, power_rules,
-    priority_control, process_list, process_power_plans, settings_pages, status_rail, tasks,
-    timer_resolution, watchdog, widgets, win32_priority_separation, window_frame,
+    priority_control, process_list, process_power_plans, settings_pages, sleep_prevention,
+    status_rail, tasks, timer_resolution, watchdog, widgets, win32_priority_separation,
+    window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -256,6 +257,7 @@ pub(crate) fn run(
                 sampling: false,
                 catalog_sampled_at: std::time::Instant::now(),
                 suspension: app_suspension::Editor::default(),
+                sleep_prevention: sleep_prevention::Editor::default(),
                 trim: memory_trim::Editor::default(),
                 watchdog: watchdog::Editor::default(),
                 timer: timer_resolution::Editor::default(),
@@ -557,6 +559,7 @@ struct WinderustApp {
     sampling: bool,
     catalog_sampled_at: std::time::Instant,
     suspension: app_suspension::Editor,
+    sleep_prevention: sleep_prevention::Editor,
     trim: memory_trim::Editor,
     watchdog: watchdog::Editor,
     timer: timer_resolution::Editor,
@@ -634,6 +637,7 @@ enum Message {
     ActionLog(action_log::Message),
     ExportLog(Option<PathBuf>),
     Suspension(app_suspension::Message),
+    SleepPrevention(sleep_prevention::Message),
     Trim(memory_trim::Message),
     Watchdog(watchdog::Message),
     Timer(timer_resolution::Message),
@@ -1299,6 +1303,12 @@ impl WinderustApp {
                 self.settings
                     .edit_global(|settings| self.watchdog.update(&mut settings.watchdog, message));
             }
+            Message::SleepPrevention(sleep_prevention::Message::Browse) => {
+                return self.browse(Page::SleepPrevention)
+            }
+            Message::SleepPrevention(message) => self
+                .sleep_prevention
+                .update(&mut self.settings.sleep_prevention, message),
             Message::Timer(timer_resolution::Message::Browse) => {
                 return self.browse(Page::TimerResolution)
             }
@@ -1400,6 +1410,11 @@ impl WinderustApp {
                             ));
                         }
                         match page {
+                            Page::SleepPrevention => {
+                                return self.update(Message::SleepPrevention(
+                                    sleep_prevention::Message::Path(path),
+                                ))
+                            }
                             Page::AppSuspension => {
                                 return self.update(Message::Suspension(
                                     app_suspension::Message::Path(path),
@@ -2034,6 +2049,7 @@ impl WinderustApp {
         self.time_rules = Default::default();
         self.cpu_rules = Default::default();
         self.suspension = Default::default();
+        self.sleep_prevention = Default::default();
         self.trim = Default::default();
         self.watchdog = Default::default();
         self.timer = Default::default();
@@ -2819,6 +2835,14 @@ impl WinderustApp {
             widgets::toggle_card(label, value, Some(action))
         };
         match self.page {
+            Page::SleepPrevention => self
+                .sleep_prevention
+                .view(
+                    &self.settings.sleep_prevention,
+                    &self.status.feature_status.sleep_prevention,
+                    &self.candidates,
+                )
+                .map(Message::SleepPrevention),
             Page::AppSuspension => self
                 .suspension
                 .view(

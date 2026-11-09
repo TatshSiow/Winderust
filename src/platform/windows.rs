@@ -21,6 +21,7 @@ pub(crate) mod process_termination;
 #[cfg(feature = "runtime-benchmark")]
 pub(crate) mod runtime_benchmark;
 pub(crate) mod self_power;
+pub(crate) mod sleep_prevention;
 pub(crate) mod suspension;
 pub(crate) mod thread_priority;
 pub(crate) mod thread_suspension;

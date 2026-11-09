@@ -339,6 +339,7 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::MemoryTrim => ("memory_trim", 3),
         Page::Watchdog => ("watchdog", 3),
         Page::AppSuspension => ("app_suspension", 3),
+        Page::SleepPrevention => ("sleep_prevention", 4),
         Page::CpuLimiter => ("cpu_limiter", 5),
         Page::ByActivity => ("by_activity", 2),
         Page::ByCpuLoad => ("by_cpu_load", 2),
@@ -440,6 +441,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::AdaptiveEngine => "icons/brain-circuit.svg",
         Page::BackgroundEfficiency => "icons/leaf.svg",
         Page::AppSuspension => "icons/monitor-pause.svg",
+        Page::SleepPrevention => "icons/coffee.svg",
         Page::ByRunningApp => "icons/footprints.svg",
         Page::IoPriority => "icons/rotate-3d.svg",
         Page::GpuPriority => "icons/gpu.svg",
@@ -479,6 +481,7 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
         Page::CpuSetsSoft => settings.cpu_sets_soft.enabled,
         Page::ProcessorAffinityHard => settings.processor_affinity_hard.enabled,
         Page::AppSuspension => settings.app_suspension.enabled,
+        Page::SleepPrevention => settings.sleep_prevention.enabled,
         Page::TimerResolution => settings.timer_resolution.enabled,
         _ => return None,
     })
@@ -505,6 +508,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
         Page::CpuSetsSoft => |settings| &mut settings.cpu_sets_soft.enabled,
         Page::ProcessorAffinityHard => |settings| &mut settings.processor_affinity_hard.enabled,
         Page::AppSuspension => |settings| &mut settings.app_suspension.enabled,
+        Page::SleepPrevention => |settings| &mut settings.sleep_prevention.enabled,
         Page::TimerResolution => |settings| &mut settings.timer_resolution.enabled,
         _ => return None,
     })
@@ -605,7 +609,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "{label} {section} settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette",
         ),
         Page::AdvancedControls => format!(
-            "{label} {section} advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry",
+            "{label} {section} advanced sleep prevention awake display app suspension windows scheduler win32 priority separation quantum foreground boost registry",
         ),
         Page::ByActivity => format!(
             "{label} {section} {} {} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
@@ -696,6 +700,11 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("app_suspension.intro_2"),
             t!("app_suspension.intro_3"),
             t!("app_suspension.suspendable_help"),
+        ),
+        Page::SleepPrevention => format!(
+            "{label} {section} {} {} sleep prevention awake system idle display monitor running app power request",
+            t!("sleep_prevention.intro_1"),
+            t!("sleep_prevention.intro_2"),
         ),
         Page::ByRunningApp => format!(
             "{label} {section} {} {} {} {} running app performance mode power plan process game gaming active restore",

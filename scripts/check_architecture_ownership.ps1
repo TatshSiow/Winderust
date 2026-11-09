@@ -509,6 +509,21 @@ Assert-NoSourceMatch `
     -Pattern 'RecoveryIntent|ProcessValue|record_process_change|baseline|managed' `
     -Paths @('src/control/timer_resolution.rs')
 
+Assert-NoUnexpectedWriter `
+    -Mechanism 'Sleep Prevention requests' `
+    -ApiPattern 'PowerCreateRequest|PowerSetRequest|PowerClearRequest' `
+    -AllowedLocationPattern '^src\\platform\\windows\\sleep_prevention\.rs:'
+
+Assert-NoSourceMatch `
+    -Boundary 'Sleep Prevention controller owns lifecycle without raw Win32' `
+    -Pattern 'PowerCreateRequest|PowerSetRequest|PowerClearRequest|windows_sys|unsafe' `
+    -Paths @('src/control/sleep_prevention.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Sleep Prevention Windows adapter imports no policy layer' `
+    -Pattern 'crate::(?:control|features|foreground|rules|ui)' `
+    -Paths @('src/platform/windows/sleep_prevention.rs')
+
 Assert-SourceMatchCount `
     -Boundary 'single shared process-control mutation-acquisition OpenProcess adapter call' `
     -Pattern 'unsafe \{ OpenProcess\s*\(' `

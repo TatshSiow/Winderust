@@ -66,7 +66,7 @@ target, but every mutation reopens and revalidates the exact process or thread i
   watchdog journal, verification, and reverse clean release.
 - Automatic power-plan state belongs to `PowerPlanController`, including the first baseline,
   verified switching, managed-plan cleanup, and watchdog recovery.
-- Process-lifetime state belongs to Timer Resolution or the Winderust self-power controller. It
+- Process-lifetime state belongs to Sleep Prevention, Timer Resolution, or the Winderust self-power controller. It
   has explicit clean release, with process teardown as the forced-exit boundary.
 - Persistent configuration belongs to `SettingsEditor` or a typed application service. It uses
   explicit user intent and readback without temporary claims or recovery entries.

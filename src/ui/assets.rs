@@ -34,6 +34,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
         icondata_lu::LuCircleFadingArrowUp,
     ),
     ("icons/cog.svg", icondata_lu::LuCog),
+    ("icons/coffee.svg", icondata_lu::LuCoffee),
     ("icons/clock.svg", icondata_lu::LuClock),
     ("icons/computer.svg", icondata_lu::LuComputer),
     ("icons/cpu.svg", icondata_lu::LuCpu),

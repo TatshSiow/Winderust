@@ -34,12 +34,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(58) {
+    if extra == Some(60) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56)
+            matches!(
+                index,
+                1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56 | 59
+            )
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -75,6 +78,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(50) => Page::WinderustBehaviour,
             Some(51..=53) => Page::Watchdog,
             Some(54..=57) => Page::ByCpuLoad,
+            Some(58..=59) => Page::SleepPrevention,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -106,6 +110,24 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
         }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
+        if matches!(extra, Some(58..=59)) {
+            let _ = app.update(Message::PowerRules(
+                power_rules::Kind::CpuLoad,
+                power_rules::Message::Cancel,
+            ));
+            app.settings.sleep_prevention.rules = vec![
+                crate::config::SleepPreventionRule {
+                    executable_path: r"C:\Apps\Long Application Name\video-renderer.exe".into(),
+                    enabled: true,
+                    keep_display_on: false,
+                },
+                crate::config::SleepPreventionRule {
+                    executable_path: r"C:\Apps\presentation.exe".into(),
+                    enabled: true,
+                    keep_display_on: true,
+                },
+            ];
+        }
         if matches!(extra, Some(51..=53)) {
             let mut rule =
                 crate::config::WatchdogRule::new(r"C:\Apps\Resource Monitor\sample.exe".into());
@@ -527,7 +549,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=57) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=59) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -624,6 +646,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        128
+        132
     );
 }

@@ -1,6 +1,6 @@
 use super::{
     AppSuspensionSettings, ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison, Settings,
-    NESTED_BATTERY_PROFILE_ERROR,
+    SleepPreventionSettings, NESTED_BATTERY_PROFILE_ERROR,
 };
 
 impl Settings {
@@ -11,6 +11,7 @@ impl Settings {
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
             profile.app_suspension.validate()?;
+            profile.sleep_prevention.validate()?;
         }
         Ok(())
     }
@@ -59,6 +60,18 @@ impl Settings {
                     .dynamic_resource_zone_settings
                     .validate(process.dynamic_resource_zones_enabled)
                     .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SleepPreventionSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        for rule in &self.rules {
+            let path = rule.executable_path.trim();
+            if !std::path::Path::new(path).is_absolute() || path.contains('\0') {
+                return Err("Sleep Prevention rules require an absolute executable path.".into());
             }
         }
         Ok(())

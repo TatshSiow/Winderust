@@ -44,6 +44,42 @@ fn watchdog_alone_keeps_automation_alive_without_power_plan_rules() {
     assert!(!automation_worker_required(&settings));
 }
 
+#[test]
+fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    let mut battery = settings.clone();
+    battery.sleep_prevention.enabled = true;
+    assert!(!automation_worker_required(&battery));
+    battery
+        .sleep_prevention
+        .rules
+        .push(crate::config::SleepPreventionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".into(),
+            keep_display_on: false,
+        });
+    settings.on_battery = Some(Box::new(battery));
+    assert!(automation_worker_required(&settings));
+    assert!(windows_event_watcher_required(&settings));
+    for event in [
+        WindowsAutomationEvent::PowerChanged,
+        WindowsAutomationEvent::SuspendResume,
+        WindowsAutomationEvent::SessionChanged,
+        WindowsAutomationEvent::WindowCreated,
+    ] {
+        assert!(windows_event_wake_required(&settings, event));
+    }
+    assert!(!windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::ForegroundChanged,
+    ));
+    assert!(!power_plan_checks_required(settings.battery_profile()));
+    assert!(!input_hook_required(&settings));
+    settings.on_battery.as_mut().unwrap().sleep_prevention.rules[0].enabled = false;
+    assert!(!automation_worker_required(&settings));
+}
+
 fn runtime_settings_with_runtime_and_persisted_revisions(
     snapshot: Settings,
     runtime_revision: SettingsRevision,
@@ -2237,6 +2273,7 @@ fn automation_feature_execution_order_is_characterized() {
             "runner.run_by_running_app_update(",
             "runner.run_memory_trim_",
             "runner.run_timer_resolution_update(",
+            "runner.run_sleep_prevention_update(",
         ],
     );
 }
@@ -2331,6 +2368,7 @@ fn automation_shutdown_restores_reversible_features_in_reverse_order() {
         "pub(super) fn shutdown(&mut self)",
         "pub(super) fn note_settings",
         &[
+            "self.sleep_prevention_manager",
             "self.run_timer_resolution_update(",
             "self.run_by_running_app_update(",
             "self.run_cpu_limiter_update(",

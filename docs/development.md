@@ -65,6 +65,20 @@ process intents; they do not exercise machine-wide power-plan cleanup, jobs,
 threads, or GUI startup. Fixture modes are absent from default builds. If a
 running app locks the debug executable, add `--target-dir target/recovery-smoke`.
 
+## Sleep Prevention checks
+
+The ignored native checks briefly create Winderust-owned system/display sleep
+requests. One also starts a hidden, bounded-lifetime `ping.exe` worker to verify
+running-app matching and disable/release through production observations:
+
+```powershell
+cargo test --locked sleep_prevention::tests::native_ -- --ignored --nocapture --test-threads=1
+```
+
+These checks do not suspend Windows or change saved settings or power plans.
+They establish accepted requests and clean release, not actual idle sleep,
+Modern Standby expiry, lid behavior, or resume after a real sleep transition.
+
 ## CPU Limiter mechanism comparison
 
 The `runtime-benchmark` feature also provides a disposable-worker comparison of

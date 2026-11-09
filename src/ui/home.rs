@@ -1384,6 +1384,15 @@ fn enabled_features(
         .to_string()
     );
     feature!(
+        SleepPrevention,
+        sleep_prevention,
+        t!(
+            "common.rule_count",
+            count = settings.sleep_prevention.rules.len()
+        )
+        .to_string()
+    );
+    feature!(
         TimerResolution,
         timer_resolution,
         t!(
@@ -1445,6 +1454,7 @@ mod tests {
             Page::MemoryPriority,
             Page::Watchdog,
             Page::MemoryTrim,
+            Page::SleepPrevention,
             Page::TimerResolution,
         ];
         let mut settings = Settings::default();

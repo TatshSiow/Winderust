@@ -42,6 +42,7 @@ pub enum ActionLogFeature {
     MemoryTrim,
     Watchdog,
     TimerResolution,
+    SleepPrevention,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

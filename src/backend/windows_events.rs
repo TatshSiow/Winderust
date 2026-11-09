@@ -2,7 +2,10 @@ use std::{
     cell::RefCell,
     panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
-    sync::{mpsc, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     thread::{self, JoinHandle},
 };
 
@@ -60,6 +63,19 @@ thread_local! {
 pub struct WindowsEventWatcher {
     thread_id: u32,
     thread: Option<JoinHandle<()>>,
+    stopped: Arc<AtomicBool>,
+}
+
+struct WatcherStopped {
+    stopped: Arc<AtomicBool>,
+    callback: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Drop for WatcherStopped {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        (self.callback)();
+    }
 }
 
 struct PowerNotifications {
@@ -69,14 +85,26 @@ struct PowerNotifications {
 }
 
 impl WindowsEventWatcher {
-    pub fn start(callback: EventCallback) -> Result<Self, String> {
+    pub fn start(
+        callback: EventCallback,
+        on_stopped: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
-        let thread = thread::spawn(move || event_thread(sender, callback));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let notification = WatcherStopped {
+            stopped: Arc::clone(&stopped),
+            callback: on_stopped,
+        };
+        let thread = thread::spawn(move || {
+            let _notification = notification;
+            event_thread(sender, callback);
+        });
 
         match receiver.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
                 thread_id,
                 thread: Some(thread),
+                stopped,
             }),
             Ok(Err(err)) => {
                 let _ = thread.join();
@@ -87,6 +115,14 @@ impl WindowsEventWatcher {
                 Err(format!("Windows event watcher did not start: {err}"))
             }
         }
+    }
+
+    pub fn is_running(&self) -> bool {
+        !self.stopped.load(Ordering::Acquire)
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
     }
 }
 
@@ -383,6 +419,38 @@ fn notify_event(event: WindowsAutomationEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watcher_exit_marks_stopped_before_notifying_once_on_return_or_unwind() {
+        use std::sync::atomic::AtomicUsize;
+
+        for unwind in [false, true] {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let observed_stopped = Arc::new(AtomicBool::new(false));
+            let notifications = Arc::new(AtomicUsize::new(0));
+            let callback_stopped = Arc::clone(&stopped);
+            let callback_observed = Arc::clone(&observed_stopped);
+            let callback_notifications = Arc::clone(&notifications);
+            let notification = WatcherStopped {
+                stopped: Arc::clone(&stopped),
+                callback: Arc::new(move || {
+                    callback_observed
+                        .store(callback_stopped.load(Ordering::Acquire), Ordering::Release);
+                    callback_notifications.fetch_add(1, Ordering::Relaxed);
+                }),
+            };
+            let worker = thread::spawn(move || {
+                let _notification = notification;
+                if unwind {
+                    panic!("simulated watcher failure");
+                }
+            });
+            assert_eq!(worker.join().is_err(), unwind);
+            assert!(stopped.load(Ordering::Acquire));
+            assert!(observed_stopped.load(Ordering::Acquire));
+            assert_eq!(notifications.load(Ordering::Relaxed), 1);
+        }
+    }
 
     #[test]
     fn power_setting_and_suspend_resume_messages_remain_distinct() {
