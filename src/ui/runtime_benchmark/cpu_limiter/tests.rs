@@ -63,9 +63,22 @@ fn snapshot(blocks: Vec<u64>) -> Snapshot {
         elapsed_ns: 1,
         capture_span_ns: 0,
         cpu_100ns: 1,
+        compute_cpu_100ns: vec![1; blocks.len()],
+        handler_cpu_100ns: 1,
         checksums: vec![1; blocks.len()],
         blocks,
     }
+}
+
+#[test]
+fn thread_cpu_deltas_preserve_idle_threads_and_reject_missing_or_regressing_counters() {
+    let before = snapshot(vec![1, 1]);
+    let mut after = snapshot(vec![2, 2]);
+    after.compute_cpu_100ns = vec![1, 7];
+    assert_eq!(thread_cpu_deltas(&before, &after, 2), Ok(vec![0, 6]));
+    assert!(thread_cpu_deltas(&before, &after, 1).is_err());
+    after.compute_cpu_100ns[0] = 0;
+    assert!(thread_cpu_deltas(&before, &after, 2).is_err());
 }
 
 #[test]

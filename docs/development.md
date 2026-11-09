@@ -90,6 +90,16 @@ siblings together and halves physical cores within each efficiency class, roundi
 up. It limits concurrency rather than CPU time. This synthetic comparison does
 not establish foreground-app protection, energy savings, or an automatic policy.
 
+Diagnostics also record CPU time for every owned compute thread and the request
+handler, the signed process-minus-known-thread difference, and system-wide
+per-processor usage over a separately recorded interval. Missing or mismatched
+processor observations stay unavailable. Job queries run inside each worker
+before and after applying restraint; they describe only its immediate job and
+cannot rule out ancestor-job restrictions. Process and thread CPU counters share
+Windows accounting, and per-processor busy time does not identify target residency.
+The report also retains initial process priority and Power Throttling masks
+through the existing read-only adapters; it never changes them.
+
 ## Rendering and performance
 
 - `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.

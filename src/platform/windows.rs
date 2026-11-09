@@ -18,6 +18,8 @@ pub(crate) mod priority_efficiency;
 pub(crate) mod process;
 pub(crate) mod process_restart;
 pub(crate) mod process_termination;
+#[cfg(feature = "runtime-benchmark")]
+pub(crate) mod runtime_benchmark;
 pub(crate) mod self_power;
 pub(crate) mod suspension;
 pub(crate) mod thread_priority;

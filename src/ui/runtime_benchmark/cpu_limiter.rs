@@ -32,11 +32,14 @@ use crate::{
         process::{open_process_for_set_information, ControlOwner},
         suspension::{SuspensionController, SuspensionTarget},
     },
+    cpu::PerProcessorUsageMonitor,
     cpu_topology::{CpuSelection, CpuTopology, LogicalProcessor, ProcessorId},
     foreground::{process_runs_as_service_account_from_handle, query_process_image_path},
     platform::windows::{
         cpu_allocation as windows_cpu_allocation,
+        priority_efficiency as windows_priority_efficiency,
         process::{self as windows_process, ProcessAccess},
+        runtime_benchmark as diagnostics,
     },
     power,
     win_util::WinHandle,
@@ -135,6 +138,7 @@ fn run(path: &Path) -> Result<(), String> {
         "sample_seconds": SAMPLE.as_secs(),
         "passes": PASSES,
         "power_plan_before": original_plan,
+        "host_job": diagnostics::current_job_info(),
         "probe_interval_ms": "13..=23, deterministic dither",
         "response_percentile_method": "nearest rank",
         "maximum_endpoint_capture_span_ns": MAX_CAPTURE_SPAN_NS,
@@ -143,7 +147,8 @@ fn run(path: &Path) -> Result<(), String> {
             "Request/response latency is inside the restrained target; it does not measure an external foreground application.",
             "A fixed CPU pool bounds concurrency, not CPU time. A single thread may use a full core in either pool; hybrid cores have unequal capacity.",
             "Synthetic integer throughput and short samples do not establish application performance or an automatic restraint policy.",
-            "Parent CPU includes its controller and probes; crash recovery helper CPU is not included. Power and thermal telemetry are not sampled."
+            "Parent CPU includes its controller and probes; crash recovery helper CPU is not included. Power and thermal telemetry are not sampled.",
+            "Per-thread and process CPU times share Windows accounting. System-wide processor usage does not establish target residency; immediate-job queries do not expose ancestor limits."
         ],
         "samples": [],
         "complete": false,
@@ -330,6 +335,19 @@ fn run_case(
     let half = half_pool(topology.processors(), eligible)?;
     let mut worker = Worker::spawn(threads)?;
     let (target, process, baseline) = inspect_worker(&worker)?;
+    let inherited_job = worker.job_info()?;
+    let priority_class = match windows_priority_efficiency::query_priority(&process) {
+        Ok(priority) => json!({ "value": priority }),
+        Err(error) => json!({ "error": format!("{error:?}") }),
+    };
+    let power_throttling = match windows_priority_efficiency::query_power(&process) {
+        Ok(state) => json!({
+            "version": state.version,
+            "control_mask": state.control_mask,
+            "state_mask": state.state_mask,
+        }),
+        Err(error) => json!({ "error": format!("{error:?}") }),
+    };
     if baseline != inherited {
         return Err("Worker did not inherit the host's exact placement".to_owned());
     }
@@ -395,12 +413,16 @@ fn run_case(
         if placement(&process)? != expected {
             return Err("Applied worker placement did not match readback".to_owned());
         }
+        let applied_job = worker.job_info()?;
         let warmup = Instant::now();
         while warmup.elapsed() < WARMUP {
             worker.probe()?;
             probe_pause(worker.sequence);
         }
         let parent_before = cpu_ticks(own_process)?;
+        let mut ambient = PerProcessorUsageMonitor::default();
+        let ambient_started = Instant::now();
+        let _ = ambient.sample();
         let before = worker.coherent_endpoint()?;
         let mut latencies = Vec::new();
         let mut rejected_endpoints = 0;
@@ -427,6 +449,10 @@ fn run_case(
             }
         };
         let parent_after = cpu_ticks(own_process)?;
+        let ambient_usage = ambient
+            .sample()
+            .filter(|usage| usage.len() == topology.processors().len());
+        let ambient_seconds = ambient_started.elapsed().as_secs_f64();
         if matches!(condition, Condition::Duty50) {
             check_limiter(&mut limiter, &target)?;
         }
@@ -444,6 +470,15 @@ fn run_case(
             .cpu_100ns
             .checked_sub(before.cpu_100ns)
             .ok_or_else(|| "Worker CPU time went backwards".to_owned())?;
+        let compute_cpu = thread_cpu_deltas(&before, &after, threads)?;
+        let compute_cpu_total = compute_cpu
+            .iter()
+            .try_fold(0_u64, |sum, ticks| sum.checked_add(*ticks))
+            .ok_or_else(|| "Compute-thread CPU time overflowed".to_owned())?;
+        let handler_cpu = after
+            .handler_cpu_100ns
+            .checked_sub(before.handler_cpu_100ns)
+            .ok_or_else(|| "Handler CPU time went backwards".to_owned())?;
         let parent_cpu = parent_after
             .checked_sub(parent_before)
             .ok_or_else(|| "Host CPU time went backwards".to_owned())?;
@@ -464,6 +499,17 @@ fn run_case(
             "blocks_per_second": blocks as f64 / seconds,
             "worker_cpu_ms": cpu as f64 / 10_000.0,
             "worker_cpu_percent_one_core": cpu as f64 / (seconds * 100_000.0),
+            "compute_thread_cpu_ms": compute_cpu.iter().map(|ticks| *ticks as f64 / 10_000.0).collect::<Vec<_>>(),
+            "compute_thread_cpu_total_ms": compute_cpu_total as f64 / 10_000.0,
+            "handler_cpu_ms": handler_cpu as f64 / 10_000.0,
+            "process_minus_known_thread_cpu_ms": (i128::from(cpu) - i128::from(compute_cpu_total) - i128::from(handler_cpu)) as f64 / 10_000.0,
+            "ambient_per_processor_busy_percent": ambient_usage,
+            "ambient_sampling_seconds": ambient_seconds,
+            "ambient_usage_scope": "Whole-system group-0 processor indices; unavailable on missing or mismatched samples, not target residency",
+            "inherited_job": inherited_job,
+            "applied_job": applied_job,
+            "worker_priority_class": priority_class,
+            "worker_power_throttling": power_throttling,
             "parent_cpu_ms": parent_cpu as f64 / 10_000.0,
             "response_median_ms": percentile(&sorted, 50)?,
             "response_p95_ms": percentile(&sorted, 95)?,
@@ -586,6 +632,8 @@ struct Snapshot {
     elapsed_ns: u64,
     capture_span_ns: u64,
     cpu_100ns: u64,
+    compute_cpu_100ns: Vec<u64>,
+    handler_cpu_100ns: u64,
     blocks: Vec<u64>,
     checksums: Vec<u64>,
 }
@@ -615,6 +663,26 @@ fn checked_work(before: &Snapshot, after: &Snapshot, threads: usize) -> Result<u
     } else {
         Ok(total)
     }
+}
+
+fn thread_cpu_deltas(
+    before: &Snapshot,
+    after: &Snapshot,
+    threads: usize,
+) -> Result<Vec<u64>, String> {
+    if before.compute_cpu_100ns.len() != threads || after.compute_cpu_100ns.len() != threads {
+        return Err("Invalid compute-thread CPU counter count".to_owned());
+    }
+    before
+        .compute_cpu_100ns
+        .iter()
+        .zip(&after.compute_cpu_100ns)
+        .map(|(before, after)| {
+            after
+                .checked_sub(*before)
+                .ok_or_else(|| "Compute-thread CPU time went backwards".to_owned())
+        })
+        .collect()
 }
 
 struct Worker {
@@ -686,6 +754,13 @@ impl Worker {
             return Err("Worker reply sequence mismatch".to_owned());
         }
         Ok((snapshot, elapsed))
+    }
+
+    fn job_info(&mut self) -> Result<Value, String> {
+        writeln!(self.input, "JOB")
+            .and_then(|_| self.input.flush())
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str(&self.line()?).map_err(|e| format!("Worker job diagnostics: {e}"))
     }
 
     fn coherent_endpoint(&mut self) -> Result<Snapshot, String> {
@@ -849,6 +924,14 @@ fn run_worker(count: usize) -> Result<(), String> {
                     .iter()
                     .map(|counter| counter.checksum.load(Ordering::Relaxed))
                     .collect();
+                let compute_cpu_100ns = workers
+                    .threads
+                    .iter()
+                    .map(diagnostics::thread_cpu_ticks)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|code| format!("Compute-thread CPU time failed with error {code}"))?;
+                let handler_cpu_100ns = diagnostics::current_thread_cpu_ticks()
+                    .map_err(|code| format!("Handler CPU time failed with error {code}"))?;
                 let capture_finished_ns =
                     u64::try_from(started.elapsed().as_nanos()).map_err(|e| e.to_string())?;
                 let capture_span_ns = capture_finished_ns
@@ -859,6 +942,8 @@ fn run_worker(count: usize) -> Result<(), String> {
                     elapsed_ns: capture_started_ns + capture_span_ns / 2,
                     capture_span_ns,
                     cpu_100ns,
+                    compute_cpu_100ns,
+                    handler_cpu_100ns,
                     blocks,
                     checksums,
                 };
@@ -866,6 +951,11 @@ fn run_worker(count: usize) -> Result<(), String> {
                     return Err("Worker useful-work lifetime expired during snapshot".to_owned());
                 }
                 serde_json::to_writer(&mut output, &snapshot).map_err(|e| e.to_string())?;
+                writeln!(output).map_err(|e| e.to_string())?;
+            }
+            ["JOB"] => {
+                serde_json::to_writer(&mut output, &diagnostics::current_job_info())
+                    .map_err(|e| e.to_string())?;
                 writeln!(output).map_err(|e| e.to_string())?;
             }
             ["STOP"] => {

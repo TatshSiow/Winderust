@@ -699,6 +699,26 @@ adapter, brackets counter reads with a monotonic clock, and verifies exact basel
 affinity/CPU Sets restoration before each child exits. It adds no native mutation
 adapter or automatic CPU Limiter policy.
 
+`src/platform/windows/runtime_benchmark.rs`, gated by `runtime-benchmark`, adds
+read-only accounting diagnostics. It borrows the worker's retained compute-thread
+`JoinHandle`s and queries its current handler-thread pseudo-handle with
+[`GetThreadTimes`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes).
+Pseudo-handles are never owned or closed. The host records the existing
+`src/cpu.rs::PerProcessorUsageMonitor` result as whole-system busy time, preserving
+an unavailable observation or processor-count mismatch rather than substituting
+zero. These counters do not establish per-thread processor residency.
+
+Each worker also queries `IsProcessInJob` and
+[`QueryInformationJobObject`](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject)
+with a null job handle before and after restraint. A null handle selects the
+calling process's immediate job. The adapter retains native query errors and
+interprets the
+[`JOBOBJECT_CPU_RATE_CONTROL_INFORMATION`](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_cpu_rate_control_information)
+union only for its enabled mode. Disabled or conflicting modes supply no rate
+interpretation. Weight, minimum/maximum rates, and hard-cap rates stay distinct.
+Ancestor-job limits remain unknown: [nested job CPU limits](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs)
+can apply beyond the queried job. Diagnostics neither change nor bypass them.
+
 | API or behavior | Used for | Reference |
 | --- | --- | --- |
 | `CreateWaitableTimerExW` | Creates the worker's high-resolution waitable timer with `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw |
