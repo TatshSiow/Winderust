@@ -1,5 +1,11 @@
 # Benchmarks
 
+Keep machine-specific reports, raw results, and captures local under ignored
+`benchmark/results/`, `benchmark-results/`, or `target/`. Markdown reports under
+`benchmark/` are also ignored except for this README. Commit reusable runners and
+methodology; retain hardware, build, settings, test conditions, and limitations
+alongside each local run.
+
 For CPU Limiter duty cycling versus fixed half-pool Processor Affinity (Hard),
 use the [disposable-worker comparison](../docs/development.md#cpu-limiter-mechanism-comparison).
 It measures synthetic work, CPU time, and response latency inside the target,
@@ -84,17 +90,14 @@ compared case; it adds measurement overhead. No sensor driver is installed.
 - [Process affinity](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.processoraffinity)
 - [Sampled processor number](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentprocessornumber)
 
-Adaptive Engine benchmark results are stored separately from the project README
-because they are specific to the machine and its current thermal and power state.
-
 Current custom-runner results use decimal byte units: 1 KB is 1,000 bytes and
 1 MB is 1,000,000 bytes. Their score objects record `byte_unit_base = 1000` and
 `byte_rate_unit = "MB/s"`. Before unit standardization, custom-runner byte rates
 used 1,048,576 bytes per displayed unit, despite the `_mbps` field names and
-MB/s table labels; size parameters used 1,024 bytes per KB. The archived raw
-JSON and historical Markdown measurements remain unmodified evidence of those
-runs. Multiply an archived custom-runner byte-rate value by 1.048576 to express
-it in decimal MB/s. Percentage ratios need no conversion. This does not apply
+MB/s table labels; size parameters used 1,024 bytes per KB. Preserve original
+units in local raw JSON and reports. Multiply an older custom-runner byte-rate
+value by 1.048576 to express it in decimal MB/s. Percentage ratios need no
+conversion. This does not apply
 to independently recorded third-party diagnostic results. Matching numeric
 buffer-size parameters across the two conventions also changes the actual
 workload, so cross-revision timing comparisons require matching byte sizes.
@@ -104,15 +107,6 @@ For a read-only observation-cost probe, run
 alone on an interactive Windows desktop. It checks that the visible-process
 prefilter preserves membership and prints observation and path-grouping timings.
 These component timings are not ST/MT throughput results.
-
-- [Intel Core 5 210H](intel-core-5-210h.md) - 2026-07-15 preset benchmark
-- [Intel Core 5 210H adaptive runtime](intel-core-5-210h-adaptive-runtime.md) - 2026-07-15 real runtime A/B
-- [Intel Core 5 210H system and preset diagnostics](intel-core-5-210h-system-and-preset-diagnostics.md) - 2026-08-06 live-system, scheduler, compute, memory, and package-power measurements
-- [Intel Core 5 210H counterbalanced Adaptive runtime matrix](intel-core-5-210h-adaptive-runtime-counterbalanced-20260807.md) - 2026-08-07 and 2026-08-10 validated CPU, I/O, and MessageLoop runtime results with foreground-host integrity, package power, and Windows priority activation
-- [Intel Core 5 210H CPU Scheduler redesign and context-aware power A/B](intel-core-5-210h-cpu-scheduler-redesign-20260818.md) - 2026-08-18 targeted-only, broad-policy, context-aware, and Limit Background Processors comparison with editable profile tuning, direct EcoQoS observation, and power-gate results
-- [Intel Core 5 210H Least-used vs E-core-preferred selector A/B](cpu-selector-least-used-vs-e-core-preferred-20260818.md) - 2026-08-18 release-runtime comparison of foreground latency, background capacity, and package power
-- [Intel Core 5 210H CPU Limiter mechanism comparison](intel-core-5-210h-cpu-limiter-mechanisms-20261109.md) - 2026-11-09 disposable-worker duty cycling versus fixed half-pool placement, with target response latency and verified restoration
-- [AMD Ryzen 7 7735HS](amd-ryzen-7-7735hs.md) - preset benchmark
 
 Run from the repository root:
 

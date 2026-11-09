@@ -3,8 +3,15 @@
 /target-bench/
 /target-bottleneck/
 /target-release-*/
-/benchmark-results/
 /dist/
+
+# Local benchmark and diagnostic records
+/benchmark-results/
+/benchmark/results/
+/benchmark/*.md
+!/benchmark/README.md
+/cpu-throughput-*.csv
+/cpu-throughput-*.csv.*.telemetry.tsv
 
 # Local runtime/config artifacts
 *.log

@@ -61,7 +61,7 @@ Byte sizes and byte rates use decimal units: 1 KB is 1,000 bytes and 1 MB is
 `-ScoreDataKb` now allocates 1,000 bytes per KB; buffer sizes therefore differ
 from runs before unit standardization even when the numeric parameter is the
 same. Compare timings only across runs with the same byte-unit base and buffer
-sizes. [Archived results](../benchmark/README.md) retain their original units.
+sizes. Preserve the original units in locally saved results.
 
 ZIP archive structure, BZIP2, 7z, and native AVX/SSE/SSE2/SSE4/AVX2/FMA feature
 microbenchmarks are not included because Windows PowerShell/.NET Framework does
@@ -447,9 +447,11 @@ than about 3%, treat it as neutral unless repeated runs show the same direction.
 
 ## Saved Results
 
-Machine-specific reports and their raw JSON live in [`benchmark/`](../benchmark/README.md). Keep
-this guide focused on methodology; add new measurements to a dated hardware report instead of
-embedding a moving "latest result" here.
+Keep machine-specific reports, raw results, and captures local under ignored
+`benchmark/results/`, `benchmark-results/`, or `target/`. Markdown reports under
+`benchmark/` are also ignored except for `README.md`. Retain the hardware, build,
+settings, test conditions, and limitations alongside each run. Keep this guide
+focused on methodology instead of embedding a moving "latest result" here.
 
 ## Known Limitations
 
