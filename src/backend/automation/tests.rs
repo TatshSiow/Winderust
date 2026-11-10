@@ -2482,6 +2482,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             process_control_commands: VecDeque::new(),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
+            pending_instance_limits_resets: instance_limits::PendingResets::default(),
             input_activity: InputActivityTracker::default(),
             windows_event_watcher_active: true,
             worker_accepting_work: false,

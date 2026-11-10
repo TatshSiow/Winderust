@@ -341,6 +341,7 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::AppSuspension => ("app_suspension", 3),
         Page::SleepPrevention => ("sleep_prevention", 4),
         Page::KeepRunning => ("keep_running", 3),
+        Page::InstanceLimits => ("instance_limits", 3),
         Page::CpuLimiter => ("cpu_limiter", 5),
         Page::ByActivity => ("by_activity", 2),
         Page::ByCpuLoad => ("by_cpu_load", 2),
@@ -444,6 +445,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::AppSuspension => "icons/monitor-pause.svg",
         Page::SleepPrevention => "icons/coffee.svg",
         Page::KeepRunning => "icons/rotate-ccw.svg",
+        Page::InstanceLimits => "icons/list.svg",
         Page::ByRunningApp => "icons/footprints.svg",
         Page::IoPriority => "icons/rotate-3d.svg",
         Page::GpuPriority => "icons/gpu.svg",
@@ -469,6 +471,7 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
         Page::MemoryTrim => settings.memory_trim.enabled,
         Page::Watchdog => settings.watchdog.enabled,
         Page::KeepRunning => settings.keep_running.enabled,
+        Page::InstanceLimits => settings.instance_limits.enabled,
         Page::ByFocus => settings.by_focus.enabled,
         Page::ByRunningApp => settings.by_running_app.enabled,
         Page::ByCpuLoad => settings.by_cpu_load.enabled,
@@ -497,6 +500,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
         Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
         Page::Watchdog => |settings| &mut settings.watchdog.enabled,
         Page::KeepRunning => |settings| &mut settings.keep_running.enabled,
+        Page::InstanceLimits => |settings| &mut settings.instance_limits.enabled,
         Page::ByFocus => |settings| &mut settings.by_focus.enabled,
         Page::ByRunningApp => |settings| &mut settings.by_running_app.enabled,
         Page::ByCpuLoad => |settings| &mut settings.by_cpu_load.enabled,
@@ -744,6 +748,10 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
         Page::Watchdog => format!(
             "{label} {section} {} watchdog monitor cpu memory ram threshold warning critical toast notification terminate kill process",
             t!("watchdog.intro_1"),
+        ),
+        Page::InstanceLimits => format!(
+            "{label} {section} {} instance limits count maximum processes monitor notifications full path",
+            t!("instance_limits.intro_1"),
         ),
         Page::KeepRunning => format!(
             "{label} {section} {} keep running relaunch restart app process exit arguments working directory retry resume",

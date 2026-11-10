@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn instance_limits_validation_guards_persistence_without_overwriting_files() {
+    let path = std::env::temp_dir().join(format!(
+        "winderust-instance-limits-{}.toml",
+        std::process::id()
+    ));
+    for battery in [false, true] {
+        for invalid in 0..3 {
+            let mut settings = Settings::default();
+            let profile = if battery {
+                settings.battery_profile_mut()
+            } else {
+                &mut settings
+            };
+            let mut rule = crate::config::InstanceLimitsRule::new(r"C:\Apps\app.exe".into());
+            match invalid {
+                0 => rule.max_instances = 0,
+                1 => rule.executable_path = "relative.exe".into(),
+                _ => profile.instance_limits.rules.push(rule.clone()),
+            }
+            profile.instance_limits.rules.push(rule);
+            let raw = toml::to_string(&settings).unwrap();
+            fs::write(&path, &raw).unwrap();
+            assert!(load_from_path(&path).is_err());
+            assert!(import_toml_from(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            fs::write(&path, "original settings").unwrap();
+            assert!(write_toml_settings(&path, &settings).is_err());
+            assert!(export_toml_to(&path, &settings).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
+        }
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn keep_running_launch_validation_guards_load_import_save_and_export() {
     let path = std::env::temp_dir().join(format!(
         "winderust-keep-running-{}.toml",
@@ -1129,6 +1164,13 @@ fn toml_round_trip_preserves_settings() {
                 arguments: r#"--document "C:\Documents\notes.txt""#.into(),
                 working_directory: r"C:\Documents".into(),
             }],
+        },
+        instance_limits: crate::config::InstanceLimitsSettings {
+            enabled: true,
+            notify: false,
+            rules: vec![crate::config::InstanceLimitsRule::new(
+                r"C:\Apps\app.exe".into(),
+            )],
         },
         memory_trim: MemoryTrimSettings {
             enabled: true,

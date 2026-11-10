@@ -44,6 +44,7 @@ pub enum ActionLogFeature {
     TimerResolution,
     SleepPrevention,
     KeepRunning,
+    InstanceLimits,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -1,8 +1,8 @@
 use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
-    by_activity, cpu_allocation, cpu_limiter, design, home, keep_running, memory_trim, navigation,
-    power_rules, priority_control, process_list, process_power_plans, settings_pages,
-    sleep_prevention, status_rail, tasks, timer_resolution, watchdog, widgets,
+    by_activity, cpu_allocation, cpu_limiter, design, home, instance_limits, keep_running,
+    memory_trim, navigation, power_rules, priority_control, process_list, process_power_plans,
+    settings_pages, sleep_prevention, status_rail, tasks, timer_resolution, watchdog, widgets,
     win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
@@ -261,6 +261,7 @@ pub(crate) fn run(
                 trim: memory_trim::Editor::default(),
                 watchdog: watchdog::Editor::default(),
                 keep_running: keep_running::Editor::default(),
+                instance_limits: instance_limits::Editor::default(),
                 timer: timer_resolution::Editor::default(),
                 priority_separation: win32_priority_separation::Editor::default(),
                 power_tuning: advanced_power_plan_tuning::Editor::default(),
@@ -564,6 +565,7 @@ struct WinderustApp {
     trim: memory_trim::Editor,
     watchdog: watchdog::Editor,
     keep_running: keep_running::Editor,
+    instance_limits: instance_limits::Editor,
     timer: timer_resolution::Editor,
     priority_separation: win32_priority_separation::Editor,
     power_tuning: advanced_power_plan_tuning::Editor,
@@ -643,6 +645,7 @@ enum Message {
     Trim(memory_trim::Message),
     Watchdog(watchdog::Message),
     KeepRunning(keep_running::Message),
+    InstanceLimits(instance_limits::Message),
     Timer(timer_resolution::Message),
     PrioritySeparation(win32_priority_separation::Message),
     PowerTuning(advanced_power_plan_tuning::Message),
@@ -780,6 +783,9 @@ impl WinderustApp {
             Page::Watchdog if self.watchdog.has_pending_editor() => {
                 Some(Message::Watchdog(watchdog::Message::CancelRule))
             }
+            Page::InstanceLimits if self.instance_limits.has_pending_editor() => Some(
+                Message::InstanceLimits(instance_limits::Message::CancelRule),
+            ),
             Page::KeepRunning if self.keep_running.has_pending_editor() => {
                 Some(Message::KeepRunning(keep_running::Message::CancelRule))
             }
@@ -1302,6 +1308,15 @@ impl WinderustApp {
             }
             Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
             Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
+            Message::InstanceLimits(instance_limits::Message::Browse) => {
+                return self.browse(Page::InstanceLimits);
+            }
+            Message::InstanceLimits(message) => {
+                self.settings.edit_global(|settings| {
+                    self.instance_limits
+                        .update(&mut settings.instance_limits, message)
+                });
+            }
             Message::KeepRunning(keep_running::Message::Browse) => {
                 return self.browse(Page::KeepRunning);
             }
@@ -1424,6 +1439,11 @@ impl WinderustApp {
             Message::ExecutableChosen(page, profile, path) => {
                 if profile == self.power_source {
                     if let Some(path) = path {
+                        if page == Page::InstanceLimits && path.to_str().is_none() {
+                            self.error_message =
+                                t!("instance_limits.unsupported_unicode_path").to_string();
+                            return Task::none();
+                        }
                         let path = path.to_string_lossy().into_owned();
                         if let Some(kind) = priority_kind(page) {
                             return self.update(Message::Priority(
@@ -1445,6 +1465,11 @@ impl WinderustApp {
                             Page::Watchdog => {
                                 return self
                                     .update(Message::Watchdog(watchdog::Message::Path(path)));
+                            }
+                            Page::InstanceLimits => {
+                                return self.update(Message::InstanceLimits(
+                                    instance_limits::Message::Path(path),
+                                ));
                             }
                             Page::KeepRunning => {
                                 return self.update(Message::KeepRunning(
@@ -1672,7 +1697,10 @@ impl WinderustApp {
                     );
                 }
                 if (page.supports_power_source_profiles()
-                    || matches!(page, Page::ActionLog | Page::Watchdog | Page::KeepRunning))
+                    || matches!(
+                        page,
+                        Page::ActionLog | Page::Watchdog | Page::KeepRunning | Page::InstanceLimits
+                    ))
                     && !self.catalog_loading
                 {
                     self.catalog_loading = true;
@@ -1732,6 +1760,11 @@ impl WinderustApp {
                             if id == Page::Watchdog as usize =>
                         {
                             self.settings.set_watchdog_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature { id, enabled, .. }
+                            if id == Page::InstanceLimits as usize =>
+                        {
+                            self.settings.set_instance_limits_enabled(enabled)
                         }
                         tray::MenuAction::Feature { id, enabled, .. }
                             if id == Page::KeepRunning as usize =>
@@ -1824,7 +1857,10 @@ impl WinderustApp {
                     if (self.page.supports_power_source_profiles()
                         || matches!(
                             self.page,
-                            Page::ActionLog | Page::Watchdog | Page::KeepRunning
+                            Page::ActionLog
+                                | Page::Watchdog
+                                | Page::KeepRunning
+                                | Page::InstanceLimits
                         ))
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
@@ -1889,6 +1925,9 @@ impl WinderustApp {
             }
             Message::Save if self.settings.validate_watchdog().is_err() => {
                 self.error_message = t!("watchdog.invalid").to_string();
+            }
+            Message::Save if self.settings.validate_instance_limits().is_err() => {
+                self.error_message = t!("instance_limits.invalid").to_string();
             }
             Message::Save if self.settings.validate_keep_running().is_err() => {
                 self.error_message = t!("keep_running.invalid").to_string();
@@ -2011,6 +2050,7 @@ impl WinderustApp {
     fn invalid_inputs(&self) -> bool {
         self.settings.validate_watchdog().is_err()
             || self.settings.validate_keep_running().is_err()
+            || self.settings.validate_instance_limits().is_err()
             || self.watchdog.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
             || self.timer.has_invalid_inputs()
@@ -2072,6 +2112,7 @@ impl WinderustApp {
             || self.cpu_limiter.has_pending_editor()
             || self.watchdog.has_pending_editor()
             || self.keep_running.has_pending_editor()
+            || self.instance_limits.has_pending_editor()
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
     }
@@ -2094,6 +2135,7 @@ impl WinderustApp {
         self.trim = Default::default();
         self.watchdog = Default::default();
         self.keep_running = Default::default();
+        self.instance_limits = Default::default();
         self.timer = Default::default();
         self.appearance = settings_pages::theme(&self.settings.global().general);
     }
@@ -2126,7 +2168,7 @@ impl WinderustApp {
     fn tray_retry_pending(&self) -> bool {
         (self.settings.global().general.hide_to_tray
             || self.settings.persisted().general.start_minimized
-            || watchdog_notifications_required(self.settings.persisted()))
+            || notifications_required(self.settings.persisted()))
             && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
     }
 
@@ -2157,7 +2199,10 @@ impl WinderustApp {
                         .iter()
                         .filter_map(|page| {
                             navigation::feature_page_enabled(
-                                if matches!(*page, Page::Watchdog | Page::KeepRunning) {
+                                if matches!(
+                                    *page,
+                                    Page::Watchdog | Page::KeepRunning | Page::InstanceLimits
+                                ) {
                                     saved
                                 } else {
                                     settings
@@ -2178,7 +2223,7 @@ impl WinderustApp {
         let intent = (
             self.settings.global().general.hide_to_tray,
             self.settings.persisted().general.start_minimized
-                || watchdog_notifications_required(self.settings.persisted()),
+                || notifications_required(self.settings.persisted()),
         );
         if !intent.0 && !intent.1 {
             self.tray = None;
@@ -2778,6 +2823,10 @@ impl WinderustApp {
             return navigation_search_overlay(layout, search);
         }
         let modal = match self.page {
+            Page::InstanceLimits => self
+                .instance_limits
+                .modal(&self.candidates)
+                .map(|modal| modal.map(Message::InstanceLimits)),
             Page::KeepRunning => self
                 .keep_running
                 .modal(&self.candidates)
@@ -2902,6 +2951,14 @@ impl WinderustApp {
                 .watchdog
                 .view(&self.settings.global().watchdog, &self.candidates)
                 .map(Message::Watchdog),
+            Page::InstanceLimits => self
+                .instance_limits
+                .view(
+                    &self.settings.global().instance_limits,
+                    &self.status.feature_status.instance_limits,
+                    &self.candidates,
+                )
+                .map(Message::InstanceLimits),
             Page::KeepRunning => self
                 .keep_running
                 .view(
@@ -3190,8 +3247,10 @@ fn priority_kind(page: Page) -> Option<priority_control::Kind> {
     }
 }
 
-fn watchdog_notifications_required(settings: &crate::config::Settings) -> bool {
-    settings.general.enabled && settings.watchdog.notifications_required()
+fn notifications_required(settings: &crate::config::Settings) -> bool {
+    settings.general.enabled
+        && (settings.watchdog.notifications_required()
+            || settings.instance_limits.notifications_required())
 }
 
 fn tray_retry_due(

@@ -1179,3 +1179,42 @@ No undocumented token layouts, privilege enabling, service/session launch,
 credentials, or crash-helper launch recovery are used. Console apps, custom
 token changes, shell replacement, and unusual inherited jobs require separate
 compatibility evidence; unsupported contexts fail closed.
+
+## Instance Limits
+
+`src/platform/windows/instance_limits.rs` owns the read-only catalog, path, token
+and liveness queries. `src/control/instance_limits.rs` applies shared protected-process
+checks on the same retained handle. Policy lives in
+`src/features/advanced_controls/instance_limits.rs`; runtime intake and notification
+ordering live in `src/backend/automation/instance_limits.rs`.
+
+- [PROCESSENTRY32W](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w)
+  supplies a candidate executable filename. Missing, malformed, unterminated or
+  potentially truncated names cannot prove absence. Windows documents this as a
+  filename, without a universal alias/rename equivalence guarantee. Negative name
+  preselection therefore retains a measured naming assumption; a discovered
+  contradiction invalidates the entire pass.
+- [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)
+  with flags zero supplies the Win32 full image path, using limited-query access.
+  [CompareStringOrdinal](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal)
+  compares explicit UTF-16 lengths with ordinal case ignoring; zero is an error.
+  Slash normalization does not resolve aliases or identify files.
+- [GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)
+  checks the selected file's normalized DOS path through a read-attributes handle
+  shared for read, write and deletion. Only documented extended DOS/UNC prefixes
+  are converted for comparison. A different resolved spelling is unavailable,
+  rather than silently changing the rule. Hardlink file IDs are never merged.
+- [GetTokenInformation](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation)
+  reads TokenUser and TokenSessionId with TOKEN_QUERY. Caller and candidate must
+  agree on SID and session. No authentication-ID, integrity, elevation, restriction,
+  AppContainer or UIAccess equality is required for this read-only count.
+- [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+  with zero timeout verifies liveness through a SYNCHRONIZE handle. Query-only
+  fallback can rule out a known different path or scope, but STILL_ACTIVE cannot
+  prove liveness because it is also a possible exit code. Exact PID/creation keys
+  and retained handles avoid PID-only joins; the catalog is still non-atomic.
+
+No privilege enabling, process mutation, launch prevention or recovery journal is
+involved. Ordinary/elevated local fixtures establish a bounded compatibility claim;
+UNC, unusual filesystem naming, process renames and actual PID reuse need separate
+controlled evidence.

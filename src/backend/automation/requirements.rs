@@ -377,6 +377,7 @@ pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
 
 pub(super) fn automation_worker_required(settings: &Settings) -> bool {
     keep_running_required(settings)
+        || instance_limits_required(settings)
         || automation_worker_required_for_profile(settings)
         || settings
             .on_battery
@@ -414,8 +415,19 @@ pub(super) fn keep_running_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
+pub(super) fn instance_limits_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.instance_limits.enabled
+        && settings
+            .instance_limits
+            .rules
+            .iter()
+            .any(|rule| rule.enabled)
+}
+
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
     keep_running_required(settings)
+        || instance_limits_required(settings)
         || windows_event_watcher_required_for_profile(settings)
         || settings
             .on_battery
@@ -444,7 +456,7 @@ pub(super) fn windows_event_wake_required(
     settings: &Settings,
     event: WindowsAutomationEvent,
 ) -> bool {
-    if keep_running_required(settings)
+    if (keep_running_required(settings) || instance_limits_required(settings))
         && matches!(
             event,
             WindowsAutomationEvent::SuspendResume | WindowsAutomationEvent::SessionChanged

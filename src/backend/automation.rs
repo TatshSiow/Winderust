@@ -54,6 +54,7 @@ use crate::{
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::advanced_controls::{
+        instance_limits::{InstanceLimitsEvent, InstanceLimitsManager, InstanceLimitsSnapshot},
         keep_running::{
             CommitDisposition, KeepRunningManager, KeepRunningSnapshot, LaunchTicket, Observation,
             PauseReason,
@@ -94,6 +95,7 @@ use crate::{
     windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
 };
 
+mod instance_limits;
 mod keep_running;
 mod requirements;
 mod runner;
@@ -128,6 +130,7 @@ const MEMORY_TRIM_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SLEEP_PREVENTION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const KEEP_RUNNING_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const INSTANCE_LIMITS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -312,6 +315,7 @@ pub struct RuntimeFeatureStatus {
     pub timer_resolution: TimerResolutionSnapshot,
     pub sleep_prevention: SleepPreventionSnapshot,
     pub(crate) keep_running: KeepRunningSnapshot,
+    pub(crate) instance_limits: InstanceLimitsSnapshot,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -352,6 +356,7 @@ struct AutomationWorkerState {
     process_control_commands: VecDeque<ProcessControlCommand>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
+    pending_instance_limits_resets: instance_limits::PendingResets,
     input_activity: InputActivityTracker,
     windows_event_watcher_active: bool,
     worker_accepting_work: bool,
@@ -411,6 +416,7 @@ impl RuntimeHandle {
                 process_control_commands: VecDeque::new(),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
+                pending_instance_limits_resets: instance_limits::PendingResets::default(),
                 input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: false,
                 worker_accepting_work: false,
@@ -477,6 +483,7 @@ impl RuntimeHandle {
                     != settings.value.keep_running
                     || state.settings.general.enabled != settings.value.general.enabled;
                 state.pending_events.keep_running_settings_changed |= keep_running_changed;
+                instance_limits::record_settings_changes(&mut state, &settings.value);
                 state.settings = Arc::clone(&settings.value);
                 state.runtime_revision = settings.runtime_revision;
                 state.pending_events.settings_changed = true;
@@ -1039,6 +1046,24 @@ fn run_background_automation(
             &configured_settings.keep_running,
             configured_settings.general.enabled,
         );
+        if snapshot.instance_limits_resets.all {
+            runner
+                .instance_limits
+                .sync(&configured_settings.instance_limits, false);
+        } else {
+            runner
+                .instance_limits
+                .reset_paths(&snapshot.instance_limits_resets.paths);
+        }
+        runner.instance_limits.sync(
+            &configured_settings.instance_limits,
+            configured_settings.general.enabled,
+        );
+        if wake_events.suspend_resume || wake_events.session_changed {
+            runner.instance_limits.invalidate(
+                "Waiting for a fresh process count after a session or sleep transition.",
+            );
+        }
         if wake_events.suspend_resume {
             runner.keep_running.pause_all(PauseReason::Suspend);
         }
@@ -1146,6 +1171,9 @@ fn run_background_automation(
             scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);
             scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
+        if wake_events.suspend_resume {
+            scheduler.schedule_now(RefreshDomain::InstanceLimits, event_now);
+        }
         if keep_running_command_requested {
             scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
@@ -1240,6 +1268,8 @@ fn run_background_automation(
             || keep_running_command_requested
             || keep_running_required(configured_settings.as_ref())
             || runner.keep_running.has_pending();
+        let instance_limits_refresh_required =
+            settings_changed || instance_limits_required(configured_settings.as_ref());
         let memory_trim_refresh_required = settings_changed
             || memory_trim_command_requested
             || feature_refresh_required(settings, settings.memory_trim.enabled);
@@ -1564,6 +1594,25 @@ fn run_background_automation(
                 KEEP_RUNNING_REFRESH_INTERVAL,
             );
         }
+        if instance_limits_refresh_required && scheduler.is_due(RefreshDomain::InstanceLimits, now)
+        {
+            let status = runner.run_instance_limits_update(
+                &shared,
+                &configured_settings,
+                windows_event_watcher_active,
+            );
+            update_feature_status(
+                &shared,
+                status,
+                |status| &status.instance_limits,
+                |status| &mut status.instance_limits,
+            );
+            scheduler.schedule_after(
+                RefreshDomain::InstanceLimits,
+                Instant::now(),
+                INSTANCE_LIMITS_REFRESH_INTERVAL,
+            );
+        }
         if timer_resolution_refresh_required
             && scheduler.is_due(RefreshDomain::TimerResolution, now)
         {
@@ -1632,6 +1681,11 @@ fn run_background_automation(
                     keep_running_refresh_required || runner.keep_running.has_pending(),
                     RefreshDomain::KeepRunning,
                     KEEP_RUNNING_REFRESH_INTERVAL,
+                ),
+                (
+                    instance_limits_refresh_required,
+                    RefreshDomain::InstanceLimits,
+                    INSTANCE_LIMITS_REFRESH_INTERVAL,
                 ),
                 (
                     background_efficiency_refresh_required,
@@ -1915,6 +1969,7 @@ mod keep_running_intake_tests {
                 process_control_commands: VecDeque::new(),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
+                pending_instance_limits_resets: instance_limits::PendingResets::default(),
                 input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: true,
                 worker_accepting_work: true,

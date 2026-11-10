@@ -114,6 +114,7 @@ pub(super) struct RuntimeCore {
     sleep_prevention_manager: SleepPreventionManager,
     sleep_prevention_controller: SleepPreventionController,
     pub(super) keep_running: keep_running::KeepRunningCoordinator,
+    pub(super) instance_limits: InstanceLimitsManager,
     pub(super) known_process_ids: BTreeSet<u32>,
     published_action_log_revision: u64,
 }

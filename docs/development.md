@@ -79,6 +79,19 @@ These checks do not suspend Windows or change saved settings or power plans.
 They establish accepted requests and clean release, not actual idle sleep,
 Modern Standby expiry, lid behavior, or resume after a real sleep transition.
 
+## Instance Limits checks
+
+The ignored native check exercises the production read-only collector with bounded
+owned workers. It checks counts through zero, one, two, one and zero while differently
+named and differently located hardlinks remain alive:
+
+```powershell
+cargo test --locked control::instance_limits::tests::native_counts_only_the_selected_image_path -- --ignored --nocapture --test-threads=1
+```
+
+It changes no process settings, privileges or power plans. It establishes full-path
+matching on local files, not atomic process counts or universal filesystem support.
+
 ## CPU Limiter mechanism comparison
 
 The `runtime-benchmark` feature also provides a disposable-worker comparison of

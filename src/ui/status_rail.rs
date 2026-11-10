@@ -76,6 +76,11 @@ pub(super) fn view<'a>(
             "sleep_prevention.paused_help",
             "common.waiting",
         ),
+        FeatureRunState::Running if page == Page::InstanceLimits => (
+            "instance_limits.monitoring",
+            "instance_limits.intro_1",
+            "common.applied",
+        ),
         FeatureRunState::Running => (
             "common.running",
             "sidebar_status.running_help",
@@ -131,6 +136,27 @@ pub(super) fn view<'a>(
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());
         body = body.push(section("common.current_power_plan", column![text(plan)]));
+    } else if page == Page::InstanceLimits {
+        let limits = &runtime.feature_status.instance_limits;
+        body = body.push(section(
+            "instance_limits.monitoring",
+            column![
+                metric(
+                    "common.rules",
+                    count(
+                        available.then(|| limits.rules.iter().filter(|rule| rule.enabled).count())
+                    )
+                ),
+                metric(
+                    "instance_limits.incidents",
+                    count(
+                        available.then(|| limits.rules.iter().filter(|rule| rule.incident).count())
+                    )
+                ),
+                text(t!("instance_limits.intro_2").to_string()).size(design::typography::CAPTION),
+            ]
+            .spacing(design::space::CONTROL),
+        ));
     } else if page == Page::SleepPrevention {
         let sleep = &runtime.feature_status.sleep_prevention;
         let accepted = |requested| {
@@ -420,6 +446,29 @@ fn sidebar_state(
         };
     }
     let features = &runtime.feature_status;
+    if page == Page::InstanceLimits {
+        use crate::{
+            control::instance_limits::CountObservation,
+            features::advanced_controls::instance_limits::NotificationStatus,
+        };
+        let limits = &features.instance_limits;
+        return if limits
+            .rules
+            .iter()
+            .any(|rule| matches!(rule.notification, NotificationStatus::Failed(_)))
+        {
+            FeatureRunState::Error
+        } else if limits.rules.iter().filter(|rule| rule.enabled).any(|rule| {
+            !super::instance_limits::sample_fresh(rule.sampled_at)
+                || !matches!(rule.count, CountObservation::Complete(_))
+        }) {
+            FeatureRunState::Unknown
+        } else if limits.rules.iter().any(|rule| rule.enabled) {
+            FeatureRunState::Running
+        } else {
+            FeatureRunState::Waiting
+        };
+    }
     if page == Page::KeepRunning {
         use crate::features::advanced_controls::keep_running::KeepRunningState;
         let keep_running = &features.keep_running;
@@ -580,6 +629,16 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::Watchdog,
             }
         }
+        Page::InstanceLimits => FeatureStatusSummary {
+            scanned: None,
+            adjusted: None,
+            protected_or_denied: None,
+            skipped: None,
+            last_error: runtime.feature_status.instance_limits.rules.iter().find_map(|rule| {
+                if let crate::features::advanced_controls::instance_limits::NotificationStatus::Failed(error) = &rule.notification { Some(error.as_str()) } else { None }
+            }),
+            action_log_feature: ActionLogFeature::InstanceLimits,
+        },
         Page::KeepRunning => FeatureStatusSummary {
             scanned: None,
             adjusted: None,

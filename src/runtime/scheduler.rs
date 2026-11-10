@@ -26,11 +26,12 @@ pub(crate) enum RefreshDomain {
     TimerResolution,
     SleepPrevention,
     KeepRunning,
+    InstanceLimits,
     ProcessAppearance,
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 25] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 26] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -54,6 +55,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 25] = [
     RefreshDomain::TimerResolution,
     RefreshDomain::SleepPrevention,
     RefreshDomain::KeepRunning,
+    RefreshDomain::InstanceLimits,
     RefreshDomain::ProcessAppearance,
     RefreshDomain::ControllerActivity,
 ];
@@ -182,6 +184,7 @@ impl RefreshScheduler {
             SchedulerEvent::SessionChanged => {
                 self.schedule_domains_now(&FOREGROUND_DOMAINS, now);
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
+                self.schedule_now(RefreshDomain::InstanceLimits, now);
             }
             SchedulerEvent::AppSwitch | SchedulerEvent::AppSwitchMouseClick => {
                 self.schedule_domains_now(&APP_SWITCH_DOMAINS, now);
@@ -305,7 +308,9 @@ mod tests {
         let expected = ALL_REFRESH_DOMAINS
             .into_iter()
             .filter(|domain| {
-                FOREGROUND_DOMAINS.contains(domain) || WINDOW_CREATED_DOMAINS.contains(domain)
+                FOREGROUND_DOMAINS.contains(domain)
+                    || WINDOW_CREATED_DOMAINS.contains(domain)
+                    || *domain == RefreshDomain::InstanceLimits
             })
             .collect::<Vec<_>>();
 

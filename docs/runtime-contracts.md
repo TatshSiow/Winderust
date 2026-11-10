@@ -65,6 +65,47 @@ Read the relevant section before changing feature policy, ownership, restoration
   jobs, console apps, custom token changes, and shell replacement remain compatibility
   constraints, not reasons to bypass access checks or enable privileges.
 
+## Instance Limits
+
+- Instance Limits is disabled by default and shares one configuration across power
+  sources. Rules count process objects at the selected full Win32 image path for
+  the current user SID and Windows session. Queryable elevated or restricted apps
+  are included; logon authentication IDs do not partition the count. The feature
+  neither prevents launches nor stops, suspends, relaunches, or places processes.
+- Paths compare by Windows ordinal-ignore-case after slash normalization. Different
+  hardlink names and directories remain separate targets. Normal drive-rooted and
+  UNC syntax is accepted; relative/device paths, dot components, ambiguous trailing
+  dots/spaces, invalid characters and duplicate rules are rejected. Each pass verifies
+  the selected file's final path spelling; missing, inaccessible or differently
+  resolved short/reparse aliases produce Unknown. Case-distinct paths intentionally
+  compare equivalent even on a case-sensitive filesystem; those directories and
+  native UNC behavior have no controlled compatibility evidence yet.
+- One fresh Toolhelp catalog serves all rules. Only a complete usable executable
+  basename may exclude a different name; positive counts require a retained live
+  process handle, creation time, full image path and SID/session checks. Query-only
+  access may exclude a known different path/scope, but cannot prove liveness.
+  Retained members are rechecked before publication. A discovered catalog/image-name
+  contradiction invalidates the pass. Basename agreement was measured on ordinary
+  and elevated fixtures, not established for every rename or filesystem behavior.
+- Counts are sampled and non-atomic: short-lived processes may be missed. Incomplete
+  counts expose a verified lower bound; incomplete zero says Count incomplete,
+  never a reassuring zero. Old samples become Unknown with their age. A missing
+  event watcher blocks fresh qualification. Native queries run outside the shared
+  intake mutex; one-second visible/tray cadence is not a Windows-call deadline.
+- Excess and recovery each need two fresh qualifying samples at least one second
+  apart. A lower bound above the maximum proves excess; only complete within-limit
+  counts prove recovery. Uncertainty breaks continuity and preserves an unresolved
+  incident. There is one notification attempt per incident, including failures;
+  acceptance means Windows accepted the request, not that a banner was displayed.
+- Rule edits reset only that rule, while feature/master disable clears all state.
+  Notify-only edits and power-source changes preserve incidents. Pending reset
+  intents survive rapid edits and toggles between worker snapshots. Suspend/session
+  events discard continuity and stale results while preserving attempted incidents.
+  Results are accepted under the intake mutex before notification delivery outside
+  it; a later intent cannot retract an already reserved notification attempt.
+- Action Log records excess as monitoring-only Skipped, complete recovery, changed
+  observation failures and notification results. It contains no raw SID or logon keys.
+
 ## Restoration and process safety
 
 - Never target Winderust itself or protected/system processes. Cross-session targeting

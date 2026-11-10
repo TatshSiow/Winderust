@@ -70,6 +70,8 @@ pub struct Settings {
     #[serde(default)]
     pub keep_running: super::KeepRunningSettings,
     #[serde(default)]
+    pub instance_limits: super::InstanceLimitsSettings,
+    #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
     #[serde(default)]
     pub sleep_prevention: SleepPreventionSettings,
@@ -129,6 +131,7 @@ impl Settings {
         battery.advanced = self.advanced.clone();
         battery.watchdog = self.watchdog.clone();
         battery.keep_running = self.keep_running.clone();
+        battery.instance_limits = self.instance_limits.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
         battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
         battery.advanced_power_plan_tuning_presets =
@@ -1955,6 +1958,7 @@ impl Default for Settings {
             memory_trim: MemoryTrimSettings::default(),
             watchdog: super::WatchdogSettings::default(),
             keep_running: super::KeepRunningSettings::default(),
+            instance_limits: super::InstanceLimitsSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
             sleep_prevention: SleepPreventionSettings::default(),
             on_battery: None,

@@ -42,6 +42,9 @@ Windows events / UI intent / persisted settings
 - Keep Running adds one bounded native-launch worker behind its runtime coordinator.
   Per-rule policy stays separate from native resources; unresolved operations retain
   their owner even after rule removal. Native calls never hold the shared intake lock.
+- Instance Limits uses one fresh read-only process catalog per pass, a control-layer
+  safety adapter, and a pure incident manager. Its own one-second scheduler domain
+  remains active in the tray; it has no mutation or recovery ownership.
 - Feature managers own rules, target selection, timers, hysteresis, suppression, status, and
   Action Log policy.
 - Typed controllers own exact identities, claims, baselines, precedence, verification,
@@ -233,7 +236,8 @@ Pages are grouped in `src/ui.rs`:
 - Settings: Winderust Behaviour, Language and Appearance, Experimental
   Features.
 - About.
-- Advanced: App Suspension, Timer Resolution, Win32 Priority Separation.
+- Advanced Controls: App Suspension, Sleep Prevention, Keep Running, Instance
+  Limits, Timer Resolution, Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 `WinderustApp::page_view` in `src/ui/app.rs` together.

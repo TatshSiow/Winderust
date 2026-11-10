@@ -877,6 +877,21 @@ Assert-NoSourceMatch `
     -Pattern 'RecoveryEntry|RecoveryCommand|RecoveryIntent|record_(?:process|thread_priority|power_plan|suspended_job)_change' `
     -Paths @('src/features', 'src/ui')
 
+Assert-NoSourceMatch `
+    -Boundary 'Instance Limits remains observational without process mutation or launch' `
+    -Pattern 'TerminateProcess|CreateProcessW|ResumeThread|SuspendThread|AdjustTokenPrivileges|SetProcessInformation|RecoveryIntent|record_process_change' `
+    -Paths @('src/platform/windows/instance_limits.rs', 'src/control/instance_limits.rs', 'src/features/advanced_controls/instance_limits.rs', 'src/backend/automation/instance_limits.rs', 'src/ui/instance_limits.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Limits Windows adapter imports no policy layer' `
+    -Pattern 'crate::(?:control|features|config|foreground|rules|ui)' `
+    -Paths @('src/platform/windows/instance_limits.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Limits incident policy contains no raw Windows calls' `
+    -Pattern 'windows_sys|unsafe|crate::platform' `
+    -Paths @('src/features/advanced_controls/instance_limits.rs')
+
 Write-Host 'All architecture ownership gates passed.'
 
 # Successful negative searches return 1; do not propagate that as a CI failure.

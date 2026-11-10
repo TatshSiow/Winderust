@@ -1402,6 +1402,15 @@ fn enabled_features(
         .to_string()
     );
     feature!(
+        InstanceLimits,
+        instance_limits,
+        t!(
+            "common.rule_count",
+            count = settings.instance_limits.rules.len()
+        )
+        .to_string()
+    );
+    feature!(
         TimerResolution,
         timer_resolution,
         t!(
@@ -1465,6 +1474,7 @@ mod tests {
             Page::MemoryTrim,
             Page::SleepPrevention,
             Page::KeepRunning,
+            Page::InstanceLimits,
             Page::TimerResolution,
         ];
         let mut settings = Settings::default();

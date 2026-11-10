@@ -24,6 +24,9 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Watchdog with per-app sustained CPU/memory warning and critical thresholds, Windows notifications, and explicit opt-in termination or restart.
 - Timer Resolution rules tied to foreground apps.
 - Sleep Prevention rules for running apps, with separate display requests.
+- Keep Running rules for opt-in automatic relaunch after a manually started app exits.
+- Instance Limits for sampled per-path process counts and excess notifications in
+  the current user's Windows session; it does not prevent or stop app instances.
 - Action Log and CSV export.
 - Process List as the main per-process policy surface.
 

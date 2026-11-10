@@ -13,6 +13,39 @@ window:
   maximize: "最大化"
   restore: "還原"
 
+instance_limits:
+  enable: "啟用執行個體限制"
+  notify: "超過上限時通知"
+  shared: "插電與電池模式共用此設定。"
+  intro_1: "監控目前 Windows 使用者工作階段中，各指定執行檔路徑的處理程序數量。此功能不會停止應用程式或阻止啟動。"
+  intro_2: "計算單位是處理程序，而非視窗或分頁。約每秒取樣一次，可能略過短暫執行的處理程序。其他使用者與工作階段不列入計算。"
+  intro_3: "連續兩次新取樣超過上限才會發出警示，連續兩次完整取樣未超過上限才會解除警示。不完整的計數僅代表已確認的最低數量；未知計數不會解除警示。通知是否顯示由 Windows 決定。"
+  maximum: "處理程序數量上限"
+  maximum_value: "處理程序數量上限：%{maximum}"
+  empty: "尚未設定執行個體限制規則。"
+  add_rule: "新增執行個體限制規則"
+  edit_rule: "編輯執行個體限制規則"
+  invalid: "請選擇支援的執行檔絕對路徑，並輸入 1 至 4294967295 的上限。每個路徑只能有一條規則，不可選擇 Winderust 與受保護的系統應用程式。"
+  unsupported_unicode_path: "執行檔路徑含有無效的 Unicode，無法選取。"
+  incomplete: "計數不完整"
+  at_least: "至少 %{count} / %{maximum}"
+  unknown: "未知"
+  conflict: "規則衝突"
+  incident: "先前超量的警示尚未解除，等待確認恢復。"
+  incidents: "目前警示"
+  monitoring: "監控中"
+  notification_pending: "通知待送出。"
+  notification_accepted: "Windows 已接受通知。"
+  notification_failed: "通知失敗：%{error}"
+  sample_age: "取樣距今：%{seconds} 秒"
+  stale_sample: "上次取樣已過時（%{seconds} 秒前），等待新的計數。"
+  notification_title: "執行個體限制"
+  notification_body: "至少有 %{count} 個處理程序執行中（上限 %{maximum}）。僅監控，未停止任何應用程式。%{path}"
+  excess_log: "至少有 %{count} 個處理程序，已超過上限 %{maximum}。僅監控，未停止任何應用程式。"
+  recovered_log: "計數已恢復至 %{count} 個處理程序（上限 %{maximum}），經兩次完整取樣確認。"
+  waiting_context: "等待目前 Windows 使用者工作階段的新觀察結果。"
+  discarded_sample: "收集期間設定或 Windows 工作階段已變更，等待新取樣。"
+
 keep_running:
   enable: "啟用持續執行"
   shared: "插電與使用電池時共用此設定。"
@@ -46,6 +79,7 @@ keep_running:
   paused_cleanup: "已暫停：尚未確認清理完成"
 
 nav:
+  instance_limits: "執行個體限制"
   keep_running: "持續執行"
   watchdog: Watchdog
   side_panel: "側邊面板"

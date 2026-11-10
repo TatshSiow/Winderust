@@ -2,6 +2,7 @@ pub(crate) mod cpu_allocation;
 pub(crate) mod cpu_limiter;
 pub(crate) mod dynamic_priority_boost;
 pub(crate) mod gpu_priority;
+pub(crate) mod instance_limits;
 pub(crate) mod io_priority;
 pub(crate) mod keep_running;
 pub(crate) mod memory_priority;

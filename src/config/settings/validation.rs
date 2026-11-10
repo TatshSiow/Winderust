@@ -8,6 +8,7 @@ impl Settings {
         self.validate_power_source_profiles()?;
         self.validate_watchdog()?;
         self.validate_keep_running()?;
+        self.validate_instance_limits()?;
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
@@ -52,6 +53,13 @@ impl Settings {
     pub fn validate_keep_running(&self) -> Result<(), String> {
         for profile in self.profiles() {
             profile.keep_running.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_instance_limits(&self) -> Result<(), String> {
+        for profile in self.profiles() {
+            profile.instance_limits.validate()?;
         }
         Ok(())
     }

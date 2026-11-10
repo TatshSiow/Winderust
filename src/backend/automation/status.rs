@@ -7,6 +7,7 @@ pub(super) struct AutomationSnapshot {
     pub(super) action_log_clear_requested: bool,
     pub(super) input_activity: InputActivityTracker,
     pub(super) wake_events: AutomationWakeEvents,
+    pub(super) instance_limits_resets: instance_limits::PendingResets,
     pub(super) windows_event_watcher_active: bool,
 }
 
@@ -19,6 +20,7 @@ pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<Auto
         process_control_commands: std::mem::take(&mut state.process_control_commands),
         action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
         wake_events: std::mem::take(&mut state.pending_events),
+        instance_limits_resets: std::mem::take(&mut state.pending_instance_limits_resets),
         windows_event_watcher_active: state.windows_event_watcher_active,
     })
 }

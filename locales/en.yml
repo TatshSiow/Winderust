@@ -13,6 +13,39 @@ window:
   maximize: "Maximize"
   restore: "Restore"
 
+instance_limits:
+  enable: "Enable Instance Limits"
+  notify: "Notify when the maximum is exceeded"
+  shared: "Shared across Plugged In and On Battery."
+  intro_1: "Monitor how many processes run at each selected executable path in your Windows user session. This feature never stops an app or prevents it from starting."
+  intro_2: "Counts refer to processes, not windows or tabs. Samples run about once a second and can miss short-lived processes. Other users and sessions are excluded."
+  intro_3: "An alert needs two fresh samples above the maximum. Recovery needs two complete samples at or below it. An incomplete count is only a verified lower bound; unknown counts never clear an alert. Windows controls notification visibility."
+  maximum: "Maximum processes"
+  maximum_value: "Maximum processes: %{maximum}"
+  empty: "No Instance Limits rules configured."
+  add_rule: "Add Instance Limits rule"
+  edit_rule: "Edit Instance Limits rule"
+  invalid: "Choose a supported absolute executable path and a maximum from 1 to 4294967295. Each path can have only one rule. Winderust and protected system apps cannot be selected."
+  unsupported_unicode_path: "The executable path contains invalid Unicode and cannot be selected."
+  incomplete: "Count incomplete"
+  at_least: "At least %{count} / %{maximum}"
+  unknown: "Unknown"
+  conflict: "Conflicting rules"
+  incident: "Previous excess remains unresolved; waiting for confirmed recovery."
+  incidents: "Active alerts"
+  monitoring: "Monitoring"
+  notification_pending: "Notification pending."
+  notification_accepted: "Notification accepted by Windows."
+  notification_failed: "Notification failed: %{error}"
+  sample_age: "Sample age: %{seconds}s"
+  stale_sample: "Last sample is stale (%{seconds}s ago). Waiting for a fresh count."
+  notification_title: "Instance Limits"
+  notification_body: "At least %{count} processes running (maximum %{maximum}). Monitoring only; no app was stopped. %{path}"
+  excess_log: "At least %{count} processes exceed the maximum of %{maximum}. Monitoring only; no app was stopped."
+  recovered_log: "Count recovered to %{count} processes (maximum %{maximum}), confirmed by two complete samples."
+  waiting_context: "Waiting for a fresh observation of this Windows user session."
+  discarded_sample: "Settings or the Windows session changed during collection; waiting for a fresh sample."
+
 keep_running:
   enable: "Enable Keep Running"
   shared: "Shared across Plugged in and On Battery."
@@ -46,6 +79,7 @@ keep_running:
   paused_cleanup: "Paused: cleanup unconfirmed"
 
 nav:
+  instance_limits: "Instance Limits"
   keep_running: "Keep Running"
   watchdog: Watchdog
   side_panel: "Side panel"
