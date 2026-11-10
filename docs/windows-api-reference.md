@@ -29,6 +29,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
 | Stop Process / Stop Process Tree | `src/foreground/process_list.rs`, `src/control/process_termination.rs`, and `src/platform/windows/process_termination.rs` | Read-side tree capture, typed batch command, and raw termination adapter |
+| Keep Running | `src/features/advanced_controls/keep_running.rs`, `src/backend/automation/keep_running/`, `src/control/keep_running.rs`, and `src/platform/windows/keep_running.rs` | Current shell context, retained process membership, provisional-launch ownership, atomic Job List creation, and one-shot native acceptance |
 | CPU Control | `src/features/cpu_control/`, `src/control/cpu_allocation.rs`, `src/control/cpu_limiter.rs`, `src/control/suspension.rs`, and the CPU allocation, CPU Limiter timing, and shared Job Object adapters under `src/platform/windows/` | Policy, shared affinity/CPU Set ownership, wall-clock duty-cycle scheduling, shared freeze/thaw ownership, and narrow raw Windows adapters |
 | Priority Control | `src/features/priority_control/`, `src/control/process.rs`, `src/control/priority_efficiency.rs`, `src/control/thread_priority.rs`, `src/control/dynamic_priority_boost.rs`, `src/control/io_priority.rs`, `src/control/gpu_priority.rs`, `src/control/memory_priority.rs`, and mechanism adapters in `src/platform/windows/` | Policy-only feature routes, typed property ownership/transactions, and narrow raw Windows adapters, including the compound Process Priority / Power Throttling adapter |
 | Shared process-control acquisition | `src/control/process.rs` and `src/platform/windows/process.rs` | Typed exact identity/safety validation plus the sole operation-specific `OpenProcess` adapter for control commands |
@@ -1126,3 +1127,55 @@ Modern Standby with battery power, System requests terminate five minutes after
 the system sleep timeout. The controller does not query effective inhibition or
 periodically renew requests to defeat these limits. No Away Mode or Execution
 request, undocumented information class, or persistent timeout change is used.
+
+## Keep Running
+
+Policy lives in `src/features/advanced_controls/keep_running.rs`; the bounded
+worker and intake ordering live in `src/backend/automation/keep_running.rs`.
+`src/control/keep_running.rs` applies the shared protected-process and exact-target
+acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
+
+- [GetShellWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getshellwindow)
+  selects the actual shell, without enumerating substitute Explorer processes.
+  Launch window-station/desktop names come from `GetProcessWindowStation`,
+  `GetThreadDesktop`, and `GetUserObjectInformationW`. Retained shell and member
+  handles must agree on ordinary user/logon/session/token facts. This does not
+  establish which desktop each observed app originally used.
+- [GetTokenInformation](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation)
+  supplies SID, authentication ID, session, integrity, elevation, AppContainer,
+  UIAccess, groups, privileges, and restricting SIDs. An elevated caller's
+  `TokenLinkedToken` must bind to the selected ordinary shell. This conservative
+  comparison does not prove arbitrary token equivalence. It changes no token
+  privileges and calls no token-based process-creation API.
+- [CreateEnvironmentBlock](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createenvironmentblock)
+  builds a fresh shell-user environment with inheritance disabled. Explicit
+  executable, literal arguments, and working directory go to
+  [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
+  No shell expansion, command-line discovery, or Winderust environment inheritance
+  is used. Creation is suspended at Normal priority with no inherited handles.
+- [UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)
+  supplies the selected parent and atomic Job List. A private unnamed job starts
+  with `KILL_ON_JOB_CLOSE | BREAKAWAY_OK`. The root requests no breakaway and does
+  not modify inherited jobs. Native verification covers its token object DACL
+  and mandatory label, executable, retained identity, context, priority, and job.
+- `ResumeThread` runs once. Successful clearing of the private job's kill flag is
+  irreversible acceptance; later readback or publication failure cannot authorize
+  termination. Explicit disposal targets only the exact unaccepted created root,
+  then confirms exit through its retained synchronization handle. Accepted-member
+  observation duplicates that same process object, avoiding a PID-reopen race.
+- [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+  define nested-job and breakaway behavior. Ordinary descendants may remain in
+  the private job; explicit breakaway children can escape it. Cleanup is not a
+  descendant rollback guarantee. Kill-on-close protects the provisional root only
+  while armed; it cannot make native disarm and result publication atomic.
+- Fresh Toolhelp enumeration inspects accessible candidates and treats plausible
+  same-name inspection failures as unknown. Resolved aliases use volume serial
+  plus [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
+  file ID. An inaccessible differently named alias cannot be ruled out, and a
+  path's current file identity does not prove an unchanged loaded image section.
+  Retained exact process handles, not missing enumeration, prove member exit.
+
+No undocumented token layouts, privilege enabling, service/session launch,
+credentials, or crash-helper launch recovery are used. Console apps, custom
+token changes, shell replacement, and unusual inherited jobs require separate
+compatibility evidence; unsupported contexts fail closed.

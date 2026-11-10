@@ -120,6 +120,42 @@ fn watchdog_is_global_when_editing_or_toggling_from_battery() {
     );
 }
 
+#[test]
+fn keep_running_edits_and_tray_toggle_are_global_from_either_profile() {
+    let mut settings = Settings::default();
+    settings.battery_profile_mut();
+    let storage = FakeStorage::new(settings, Ok(Settings::default()), Ok(()), Ok(()));
+    let (mut editor, _, _) = editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+    editor.select_power_source(PowerSourceProfile::OnBattery);
+    editor.edit_global(|settings| {
+        settings
+            .keep_running
+            .rules
+            .push(crate::config::KeepRunningRule::new(
+                r"C:\Apps\test.exe".into(),
+            ))
+    });
+    assert_eq!(editor.global().keep_running, editor.keep_running);
+    editor.save().unwrap();
+    editor.set_keep_running_enabled(true).unwrap();
+    let runtime = editor.runtime_settings_snapshot();
+    assert!(runtime.value.keep_running.enabled);
+    assert_eq!(
+        runtime.value.keep_running,
+        runtime.value.battery_profile().keep_running
+    );
+    editor.select_power_source(PowerSourceProfile::PluggedIn);
+    editor.set_keep_running_enabled(false).unwrap();
+    assert!(
+        !editor
+            .runtime_settings_snapshot()
+            .value
+            .battery_profile()
+            .keep_running
+            .enabled
+    );
+}
+
 fn load_ok_with_fixtures() -> (SettingsCoordinator, SettingsDraft, FakeStorage) {
     let storage = FakeStorage::new(Settings::default(), Ok(Settings::default()), Ok(()), Ok(()));
     let storage_copy = storage.clone();

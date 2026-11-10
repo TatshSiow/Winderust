@@ -376,7 +376,8 @@ pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn automation_worker_required(settings: &Settings) -> bool {
-    automation_worker_required_for_profile(settings)
+    keep_running_required(settings)
+        || automation_worker_required_for_profile(settings)
         || settings
             .on_battery
             .as_deref()
@@ -403,8 +404,19 @@ pub(super) fn watchdog_required(settings: &Settings) -> bool {
     settings.watchdog.enabled && settings.watchdog.rules.iter().any(|rule| rule.enabled)
 }
 
+pub(super) fn keep_running_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.keep_running.enabled
+        && settings
+            .keep_running
+            .rules
+            .iter()
+            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+}
+
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
-    windows_event_watcher_required_for_profile(settings)
+    keep_running_required(settings)
+        || windows_event_watcher_required_for_profile(settings)
         || settings
             .on_battery
             .as_deref()
@@ -432,6 +444,14 @@ pub(super) fn windows_event_wake_required(
     settings: &Settings,
     event: WindowsAutomationEvent,
 ) -> bool {
+    if keep_running_required(settings)
+        && matches!(
+            event,
+            WindowsAutomationEvent::SuspendResume | WindowsAutomationEvent::SessionChanged
+        )
+    {
+        return true;
+    }
     std::iter::once(settings)
         .chain(settings.on_battery.as_deref())
         .any(|profile| windows_event_wake_required_for_profile(profile, event))

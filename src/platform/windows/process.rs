@@ -15,6 +15,7 @@ use super::ProcessOperationError;
 pub(crate) enum ProcessAccess {
     SetInformation,
     SafetyOnly,
+    Observation,
     ThreadSnapshot,
     WorkingSetTrim,
     Termination,
@@ -66,6 +67,7 @@ pub(crate) fn open(process_id: u32, access: ProcessAccess) -> Result<WinHandle, 
 fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
     const SET_INFORMATION: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION];
     const SAFETY_ONLY: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION];
+    const OBSERVATION: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE];
     const THREAD_SNAPSHOT: &[u32] = &[PROCESS_QUERY_INFORMATION];
     const WORKING_SET_TRIM: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA];
     const TERMINATION: &[u32] = &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE];
@@ -84,6 +86,7 @@ fn desired_access_masks(access: ProcessAccess) -> &'static [u32] {
     match access {
         ProcessAccess::SetInformation => SET_INFORMATION,
         ProcessAccess::SafetyOnly => SAFETY_ONLY,
+        ProcessAccess::Observation => OBSERVATION,
         ProcessAccess::ThreadSnapshot => THREAD_SNAPSHOT,
         ProcessAccess::WorkingSetTrim => WORKING_SET_TRIM,
         ProcessAccess::Termination => TERMINATION,
@@ -105,6 +108,10 @@ mod tests {
         assert_eq!(
             desired_access_masks(ProcessAccess::SafetyOnly),
             &[PROCESS_QUERY_LIMITED_INFORMATION]
+        );
+        assert_eq!(
+            desired_access_masks(ProcessAccess::Observation),
+            &[PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE]
         );
         assert_eq!(
             desired_access_masks(ProcessAccess::ThreadSnapshot),

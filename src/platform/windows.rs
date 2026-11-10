@@ -10,6 +10,7 @@ pub(crate) mod gpu_priority;
 pub(crate) mod gpu_usage;
 pub(crate) mod io_priority;
 pub(crate) mod job;
+pub(crate) mod keep_running;
 pub(crate) mod memory_priority;
 pub(crate) mod memory_trim;
 pub(crate) mod menu_theme;

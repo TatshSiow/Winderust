@@ -384,7 +384,7 @@ Assert-NoSourceMatch `
 Assert-NoUnexpectedWriter `
     -Mechanism 'Job Object information' `
     -ApiPattern 'SetInformationJobObject' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:job|suspension))\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:job|suspension|keep_running))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'single App Suspension production adapter call' `
@@ -438,7 +438,7 @@ Assert-NoUnexpectedWriter `
 Assert-NoUnexpectedWriter `
     -Mechanism 'thread resumption' `
     -ApiPattern 'ResumeThread\s*(?:,|\()' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:thread_suspension|process_restart))\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:thread_suspension|process_restart|keep_running))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'restart resumes only its prepared primary thread' `
@@ -554,7 +554,7 @@ Assert-NoUnexpectedWriter `
 Assert-NoUnexpectedWriter `
     -Mechanism 'process termination' `
     -ApiPattern 'TerminateProcess' `
-    -AllowedLocationPattern '^src\\platform\\windows\\process_termination\.rs:'
+    -AllowedLocationPattern '^src\\platform\\windows\\(?:process_termination|keep_running)\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'single process termination production adapter call' `

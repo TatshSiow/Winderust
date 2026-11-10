@@ -1393,6 +1393,15 @@ fn enabled_features(
         .to_string()
     );
     feature!(
+        KeepRunning,
+        keep_running,
+        t!(
+            "common.rule_count",
+            count = settings.keep_running.rules.len()
+        )
+        .to_string()
+    );
+    feature!(
         TimerResolution,
         timer_resolution,
         t!(
@@ -1455,6 +1464,7 @@ mod tests {
             Page::Watchdog,
             Page::MemoryTrim,
             Page::SleepPrevention,
+            Page::KeepRunning,
             Page::TimerResolution,
         ];
         let mut settings = Settings::default();
@@ -2075,7 +2085,8 @@ mod tests {
                 if (3..148).contains(&(x % 150)) {
                     for y in [25, 75] {
                         assert_ne!(
-                            pixels.pixel(x, y), blank.pixel(x, y),
+                            pixels.pixel(x, y),
+                            blank.pixel(x, y),
                             "ordinary {cadence:?}ms sampling left a false stroke/fill gap at {x},{y}"
                         );
                     }

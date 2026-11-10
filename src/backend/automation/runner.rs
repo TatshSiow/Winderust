@@ -113,6 +113,7 @@ pub(super) struct RuntimeCore {
     timer_resolution_controller: TimerResolutionController,
     sleep_prevention_manager: SleepPreventionManager,
     sleep_prevention_controller: SleepPreventionController,
+    pub(super) keep_running: keep_running::KeepRunningCoordinator,
     pub(super) known_process_ids: BTreeSet<u32>,
     published_action_log_revision: u64,
 }
@@ -218,6 +219,8 @@ impl RuntimeCore {
             };
             let mut action_detail = t!("watchdog.no_action").to_string();
             if event.response.action != WatchdogAction::None {
+                self.keep_running
+                    .pause_targets(&event.targets, PauseReason::Watchdog);
                 let targets: Vec<_> = event
                     .targets
                     .iter()
@@ -342,6 +345,7 @@ impl RuntimeCore {
             return Ok(());
         }
         self.shutdown_started = true;
+        self.keep_running.shutdown();
 
         let mut errors = Vec::<String>::new();
         let mut settings = self.last_settings.clone().unwrap_or_default();
@@ -1279,11 +1283,16 @@ impl RuntimeCore {
                     statuses.memory_trim = Some(status);
                 }
                 ProcessControlCommand::StopProcesses { targets, result } => {
+                    self.keep_running
+                        .pause_targets(&targets, PauseReason::IntentionalStop);
                     let outcome = self.process_termination_controller.terminate_batch(
                         targets,
                         settings.general.allow_cross_session_process_control,
                     );
                     let _ = result.try_send(Ok(outcome));
+                }
+                ProcessControlCommand::KeepRunningResume { executable_path } => {
+                    self.keep_running.resume(&executable_path);
                 }
             }
         }
@@ -1413,6 +1422,7 @@ impl RuntimeCore {
                 .as_ref()
                 .is_some_and(CpuLimiterController::has_managed_state)
             || app_suspension_active
+            || self.keep_running.has_pending()
     }
 
     pub(super) fn app_suspension_active(&self) -> bool {

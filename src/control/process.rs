@@ -239,6 +239,17 @@ pub(crate) fn open_process_for_thread_control(
     )
 }
 
+pub(crate) fn open_process_for_observation(
+    target: &ProcessControlTarget,
+) -> Result<(ProcessIdentity, WinHandle), ProcessControlError> {
+    open_process_with_access(
+        target,
+        false,
+        ProcessAccess::Observation,
+        ProcessActionAccess::SafetyOnly,
+    )
+}
+
 pub(crate) fn open_process_for_thread_snapshot(
     target: &ProcessControlTarget,
     allow_cross_session_process_control: bool,

@@ -1,9 +1,9 @@
 use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
-    by_activity, cpu_allocation, cpu_limiter, design, home, memory_trim, navigation, power_rules,
-    priority_control, process_list, process_power_plans, settings_pages, sleep_prevention,
-    status_rail, tasks, timer_resolution, watchdog, widgets, win32_priority_separation,
-    window_frame,
+    by_activity, cpu_allocation, cpu_limiter, design, home, keep_running, memory_trim, navigation,
+    power_rules, priority_control, process_list, process_power_plans, settings_pages,
+    sleep_prevention, status_rail, tasks, timer_resolution, watchdog, widgets,
+    win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -260,6 +260,7 @@ pub(crate) fn run(
                 sleep_prevention: sleep_prevention::Editor::default(),
                 trim: memory_trim::Editor::default(),
                 watchdog: watchdog::Editor::default(),
+                keep_running: keep_running::Editor::default(),
                 timer: timer_resolution::Editor::default(),
                 priority_separation: win32_priority_separation::Editor::default(),
                 power_tuning: advanced_power_plan_tuning::Editor::default(),
@@ -562,6 +563,7 @@ struct WinderustApp {
     sleep_prevention: sleep_prevention::Editor,
     trim: memory_trim::Editor,
     watchdog: watchdog::Editor,
+    keep_running: keep_running::Editor,
     timer: timer_resolution::Editor,
     priority_separation: win32_priority_separation::Editor,
     power_tuning: advanced_power_plan_tuning::Editor,
@@ -640,6 +642,7 @@ enum Message {
     SleepPrevention(sleep_prevention::Message),
     Trim(memory_trim::Message),
     Watchdog(watchdog::Message),
+    KeepRunning(keep_running::Message),
     Timer(timer_resolution::Message),
     PrioritySeparation(win32_priority_separation::Message),
     PowerTuning(advanced_power_plan_tuning::Message),
@@ -768,7 +771,7 @@ impl WinderustApp {
                     return self.scroll_search_selection();
                 }
                 Key::Named(Named::Enter) if status == iced::event::Status::Ignored && !repeat => {
-                    return self.update(Message::ConfirmSearch)
+                    return self.update(Message::ConfirmSearch);
                 }
                 _ => return Task::none(),
             }
@@ -776,6 +779,9 @@ impl WinderustApp {
         let cancel_rule = match self.page {
             Page::Watchdog if self.watchdog.has_pending_editor() => {
                 Some(Message::Watchdog(watchdog::Message::CancelRule))
+            }
+            Page::KeepRunning if self.keep_running.has_pending_editor() => {
+                Some(Message::KeepRunning(keep_running::Message::CancelRule))
             }
             Page::ByTime if self.time_rules.has_pending_editor() => Some(Message::PowerRules(
                 power_rules::Kind::Time,
@@ -1091,7 +1097,7 @@ impl WinderustApp {
                 }
             }
             Message::Home(home::Message::Navigate(page)) => {
-                return self.update(Message::Page(page))
+                return self.update(Message::Page(page));
             }
             Message::Home(home::Message::HoverChart(kind, slot)) => {
                 self.home.hover_chart(kind, slot)
@@ -1104,10 +1110,10 @@ impl WinderustApp {
                 }
             }
             Message::Preferences(settings_pages::Message::Export) => {
-                return self.update(Message::SettingsFile(FileDialogMode::Save))
+                return self.update(Message::SettingsFile(FileDialogMode::Save));
             }
             Message::Preferences(settings_pages::Message::Import) => {
-                return self.update(Message::SettingsFile(FileDialogMode::Open))
+                return self.update(Message::SettingsFile(FileDialogMode::Open));
             }
             Message::Preferences(
                 message @ (settings_pages::Message::Check | settings_pages::Message::CheckStartup),
@@ -1209,7 +1215,7 @@ impl WinderustApp {
                         self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
                     ),
                     Message::ExportLog,
-                )
+                );
             }
             Message::ActionLog(message) => {
                 let reset = matches!(
@@ -1253,7 +1259,7 @@ impl WinderustApp {
                 }
             }
             Message::Suspension(app_suspension::Message::Browse) => {
-                return self.browse(Page::AppSuspension)
+                return self.browse(Page::AppSuspension);
             }
             Message::Suspension(message) => {
                 if let Some((path, freeze)) = self.suspension.update(
@@ -1273,7 +1279,7 @@ impl WinderustApp {
                                     .map_err(|e| e.to_string())
                                     .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
                             })
-                            .map(|r| Message::CommandFinished(r.and_then(|r| r)))
+                            .map(|r| Message::CommandFinished(r.and_then(|r| r)));
                         }
                         Err(error) => self.error_message = error.to_string(),
                     }
@@ -1289,13 +1295,29 @@ impl WinderustApp {
                                 .map_err(|e| e.to_string())
                                 .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
                         })
-                        .map(|r| Message::CommandFinished(r.and_then(|r| r)))
+                        .map(|r| Message::CommandFinished(r.and_then(|r| r)));
                     }
                     Err(error) => self.error_message = error.to_string(),
                 }
             }
             Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
             Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
+            Message::KeepRunning(keep_running::Message::Browse) => {
+                return self.browse(Page::KeepRunning);
+            }
+            Message::KeepRunning(keep_running::Message::Resume(path)) => {
+                if self.pending_changes() {
+                    self.error_message = t!("keep_running.save_before_resume").to_string();
+                } else if let Err(error) = self.runtime.request_keep_running_resume(path) {
+                    self.error_message = error.to_string();
+                }
+            }
+            Message::KeepRunning(message) => {
+                self.settings.edit_global(|settings| {
+                    self.keep_running
+                        .update(&mut settings.keep_running, message)
+                });
+            }
             Message::Watchdog(watchdog::Message::Tab(resource)) => {
                 self.watchdog.select_tab(resource);
             }
@@ -1304,13 +1326,13 @@ impl WinderustApp {
                     .edit_global(|settings| self.watchdog.update(&mut settings.watchdog, message));
             }
             Message::SleepPrevention(sleep_prevention::Message::Browse) => {
-                return self.browse(Page::SleepPrevention)
+                return self.browse(Page::SleepPrevention);
             }
             Message::SleepPrevention(message) => self
                 .sleep_prevention
                 .update(&mut self.settings.sleep_prevention, message),
             Message::Timer(timer_resolution::Message::Browse) => {
-                return self.browse(Page::TimerResolution)
+                return self.browse(Page::TimerResolution);
             }
             Message::Timer(message) => self.timer.update(
                 &mut self.settings.timer_resolution,
@@ -1337,20 +1359,20 @@ impl WinderustApp {
                 editor.update(kind, &mut self.settings, &self.power_plans, message);
             }
             Message::Priority(kind, priority_control::Message::Browse) => {
-                return self.browse(priority_page(kind))
+                return self.browse(priority_page(kind));
             }
             Message::Priority(kind, message) => {
                 self.priority.update(&mut self.settings, kind, message)
             }
             Message::Efficiency(background_efficiency::Message::Browse) => {
-                return self.browse(Page::BackgroundEfficiency)
+                return self.browse(Page::BackgroundEfficiency);
             }
             Message::Efficiency(message) => self.efficiency.update(&mut self.settings, message),
             Message::Allocation(kind, cpu_allocation::Message::Browse) => {
                 return self.browse(match kind {
                     cpu_allocation::Kind::Soft => Page::CpuSetsSoft,
                     cpu_allocation::Kind::Hard => Page::ProcessorAffinityHard,
-                })
+                });
             }
             Message::Allocation(kind, message) => {
                 if matches!(
@@ -1369,7 +1391,7 @@ impl WinderustApp {
                 })
             }
             Message::Adaptive(adaptive_engine::Message::Browse) => {
-                return self.browse(Page::AdaptiveEngine)
+                return self.browse(Page::AdaptiveEngine);
             }
             Message::Adaptive(message) => {
                 if matches!(
@@ -1413,61 +1435,67 @@ impl WinderustApp {
                             Page::SleepPrevention => {
                                 return self.update(Message::SleepPrevention(
                                     sleep_prevention::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::AppSuspension => {
                                 return self.update(Message::Suspension(
                                     app_suspension::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::Watchdog => {
                                 return self
                                     .update(Message::Watchdog(watchdog::Message::Path(path)));
                             }
+                            Page::KeepRunning => {
+                                return self.update(Message::KeepRunning(
+                                    keep_running::Message::Path(path),
+                                ));
+                            }
                             Page::MemoryTrim => {
-                                return self.update(Message::Trim(memory_trim::Message::Path(path)))
+                                return self
+                                    .update(Message::Trim(memory_trim::Message::Path(path)));
                             }
                             Page::TimerResolution => {
                                 return self
-                                    .update(Message::Timer(timer_resolution::Message::Path(path)))
+                                    .update(Message::Timer(timer_resolution::Message::Path(path)));
                             }
                             Page::CpuSetsSoft => {
                                 return self.update(Message::Allocation(
                                     cpu_allocation::Kind::Soft,
                                     cpu_allocation::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::ProcessorAffinityHard => {
                                 return self.update(Message::Allocation(
                                     cpu_allocation::Kind::Hard,
                                     cpu_allocation::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::BackgroundEfficiency => {
                                 return self.update(Message::Efficiency(
                                     background_efficiency::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::AdaptiveEngine => {
                                 return self.update(Message::Adaptive(
                                     adaptive_engine::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::CpuLimiter => {
                                 return self
-                                    .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)))
+                                    .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)));
                             }
                             Page::ByFocus => {
                                 return self.update(Message::ProcessPowerPlans(
                                     process_power_plans::Kind::Focus,
                                     process_power_plans::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::ByRunningApp => {
                                 return self.update(Message::ProcessPowerPlans(
                                     process_power_plans::Kind::RunningApp,
                                     process_power_plans::Message::Path(path),
-                                ))
+                                ));
                             }
                             _ => {}
                         }
@@ -1478,7 +1506,7 @@ impl WinderustApp {
                 return self.browse(match kind {
                     process_power_plans::Kind::Focus => Page::ByFocus,
                     process_power_plans::Kind::RunningApp => Page::ByRunningApp,
-                })
+                });
             }
             Message::ProcessPowerPlans(kind, message) => {
                 let editor = match kind {
@@ -1509,7 +1537,7 @@ impl WinderustApp {
                 }
             }
             Message::CpuLimiter(cpu_limiter::Message::Browse) => {
-                return self.browse(Page::CpuLimiter)
+                return self.browse(Page::CpuLimiter);
             }
             Message::CpuLimiter(message) => self
                 .cpu_limiter
@@ -1523,7 +1551,7 @@ impl WinderustApp {
                 self.reset_editors();
             }
             Message::WindowAction(window_frame::Event::Close) => {
-                return self.update(Message::WindowClose)
+                return self.update(Message::WindowClose);
             }
             Message::WindowAction(action) => {
                 if let Some(window) = self.window {
@@ -1644,7 +1672,7 @@ impl WinderustApp {
                     );
                 }
                 if (page.supports_power_source_profiles()
-                    || matches!(page, Page::ActionLog | Page::Watchdog))
+                    || matches!(page, Page::ActionLog | Page::Watchdog | Page::KeepRunning))
                     && !self.catalog_loading
                 {
                     self.catalog_loading = true;
@@ -1704,6 +1732,11 @@ impl WinderustApp {
                             if id == Page::Watchdog as usize =>
                         {
                             self.settings.set_watchdog_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature { id, enabled, .. }
+                            if id == Page::KeepRunning as usize =>
+                        {
+                            self.settings.set_keep_running_enabled(enabled)
                         }
                         tray::MenuAction::Feature {
                             id,
@@ -1789,7 +1822,10 @@ impl WinderustApp {
                         );
                     }
                     if (self.page.supports_power_source_profiles()
-                        || matches!(self.page, Page::ActionLog | Page::Watchdog))
+                        || matches!(
+                            self.page,
+                            Page::ActionLog | Page::Watchdog | Page::KeepRunning
+                        ))
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
                     {
@@ -1853,6 +1889,9 @@ impl WinderustApp {
             }
             Message::Save if self.settings.validate_watchdog().is_err() => {
                 self.error_message = t!("watchdog.invalid").to_string();
+            }
+            Message::Save if self.settings.validate_keep_running().is_err() => {
+                self.error_message = t!("keep_running.invalid").to_string();
             }
             Message::Save if self.watchdog.has_invalid_inputs() => {
                 self.error_message = t!("watchdog.invalid_duration").to_string();
@@ -1971,6 +2010,7 @@ impl WinderustApp {
     }
     fn invalid_inputs(&self) -> bool {
         self.settings.validate_watchdog().is_err()
+            || self.settings.validate_keep_running().is_err()
             || self.watchdog.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
             || self.timer.has_invalid_inputs()
@@ -2031,6 +2071,7 @@ impl WinderustApp {
             || self.hard_allocation.has_pending_editor()
             || self.cpu_limiter.has_pending_editor()
             || self.watchdog.has_pending_editor()
+            || self.keep_running.has_pending_editor()
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
     }
@@ -2052,6 +2093,7 @@ impl WinderustApp {
         self.sleep_prevention = Default::default();
         self.trim = Default::default();
         self.watchdog = Default::default();
+        self.keep_running = Default::default();
         self.timer = Default::default();
         self.appearance = settings_pages::theme(&self.settings.global().general);
     }
@@ -2115,7 +2157,7 @@ impl WinderustApp {
                         .iter()
                         .filter_map(|page| {
                             navigation::feature_page_enabled(
-                                if *page == Page::Watchdog {
+                                if matches!(*page, Page::Watchdog | Page::KeepRunning) {
                                     saved
                                 } else {
                                     settings
@@ -2736,6 +2778,10 @@ impl WinderustApp {
             return navigation_search_overlay(layout, search);
         }
         let modal = match self.page {
+            Page::KeepRunning => self
+                .keep_running
+                .modal(&self.candidates)
+                .map(|modal| modal.map(Message::KeepRunning)),
             Page::Watchdog => self
                 .watchdog
                 .modal(&self.candidates)
@@ -2856,6 +2902,14 @@ impl WinderustApp {
                 .watchdog
                 .view(&self.settings.global().watchdog, &self.candidates)
                 .map(Message::Watchdog),
+            Page::KeepRunning => self
+                .keep_running
+                .view(
+                    &self.settings.global().keep_running,
+                    &self.status.feature_status.keep_running,
+                    &self.candidates,
+                )
+                .map(Message::KeepRunning),
             Page::MemoryTrim => self
                 .trim
                 .view(&self.settings.memory_trim, &self.candidates)

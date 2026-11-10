@@ -115,17 +115,23 @@ pub(crate) struct SettingsEditor {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum SettingsCoordinatorError {
-    #[error("Settings changed after this draft was created (draft revision {draft_revision:?}, persisted revision {persisted_revision:?}).")]
+    #[error(
+        "Settings changed after this draft was created (draft revision {draft_revision:?}, persisted revision {persisted_revision:?})."
+    )]
     StaleDraft {
         draft_revision: SettingsRevision,
         persisted_revision: SettingsRevision,
     },
-    #[error("Settings changed before a runtime patch could be applied (patch revision {patch_revision:?}, persisted revision {persisted_revision:?}).")]
+    #[error(
+        "Settings changed before a runtime patch could be applied (patch revision {patch_revision:?}, persisted revision {persisted_revision:?})."
+    )]
     StalePatch {
         patch_revision: SettingsRevision,
         persisted_revision: SettingsRevision,
     },
-    #[error("Automatic saving is disabled because settings could not be loaded. Repair settings.toml and restart, or explicitly Save or Import settings to replace it.")]
+    #[error(
+        "Automatic saving is disabled because settings could not be loaded. Repair settings.toml and restart, or explicitly Save or Import settings to replace it."
+    )]
     RecoveryRequired,
     #[error("{0}")]
     Save(String),
@@ -436,6 +442,18 @@ impl SettingsEditor {
             self.coordinator.persisted_revision,
             |settings| {
                 let changed = set_enabled_value(&mut settings.watchdog.enabled, enabled);
+                settings.sync_shared_settings_to_battery();
+                changed
+            },
+        )
+    }
+
+    pub(crate) fn set_keep_running_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let changed = set_enabled_value(&mut settings.keep_running.enabled, enabled);
                 settings.sync_shared_settings_to_battery();
                 changed
             },

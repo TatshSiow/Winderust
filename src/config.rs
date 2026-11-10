@@ -5,6 +5,8 @@ pub use rule_time::RuleTime;
 mod settings;
 mod watchdog;
 pub use watchdog::*;
+mod keep_running;
+pub use keep_running::{KeepRunningRule, KeepRunningSettings};
 pub mod storage;
 
 pub use settings::*;

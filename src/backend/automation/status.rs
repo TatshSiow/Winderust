@@ -99,6 +99,18 @@ pub(super) fn update_app_suspension_status(
     );
 }
 
+pub(super) fn update_keep_running_status(
+    shared: &SharedAutomationState,
+    status: KeepRunningSnapshot,
+) {
+    update_feature_status(
+        shared,
+        status,
+        |feature_status| &feature_status.keep_running,
+        |feature_status| &mut feature_status.keep_running,
+    );
+}
+
 pub(super) fn update_cpu_sets_soft_status(
     shared: &SharedAutomationState,
     status: CpuAllocationSnapshot,

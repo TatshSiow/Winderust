@@ -13,6 +13,7 @@ mod cpu_limiter;
 mod design;
 mod home;
 mod hotkeys;
+mod keep_running;
 mod memory_trim;
 mod modal;
 mod motion;
@@ -63,6 +64,7 @@ pub enum Page {
     BackgroundEfficiency,
     AppSuspension,
     SleepPrevention,
+    KeepRunning,
     ByRunningApp,
     IoPriority,
     GpuPriority,
@@ -122,9 +124,10 @@ const SETTINGS_PAGES: [Page; 3] = [
     Page::ExperimentalFeatures,
 ];
 const ABOUT_PAGES: [Page; 1] = [Page::About];
-const ADVANCED_CONTROLS_PAGES: [Page; 4] = [
+const ADVANCED_CONTROLS_PAGES: [Page; 5] = [
     Page::AppSuspension,
     Page::SleepPrevention,
+    Page::KeepRunning,
     Page::TimerResolution,
     Page::Win32PrioritySeparation,
 ];
@@ -220,6 +223,7 @@ impl Page {
             Self::BackgroundEfficiency => t!("nav.background_efficiency"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::SleepPrevention => t!("nav.sleep_prevention"),
+            Self::KeepRunning => t!("nav.keep_running"),
             Self::ByRunningApp => t!("nav.by_running_app"),
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
@@ -280,6 +284,7 @@ impl Page {
             Self::AdvancedControls
             | Self::AppSuspension
             | Self::SleepPrevention
+            | Self::KeepRunning
             | Self::TimerResolution
             | Self::Win32PrioritySeparation => Self::AdvancedControls,
         }
@@ -323,6 +328,7 @@ mod tests {
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());
         assert!(!Page::Watchdog.supports_power_source_profiles());
+        assert!(!Page::KeepRunning.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
         assert!(!Page::ProcessList.supports_power_source_profiles());
         assert!(!Page::ActionLog.supports_power_source_profiles());

@@ -39,6 +39,9 @@ Windows events / UI intent / persisted settings
 - `RuntimeHandle` owns worker lifecycle, event sources, typed commands, and published status.
 - `RuntimeCore` owns reconciliation order, shared observations, controller composition, and
   shutdown.
+- Keep Running adds one bounded native-launch worker behind its runtime coordinator.
+  Per-rule policy stays separate from native resources; unresolved operations retain
+  their owner even after rule removal. Native calls never hold the shared intake lock.
 - Feature managers own rules, target selection, timers, hysteresis, suppression, status, and
   Action Log policy.
 - Typed controllers own exact identities, claims, baselines, precedence, verification,

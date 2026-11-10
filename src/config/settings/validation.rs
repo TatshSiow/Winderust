@@ -7,6 +7,7 @@ impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         self.validate_power_source_profiles()?;
         self.validate_watchdog()?;
+        self.validate_keep_running()?;
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
@@ -44,6 +45,13 @@ impl Settings {
     pub fn validate_watchdog(&self) -> Result<(), String> {
         for profile in self.profiles() {
             profile.watchdog.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_keep_running(&self) -> Result<(), String> {
+        for profile in self.profiles() {
+            profile.keep_running.validate()?;
         }
         Ok(())
     }

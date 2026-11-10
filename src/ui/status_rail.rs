@@ -420,6 +420,28 @@ fn sidebar_state(
         };
     }
     let features = &runtime.feature_status;
+    if page == Page::KeepRunning {
+        use crate::features::advanced_controls::keep_running::KeepRunningState;
+        let keep_running = &features.keep_running;
+        return if !keep_running.observation_known {
+            FeatureRunState::Unknown
+        } else if keep_running
+            .rules
+            .iter()
+            .any(|rule| matches!(rule.state, KeepRunningState::Paused(_)))
+        {
+            FeatureRunState::Paused
+        } else if keep_running.rules.iter().any(|rule| {
+            matches!(
+                rule.state,
+                KeepRunningState::Armed | KeepRunningState::Starting
+            )
+        }) {
+            FeatureRunState::Running
+        } else {
+            FeatureRunState::Waiting
+        };
+    }
     if page == Page::SleepPrevention {
         let sleep = &features.sleep_prevention;
         return if !sleep.observation_known {
@@ -558,6 +580,14 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::Watchdog,
             }
         }
+        Page::KeepRunning => FeatureStatusSummary {
+            scanned: None,
+            adjusted: None,
+            protected_or_denied: None,
+            skipped: None,
+            last_error: runtime.feature_status.keep_running.last_error.as_deref(),
+            action_log_feature: ActionLogFeature::KeepRunning,
+        },
         Page::MemoryTrim => {
             let status = &runtime.feature_status.memory_trim;
             FeatureStatusSummary {

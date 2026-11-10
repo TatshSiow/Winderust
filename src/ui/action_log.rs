@@ -454,6 +454,7 @@ pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
     let page = match feature {
         ActionLogFeature::AppSuspension => super::Page::AppSuspension,
         ActionLogFeature::SleepPrevention => super::Page::SleepPrevention,
+        ActionLogFeature::KeepRunning => super::Page::KeepRunning,
         ActionLogFeature::CpuSetsSoft => super::Page::CpuSetsSoft,
         ActionLogFeature::ProcessorAffinityHard => super::Page::ProcessorAffinityHard,
         ActionLogFeature::BackgroundEfficiency => super::Page::BackgroundEfficiency,
@@ -537,9 +538,10 @@ const RESULTS: [ActionLogResult; 4] = [
     ActionLogResult::Skipped,
     ActionLogResult::Failed,
 ];
-const FEATURES: [ActionLogFeature; 21] = [
+const FEATURES: [ActionLogFeature; 22] = [
     ActionLogFeature::AppSuspension,
     ActionLogFeature::SleepPrevention,
+    ActionLogFeature::KeepRunning,
     ActionLogFeature::CpuSetsSoft,
     ActionLogFeature::ProcessorAffinityHard,
     ActionLogFeature::BackgroundEfficiency,

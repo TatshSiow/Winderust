@@ -25,11 +25,12 @@ pub(crate) enum RefreshDomain {
     Watchdog,
     TimerResolution,
     SleepPrevention,
+    KeepRunning,
     ProcessAppearance,
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 24] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 25] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -52,6 +53,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 24] = [
     RefreshDomain::Watchdog,
     RefreshDomain::TimerResolution,
     RefreshDomain::SleepPrevention,
+    RefreshDomain::KeepRunning,
     RefreshDomain::ProcessAppearance,
     RefreshDomain::ControllerActivity,
 ];

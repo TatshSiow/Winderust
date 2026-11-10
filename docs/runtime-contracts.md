@@ -22,6 +22,49 @@ Read the relevant section before changing feature policy, ownership, restoration
   and duplicate launches recreate the window; explicit Exit still completes restoration before
   stopping the daemon. A failed tray registration keeps or reopens the GUI for recovery.
 
+## Keep Running
+
+- Keep Running is a global, opt-in Advanced Controls feature. Each rule names one
+  executable, literal argument tail, and absolute working directory. Arguments are
+  stored as plain text in the portable settings file. Enabling a rule with no
+  existing eligible app never launches it. First observe an ordinary app with the
+  current shell's verified user/logon/session token facts, then retain its exact
+  handles. Fresh launches bind to the verified shell desktop; matching token facts
+  do not prove the original app's desktop or restore it.
+  Cross-session process-control permission does not widen launch eligibility.
+- Missing or incomplete enumeration is not exit evidence. Only a signaled retained
+  process handle retires a member. After the last confirmed exit, retry after 1,
+  5, then 30 seconds, with at most three attempts until 60 seconds of verified
+  overlapping-cohort runtime or explicit Resume. Unknown intervals earn no stable
+  runtime credit. Disjoint replacement cohorts do not inherit it.
+- This is a fresh launch, not crash diagnosis, saved-session recovery, or the
+  Watchdog's restart operation. Winderust never reads another app's arguments or
+  copies its environment. Unsupported/elevated/service/restricted app contexts
+  pause the rule. File-identity aliases and overlapping live membership pause
+  conflicting rules instead of selecting arguments by rule order.
+- One bounded worker owns all preparation, resume/acceptance, and disposal calls.
+  The five-second preparation deadline bounds acceptance of results, not Windows
+  call duration. A timed-out call or unconfirmed cleanup occupies the global slot;
+  disabling, editing, removing, or re-adding a rule cannot discard its ownership.
+  Shutdown cancels provisional work without joining a blocked Windows call.
+  Membership and filesystem queries remain synchronous on RuntimeCore; the
+  preparation deadline is not a bound on the entire runtime cycle.
+- Immediately before launch commitment, re-enumerate membership outside the
+  shared intake mutex, then reserve once under that mutex. Pending Stop commands,
+  settings edits, suspend/session changes, shutdown, or watcher loss block the
+  reservation. Native calls run after unlocking. Later intents pause subsequent
+  retries; they cannot roll back a committed launch. Manual Stop/Stop Process Tree
+  and Watchdog Stop/Restart pause affected rules before acting, even on failure.
+- Closing to tray retains this owner. Suspend/session changes require Resume;
+  power-source handoff does not reset global rules. Disable and Exit never stop
+  an accepted replacement. Fresh launches are not crash-helper recovery records.
+- Atomic Job List creation protects suspended/provisional roots while the private
+  job's kill-on-close flag remains armed. Clearing that flag is irreversible native
+  acceptance, before result publication. Explicit breakaway descendants may survive
+  provisional cleanup; this feature does not promise descendant rollback. Nested
+  jobs, console apps, custom token changes, and shell replacement remain compatibility
+  constraints, not reasons to bypass access checks or enable privileges.
+
 ## Restoration and process safety
 
 - Never target Winderust itself or protected/system processes. Cross-session targeting

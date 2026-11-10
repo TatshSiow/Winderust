@@ -34,14 +34,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(60) {
+    if extra == Some(62) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
             matches!(
                 index,
-                1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56 | 59
+                1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56 | 59 | 61
             )
         });
         let page = match extra {
@@ -79,6 +79,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(51..=53) => Page::Watchdog,
             Some(54..=57) => Page::ByCpuLoad,
             Some(58..=59) => Page::SleepPrevention,
+            Some(60..=61) => Page::KeepRunning,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -110,6 +111,43 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
         }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
+        if matches!(extra, Some(60..=61)) {
+            use crate::features::advanced_controls::keep_running::{
+                KeepRunningRuleSnapshot, KeepRunningState, PauseReason,
+            };
+            let paths = [
+                r"C:\Apps\Long Application Name\renderer.exe",
+                r"C:\Apps\editor.exe",
+            ];
+            app.settings.edit_global(|settings| {
+                settings.keep_running.enabled = true;
+                settings.keep_running.rules = paths
+                    .iter()
+                    .map(|path| crate::config::KeepRunningRule::new((*path).into()))
+                    .collect();
+            });
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).keep_running;
+            status.enabled = true;
+            status.observation_known = true;
+            status.rules = paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| KeepRunningRuleSnapshot {
+                    executable_path: (*path).into(),
+                    state: if index == 0 {
+                        KeepRunningState::Armed
+                    } else {
+                        KeepRunningState::Paused(PauseReason::RetryBudgetExhausted)
+                    },
+                    attempts: if index == 0 { 0 } else { 3 },
+                    next_retry_seconds: None,
+                    last_error: None,
+                })
+                .collect();
+            if extra == Some(61) {
+                let _ = app.update(Message::KeepRunning(keep_running::Message::Edit(0)));
+            }
+        }
         if matches!(extra, Some(58..=59)) {
             let _ = app.update(Message::PowerRules(
                 power_rules::Kind::CpuLoad,
@@ -549,7 +587,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=59) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=61) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -646,6 +684,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        132
+        136
     );
 }

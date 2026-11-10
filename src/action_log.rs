@@ -43,6 +43,7 @@ pub enum ActionLogFeature {
     Watchdog,
     TimerResolution,
     SleepPrevention,
+    KeepRunning,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

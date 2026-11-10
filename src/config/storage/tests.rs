@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn keep_running_launch_validation_guards_load_import_save_and_export() {
+    let path = std::env::temp_dir().join(format!(
+        "winderust-keep-running-{}.toml",
+        std::process::id()
+    ));
+    for battery in [false, true] {
+        for invalid in 0..4 {
+            let mut settings = Settings::default();
+            let profile = if battery {
+                settings.battery_profile_mut()
+            } else {
+                &mut settings
+            };
+            let mut rule = crate::config::KeepRunningRule::new(r"C:\Apps\test.exe".into());
+            match invalid {
+                0 => rule.executable_path = "relative.exe".into(),
+                1 => rule.working_directory.push('\0'),
+                2 => rule.arguments = "x".repeat(32_767),
+                _ => profile.keep_running.rules.push(rule.clone()),
+            }
+            profile.keep_running.rules.push(rule);
+            let raw = toml::to_string(&settings).unwrap();
+            fs::write(&path, &raw).unwrap();
+            assert!(load_from_path(&path).is_err());
+            assert!(import_toml_from(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            fs::write(&path, "original settings").unwrap();
+            assert!(write_toml_settings(&path, &settings).is_err());
+            assert!(export_toml_to(&path, &settings).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
+        }
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn app_suspension_delay_limits_apply_to_both_profiles_before_io() {
     let path = std::env::temp_dir().join(format!(
         "winderust-suspension-delay-{}.toml",
@@ -1085,6 +1121,15 @@ fn toml_round_trip_preserves_settings() {
             }],
         },
         watchdog: crate::config::WatchdogSettings::default(),
+        keep_running: crate::config::KeepRunningSettings {
+            enabled: true,
+            rules: vec![crate::config::KeepRunningRule {
+                enabled: true,
+                executable_path: r"C:\Apps\keeper.exe".into(),
+                arguments: r#"--document "C:\Documents\notes.txt""#.into(),
+                working_directory: r"C:\Documents".into(),
+            }],
+        },
         memory_trim: MemoryTrimSettings {
             enabled: true,
             system_memory_load_threshold_percent: 80,
