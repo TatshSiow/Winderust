@@ -34,13 +34,25 @@
 
 ## Features
 
-- Adaptive Engine that automatically adjust background process resources
-- Automatic power plan
-- CPU/GPU/Memory/IO etc. Priority Controls
-- Smart memory trimming for background process
-- CPU/Memory watchdog (Alert,Kill,Restart)
-- iOS inspired background app suspension
-- etc. 
+- Adaptive Engine - automatic background process restraint.
+- Power Plan Control - switch plans by app focus, running apps, CPU load, activity, or time, with optional restoration when no rule selects a plan.
+- Advanced Power Plan Tuning - adjust processor performance, core parking, and thread scheduling policies.
+- CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
+- Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
+- Memory Trim - trim background process working sets.
+- Watchdog - CPU and memory alerts, with optional Stop or Restart actions.
+- App Suspension and Timer Resolution for selected apps.
+- Sleep Prevention - prevent idle sleep while selected apps run, with an option to keep the display on.
+- Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
+- Instance Limits - monitor process counts and notify when an app exceeds your chosen maximum, without blocking launches.
+- Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across app instances.
+- Process List and Action Log - inspect running processes and export action history to CSV.
+
+## Getting started
+
+Download and extract the release ZIP, then run `winderust.exe`. Settings are saved in `settings.toml` beside the executable.
+
+Check the [changelog](CHANGELOG.md) before upgrading; settings formats can change between alpha releases.
 
 ## Run/Build it yourself
 - [Prerequisites](https://rustup.rs)
@@ -60,22 +72,25 @@ The release build is in `target\*`
 
 ## Bug Report
 
-When reporting a crash or uncommon behaviour, attach :
+Include your Winderust version, Windows version, and steps to reproduce the problem.
+
+Attach these logs from beside the executable if present:
+
 - `winderust-diagnostics.log`
 - `winderust-recovery.log`
 - other`*.previous.log` files
 
 Logs may contain process names and local path, review them before upload/reporting.
 
-Using developer **End Task**, system crash or power loss may not generate the log. 
+Using developer **End Task**, system crash or power loss may not generate the log.
 
 ## Contributions
 
 Check:
 - [CONTRIBUTING.md](CONTRIBUTING.md)
-- [SECURITY.md](SECURITY.md).
+- [SECURITY.md](SECURITY.md)
 
 ## License
 
 Copyright (C) 2026 Tatsh Siow.
-Licensed under [GPLv3](LICENSE).
+Licensed under [GPL-3.0-only](LICENSE).
