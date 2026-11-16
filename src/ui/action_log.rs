@@ -452,6 +452,7 @@ fn process_group<'a>(
 
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
     let page = match feature {
+        ActionLogFeature::InstanceBalancing => super::Page::InstanceBalancing,
         ActionLogFeature::AppSuspension => super::Page::AppSuspension,
         ActionLogFeature::SleepPrevention => super::Page::SleepPrevention,
         ActionLogFeature::KeepRunning => super::Page::KeepRunning,
@@ -539,12 +540,13 @@ const RESULTS: [ActionLogResult; 4] = [
     ActionLogResult::Skipped,
     ActionLogResult::Failed,
 ];
-const FEATURES: [ActionLogFeature; 23] = [
+const FEATURES: [ActionLogFeature; 24] = [
     ActionLogFeature::AppSuspension,
     ActionLogFeature::SleepPrevention,
     ActionLogFeature::KeepRunning,
     ActionLogFeature::InstanceLimits,
     ActionLogFeature::CpuSetsSoft,
+    ActionLogFeature::InstanceBalancing,
     ActionLogFeature::ProcessorAffinityHard,
     ActionLogFeature::BackgroundEfficiency,
     ActionLogFeature::CpuLimiter,

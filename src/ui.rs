@@ -13,6 +13,7 @@ mod cpu_limiter;
 mod design;
 mod home;
 mod hotkeys;
+mod instance_balancing;
 mod instance_limits;
 mod keep_running;
 mod memory_trim;
@@ -74,6 +75,7 @@ pub enum Page {
     MemoryTrim,
     Watchdog,
     ProcessorAffinityHard,
+    InstanceBalancing,
     ByFocus,
     ByTime,
     ActionLog,
@@ -100,10 +102,11 @@ const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
     Page::ByTime,
     Page::AdvancedPowerPlanTuning,
 ];
-const CPU_CONTROL_PAGES: [Page; 3] = [
+const CPU_CONTROL_PAGES: [Page; 4] = [
     Page::CpuLimiter,
     Page::CpuSetsSoft,
     Page::ProcessorAffinityHard,
+    Page::InstanceBalancing,
 ];
 const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::ProcessPriority,
@@ -235,6 +238,7 @@ impl Page {
             Self::MemoryTrim => t!("nav.memory_trim"),
             Self::Watchdog => t!("nav.watchdog"),
             Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
+            Self::InstanceBalancing => t!("nav.instance_balancing"),
             Self::ByFocus => t!("nav.by_focus"),
             Self::ByTime => t!("nav.by_time"),
             Self::ActionLog => t!("nav.action_log"),
@@ -271,6 +275,7 @@ impl Page {
             Self::CpuControl
             | Self::CpuLimiter
             | Self::CpuSetsSoft
+            | Self::InstanceBalancing
             | Self::ProcessorAffinityHard => Self::CpuControl,
             Self::PriorityControl
             | Self::ProcessPriority
@@ -335,6 +340,7 @@ mod tests {
         assert!(!Page::Watchdog.supports_power_source_profiles());
         assert!(!Page::KeepRunning.supports_power_source_profiles());
         assert!(!Page::InstanceLimits.supports_power_source_profiles());
+        assert!(!Page::InstanceBalancing.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
         assert!(!Page::ProcessList.supports_power_source_profiles());
         assert!(!Page::ActionLog.supports_power_source_profiles());

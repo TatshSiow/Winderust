@@ -192,6 +192,87 @@ fn instance_limits_edits_and_tray_toggle_are_global_from_either_profile() {
     );
 }
 
+#[test]
+fn instance_balancing_global_toggles_preserve_unsaved_rules_and_profile_edits() {
+    for profile in [PowerSourceProfile::PluggedIn, PowerSourceProfile::OnBattery] {
+        let mut settings = Settings::default();
+        settings.battery_profile_mut();
+        let storage = FakeStorage::new(settings, Ok(Settings::default()), Ok(()), Ok(()));
+        let (mut editor, storage, _) =
+            editor_with_fixtures(storage, FakeStartupRegistration::new(Ok(())));
+        editor.select_power_source(profile);
+        let original_priority_enabled = editor.process_priority.enabled;
+        editor.process_priority.enabled = !original_priority_enabled;
+        editor.edit_global(|settings| {
+            settings
+                .instance_balancing
+                .rules
+                .push(crate::config::InstanceBalancingRule {
+                    enabled: true,
+                    executable_path: r"C:\Apps\app.exe".into(),
+                });
+        });
+        assert_eq!(
+            editor.global().instance_balancing,
+            editor.instance_balancing
+        );
+        assert_eq!(
+            editor.global().instance_balancing,
+            editor.global().battery_profile().instance_balancing
+        );
+
+        assert!(editor.set_instance_balancing_enabled(true).unwrap());
+        assert!(!editor.set_instance_balancing_enabled(true).unwrap());
+        let live = editor.runtime_settings_snapshot();
+        assert!(live.value.instance_balancing.enabled);
+        assert!(live.value.instance_balancing.rules.is_empty());
+        assert_eq!(
+            live.value.instance_balancing,
+            live.value.battery_profile().instance_balancing
+        );
+        assert!(editor.has_unsaved_changes());
+        assert_eq!(editor.instance_balancing.rules.len(), 1);
+        assert_eq!(editor.process_priority.enabled, !original_priority_enabled);
+        assert_eq!(storage.saved_payloads().len(), 1);
+        let persisted = storage.saved_payloads().pop().unwrap();
+        assert!(persisted.instance_balancing.rules.is_empty());
+        let persisted_profile = match profile {
+            PowerSourceProfile::PluggedIn => &persisted,
+            PowerSourceProfile::OnBattery => persisted.battery_profile(),
+        };
+        assert_eq!(
+            persisted_profile.process_priority.enabled,
+            original_priority_enabled
+        );
+
+        editor.save().unwrap();
+        let saved = editor.runtime_settings_snapshot();
+        assert_eq!(saved.value.instance_balancing.rules.len(), 1);
+        assert_eq!(saved.value.instance_balancing, editor.instance_balancing);
+        assert_eq!(
+            saved.value.instance_balancing,
+            saved.value.battery_profile().instance_balancing
+        );
+
+        editor.edit_global(|settings| {
+            settings.instance_balancing.rules[0].executable_path = r"C:\Apps\changed.exe".into();
+            settings.instance_balancing.rules[0].enabled = false;
+        });
+        assert_eq!(
+            editor.runtime_settings_snapshot().value.instance_balancing,
+            saved.value.instance_balancing
+        );
+        editor.cancel();
+        assert_eq!(editor.instance_balancing, saved.value.instance_balancing);
+        assert!(!editor.has_unsaved_changes());
+        editor.set_instance_balancing_enabled(false).unwrap();
+        let disabled = editor.runtime_settings_snapshot();
+        assert!(!disabled.value.instance_balancing.enabled);
+        assert!(!disabled.value.battery_profile().instance_balancing.enabled);
+        assert_eq!(disabled.value.instance_balancing.rules.len(), 1);
+    }
+}
+
 fn load_ok_with_fixtures() -> (SettingsCoordinator, SettingsDraft, FakeStorage) {
     let storage = FakeStorage::new(Settings::default(), Ok(Settings::default()), Ok(()), Ok(()));
     let storage_copy = storage.clone();
@@ -905,6 +986,14 @@ fn import_normalizes_shared_fields_without_flattening_feature_profiles() {
     imported.battery_profile_mut().general.check_interval_ms = 5000;
     imported.battery_profile_mut().cpu_limiter.enabled = true;
     imported.cpu_limiter.enabled = false;
+    imported.instance_balancing.enabled = true;
+    imported
+        .instance_balancing
+        .rules
+        .push(crate::config::InstanceBalancingRule {
+            enabled: true,
+            executable_path: r"C:\Apps\imported.exe".into(),
+        });
     let storage = FakeStorage::new(Settings::default(), Ok(imported.clone()), Ok(()), Ok(()));
     let (mut coordinator, mut draft) = SettingsCoordinator::load_from(Box::new(storage.clone()));
     coordinator

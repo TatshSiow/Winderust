@@ -24,6 +24,7 @@ pub struct ActionLogEntry {
 pub enum ActionLogFeature {
     AppSuspension,
     CpuSetsSoft,
+    InstanceBalancing,
     ProcessorAffinityHard,
     BackgroundEfficiency,
     CpuLimiter,

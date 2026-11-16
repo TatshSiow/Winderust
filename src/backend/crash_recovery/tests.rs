@@ -1561,7 +1561,7 @@ fn cpu_sets_recovery_restores_a_disposable_process() -> Result<(), String> {
         .map_err(|error| format!("Recovery fixture CPU Set inventory failed: {error:?}."))?;
     let expected_ids = inventory
         .iter()
-        .map(|(_, id)| vec![*id])
+        .map(|record| vec![record.id()])
         .find(|ids| *ids != original_ids);
     let Some(expected_ids) = expected_ids else {
         return Ok(());

@@ -8,9 +8,20 @@ use crate::{
     platform::windows::{instance_limits as native, process::current_process_id},
 };
 
-pub(crate) use native::{paths_equal, validate_path, CountObservation};
+pub(crate) use native::{
+    member_state, paths_equal, validate_path, CountObservation, Member, MemberState,
+    MembershipObservation,
+};
 
 pub(crate) fn collect(paths: &[String]) -> Vec<CountObservation> {
+    collect_members(paths)
+        .iter()
+        .map(MembershipObservation::count)
+        .collect()
+}
+
+/// Captures read-only exact members; callers must acquire fresh mutation authority separately.
+pub(crate) fn collect_members(paths: &[String]) -> Vec<MembershipObservation> {
     native::collect(paths, |id, path, creation_time, process| {
         if id == current_process_id() || crate::crash_recovery::is_watchdog_process(id) {
             return Err("Winderust and its recovery helper cannot be monitored.".into());
@@ -91,7 +102,7 @@ mod tests {
         }
     }
 
-    fn await_count(path: &str, expected: u32) {
+    fn await_members(path: &str, expected: &[u32]) -> Vec<Member> {
         let deadline = Instant::now() + Duration::from_secs(5);
         let protected = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32")
@@ -100,17 +111,33 @@ mod tests {
             .unwrap()
             .to_owned();
         loop {
-            let result = collect(&[path.into(), protected.clone()]);
-            if result[0] == CountObservation::Complete(expected) {
+            let mut result = collect_members(&[path.into(), protected.clone()]);
+            let counts: Vec<_> = result.iter().map(MembershipObservation::count).collect();
+            if counts[0] == CountObservation::Complete(expected.len() as u32) {
                 assert!(
-                    matches!(result[1], CountObservation::Incomplete { .. }),
-                    "Protected matching targets cannot prove absence: {result:?}"
+                    matches!(counts[1], CountObservation::Incomplete { .. }),
+                    "Protected matching targets cannot prove absence: {counts:?}"
                 );
-                return;
+                let MembershipObservation::Complete(members) = result.remove(0) else {
+                    panic!("Complete counts must retain complete members")
+                };
+                let actual: std::collections::BTreeSet<_> =
+                    members.iter().map(|member| member.id).collect();
+                assert_eq!(actual, expected.iter().copied().collect());
+                for member in &members {
+                    assert_eq!(member_state(member), Ok(MemberState::Current));
+                    assert!(native::paths_equal(&member.path, path).unwrap());
+                    assert_eq!(
+                        member.process.process_creation_time(),
+                        Some(member.creation_time)
+                    );
+                }
+                return members;
             }
             assert!(
                 Instant::now() < deadline,
-                "Expected {expected}, got {result:?}"
+                "Expected {} members, got {counts:?}",
+                expected.len()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -136,15 +163,17 @@ mod tests {
         let target = selected.to_str().unwrap();
         let negative_name = Worker::start(&named_alias);
         let negative_directory = Worker::start(&other_path);
-        await_count(target, 0);
+        await_members(target, &[]);
         let first = Worker::start(&selected);
-        await_count(target, 1);
+        let retained_first = await_members(target, &[first.0.id()]);
         let second = Worker::start(&selected);
-        await_count(target, 2);
+        await_members(target, &[first.0.id(), second.0.id()]);
         drop(first);
-        await_count(target, 1);
+        assert_eq!(member_state(&retained_first[0]), Ok(MemberState::Exited));
+        drop(retained_first);
+        await_members(target, &[second.0.id()]);
         drop(second);
-        await_count(target, 0);
+        await_members(target, &[]);
         drop((negative_name, negative_directory));
         for path in [&selected, &named_alias, &other_path] {
             std::fs::remove_file(path).unwrap();

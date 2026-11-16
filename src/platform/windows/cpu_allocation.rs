@@ -23,6 +23,26 @@ use super::ProcessOperationError;
 
 pub(crate) mod topology;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CpuSetRecord {
+    Unallocated { processor: ProcessorId, id: u32 },
+    Allocated { processor: ProcessorId, id: u32 },
+}
+
+impl CpuSetRecord {
+    pub(crate) fn processor(&self) -> ProcessorId {
+        match *self {
+            Self::Unallocated { processor, .. } | Self::Allocated { processor, .. } => processor,
+        }
+    }
+
+    pub(crate) fn id(&self) -> u32 {
+        match *self {
+            Self::Unallocated { id, .. } | Self::Allocated { id, .. } => id,
+        }
+    }
+}
+
 pub(crate) fn validate_group_zero_affinity(
     process: &WinHandle,
 ) -> Result<(), ProcessOperationError> {
@@ -130,7 +150,7 @@ pub(crate) fn set_cpu_sets(process: &WinHandle, ids: &[u32]) -> Result<(), Proce
     }
 }
 
-pub(crate) fn cpu_set_inventory() -> Result<Vec<(ProcessorId, u32)>, ProcessOperationError> {
+pub(crate) fn cpu_set_inventory() -> Result<Vec<CpuSetRecord>, ProcessOperationError> {
     let mut returned_length = 0;
     // SAFETY: a null buffer with zero length requests the required byte count.
     let probe_ok =
@@ -177,9 +197,7 @@ struct CpuSetInformationHeader {
     cpu_set_type: u32,
 }
 
-fn cpu_set_inventory_from_bytes(
-    buffer: &[u8],
-) -> Result<Vec<(ProcessorId, u32)>, ProcessOperationError> {
+fn cpu_set_inventory_from_bytes(buffer: &[u8]) -> Result<Vec<CpuSetRecord>, ProcessOperationError> {
     let mut ids = Vec::new();
     let mut offset = 0_usize;
     let header_size = size_of::<CpuSetInformationHeader>();
@@ -226,13 +244,18 @@ fn cpu_set_inventory_from_bytes(
                     code: windows_sys::Win32::Foundation::ERROR_INVALID_DATA,
                 });
             }
-            ids.push((
-                ProcessorId {
-                    group: cpu_set.Group,
-                    number: cpu_set.LogicalProcessorIndex,
-                },
-                cpu_set.Id,
-            ));
+            let processor = ProcessorId {
+                group: cpu_set.Group,
+                number: cpu_set.LogicalProcessorIndex,
+            };
+            let id = cpu_set.Id;
+            // SAFETY: AllFlags is the documented byte representation of the CPU Set flags union.
+            let flags = unsafe { cpu_set.Anonymous1.AllFlags };
+            ids.push(if flags & 0x02 != 0 {
+                CpuSetRecord::Allocated { processor, id }
+            } else {
+                CpuSetRecord::Unallocated { processor, id }
+            });
         }
         offset += record_size;
     }
@@ -274,9 +297,22 @@ mod tests {
     fn partial_cpu_set_inventory_is_rejected() {
         assert!(cpu_set_inventory_from_bytes(&[0; 3]).is_err());
         assert!(cpu_set_inventory_from_bytes(&[0; 8]).is_err());
+        let record = cpu_set_record(
+            ProcessorId {
+                group: 0,
+                number: 0,
+            },
+            100,
+            2,
+        );
+        for size in size_of::<CpuSetInformationHeader>()..record.len() {
+            let mut partial = record[..size].to_vec();
+            partial[..4].copy_from_slice(&(size as u32).to_le_bytes());
+            assert!(cpu_set_inventory_from_bytes(&partial).is_err());
+        }
     }
 
-    fn cpu_set_record(processor: ProcessorId, id: u32) -> Vec<u8> {
+    fn cpu_set_record(processor: ProcessorId, id: u32, flags: u8) -> Vec<u8> {
         use std::mem::offset_of;
         use windows_sys::Win32::System::SystemInformation::SYSTEM_CPU_SET_INFORMATION_0_0;
 
@@ -290,37 +326,39 @@ mod tests {
         buffer[group..group + 2].copy_from_slice(&processor.group.to_le_bytes());
         let index = payload + offset_of!(SYSTEM_CPU_SET_INFORMATION_0_0, LogicalProcessorIndex);
         buffer[index] = processor.number;
+        let flags_offset = payload + offset_of!(SYSTEM_CPU_SET_INFORMATION_0_0, Anonymous1);
+        buffer[flags_offset] = flags;
         buffer
     }
 
     #[test]
     fn cpu_set_inventory_retains_group_qualified_processors() {
         let expected = vec![
-            (
-                ProcessorId {
+            CpuSetRecord::Unallocated {
+                processor: ProcessorId {
                     group: 0,
                     number: 63,
                 },
-                100,
-            ),
-            (
-                ProcessorId {
+                id: 100,
+            },
+            CpuSetRecord::Unallocated {
+                processor: ProcessorId {
                     group: 2,
                     number: 63,
                 },
-                200,
-            ),
-            (
-                ProcessorId {
+                id: 200,
+            },
+            CpuSetRecord::Unallocated {
+                processor: ProcessorId {
                     group: 2,
                     number: 0,
                 },
-                300,
-            ),
+                id: 300,
+            },
         ];
         let buffer = expected
             .iter()
-            .flat_map(|&(processor, id)| cpu_set_record(processor, id))
+            .flat_map(|record| cpu_set_record(record.processor(), record.id(), 0))
             .collect::<Vec<_>>();
         assert_eq!(cpu_set_inventory_from_bytes(&buffer).unwrap(), expected);
     }
@@ -330,11 +368,30 @@ mod tests {
         for group in [0, 2] {
             let processor = ProcessorId { group, number: 63 };
             assert_eq!(
-                cpu_set_inventory_from_bytes(&cpu_set_record(processor, 100)).unwrap(),
-                vec![(processor, 100)]
+                cpu_set_inventory_from_bytes(&cpu_set_record(processor, 100, 0)).unwrap(),
+                vec![CpuSetRecord::Unallocated { processor, id: 100 }]
             );
             let invalid = ProcessorId { group, number: 64 };
-            assert!(cpu_set_inventory_from_bytes(&cpu_set_record(invalid, 100)).is_err());
+            assert!(cpu_set_inventory_from_bytes(&cpu_set_record(invalid, 100, 0)).is_err());
+        }
+    }
+
+    #[test]
+    fn cpu_set_inventory_retains_allocation_without_treating_other_flags_as_reserved() {
+        for group in [0, 2] {
+            for flags in [0, 1, 2, 4, 6, 8, 255] {
+                let processor = ProcessorId { group, number: 1 };
+                let expected = if flags & 2 != 0 {
+                    CpuSetRecord::Allocated { processor, id: 100 }
+                } else {
+                    CpuSetRecord::Unallocated { processor, id: 100 }
+                };
+                assert_eq!(
+                    cpu_set_inventory_from_bytes(&cpu_set_record(processor, 100, flags)).unwrap(),
+                    vec![expected],
+                    "group {group}, flags {flags:#x}"
+                );
+            }
         }
     }
 

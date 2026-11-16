@@ -95,6 +95,7 @@ use crate::{
     windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
 };
 
+mod instance_balancing;
 mod instance_limits;
 mod keep_running;
 mod requirements;
@@ -113,6 +114,7 @@ const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(500);
 const APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL: Duration = Duration::from_millis(750);
 const CPU_ALLOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const INSTANCE_BALANCING_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const CPU_ALLOCATION_RECONCILIATION_RETRY_MAX: Duration = Duration::from_secs(60);
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -301,6 +303,7 @@ pub struct RuntimeFeatureStatus {
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_sets_soft: CpuAllocationSnapshot,
     pub processor_affinity_hard: CpuAllocationSnapshot,
+    pub(crate) instance_balancing: CpuAllocationSnapshot,
     pub cpu_limiter: CpuLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
     pub adaptive_engine_process: AdaptiveEngineProcessSnapshot,
@@ -357,6 +360,7 @@ struct AutomationWorkerState {
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
     pending_instance_limits_resets: instance_limits::PendingResets,
+    pending_instance_balancing_resets: instance_balancing::PendingResets,
     input_activity: InputActivityTracker,
     windows_event_watcher_active: bool,
     worker_accepting_work: bool,
@@ -367,6 +371,7 @@ struct AutomationWorkerState {
 struct AutomationWakeEvents {
     settings_changed: bool,
     keep_running_settings_changed: bool,
+    windows_event_watcher_changed: bool,
     foreground_changed: bool,
     window_created: bool,
     power_changed: bool,
@@ -417,6 +422,7 @@ impl RuntimeHandle {
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),
+                pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
                 input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: false,
                 worker_accepting_work: false,
@@ -484,6 +490,7 @@ impl RuntimeHandle {
                     || state.settings.general.enabled != settings.value.general.enabled;
                 state.pending_events.keep_running_settings_changed |= keep_running_changed;
                 instance_limits::record_settings_changes(&mut state, &settings.value);
+                instance_balancing::record_settings_changes(&mut state, &settings.value);
                 state.settings = Arc::clone(&settings.value);
                 state.runtime_revision = settings.runtime_revision;
                 state.pending_events.settings_changed = true;
@@ -1059,6 +1066,19 @@ fn run_background_automation(
             &configured_settings.instance_limits,
             configured_settings.general.enabled,
         );
+        let instance_balancing_reset = snapshot.instance_balancing_resets.all
+            || !snapshot.instance_balancing_resets.paths.is_empty();
+        runner.instance_balancing.sync(
+            &configured_settings.instance_balancing,
+            configured_settings.general.enabled,
+            snapshot.instance_balancing_resets,
+        );
+        let instance_balancing_context_changed = wake_events.suspend_resume
+            || wake_events.session_changed
+            || wake_events.windows_event_watcher_changed;
+        if instance_balancing_context_changed || !snapshot.windows_event_watcher_active {
+            runner.instance_balancing.invalidate();
+        }
         if wake_events.suspend_resume || wake_events.session_changed {
             runner.instance_limits.invalidate(
                 "Waiting for a fresh process count after a session or sleep transition.",
@@ -1174,6 +1194,9 @@ fn run_background_automation(
         if wake_events.suspend_resume {
             scheduler.schedule_now(RefreshDomain::InstanceLimits, event_now);
         }
+        if instance_balancing_reset || instance_balancing_context_changed {
+            scheduler.schedule_now(RefreshDomain::InstanceBalancing, event_now);
+        }
         if keep_running_command_requested {
             scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
@@ -1270,6 +1293,11 @@ fn run_background_automation(
             || runner.keep_running.has_pending();
         let instance_limits_refresh_required =
             settings_changed || instance_limits_required(configured_settings.as_ref());
+        let instance_balancing_refresh_required = settings_changed
+            || instance_balancing_reset
+            || instance_balancing_context_changed
+            || instance_balancing_required(configured_settings.as_ref())
+            || runner.instance_balancing.active();
         let memory_trim_refresh_required = settings_changed
             || memory_trim_command_requested
             || feature_refresh_required(settings, settings.memory_trim.enabled);
@@ -1490,6 +1518,22 @@ fn run_background_automation(
                 processor_affinity_hard_refresh_interval,
             );
         }
+        if instance_balancing_refresh_required
+            && scheduler.is_due(RefreshDomain::InstanceBalancing, now)
+        {
+            let status = runner.run_instance_balancing_update(
+                &shared,
+                &configured_settings,
+                settings,
+                windows_event_watcher_active,
+            );
+            update_instance_balancing_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::InstanceBalancing,
+                now,
+                INSTANCE_BALANCING_REFRESH_INTERVAL,
+            );
+        }
         if cpu_limiter_refresh_required && scheduler.is_due(RefreshDomain::CpuLimiter, now) {
             let cpu_limiter_status = runner.run_cpu_limiter_update(settings, &mut observations);
             update_cpu_limiter_status(&shared, cpu_limiter_status);
@@ -1686,6 +1730,11 @@ fn run_background_automation(
                     instance_limits_refresh_required,
                     RefreshDomain::InstanceLimits,
                     INSTANCE_LIMITS_REFRESH_INTERVAL,
+                ),
+                (
+                    instance_balancing_refresh_required || runner.instance_balancing.active(),
+                    RefreshDomain::InstanceBalancing,
+                    INSTANCE_BALANCING_REFRESH_INTERVAL,
                 ),
                 (
                     background_efficiency_refresh_required,
@@ -1970,6 +2019,7 @@ mod keep_running_intake_tests {
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
                 pending_instance_limits_resets: instance_limits::PendingResets::default(),
+                pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
                 input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: true,
                 worker_accepting_work: true,

@@ -1172,6 +1172,13 @@ fn toml_round_trip_preserves_settings() {
                 r"C:\Apps\app.exe".into(),
             )],
         },
+        instance_balancing: crate::config::InstanceBalancingSettings {
+            enabled: true,
+            rules: vec![crate::config::InstanceBalancingRule {
+                enabled: true,
+                executable_path: r"C:\Apps\app.exe".into(),
+            }],
+        },
         memory_trim: MemoryTrimSettings {
             enabled: true,
             system_memory_load_threshold_percent: 80,

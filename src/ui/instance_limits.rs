@@ -259,8 +259,6 @@ impl Editor {
                     settings.enabled,
                     Some(Message::Enabled)
                 ),
-                text(t!("instance_limits.shared").to_string()).size(design::typography::SECONDARY),
-                text(t!("instance_limits.intro_1").to_string()).size(design::typography::SECONDARY),
                 widgets::toggle_card(
                     "instance_limits.notify",
                     settings.notify,

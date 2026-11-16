@@ -23,6 +23,7 @@ pub(crate) enum ControlOwner {
     DynamicPriorityBoost,
     GpuPriority,
     IoPriority,
+    InstanceBalancing,
     MemoryPriority,
     ProcessPriority,
     ProcessorAffinityHard,
@@ -631,6 +632,7 @@ mod tests {
         assert!(ControlOwner::ProcessPriority.is_automatic());
         assert!(ControlOwner::BackgroundEfficiency.is_automatic());
         assert!(ControlOwner::CpuSetsSoft.is_automatic());
+        assert!(ControlOwner::InstanceBalancing.is_automatic());
         assert!(ControlOwner::ProcessorAffinityHard.is_automatic());
         assert!(ControlOwner::AdaptiveEngineProcessFocusPriority.is_automatic());
         assert!(ControlOwner::ThreadPriority.is_automatic());

@@ -892,6 +892,16 @@ Assert-NoSourceMatch `
     -Pattern 'windows_sys|unsafe|crate::platform' `
     -Paths @('src/features/advanced_controls/instance_limits.rs')
 
+Assert-NoSourceMatch `
+    -Boundary 'Instance Balancing planning and qualification remain pure policy' `
+    -Pattern 'windows_sys|windows::|unsafe\s*\{|crate::platform|apply_policy_claim|record_process_change' `
+    -Paths @('src/features/cpu_control/instance_balancing.rs', 'src/features/cpu_control/instance_balancing/policy.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Balancing orchestrates only through shared allocation and observation controls' `
+    -Pattern 'windows_sys|windows::|unsafe\s*\{|crate::platform|AdjustTokenPrivileges|CreateProcessW|TerminateProcess|SetProcessDefaultCpuSets|SetProcessAffinityMask' `
+    -Paths @('src/backend/automation/instance_balancing.rs')
+
 Write-Host 'All architecture ownership gates passed.'
 
 # Successful negative searches return 1; do not propagate that as a CI failure.

@@ -84,7 +84,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   basename may exclude a different name; positive counts require a retained live
   process handle, creation time, full image path and SID/session checks. Query-only
   access may exclude a known different path/scope, but cannot prove liveness.
-  Retained members are rechecked before publication. A discovered catalog/image-name
+  The collector returns exact PID/creation/path members with retained observation
+  handles, rechecking liveness before publication. Instance Limits projects these
+  observations to counts and releases the handles before publishing runtime status.
+  Retained observation is not mutation authority: placement still needs fresh scope,
+  safety, identity and settings preflight. A discovered catalog/image-name
   contradiction invalidates the pass. Basename agreement was measured on ordinary
   and elevated fixtures, not established for every rename or filesystem behavior.
 - Counts are sampled and non-atomic: short-lived processes may be missed. Incomplete
@@ -326,13 +330,13 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
 - Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
-- CPU Set discovery is lazy and operation-local, including failure caching. Discovery failure preserves existing assignments and does not suppress individual applications; pending handoffs retry on the existing cleanup interval.
+- CPU Set discovery is lazy and operation-local, including failure caching. Existing explicit and Adaptive claims preserve assignments on discovery failure without suppressing applications; pending handoffs retry on the existing cleanup interval. Guarded Instance Balancing claims withdraw instead.
 - Process enrichment cannot replace the identity generation captured by the cycle. Newly available or changed generations are deferred (non-actionable) until a fresh cycle, preserving consistency with cached Adaptive membership and earlier consumers.
 
 ## CPU allocation and Adaptive Engine
 
 - CPU allocation has one runtime coordinator and deterministic precedence: CPU Sets (Soft) >
-  Processor Affinity (Hard) > Adaptive Engine. Feature modules own
+  Processor Affinity (Hard) > Instance Balancing > Adaptive Engine. Feature modules own
   policy only; the coordinator alone owns affinity/CPU Set baselines, mutation, compensation,
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
@@ -375,7 +379,10 @@ Read the relevant section before changing feature policy, ownership, restoration
   native variable-length records. CPU Sets (Soft) resolves complete group-qualified
   selections to current CPU Set IDs across all discovered groups. Duplicate
   processor mappings, duplicate IDs, or any missing selected member block the
-  entire request before an ownership handoff. Native readback verifies the
+  entire request before an ownership handoff. The shared inventory retains each
+  Set's allocated/unallocated flag; it does not prove availability or reserve a
+  processor. Existing explicit and Adaptive selections still resolve either
+  state. Native readback verifies the
   process-default ID assignment, not actual thread residency; thread-selected
   CPU Sets, hard affinity, reservations, and Windows scheduling still apply.
   Processor Affinity (Hard) and Adaptive per-processor sampling remain explicitly
@@ -396,6 +403,51 @@ Read the relevant section before changing feature policy, ownership, restoration
   affinity mask; it never applies a partial intersection.
   New hard-affinity claims require a verified single group-0 target; group
   validation does not gate compensation, release, or crash restoration.
+- Instance Balancing has a guarded backend claim, below explicit CPU Sets (Soft)
+  and Processor Affinity (Hard) and above Adaptive Engine. Its global configuration
+  defaults off and is shared across power sources. Its CPU Control page edits
+  executable-path rules and displays runtime status. Literal paths use Instance
+  Limits' scope and ordinal comparison,
+  with duplicate paths rejected even in disabled rules. Claims require a rule generation and a
+  topology-bound Soft CPU Set request, one group-0 topology, complete current CPU
+  Set mappings, and whole physical cores with no allocated siblings. Every selected
+  CPU must fit the original allowed hard mask and the current system mask; no partial share
+  or All fallback is substituted.
+- One-second visible/tray observations qualify two identical complete actionable
+  cohorts at least one second apart. Previously retained live members missing from
+  a new catalog make the rule incomplete; absence alone never proves exit. Fresh
+  SID/session and liveness queries use the retained handles, while mutation still
+  reopens the exact target through shared safety and cross-session checks.
+- Each rule partitions the common eligible whole-core pool, balancing core counts
+  within each numeric efficiency class. Survivor admission order and valid prior
+  core assignments are stability hints only. New accepted plans are at least five
+  seconds apart. Fewer than two eligible members or insufficient whole cores yields
+  the entire rule; no overlapping or empty share substitutes for insufficient capacity.
+- Explicit CPU selections, known denied control, unmanaged defaults and drift
+  suppression exclude members visibly in Action Log. Incomplete observations or
+  unavailable eligibility withdraw that rule's claims. A fresh catalog, topology
+  and eligibility pass must match before group application. Settings, session and
+  watcher changes cancel subsequent work; an admitted native operation may finish.
+  Native writes are not atomic across members. Any failed or shadowed share stops
+  the plan and withdraws every balancing claim for the rule, retaining failed cleanup.
+- Observed cohort, pool or control-context changes withdraw current preferences
+  before qualifying again. Topology changes remain paused until explicit rearm.
+  Rule/feature/master edits preserve reset intents even when reversed between worker
+  passes; power-source changes alone do not rearm drift suppression or discard hints.
+  Different executable rules may prefer the same cores. Readback confirms accepted
+  scheduling preferences, not core exclusivity, thread residency or faster execution.
+- For managed properties, balancing uses the original baseline only while
+  coordinator ownership is confirmed and the live value matches its expected
+  value. Unowned properties use their current native values. Unowned nonempty
+  CPU Sets, unavailable facts, uncertain recovery state, and external drift block
+  placement. Rebalances do not shrink from a prior managed share. A final native
+  read checks the expected affinity/default Sets before applying; the read/write
+  sequence is optimistic, not atomic against another controller.
+- A balancing claim's generation identifies an explicit rearm for an exact
+  process. Observed drift suppresses that generation across release and retries;
+  an older generation cannot rearm it. Other CPU features retain their own
+  reapplication contracts. Guard failure withdraws balancing ownership through
+  the existing reconciliation/restoration paths without losing pending cleanup.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 
@@ -478,7 +530,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 - CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones are independent Adaptive Engine producers. Zones-only work must keep AC/Battery automation alive without enabling priority/efficiency assists.
 - The limiter owns its existing percentage, selector, custom mask, and soft/hard method. `dynamic_resource_zone_settings` owns the separate zone share, selector, and custom mask. Speed defaults zoning off; Performance retains zoning on.
 - Zones require fresh eligible foreground and hot background competition outside startup grace. One combined Adaptive generation applies background first, requires verified effective placement, then applies foreground. Loss of competition withdraws foreground immediately on reconciliation; partial failure resolves to the independently eligible limiter or no allocation, retaining controller cleanup/backoff.
-- The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Adaptive precedence is unchanged. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
+- The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Instance Balancing > Adaptive precedence applies to zoning too. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
 - Disabled zoning may deserialize a missing zone block into inactive defaults without rewriting input. Enabled zoning with a missing block fails at deserialization for root, Battery, and presets. Do not infer zone values from the limiter or add a migration.
 
 ## Thread Priority discovery

@@ -8,6 +8,7 @@ pub(super) struct AutomationSnapshot {
     pub(super) input_activity: InputActivityTracker,
     pub(super) wake_events: AutomationWakeEvents,
     pub(super) instance_limits_resets: instance_limits::PendingResets,
+    pub(super) instance_balancing_resets: instance_balancing::PendingResets,
     pub(super) windows_event_watcher_active: bool,
 }
 
@@ -21,6 +22,7 @@ pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<Auto
         action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
         wake_events: std::mem::take(&mut state.pending_events),
         instance_limits_resets: std::mem::take(&mut state.pending_instance_limits_resets),
+        instance_balancing_resets: std::mem::take(&mut state.pending_instance_balancing_resets),
         windows_event_watcher_active: state.windows_event_watcher_active,
     })
 }
@@ -32,6 +34,7 @@ pub(super) fn set_windows_event_watcher_active(shared: &SharedAutomationState, a
     }
 
     state.windows_event_watcher_active = active;
+    state.pending_events.windows_event_watcher_changed = true;
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
 }
@@ -110,6 +113,18 @@ pub(super) fn update_keep_running_status(
         status,
         |feature_status| &feature_status.keep_running,
         |feature_status| &mut feature_status.keep_running,
+    );
+}
+
+pub(super) fn update_instance_balancing_status(
+    shared: &SharedAutomationState,
+    status: CpuAllocationSnapshot,
+) {
+    update_feature_status(
+        shared,
+        status,
+        |feature_status| &feature_status.instance_balancing,
+        |feature_status| &mut feature_status.instance_balancing,
     );
 }
 

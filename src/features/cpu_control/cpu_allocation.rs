@@ -480,6 +480,7 @@ impl CpuAllocationManager {
                 ),
                 owner,
                 request,
+                balancing_generation: None,
             };
             match coordinator.apply_policy_claim(
                 &mut inventory,
@@ -557,6 +558,16 @@ impl CpuAllocationManager {
                         failures.count += 1;
                         failures.last_error = Some(error.to_string());
                     }
+                }
+                Err(CpuAllocationApplyError::Eligibility(error)) => {
+                    skipped_processes += 1;
+                    action_log.record(
+                        self.action_log_feature,
+                        Some(target.process_id),
+                        target.process_name,
+                        ActionLogResult::Skipped,
+                        error.to_string(),
+                    );
                 }
                 Err(CpuAllocationApplyError::Target(error)) => {
                     if zone_role.is_some() {
@@ -814,7 +825,7 @@ pub(crate) fn record_cpu_allocation_reconciliation(
             ActionLogResult::Applied,
             format!(
                 "Applied {} after CPU allocation precedence changed.",
-                cpu_allocation_request_label(application.request)
+                cpu_allocation_request_label(application.owner, application.request)
             ),
         );
     }
@@ -855,6 +866,9 @@ pub(crate) fn cpu_allocation_action_log_context(
             "Processor Affinity (Hard)",
         ),
         ControlOwner::AdaptiveEngine => (ActionLogFeature::AdaptiveEngine, "Adaptive Engine"),
+        ControlOwner::InstanceBalancing => {
+            (ActionLogFeature::InstanceBalancing, "Instance Balancing")
+        }
         unsupported => {
             unreachable!("unsupported CPU allocation Action Log owner: {unsupported:?}")
         }
@@ -909,7 +923,13 @@ fn cpu_allocation_target_key(target: &CpuAllocationTarget) -> ProcessTargetKey {
     )
 }
 
-fn cpu_allocation_request_label(request: CpuAllocationRequest) -> &'static str {
+fn cpu_allocation_request_label(
+    owner: ControlOwner,
+    request: CpuAllocationRequest,
+) -> &'static str {
+    if owner == ControlOwner::InstanceBalancing {
+        return "Instance Balancing";
+    }
     match request {
         CpuAllocationRequest::SoftCpuSets { .. } => "CPU Sets (Soft)",
         CpuAllocationRequest::HardAffinity { .. } => "Processor Affinity (Hard)",
@@ -1336,17 +1356,19 @@ mod tests {
                 ControlOwner::CpuSetsSoft,
                 ControlOwner::AdaptiveEngine,
                 ControlOwner::CpuSetsSoft,
+                ControlOwner::InstanceBalancing,
             ],
             "settings changed",
             &mut log,
         );
 
         let entries = log.entries();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].feature, ActionLogFeature::CpuSetsSoft);
         assert!(entries[0].reason.contains("2 CPU allocation properties"));
-        assert_eq!(entries[1].feature, ActionLogFeature::AdaptiveEngine);
+        assert_eq!(entries[1].feature, ActionLogFeature::InstanceBalancing);
         assert!(entries[1].reason.contains("1 CPU allocation property"));
+        assert_eq!(entries[2].feature, ActionLogFeature::AdaptiveEngine);
     }
 
     #[test]
@@ -1400,6 +1422,14 @@ mod tests {
                             selection: crate::cpu_topology::test_selection(0b0011),
                         },
                     },
+                    crate::control::cpu_allocation::CpuAllocationReconciledApplication {
+                        owner: ControlOwner::InstanceBalancing,
+                        process_id: 43,
+                        process_name: "balanced.exe".to_owned(),
+                        request: CpuAllocationRequest::SoftCpuSets {
+                            selection: crate::cpu_topology::test_selection(0b0011),
+                        },
+                    },
                 ],
                 ..Default::default()
             },
@@ -1407,10 +1437,12 @@ mod tests {
         );
 
         let entries = log.entries();
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].feature, ActionLogFeature::AdaptiveEngine);
         assert_eq!(entries[0].result, ActionLogResult::Applied);
         assert!(entries[0].reason.contains("Processor Affinity (Hard)"));
+        assert_eq!(entries[1].feature, ActionLogFeature::InstanceBalancing);
+        assert!(entries[1].reason.contains("Instance Balancing"));
     }
 
     #[test]

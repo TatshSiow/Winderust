@@ -202,8 +202,6 @@ impl Editor {
                 settings.enabled,
                 Some(Message::Enabled)
             ),
-            text(t!("keep_running.shared").to_string()).size(design::typography::SECONDARY),
-            text(t!("keep_running.intro_1").to_string()).size(design::typography::SECONDARY),
             widgets::setting_title("common.rules"),
             app_picker::view(
                 &self.path,

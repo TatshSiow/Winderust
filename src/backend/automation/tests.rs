@@ -80,6 +80,40 @@ fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
     assert!(!automation_worker_required(&settings));
 }
 
+#[test]
+fn instance_balancing_owns_a_worker_and_context_events_without_process_scans() {
+    let mut settings = Settings::default();
+    settings.general.theme_mode = AppThemeMode::Amoled;
+    settings.general.accent.source = AccentColorSource::Custom;
+    settings.instance_balancing.enabled = true;
+    assert!(!instance_balancing_required(&settings));
+    settings
+        .instance_balancing
+        .rules
+        .push(crate::config::InstanceBalancingRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".into(),
+        });
+    assert!(instance_balancing_required(&settings));
+    assert!(automation_worker_required(&settings));
+    assert!(windows_event_watcher_required(&settings));
+    assert!(!process_appearance_scan_required(&settings));
+    assert!(!power_plan_checks_required(&settings));
+    for event in [
+        WindowsAutomationEvent::SuspendResume,
+        WindowsAutomationEvent::SessionChanged,
+    ] {
+        assert!(windows_event_wake_required(&settings, event));
+    }
+    settings.instance_balancing.rules[0].enabled = false;
+    assert!(!automation_worker_required(&settings));
+    assert!(!windows_event_watcher_required(&settings));
+    settings.instance_balancing.rules[0].enabled = true;
+    settings.general.enabled = false;
+    assert!(!instance_balancing_required(&settings));
+    assert!(!automation_worker_required(&settings));
+}
+
 fn runtime_settings_with_runtime_and_persisted_revisions(
     snapshot: Settings,
     runtime_revision: SettingsRevision,
@@ -2268,6 +2302,7 @@ fn automation_feature_execution_order_is_characterized() {
             "runner.run_app_suspension_update(",
             "runner.run_cpu_sets_soft_update(",
             "runner.run_processor_affinity_hard_update(",
+            "runner.run_instance_balancing_update(",
             "runner.run_cpu_limiter_update(",
             "runner.run_cpu_allocation_reconciliation(",
             "runner.run_by_running_app_update(",
@@ -2330,6 +2365,7 @@ fn shared_property_precedence_inputs_are_characterized() {
         &[
             "ControlOwner::CpuSetsSoft",
             "ControlOwner::ProcessorAffinityHard",
+            "ControlOwner::InstanceBalancing",
             "ControlOwner::AdaptiveEngine",
         ],
     );
@@ -2483,6 +2519,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
             pending_instance_limits_resets: instance_limits::PendingResets::default(),
+            pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
             input_activity: InputActivityTracker::default(),
             windows_event_watcher_active: true,
             worker_accepting_work: false,

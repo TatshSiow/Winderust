@@ -472,6 +472,18 @@ impl SettingsEditor {
         )
     }
 
+    pub(crate) fn set_instance_balancing_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+        self.coordinator.apply_runtime_patch(
+            &mut self.draft,
+            self.coordinator.persisted_revision,
+            |settings| {
+                let changed = set_enabled_value(&mut settings.instance_balancing.enabled, enabled);
+                settings.sync_shared_settings_to_battery();
+                changed
+            },
+        )
+    }
+
     pub(crate) fn set_master_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
         self.coordinator.apply_runtime_patch(
             &mut self.draft,

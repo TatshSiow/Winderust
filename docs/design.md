@@ -178,6 +178,10 @@ hover/press; background shading supplies feedback.
   visible independently of the shared restoration switch.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
   tabs, alongside Info in the shared docked panel.
+- Instance Balancing lives under CPU Control and shares one configuration across
+  power sources. Use executable-path rules with activation, edit and delete actions;
+  keep configuration editable while disabled. Its Info / Status panel shows the
+  actual assignment or waiting reason without presenting preferences as reserved cores.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
   delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
   edit, and view use the existing full-window modal style.

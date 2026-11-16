@@ -92,6 +92,23 @@ cargo test --locked control::instance_limits::tests::native_counts_only_the_sele
 It changes no process settings, privileges or power plans. It establishes full-path
 matching on local files, not atomic process counts or universal filesystem support.
 
+## Instance Balancing checks
+
+The ignored producer smoke uses the production event watcher, direct runtime
+ticks and bounded private workers. It checks two, three, then two instances,
+empty preferences during qualification, disjoint accepted CPU Set readback,
+five-second replan spacing, unchanged affinity and disable restoration:
+
+```powershell
+cargo test --locked instance_balancing::native_tests:: -- --ignored --nocapture --test-threads=1
+```
+
+It requires one active group 0 with at least three physical cores and reports a
+skip otherwise. It changes only its owned workers' CPU Set preferences. Its loop
+deadline does not cancel blocking Windows calls. Test recovery transport does not
+establish watchdog acknowledgement or crash recovery; direct ticks do not prove
+outer scheduler timing, actual thread residency or performance benefits.
+
 ## CPU Limiter mechanism comparison
 
 The `runtime-benchmark` feature also provides a disposable-worker comparison of

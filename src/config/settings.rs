@@ -43,6 +43,8 @@ pub struct Settings {
     #[serde(default)]
     pub processor_affinity_hard: CpuAllocationSettings,
     #[serde(default)]
+    pub instance_balancing: super::InstanceBalancingSettings,
+    #[serde(default)]
     pub cpu_allocation_presets: Vec<CpuAllocationPreset>,
     #[serde(default)]
     pub advanced_power_plan_tuning_presets: Vec<AdvancedPowerPlanTuningPreset>,
@@ -132,6 +134,7 @@ impl Settings {
         battery.watchdog = self.watchdog.clone();
         battery.keep_running = self.keep_running.clone();
         battery.instance_limits = self.instance_limits.clone();
+        battery.instance_balancing = self.instance_balancing.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
         battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
         battery.advanced_power_plan_tuning_presets =
@@ -1944,6 +1947,7 @@ impl Default for Settings {
             app_suspension: AppSuspensionSettings::default(),
             cpu_sets_soft: CpuAllocationSettings::default(),
             processor_affinity_hard: CpuAllocationSettings::default(),
+            instance_balancing: super::InstanceBalancingSettings::default(),
             cpu_allocation_presets: Vec::new(),
             advanced_power_plan_tuning_presets: Vec::new(),
             cpu_limiter: CpuLimiterSettings::default(),

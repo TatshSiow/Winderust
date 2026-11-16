@@ -389,6 +389,7 @@ fn run_case(
                             target: target.process.clone(),
                             owner: ControlOwner::ProcessorAffinityHard,
                             request: CpuAllocationRequest::HardAffinity { selection },
+                            balancing_generation: None,
                         },
                         false,
                     )

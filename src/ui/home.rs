@@ -1271,6 +1271,15 @@ fn enabled_features(
         .to_string()
     );
     feature!(
+        InstanceBalancing,
+        instance_balancing,
+        t!(
+            "home.adjusted_count",
+            count = status.instance_balancing.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
         BackgroundEfficiency,
         background_efficiency,
         t!(
@@ -1461,6 +1470,7 @@ mod tests {
             Page::CpuLimiter,
             Page::CpuSetsSoft,
             Page::ProcessorAffinityHard,
+            Page::InstanceBalancing,
             Page::BackgroundEfficiency,
             Page::AppSuspension,
             Page::AdaptiveEngine,
@@ -1487,6 +1497,7 @@ mod tests {
         let mut status = RuntimeFeatureStatus::default();
         status.by_running_app.active_process = Some("example.exe".into());
         status.cpu_sets_soft.adjusted_processes = 7;
+        status.instance_balancing.adjusted_processes = 2;
         status.app_suspension.suspended_processes = 3;
         let sample = Sample {
             cpu: CpuUsageSnapshot {
@@ -1508,6 +1519,10 @@ mod tests {
             (
                 Page::CpuSetsSoft,
                 t!("home.adjusted_count", count = 7).to_string(),
+            ),
+            (
+                Page::InstanceBalancing,
+                t!("home.adjusted_count", count = 2).to_string(),
             ),
             (
                 Page::AppSuspension,

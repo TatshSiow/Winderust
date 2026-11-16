@@ -27,11 +27,12 @@ pub(crate) enum RefreshDomain {
     SleepPrevention,
     KeepRunning,
     InstanceLimits,
+    InstanceBalancing,
     ProcessAppearance,
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 26] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 27] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -56,6 +57,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 26] = [
     RefreshDomain::SleepPrevention,
     RefreshDomain::KeepRunning,
     RefreshDomain::InstanceLimits,
+    RefreshDomain::InstanceBalancing,
     RefreshDomain::ProcessAppearance,
     RefreshDomain::ControllerActivity,
 ];
@@ -185,6 +187,7 @@ impl RefreshScheduler {
                 self.schedule_domains_now(&FOREGROUND_DOMAINS, now);
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
                 self.schedule_now(RefreshDomain::InstanceLimits, now);
+                self.schedule_now(RefreshDomain::InstanceBalancing, now);
             }
             SchedulerEvent::AppSwitch | SchedulerEvent::AppSwitchMouseClick => {
                 self.schedule_domains_now(&APP_SWITCH_DOMAINS, now);
@@ -311,6 +314,7 @@ mod tests {
                 FOREGROUND_DOMAINS.contains(domain)
                     || WINDOW_CREATED_DOMAINS.contains(domain)
                     || *domain == RefreshDomain::InstanceLimits
+                    || *domain == RefreshDomain::InstanceBalancing
             })
             .collect::<Vec<_>>();
 

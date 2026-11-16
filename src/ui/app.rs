@@ -1,9 +1,9 @@
 use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
-    by_activity, cpu_allocation, cpu_limiter, design, home, instance_limits, keep_running,
-    memory_trim, navigation, power_rules, priority_control, process_list, process_power_plans,
-    settings_pages, sleep_prevention, status_rail, tasks, timer_resolution, watchdog, widgets,
-    win32_priority_separation, window_frame,
+    by_activity, cpu_allocation, cpu_limiter, design, home, instance_balancing, instance_limits,
+    keep_running, memory_trim, navigation, power_rules, priority_control, process_list,
+    process_power_plans, settings_pages, sleep_prevention, status_rail, tasks, timer_resolution,
+    watchdog, widgets, win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -262,6 +262,7 @@ pub(crate) fn run(
                 watchdog: watchdog::Editor::default(),
                 keep_running: keep_running::Editor::default(),
                 instance_limits: instance_limits::Editor::default(),
+                instance_balancing: instance_balancing::Editor::default(),
                 timer: timer_resolution::Editor::default(),
                 priority_separation: win32_priority_separation::Editor::default(),
                 power_tuning: advanced_power_plan_tuning::Editor::default(),
@@ -566,6 +567,7 @@ struct WinderustApp {
     watchdog: watchdog::Editor,
     keep_running: keep_running::Editor,
     instance_limits: instance_limits::Editor,
+    instance_balancing: instance_balancing::Editor,
     timer: timer_resolution::Editor,
     priority_separation: win32_priority_separation::Editor,
     power_tuning: advanced_power_plan_tuning::Editor,
@@ -646,6 +648,7 @@ enum Message {
     Watchdog(watchdog::Message),
     KeepRunning(keep_running::Message),
     InstanceLimits(instance_limits::Message),
+    InstanceBalancing(instance_balancing::Message),
     Timer(timer_resolution::Message),
     PrioritySeparation(win32_priority_separation::Message),
     PowerTuning(advanced_power_plan_tuning::Message),
@@ -785,6 +788,9 @@ impl WinderustApp {
             }
             Page::InstanceLimits if self.instance_limits.has_pending_editor() => Some(
                 Message::InstanceLimits(instance_limits::Message::CancelRule),
+            ),
+            Page::InstanceBalancing if self.instance_balancing.has_pending_editor() => Some(
+                Message::InstanceBalancing(instance_balancing::Message::CancelRule),
             ),
             Page::KeepRunning if self.keep_running.has_pending_editor() => {
                 Some(Message::KeepRunning(keep_running::Message::CancelRule))
@@ -1308,6 +1314,15 @@ impl WinderustApp {
             }
             Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
             Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
+            Message::InstanceBalancing(instance_balancing::Message::Browse) => {
+                return self.browse(Page::InstanceBalancing);
+            }
+            Message::InstanceBalancing(message) => {
+                self.settings.edit_global(|settings| {
+                    self.instance_balancing
+                        .update(&mut settings.instance_balancing, message)
+                });
+            }
             Message::InstanceLimits(instance_limits::Message::Browse) => {
                 return self.browse(Page::InstanceLimits);
             }
@@ -1437,11 +1452,17 @@ impl WinderustApp {
                 }
             }
             Message::ExecutableChosen(page, profile, path) => {
-                if profile == self.power_source {
+                if profile == self.power_source || page == Page::InstanceBalancing {
                     if let Some(path) = path {
-                        if page == Page::InstanceLimits && path.to_str().is_none() {
-                            self.error_message =
-                                t!("instance_limits.unsupported_unicode_path").to_string();
+                        if matches!(page, Page::InstanceLimits | Page::InstanceBalancing)
+                            && path.to_str().is_none()
+                        {
+                            self.error_message = t!(match page {
+                                Page::InstanceBalancing =>
+                                    "instance_balancing.unsupported_unicode_path",
+                                _ => "instance_limits.unsupported_unicode_path",
+                            })
+                            .to_string();
                             return Task::none();
                         }
                         let path = path.to_string_lossy().into_owned();
@@ -1469,6 +1490,11 @@ impl WinderustApp {
                             Page::InstanceLimits => {
                                 return self.update(Message::InstanceLimits(
                                     instance_limits::Message::Path(path),
+                                ));
+                            }
+                            Page::InstanceBalancing => {
+                                return self.update(Message::InstanceBalancing(
+                                    instance_balancing::Message::Path(path),
                                 ));
                             }
                             Page::KeepRunning => {
@@ -1699,7 +1725,11 @@ impl WinderustApp {
                 if (page.supports_power_source_profiles()
                     || matches!(
                         page,
-                        Page::ActionLog | Page::Watchdog | Page::KeepRunning | Page::InstanceLimits
+                        Page::ActionLog
+                            | Page::Watchdog
+                            | Page::KeepRunning
+                            | Page::InstanceLimits
+                            | Page::InstanceBalancing
                     ))
                     && !self.catalog_loading
                 {
@@ -1765,6 +1795,11 @@ impl WinderustApp {
                             if id == Page::InstanceLimits as usize =>
                         {
                             self.settings.set_instance_limits_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature { id, enabled, .. }
+                            if id == Page::InstanceBalancing as usize =>
+                        {
+                            self.settings.set_instance_balancing_enabled(enabled)
                         }
                         tray::MenuAction::Feature { id, enabled, .. }
                             if id == Page::KeepRunning as usize =>
@@ -1861,6 +1896,7 @@ impl WinderustApp {
                                 | Page::Watchdog
                                 | Page::KeepRunning
                                 | Page::InstanceLimits
+                                | Page::InstanceBalancing
                         ))
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
@@ -1928,6 +1964,9 @@ impl WinderustApp {
             }
             Message::Save if self.settings.validate_instance_limits().is_err() => {
                 self.error_message = t!("instance_limits.invalid").to_string();
+            }
+            Message::Save if self.settings.validate_instance_balancing().is_err() => {
+                self.error_message = t!("instance_balancing.invalid").to_string();
             }
             Message::Save if self.settings.validate_keep_running().is_err() => {
                 self.error_message = t!("keep_running.invalid").to_string();
@@ -2051,6 +2090,7 @@ impl WinderustApp {
         self.settings.validate_watchdog().is_err()
             || self.settings.validate_keep_running().is_err()
             || self.settings.validate_instance_limits().is_err()
+            || self.settings.validate_instance_balancing().is_err()
             || self.watchdog.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
             || self.timer.has_invalid_inputs()
@@ -2113,6 +2153,7 @@ impl WinderustApp {
             || self.watchdog.has_pending_editor()
             || self.keep_running.has_pending_editor()
             || self.instance_limits.has_pending_editor()
+            || self.instance_balancing.has_pending_editor()
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
     }
@@ -2136,6 +2177,7 @@ impl WinderustApp {
         self.watchdog = Default::default();
         self.keep_running = Default::default();
         self.instance_limits = Default::default();
+        self.instance_balancing = Default::default();
         self.timer = Default::default();
         self.appearance = settings_pages::theme(&self.settings.global().general);
     }
@@ -2201,7 +2243,10 @@ impl WinderustApp {
                             navigation::feature_page_enabled(
                                 if matches!(
                                     *page,
-                                    Page::Watchdog | Page::KeepRunning | Page::InstanceLimits
+                                    Page::Watchdog
+                                        | Page::KeepRunning
+                                        | Page::InstanceLimits
+                                        | Page::InstanceBalancing
                                 ) {
                                     saved
                                 } else {
@@ -2823,6 +2868,10 @@ impl WinderustApp {
             return navigation_search_overlay(layout, search);
         }
         let modal = match self.page {
+            Page::InstanceBalancing => self
+                .instance_balancing
+                .modal(&self.settings.global().instance_balancing, &self.candidates)
+                .map(|modal| modal.map(Message::InstanceBalancing)),
             Page::InstanceLimits => self
                 .instance_limits
                 .modal(&self.candidates)
@@ -2959,6 +3008,10 @@ impl WinderustApp {
                     &self.candidates,
                 )
                 .map(Message::InstanceLimits),
+            Page::InstanceBalancing => self
+                .instance_balancing
+                .view(&self.settings.global().instance_balancing, &self.candidates)
+                .map(Message::InstanceBalancing),
             Page::KeepRunning => self
                 .keep_running
                 .view(

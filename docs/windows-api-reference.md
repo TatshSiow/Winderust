@@ -566,17 +566,25 @@ require GetProcessGroupAffinity to report exactly group 0 before any ownership
 handoff, preventing a group-0 mask from being reinterpreted in another primary
 group. Compensation, release, and recovery do not depend on this new-claim guard.
 All automatic CPU allocation shares one coordinator with this order: CPU Sets
-(Soft) > Processor Affinity (Hard) > Adaptive Engine. CPU Sets and affinity cannot
+(Soft) > Processor Affinity (Hard) > Instance Balancing > Adaptive Engine. CPU Sets and affinity cannot
 remain simultaneously Winderust-owned for one exact process instance. Adaptive
 Engine retains group-0 selection and sampling; its policy choices do not create
 another mutation owner.
 
 `src/platform/windows/cpu_allocation.rs::cpu_set_inventory_from_bytes` retains
-`SYSTEM_CPU_SET_INFORMATION.CpuSet.Group` and `LogicalProcessorIndex` separately
-for every record. CPU Set IDs are runtime mappings, not saved processor identities.
+`SYSTEM_CPU_SET_INFORMATION.CpuSet.Group`, `LogicalProcessorIndex`, and the
+`Allocated` flag for every record. `CpuSetRecord` distinguishes allocated from
+unallocated mappings; unallocated does not prove scheduling eligibility. The
+documented `AllFlags` bit 1 carries `Allocated`. The shared query uses a null
+process handle, so it does not classify `AllocatedToTargetProcess`. CPU Set IDs
+and allocation flags are sampled runtime facts, not saved processor identities
+or reservations made by Winderust.
 `src/control/cpu_allocation.rs::CpuSetInventory` rejects duplicate processor
 identities, duplicate IDs, and incomplete selected membership before changing
-ownership. CPU Set application, verification, compensation, and restoration still
+ownership and retains allocation state in the same per-operation cache. Existing
+CPU Sets (Soft) and Adaptive Engine selections continue to resolve both allocated
+and unallocated IDs; Windows determines their effect. CPU Set application,
+verification, compensation, and restoration still
 use the complete ID list through the existing process-default APIs; an empty
 baseline is restored as an empty list. No new setter, recovery schema, affinity
 override, or undocumented multi-group contract is introduced.
@@ -603,6 +611,12 @@ Implementation paths:
 - `src/control/cpu_allocation.rs`: sole live affinity and CPU Set ownership coordinator,
   exact-identity validation, claim arbitration, baseline/expected state, mutual exclusion,
   recovery sequencing, compensation, and clean release.
+- `src/control/cpu_allocation/instance_balancing.rs` and `eligibility.rs`:
+  guarded Instance Balancing backend requests, exact-process drift suppression,
+  confirmed original-state eligibility, and whole-core/unallocated-Set validation.
+  The automatic producer in `src/backend/automation/instance_balancing.rs` uses
+  retained membership and owner-aware preflight; the feature module owns whole-core
+  planning and qualification. Configuration defaults off; the UI editor is pending.
 - `src/platform/windows/cpu_allocation.rs`: sole live affinity/CPU Set query and setter adapter,
   including packed `GetSystemCpuSetInformation` conversion and new-claim processor-group validation.
 - `src/platform/windows/cpu_allocation/topology.rs`: read-only `RelationAll` capture and
@@ -625,11 +639,27 @@ worker pass, `RuntimeCore` asks the coordinator to re-resolve the effective
 claim and reopen it with the current cross-session setting. If no claim remains,
 the coordinator restores the first baseline only while the live state still
 matches Winderust's expected value. External changes break ownership and are
-left untouched after the recovery entry is relinquished. Shutdown skips the
+left untouched after the recovery entry is relinquished. A fresh effective CPU
+Sets (Soft), Processor Affinity (Hard), or Adaptive Engine claim can deliberately
+reapply its selection after drift, capturing the external value
+as its new restoration baseline. Equality with an expected value alone does not
+prove a recovery Commit was acknowledged. Shutdown skips the
 pass-end handoff and directly restores coordinator-owned state in reverse
 application order. Failed release-only cleanup retries with bounded one-to-60
 second backoff; repeated identical attempts do not create repeated Action Log
 failures, and a newly queued handoff bypasses an older retry deadline.
+
+Instance Balancing uses the same native adapter, process-control safety boundary,
+and recovery journal. Its direct claims and delayed handoffs both check the
+original allowed affinity, empty original default Sets, complete current CPU Set
+mappings, whole active SMT cores, and the documented `Allocated` flag. It excludes
+all allocated Sets without interpreting target-specific reservation ownership.
+Native read failures and uncertain journal state cannot authorize placement;
+expected-value equality alone cannot turn uncertain state into confirmed state.
+Fresh affinity/default-Set reads guard the final apply path against observed
+drift, but do not lock another process's native writes. The backend validates
+individual shares. The producer separately plans sampled cohort membership and
+disjoint desired shares; neither layer proves physical-core exclusivity or performance.
 
 `GetProcessDefaultCpuSets` buffer discovery accepts
 `ERROR_INSUFFICIENT_BUFFER` as the only larger-buffer signal. A successful
@@ -649,7 +679,7 @@ retain restoration ownership.
 | --- | --- | --- |
 | `GetProcessAffinityMask` | `src/platform/windows/cpu_allocation.rs` reads the current process and system affinity masks before the coordinator changes them. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessaffinitymask |
 | `SetProcessAffinityMask` | The same adapter is the sole live writer for the coordinator's configured hard affinity mask; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessaffinitymask |
-| `GetSystemCpuSetInformation` | The adapter converts the packed variable-length topology buffer into group-qualified logical-processor-to-CPU-Set IDs for soft mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
+| `GetSystemCpuSetInformation` | The adapter converts the packed variable-length buffer into group-qualified CPU Set mappings with the documented `Allocated` flag. The null process argument leaves target-specific reservation ownership unclassified. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
 | `GetProcessGroupAffinity` | The adapter verifies new hard-affinity targets belong only to group 0 before releasing another allocation. Unknown, multiple, or nonzero groups decline new claims without preventing owned-state restoration. | https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-getprocessgroupaffinity |
 | `GetProcessDefaultCpuSets` | The adapter reads existing process default CPU Set IDs so the coordinator can capture and restore the exact baseline. The runtime benchmark helper also reads generated workers' IDs to verify real-runtime allocation. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
 | `SetProcessDefaultCpuSets` | The adapter is the sole live writer that applies or clears process default CPU Set IDs; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets |
@@ -1088,7 +1118,7 @@ and recovery ownership. Missing-PID classification stays at the separate
 - `src/backend/win_util.rs::WinHandle::process_times` returns creation and CPU counters from one [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) call, preserving its native failure code. `src/control/process.rs` treats failed reads as unavailable rather than proof of exit.
 - `src/foreground/process_list.rs::query_process_image_path` preserves [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) errors. Successful path or creation mismatches remain identity failures.
 - `src/runtime/observations.rs::foreground_process_group_ids` validates creation times on ancestry edges. Parent PID can identify an exited or reused process: [Win32_Process](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process).
-- `src/platform/windows/cpu_allocation.rs::cpu_set_inventory` captures [GetSystemCpuSetInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation) with the existing null process argument. `src/control/cpu_allocation.rs::CpuSetInventory` shares one complete group-qualified mapping or failure per operation. Partial records, duplicate mappings, and incomplete selected membership are rejected. Processor Affinity (Hard) and Adaptive Engine retain group-0 limits. No undocumented API was introduced.
+- `src/platform/windows/cpu_allocation.rs::cpu_set_inventory` captures [GetSystemCpuSetInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation) with the existing null process argument. `src/control/cpu_allocation.rs::CpuSetInventory` shares one complete group-qualified mapping, including each Set's allocated/unallocated state, or failure per operation. Partial records, duplicate mappings, and incomplete selected membership are rejected. The allocation bit follows the documented [SYSTEM_CPU_SET_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_cpu_set_information) layout; target-specific reservation ownership is not queried. Processor Affinity (Hard) and Adaptive Engine retain group-0 limits. No undocumented API was introduced.
 
 ## Mixed-DPI window geometry
 
@@ -1184,7 +1214,16 @@ compatibility evidence; unsupported contexts fail closed.
 
 `src/platform/windows/instance_limits.rs` owns the read-only catalog, path, token
 and liveness queries. `src/control/instance_limits.rs` applies shared protected-process
-checks on the same retained handle. Policy lives in
+checks on the same retained handle. The native result retains exact PID, creation
+time, observed image path and observation handle after a final liveness check;
+`collect_members` preserves those observations, while `collect` projects them to
+counts and releases the handles. Scope is sampled during acquisition, so retained
+membership alone does not authorize a later process mutation. `member_state`
+refreshes retained-handle liveness and current SID/session scope for Instance Balancing,
+distinguishing confirmed exit from a known scope mismatch or unavailable evidence.
+The balancing producer repeats complete catalog/topology/eligibility preparation
+before a group plan and rechecks each retained member before the shared mutation
+preflight. These sampled reads do not make a native group update atomic. Policy lives in
 `src/features/advanced_controls/instance_limits.rs`; runtime intake and notification
 ordering live in `src/backend/automation/instance_limits.rs`.
 

@@ -34,14 +34,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(66) {
+    if extra == Some(70) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
             matches!(
                 index,
-                1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56 | 59 | 61 | 63 | 65
+                1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56 | 59 | 61 | 63 | 65 | 67 | 69
             )
         });
         let page = match extra {
@@ -81,6 +81,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(58..=59) => Page::SleepPrevention,
             Some(60..=61) => Page::KeepRunning,
             Some(62..=65) => Page::InstanceLimits,
+            Some(66..=69) => Page::InstanceBalancing,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -290,6 +291,64 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
+        if matches!(extra, Some(66..=69)) {
+            app.reset_editors();
+            app.settings.edit_global(|settings| {
+                settings.general.enabled = true;
+                settings.instance_balancing.enabled = true;
+                settings.instance_balancing.rules = [
+                    r"C:\Apps\Long Application Name\renderer.exe",
+                    r"C:\Apps\editor.exe",
+                ]
+                .into_iter()
+                .map(|path| crate::config::InstanceBalancingRule {
+                    enabled: true,
+                    executable_path: path.into(),
+                })
+                .collect();
+            });
+            // Only the UI's saved-state projection changes; the smoke runtime stays disabled.
+            app.settings = SettingsEditor::with_settings(app.settings.global().clone());
+            app.status.generation = app.status.generation.max(1);
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).instance_balancing;
+            status.enabled = true;
+            status.scanned_processes = 4;
+            status.adjusted_processes = if extra == Some(66) { 4 } else { 0 };
+            status.message = if extra == Some(66) {
+                t!("instance_balancing.assigned", count = 4)
+            } else {
+                t!("instance_balancing.waiting_stable")
+            }
+            .to_string();
+            if matches!(extra, Some(68..=69)) {
+                let before = app.settings.global().instance_balancing.clone();
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Edit(0),
+                ));
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Path("relative.exe".into()),
+                ));
+                let _ = app.search_keyboard(
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    iced::keyboard::Modifiers::empty(),
+                    false,
+                    iced::event::Status::Ignored,
+                );
+                assert!(!app.pending_editor());
+                assert_eq!(app.settings.global().instance_balancing, before);
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Edit(0),
+                ));
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Path(if extra == Some(68) {
+                        before.rules[1].executable_path.clone()
+                    } else {
+                        r"C:\Apps\Long Application Name\renderer-updated.exe".into()
+                    }),
+                ));
+                assert!(app.pending_editor());
+            }
+        }
         if matches!(extra, Some(54..=57)) {
             let edit =
                 || Message::PowerRules(power_rules::Kind::CpuLoad, power_rules::Message::Edit(0));
@@ -641,8 +700,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.side_panel_open);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
+        if matches!(extra, Some(66..=69)) {
+            app.side_panel_open = true;
+            app.side_panel_tab = SidePanelTab::Status;
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=65) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -747,6 +810,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        142
+        148
     );
 }

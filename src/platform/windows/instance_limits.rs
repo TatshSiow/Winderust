@@ -1,5 +1,9 @@
 //! One fresh, read-only catalog for all Instance Limits rules. Paths identify names, not files.
-use std::{collections::BTreeSet, mem::size_of, ptr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    mem::size_of,
+    ptr,
+};
 
 use windows_sys::Win32::{
     Foundation::{
@@ -47,6 +51,49 @@ pub(crate) enum CountObservation {
     Conflict,
 }
 
+/// Read-only membership evidence; the retained handle does not authorize mutation.
+pub(crate) struct Member {
+    pub(crate) id: u32,
+    pub(crate) creation_time: u64,
+    pub(crate) path: String,
+    pub(crate) process: WinHandle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemberState {
+    Current,
+    Exited,
+    OutOfScope,
+}
+
+pub(crate) enum MembershipObservation {
+    Complete(Vec<Member>),
+    Incomplete {
+        members: Vec<Member>,
+        reason: String,
+    },
+    Unavailable {
+        reason: String,
+    },
+    Conflict,
+}
+
+impl MembershipObservation {
+    pub(crate) fn count(&self) -> CountObservation {
+        match self {
+            Self::Complete(members) => CountObservation::Complete(members.len() as u32),
+            Self::Incomplete { members, reason } => CountObservation::Incomplete {
+                known_lower_bound: members.len() as u32,
+                reason: reason.clone(),
+            },
+            Self::Unavailable { reason } => CountObservation::Unavailable {
+                reason: reason.clone(),
+            },
+            Self::Conflict => CountObservation::Conflict,
+        }
+    }
+}
+
 fn failure(operation: &str) -> String {
     let code = last_error();
     format!("{operation} failed (Windows error {code}).")
@@ -70,7 +117,7 @@ fn usable_basename(value: &[u16], terminated: bool) -> bool {
         && String::from_utf16(value).is_ok()
         && !value.iter().any(|value| {
             *value < 32
-                || [b'\\', b'/', b':', b'"', b'<', b'>', b'|', b'?', b'*']
+                || b"\\/:\"<>|?*"
                     .iter()
                     .any(|invalid| *value == u16::from(*invalid))
         })
@@ -92,7 +139,7 @@ fn normalized_path(path: &str) -> Result<Vec<u16>> {
         || path.starts_with("\\\\?\\")
         || path.starts_with("\\\\.\\")
     {
-        return Err("Instance Limits requires a normal absolute drive or UNC executable path; device and extended paths are unsupported.".into());
+        return Err("A normal absolute drive or UNC executable path is required; device and extended paths are unsupported.".into());
     }
     let components = value[if drive { 3 } else { 2 }..]
         .split(|value| *value == u16::from(b'\\'))
@@ -104,7 +151,7 @@ fn normalized_path(path: &str) -> Result<Vec<u16>> {
                 || String::from_utf16(value).is_ok_and(|name| reserved_component(&name))
         })
     {
-        return Err("Instance Limits paths require complete names without dot segments, control characters, trailing dots or spaces.".into());
+        return Err("Executable paths require complete names without dot segments, control characters, trailing dots or spaces.".into());
     }
     Ok(value)
 }
@@ -353,16 +400,37 @@ fn running(process: &WinHandle) -> Result<bool> {
     }
 }
 
+/// Refreshes read-only liveness and user/session scope, without granting mutation authority.
+pub(crate) fn member_state(member: &Member) -> Result<MemberState> {
+    if !running(&member.process)? {
+        return Ok(MemberState::Exited);
+    }
+    let matching_scope = (|| -> Result<bool> {
+        // SAFETY: GetCurrentProcess returns a queryable pseudo-handle with no caller requirements.
+        let expected = scope(unsafe { GetCurrentProcess() })?;
+        let actual = scope(member.process.raw())?;
+        Ok(actual.sid == expected.sid && actual.session == expected.session)
+    })();
+    if !running(&member.process)? {
+        return Ok(MemberState::Exited);
+    }
+    Ok(if matching_scope? {
+        MemberState::Current
+    } else {
+        MemberState::OutOfScope
+    })
+}
+
 struct Rule {
     path: Vec<u16>,
     basename: Vec<u16>,
-    members: BTreeSet<(u32, u64)>,
+    members: BTreeMap<(u32, u64), Member>,
     issue: Option<String>,
 }
 
 enum CandidateError {
     Uncertain(String),
-    NamingContradiction,
+    Contradiction(&'static str),
 }
 
 impl From<String> for CandidateError {
@@ -399,7 +467,7 @@ fn relevant_rules(row: &Row, rules: &[Option<Rule>]) -> Result<Vec<usize>> {
 pub(crate) fn collect(
     paths: &[String],
     safety: impl Fn(u32, &str, u64, &WinHandle) -> Result<()>,
-) -> Vec<CountObservation> {
+) -> Vec<MembershipObservation> {
     let mut results = Vec::with_capacity(paths.len());
     let mut rules = Vec::with_capacity(paths.len());
     for path in paths {
@@ -413,14 +481,14 @@ pub(crate) fn collect(
                 rules.push(Some(Rule {
                     path,
                     basename,
-                    members: BTreeSet::new(),
+                    members: BTreeMap::new(),
                     issue: None,
                 }));
-                results.push(CountObservation::Complete(0));
+                results.push(MembershipObservation::Complete(Vec::new()));
             }
             Err(reason) => {
                 rules.push(None);
-                results.push(CountObservation::Unavailable { reason });
+                results.push(MembershipObservation::Unavailable { reason });
             }
         }
     }
@@ -429,7 +497,7 @@ pub(crate) fn collect(
         Err(reason) => {
             for (index, rule) in rules.iter().enumerate() {
                 if rule.is_some() {
-                    results[index] = CountObservation::Unavailable {
+                    results[index] = MembershipObservation::Unavailable {
                         reason: reason.clone(),
                     };
                 }
@@ -438,13 +506,10 @@ pub(crate) fn collect(
         Ok(()) => {
             for (index, rule) in rules.into_iter().enumerate() {
                 if let Some(rule) = rule {
-                    let count = rule.members.len() as u32;
+                    let members = rule.members.into_values().collect();
                     results[index] = match rule.issue {
-                        Some(reason) => CountObservation::Incomplete {
-                            known_lower_bound: count,
-                            reason,
-                        },
-                        None => CountObservation::Complete(count),
+                        Some(reason) => MembershipObservation::Incomplete { members, reason },
+                        None => MembershipObservation::Complete(members),
                     };
                 }
             }
@@ -455,7 +520,7 @@ pub(crate) fn collect(
 
 fn collect_pass(
     rules: &mut [Option<Rule>],
-    results: &mut [CountObservation],
+    results: &mut [MembershipObservation],
     safety: impl Fn(u32, &str, u64, &WinHandle) -> Result<()>,
 ) -> Result<()> {
     let mut conflicts = BTreeSet::new();
@@ -471,13 +536,13 @@ fn collect_pass(
     }
     for index in conflicts {
         rules[index] = None;
-        results[index] = CountObservation::Conflict;
+        results[index] = MembershipObservation::Conflict;
     }
     for (index, rule) in rules.iter_mut().enumerate() {
         if let Some(active) = rule {
             if let Err(reason) = verify_selected_path(&active.path) {
                 *rule = None;
-                results[index] = CountObservation::Unavailable { reason };
+                results[index] = MembershipObservation::Unavailable { reason };
             }
         }
     }
@@ -491,7 +556,6 @@ fn collect_pass(
     unsafe { GetSystemTimeAsFileTime(&mut started) };
     let started = filetime_to_u64(started);
     let rows = catalog()?;
-    let mut retained = Vec::new();
     for row in rows {
         let mut relevant = relevant_rules(&row, rules)?;
         if relevant.is_empty() {
@@ -521,8 +585,14 @@ fn collect_pass(
             if created > started {
                 return Err("A process generation changed during the catalog pass.".into());
             }
-            let path = process_path(&process)?;
-            let basename = path
+            let member = Member {
+                id: row.id,
+                creation_time: created,
+                path: process_path(&process)?,
+                process,
+            };
+            let basename = member
+                .path
                 .rsplit(['\\', '/'])
                 .next()
                 .unwrap_or_default()
@@ -530,10 +600,12 @@ fn collect_pass(
                 .collect::<Vec<_>>();
             if let Some(name) = &row.name {
                 if !ordinal_equal(name, &basename)? {
-                    return Err(CandidateError::NamingContradiction);
+                    return Err(CandidateError::Contradiction(
+                        "The process catalog and queried image names disagree; counts are unavailable for this pass.",
+                    ));
                 }
             }
-            let image = normalized_path(&path)?;
+            let image = normalized_path(&member.path)?;
             let mut matching = Vec::new();
             for index in &relevant {
                 let rule = rules[*index]
@@ -544,33 +616,39 @@ fn collect_pass(
                 }
             }
             relevant = matching;
-            if relevant.is_empty() {
-                return Ok(());
-            }
-            let actual = scope(process.raw())?;
+            let index =
+                match relevant.as_slice() {
+                    [] => return Ok(()),
+                    [index] => *index,
+                    _ => return Err(CandidateError::Contradiction(
+                        "Equivalent executable paths survived Instance Limits conflict detection.",
+                    )),
+                };
+            let actual = scope(member.process.raw())?;
             if actual.sid != expected.sid || actual.session != expected.session {
                 return Ok(());
             }
             if !synchronized {
                 return Err("A matching process lacks verified liveness; query-only access cannot prove a live count.".into());
             }
-            safety(row.id, &path, created, &process)?;
-            if !running(&process)? {
+            safety(
+                member.id,
+                &member.path,
+                member.creation_time,
+                &member.process,
+            )?;
+            if !running(&member.process)? {
                 return Ok(());
             }
-            for index in &relevant {
-                let rule = rules[*index]
-                    .as_mut()
-                    .ok_or("Instance Limits lost an active rule during collection.")?;
-                rule.members.insert((row.id, created));
-            }
-            retained.push((process, (row.id, created), relevant.clone()));
+            let rule = rules[index]
+                .as_mut()
+                .ok_or("Instance Limits lost an active rule during collection.")?;
+            rule.members
+                .insert((member.id, member.creation_time), member);
             Ok(())
         })();
         match observed {
-            Err(CandidateError::NamingContradiction) => {
-                return Err("The process catalog and queried image names disagree; counts are unavailable for this pass.".into());
-            }
+            Err(CandidateError::Contradiction(reason)) => return Err(reason.into()),
             Err(CandidateError::Uncertain(reason)) => {
                 for index in relevant {
                     let rule = rules[index]
@@ -583,21 +661,16 @@ fn collect_pass(
         }
     }
     // A later candidate query may outlive an earlier member; refresh every retained positive.
-    for (process, key, indices) in retained {
-        match running(&process) {
-            Ok(true) => {}
-            outcome => {
-                for index in indices {
-                    let rule = rules[index]
-                        .as_mut()
-                        .ok_or("Instance Limits lost an active rule during collection.")?;
-                    rule.members.remove(&key);
-                    if let Err(reason) = &outcome {
-                        rule.issue.get_or_insert_with(|| reason.clone());
-                    }
+    for rule in rules.iter_mut().flatten() {
+        rule.members
+            .retain(|_, member| match running(&member.process) {
+                Ok(true) => true,
+                Ok(false) => false,
+                Err(reason) => {
+                    rule.issue.get_or_insert(reason);
+                    false
                 }
-            }
-        }
+            });
     }
     Ok(())
 }
@@ -605,6 +678,37 @@ fn collect_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn count_projection_preserves_uncertain_and_conflicting_membership() {
+        for (members, expected) in [
+            (
+                MembershipObservation::Complete(Vec::new()),
+                CountObservation::Complete(0),
+            ),
+            (
+                MembershipObservation::Incomplete {
+                    members: Vec::new(),
+                    reason: "A plausible member could not be queried.".into(),
+                },
+                CountObservation::Incomplete {
+                    known_lower_bound: 0,
+                    reason: "A plausible member could not be queried.".into(),
+                },
+            ),
+            (
+                MembershipObservation::Unavailable {
+                    reason: "The process catalog is unavailable.".into(),
+                },
+                CountObservation::Unavailable {
+                    reason: "The process catalog is unavailable.".into(),
+                },
+            ),
+            (MembershipObservation::Conflict, CountObservation::Conflict),
+        ] {
+            assert_eq!(members.count(), expected);
+        }
+    }
 
     #[test]
     fn normal_paths_compare_by_ordinal_case_and_separators_without_alias_resolution() {
@@ -649,7 +753,7 @@ mod tests {
         let rules = vec![Some(Rule {
             path: Vec::new(),
             basename: "app.exe".encode_utf16().collect(),
-            members: BTreeSet::new(),
+            members: BTreeMap::new(),
             issue: None,
         })];
         assert_eq!(
@@ -673,7 +777,10 @@ mod tests {
             collect(
                 &["C:/Apps/app.exe".into(), "c:\\apps\\APP.exe".into()],
                 |_, _, _, _| panic!("conflicts cannot acquire targets")
-            ),
+            )
+            .iter()
+            .map(MembershipObservation::count)
+            .collect::<Vec<_>>(),
             vec![CountObservation::Conflict, CountObservation::Conflict]
         );
     }

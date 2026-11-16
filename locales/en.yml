@@ -1,5 +1,27 @@
 _version: 1
 
+instance_balancing:
+  enable: "Enable Instance Balancing"
+  enable_help: "Balance two or more matching processes using separate whole-core scheduling preferences. Shared across Plugged In and On Battery."
+  intro_1: "Balance two or more running processes from the same executable path across separate whole-core scheduling preferences."
+  intro_2: "Only the current Windows user session is eligible. Winderust waits for stable membership and yields to explicit CPU selection rules. Disabling a rule restores its managed preferences."
+  intro_3: "Requires one active processor group and enough eligible whole cores for every instance. These preferences do not reserve cores or guarantee better performance."
+  empty: "No Instance Balancing rules configured."
+  edit_rule: "Edit Instance Balancing rule"
+  invalid: "Choose a supported absolute executable path. Each path can have only one rule. Winderust and protected system apps cannot be selected."
+  unsupported_unicode_path: "The executable path contains invalid Unicode and cannot be selected."
+  conflict: "Equivalent executable paths cannot have separate Instance Balancing rules."
+  changed: "Instance Balancing withdrew the plan because its context or membership changed."
+  missing_live: "A previously observed live instance is missing from the process catalog."
+  explicit_selection: "Excluded by an explicit CPU selection rule."
+  not_accepted: "Instance Balancing could not apply every share; the whole rule yielded."
+  disabled: "Instance Balancing is disabled."
+  waiting_context: "Instance Balancing is waiting for a fresh Windows session observation."
+  waiting: "Waiting for at least two eligible instances."
+  insufficient_capacity: "Not enough eligible whole cores for every instance; the rule yielded."
+  waiting_stable: "Waiting for stable instances and the next permitted plan change."
+  assigned: "Applied scheduling preferences to %{count} instances."
+
 app:
   name: "Winderust"
   description: "Windows Performance & Power Manager"
@@ -15,8 +37,8 @@ window:
 
 instance_limits:
   enable: "Enable Instance Limits"
+  enable_help: "Monitor the number of processes for each selected executable without stopping or blocking apps. Shared across Plugged In and On Battery."
   notify: "Notify when the maximum is exceeded"
-  shared: "Shared across Plugged In and On Battery."
   intro_1: "Monitor how many processes run at each selected executable path in your Windows user session. This feature never stops an app or prevents it from starting."
   intro_2: "Counts refer to processes, not windows or tabs. Samples run about once a second and can miss short-lived processes. Other users and sessions are excluded."
   intro_3: "An alert needs two fresh samples above the maximum. Recovery needs two complete samples at or below it. An incomplete count is only a verified lower bound; unknown counts never clear an alert. Windows controls notification visibility."
@@ -48,7 +70,7 @@ instance_limits:
 
 keep_running:
   enable: "Enable Keep Running"
-  shared: "Shared across Plugged in and On Battery."
+  enable_help: "Relaunch an app after all verified instances exit. Start it yourself once to arm its rule. Shared across Plugged In and On Battery."
   intro_1: "Start the app yourself once to arm its rule. Winderust then relaunches one instance after every verified instance exits."
   intro_2: "Stop actions in Winderust, Watchdog actions, sleep and session changes pause relaunching. Closing the app normally still counts as an exit. Use Resume after reviewing the pause reason. Retries are limited."
   intro_3: "Relaunching starts a fresh ordinary desktop app. Packaged apps, launchers, protected apps and some existing job restrictions may be unsupported."
@@ -79,6 +101,7 @@ keep_running:
   paused_cleanup: "Paused: cleanup unconfirmed"
 
 nav:
+  instance_balancing: "Instance Balancing"
   instance_limits: "Instance Limits"
   keep_running: "Keep Running"
   watchdog: Watchdog

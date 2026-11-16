@@ -13,6 +13,8 @@ use std::{
 
 use super::*;
 
+mod instance_balancing;
+
 #[derive(Clone)]
 struct FakeProcessState {
     identity: ProcessIdentity,
@@ -34,7 +36,7 @@ struct FakeState {
     next_affinity_error: Option<ProcessControlError>,
     fail_next_cpu_sets_apply: bool,
     fail_inventory: bool,
-    cpu_set_entries: Option<Vec<(ProcessorId, u32)>>,
+    cpu_set_entries: Option<Vec<CpuSetRecord>>,
     reject_group_zero_affinity: bool,
     fail_next_commit: bool,
     fail_next_affinity_relinquish: bool,
@@ -151,7 +153,7 @@ impl CpuAllocationPlatform for FakePlatform {
             .ok_or(ProcessControlError::ProcessExited)
     }
 
-    fn cpu_set_inventory(&mut self) -> Result<Vec<(ProcessorId, u32)>, ProcessControlError> {
+    fn cpu_set_inventory(&mut self) -> Result<Vec<CpuSetRecord>, ProcessControlError> {
         self.state
             .borrow_mut()
             .events
@@ -165,7 +167,10 @@ impl CpuAllocationPlatform for FakePlatform {
             return Ok(entries.clone());
         }
         Ok((0..64u8)
-            .map(|number| (ProcessorId { group: 0, number }, 100 + u32::from(number)))
+            .map(|number| CpuSetRecord::Unallocated {
+                processor: ProcessorId { group: 0, number },
+                id: 100 + u32::from(number),
+            })
             .collect())
     }
 
@@ -368,9 +373,18 @@ fn multi_group_soft_selection_hands_off_and_restores_exact_baselines() {
         let mut state = coordinator.platform.state.borrow_mut();
         state.processes.get_mut(&42).unwrap().cpu_sets = vec![88, 89];
         state.cpu_set_entries = Some(vec![
-            (members[2], 963),
-            (members[0], 100),
-            (members[1], 900),
+            CpuSetRecord::Unallocated {
+                processor: members[2],
+                id: 963,
+            },
+            CpuSetRecord::Unallocated {
+                processor: members[0],
+                id: 100,
+            },
+            CpuSetRecord::Unallocated {
+                processor: members[1],
+                id: 900,
+            },
         ]);
         state.reject_group_zero_affinity = true;
     }
@@ -533,6 +547,7 @@ fn claim_for(
         target: target(process_id, creation_time),
         owner,
         request,
+        balancing_generation: None,
     }
 }
 
@@ -876,13 +891,13 @@ fn missing_soft_processors_do_not_shrink_a_selection_or_release_hard_affinity() 
     {
         let mut state = coordinator.platform.state.borrow_mut();
         state.events.clear();
-        state.cpu_set_entries = Some(vec![(
-            ProcessorId {
+        state.cpu_set_entries = Some(vec![CpuSetRecord::Unallocated {
+            processor: ProcessorId {
                 group: 0,
                 number: 0,
             },
-            100,
-        )]);
+            id: 100,
+        }]);
     }
     let mut inventory = CpuSetInventory::default();
     let mut soft = claim(
@@ -919,47 +934,116 @@ fn missing_soft_processors_do_not_shrink_a_selection_or_release_hard_affinity() 
 }
 
 #[test]
+fn soft_inventory_retains_allocation_facts_without_changing_existing_claim_policy() {
+    let processors = [
+        ProcessorId {
+            group: 0,
+            number: 0,
+        },
+        ProcessorId {
+            group: 0,
+            number: 1,
+        },
+    ];
+    let entries = vec![
+        CpuSetRecord::Unallocated {
+            processor: processors[0],
+            id: 100,
+        },
+        CpuSetRecord::Allocated {
+            processor: processors[1],
+            id: 101,
+        },
+    ];
+    for owner in [ControlOwner::CpuSetsSoft, ControlOwner::AdaptiveEngine] {
+        let mut coordinator = coordinator();
+        coordinator.platform.state.borrow_mut().cpu_set_entries = Some(entries.clone());
+        let mut inventory = CpuSetInventory::default();
+        assert_eq!(
+            inventory
+                .ids(&mut coordinator.platform, &processors)
+                .unwrap(),
+            vec![100, 101]
+        );
+        coordinator.platform.state.borrow_mut().fail_inventory = true;
+        coordinator
+            .apply_policy_claim(
+                &mut inventory,
+                Ok(&test_topology()),
+                claim(
+                    owner,
+                    CpuAllocationRequest::SoftCpuSets {
+                        selection: test_selection(3),
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        assert_eq!(process_state(&coordinator).cpu_sets, vec![100, 101]);
+        assert_eq!(
+            inventory.result.as_ref().unwrap().as_ref().unwrap(),
+            &entries
+                .iter()
+                .map(|entry| (entry.processor(), *entry))
+                .collect::<BTreeMap<_, _>>()
+        );
+        assert_eq!(
+            coordinator
+                .platform
+                .state
+                .borrow()
+                .events
+                .iter()
+                .filter(|event| *event == "cpu-set-inventory")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
 fn invalid_soft_inventory_is_cached_before_any_mode_switch() {
     for entries in [
         vec![
-            (
-                ProcessorId {
+            CpuSetRecord::Unallocated {
+                processor: ProcessorId {
                     group: 0,
                     number: 0,
                 },
-                100,
-            ),
-            (
-                ProcessorId {
+                id: 100,
+            },
+            CpuSetRecord::Allocated {
+                processor: ProcessorId {
                     group: 0,
                     number: 0,
                 },
-                101,
-            ),
+                id: 101,
+            },
         ],
         vec![
-            (
-                ProcessorId {
+            CpuSetRecord::Unallocated {
+                processor: ProcessorId {
                     group: 0,
                     number: 0,
                 },
-                100,
-            ),
-            (
-                ProcessorId {
+                id: 100,
+            },
+            CpuSetRecord::Allocated {
+                processor: ProcessorId {
                     group: 1,
                     number: 0,
                 },
-                100,
-            ),
+                id: 100,
+            },
         ],
-        vec![(
-            ProcessorId {
+        vec![CpuSetRecord::Allocated {
+            processor: ProcessorId {
                 group: 1,
                 number: 64,
             },
-            100,
-        )],
+            id: 100,
+        }],
     ] {
         let mut coordinator = coordinator();
         coordinator
@@ -2702,6 +2786,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
                 CpuAllocationClaim {
                     target: target.clone(),
                     owner: ControlOwner::ProcessorAffinityHard,
+                    balancing_generation: None,
                     request: CpuAllocationRequest::HardAffinity {
                         selection: CpuSelection::from_group_zero_mask(
                             &topology,
@@ -2753,11 +2838,12 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut baseline_cpu_sets);
     let mut per_group = BTreeMap::new();
-    for (processor, _) in coordinator
+    for record in coordinator
         .platform
         .cpu_set_inventory()
         .map_err(|error| error.to_string())?
     {
+        let processor = record.processor();
         per_group.entry(processor.group).or_insert(processor);
     }
     if per_group.is_empty() {
@@ -2776,6 +2862,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
             CpuAllocationClaim {
                 target: target.clone(),
                 owner: ControlOwner::CpuSetsSoft,
+                balancing_generation: None,
                 request: CpuAllocationRequest::SoftCpuSets { selection },
             },
             true,
@@ -2806,4 +2893,115 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
     normalize_cpu_set_ids(&mut observed);
     assert_eq!(observed, baseline_cpu_sets);
     Ok(())
+}
+
+#[test]
+fn resubmission_after_external_drift_restores_the_new_external_baseline() {
+    for soft in [false, true] {
+        let mut coordinator = coordinator();
+        let owner = if soft {
+            ControlOwner::CpuSetsSoft
+        } else {
+            ControlOwner::ProcessorAffinityHard
+        };
+        let request = if soft {
+            CpuAllocationRequest::SoftCpuSets {
+                selection: test_selection(0b0011),
+            }
+        } else {
+            CpuAllocationRequest::HardAffinity {
+                selection: test_selection(0b0011),
+            }
+        };
+        let claim = claim(owner, request, 7);
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
+                claim.clone(),
+                true,
+            )
+            .unwrap();
+        {
+            let mut state = coordinator.platform.state.borrow_mut();
+            let process = state.processes.get_mut(&42).unwrap();
+            if soft {
+                process.cpu_sets = vec![103];
+            } else {
+                process.affinity = 0b0101;
+            }
+        }
+
+        assert_eq!(
+            coordinator
+                .apply_policy_claim(
+                    &mut CpuSetInventory::default(),
+                    Ok(&test_topology()),
+                    claim,
+                    true,
+                )
+                .unwrap(),
+            CpuAllocationApplyOutcome::Applied
+        );
+        let summary = coordinator.release_all_policy(owner);
+        assert!(summary.failures.is_empty());
+        assert_eq!(summary.restored_owners, vec![owner]);
+        let process = process_state(&coordinator);
+        if soft {
+            assert_eq!(process.cpu_sets, vec![103]);
+            assert_eq!(process.affinity, 0b1111);
+        } else {
+            assert_eq!(process.affinity, 0b0101);
+            assert!(process.cpu_sets.is_empty());
+        }
+        assert!(!coordinator.has_managed_state());
+    }
+}
+
+#[test]
+fn cpu_set_readback_normalization_and_read_failure_preserve_the_first_baseline() {
+    let mut coordinator = coordinator();
+    let mut inventory = CpuSetInventory::default();
+    let claim = claim(
+        ControlOwner::CpuSetsSoft,
+        CpuAllocationRequest::SoftCpuSets {
+            selection: test_selection(0b0011),
+        },
+        7,
+    );
+    coordinator
+        .apply_policy_claim(&mut inventory, Ok(&test_topology()), claim.clone(), true)
+        .unwrap();
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.processes.get_mut(&42).unwrap().cpu_sets = vec![101, 100, 101];
+        state.events.clear();
+    }
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&test_topology()), claim.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Unchanged
+    );
+    assert!(coordinator.platform.state.borrow().events.is_empty());
+    coordinator
+        .platform
+        .state
+        .borrow_mut()
+        .cpu_sets_query_failures
+        .push_back(true);
+    assert!(matches!(
+        coordinator.apply_policy_claim(&mut inventory, Ok(&test_topology()), claim, true),
+        Err(CpuAllocationApplyError::Target(
+            ProcessControlError::Failed(_)
+        ))
+    ));
+    let managed = coordinator.managed_cpu_sets.get(&identity(42, 7)).unwrap();
+    assert!(managed.baseline.is_empty());
+    assert_eq!(managed.expected, vec![100, 101]);
+    assert!(coordinator.platform.state.borrow().events.is_empty());
+    let summary = coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
+    assert!(summary.failures.is_empty());
+    assert!(process_state(&coordinator).cpu_sets.is_empty());
+    assert!(!coordinator.has_managed_state());
 }

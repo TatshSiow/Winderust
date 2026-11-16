@@ -9,6 +9,8 @@ mod keep_running;
 pub use keep_running::{KeepRunningRule, KeepRunningSettings};
 mod instance_limits;
 pub use instance_limits::{InstanceLimitsRule, InstanceLimitsSettings};
+mod instance_balancing;
+pub use instance_balancing::{InstanceBalancingRule, InstanceBalancingSettings};
 pub mod storage;
 
 pub use settings::*;
