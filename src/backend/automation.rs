@@ -40,6 +40,7 @@ use crate::{
         priority_efficiency::PriorityEfficiencyController,
         process::ControlOwner,
         process_termination::{ProcessTerminationBatchResult, ProcessTerminationController},
+        sleep_prevention::SleepPreventionController,
         suspension::SuspensionController,
         thread_priority::ThreadPriorityController,
         timer_resolution::TimerResolutionController,
@@ -52,6 +53,14 @@ use crate::{
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
+    features::advanced_controls::{
+        instance_limits::{InstanceLimitsEvent, InstanceLimitsManager, InstanceLimitsSnapshot},
+        keep_running::{
+            CommitDisposition, KeepRunningManager, KeepRunningSnapshot, LaunchTicket, Observation,
+            PauseReason,
+        },
+        sleep_prevention::{SleepPreventionManager, SleepPreventionSnapshot},
+    },
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
     features::power_plan_control::{
         current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
@@ -86,6 +95,9 @@ use crate::{
     windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
 };
 
+mod instance_balancing;
+mod instance_limits;
+mod keep_running;
 mod requirements;
 mod runner;
 mod status;
@@ -102,6 +114,7 @@ const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(500);
 const APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL: Duration = Duration::from_millis(750);
 const CPU_ALLOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const INSTANCE_BALANCING_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_ALLOCATION_RECONCILIATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const CPU_ALLOCATION_RECONCILIATION_RETRY_MAX: Duration = Duration::from_secs(60);
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -117,6 +130,9 @@ const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_TRIM_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+const SLEEP_PREVENTION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const KEEP_RUNNING_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const INSTANCE_LIMITS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const ADAPTIVE_ENGINE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -237,6 +253,9 @@ enum ProcessControlCommand {
         targets: Vec<ProcessActionTarget>,
         result: SyncSender<Result<ProcessTerminationBatchResult, RuntimeCommandError>>,
     },
+    KeepRunningResume {
+        executable_path: String,
+    },
 }
 
 impl ProcessControlCommand {
@@ -261,6 +280,7 @@ impl ProcessControlCommand {
             Self::AppSuspensionPathAction { result, .. } => {
                 let _ = result.try_send(Err(error));
             }
+            Self::KeepRunningResume { .. } => {}
         }
     }
 
@@ -283,6 +303,7 @@ pub struct RuntimeFeatureStatus {
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_sets_soft: CpuAllocationSnapshot,
     pub processor_affinity_hard: CpuAllocationSnapshot,
+    pub(crate) instance_balancing: CpuAllocationSnapshot,
     pub cpu_limiter: CpuLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
     pub adaptive_engine_process: AdaptiveEngineProcessSnapshot,
@@ -295,6 +316,9 @@ pub struct RuntimeFeatureStatus {
     pub memory_trim: MemoryTrimSnapshot,
     pub watchdog: WatchdogSnapshot,
     pub timer_resolution: TimerResolutionSnapshot,
+    pub sleep_prevention: SleepPreventionSnapshot,
+    pub(crate) keep_running: KeepRunningSnapshot,
+    pub(crate) instance_limits: InstanceLimitsSnapshot,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -335,6 +359,8 @@ struct AutomationWorkerState {
     process_control_commands: VecDeque<ProcessControlCommand>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
+    pending_instance_limits_resets: instance_limits::PendingResets,
+    pending_instance_balancing_resets: instance_balancing::PendingResets,
     input_activity: InputActivityTracker,
     windows_event_watcher_active: bool,
     worker_accepting_work: bool,
@@ -344,9 +370,12 @@ struct AutomationWorkerState {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AutomationWakeEvents {
     settings_changed: bool,
+    keep_running_settings_changed: bool,
+    windows_event_watcher_changed: bool,
     foreground_changed: bool,
     window_created: bool,
     power_changed: bool,
+    suspend_resume: bool,
     session_changed: bool,
     clock_changed: bool,
     appearance_changed: bool,
@@ -361,6 +390,10 @@ impl AutomationWakeEvents {
             WindowsAutomationEvent::ForegroundChanged => self.foreground_changed = true,
             WindowsAutomationEvent::WindowCreated => self.window_created = true,
             WindowsAutomationEvent::PowerChanged => self.power_changed = true,
+            WindowsAutomationEvent::SuspendResume => {
+                self.power_changed = true;
+                self.suspend_resume = true;
+            }
             WindowsAutomationEvent::SessionChanged => self.session_changed = true,
             WindowsAutomationEvent::ClockChanged => self.clock_changed = true,
             WindowsAutomationEvent::AppearanceChanged => self.appearance_changed = true,
@@ -388,6 +421,8 @@ impl RuntimeHandle {
                 process_control_commands: VecDeque::new(),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
+                pending_instance_limits_resets: instance_limits::PendingResets::default(),
+                pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
                 input_activity: InputActivityTracker::default(),
                 windows_event_watcher_active: false,
                 worker_accepting_work: false,
@@ -428,9 +463,9 @@ impl RuntimeHandle {
             self_power: Mutex::new(self_power),
             tray_visibility_watcher: Mutex::new(tray_visibility_watcher),
         };
-        automation.sync_worker(settings, false);
         automation.sync_windows_event_watcher(settings);
         automation.sync_input_hook(settings);
+        automation.sync_worker(settings, false);
         automation
     }
 
@@ -450,6 +485,12 @@ impl RuntimeHandle {
             if state.runtime_revision == settings.runtime_revision {
                 false
             } else {
+                let keep_running_changed = state.settings.keep_running
+                    != settings.value.keep_running
+                    || state.settings.general.enabled != settings.value.general.enabled;
+                state.pending_events.keep_running_settings_changed |= keep_running_changed;
+                instance_limits::record_settings_changes(&mut state, &settings.value);
+                instance_balancing::record_settings_changes(&mut state, &settings.value);
                 state.settings = Arc::clone(&settings.value);
                 state.runtime_revision = settings.runtime_revision;
                 state.pending_events.settings_changed = true;
@@ -460,9 +501,9 @@ impl RuntimeHandle {
         };
 
         if settings_changed {
-            self.sync_worker(settings, false);
             self.sync_windows_event_watcher(settings);
             self.sync_input_hook(settings);
+            self.sync_worker(settings, false);
         }
     }
 
@@ -794,6 +835,15 @@ impl RuntimeHandle {
         Ok(receiver)
     }
 
+    pub(crate) fn request_keep_running_resume(
+        &self,
+        executable_path: String,
+    ) -> Result<(), RuntimeCommandError> {
+        self.enqueue_process_control_command(ProcessControlCommand::KeepRunningResume {
+            executable_path,
+        })
+    }
+
     fn sync_worker(&self, settings: &RuntimeSettingsSnapshot, start_requested: bool) {
         let _lifecycle = lock_unpoisoned(&self.lifecycle);
         if lock_unpoisoned(&self.shared.state).stop_requested {
@@ -847,20 +897,40 @@ impl RuntimeHandle {
             return;
         }
         let mut watcher = lock_unpoisoned(&self.event_watcher);
+        if watcher
+            .as_ref()
+            .is_some_and(|watcher| !watcher.is_running())
+        {
+            *watcher = None;
+        }
 
         if windows_event_watcher_required(&settings.value) {
             if watcher.is_none() {
                 let shared = Arc::clone(&self.shared);
-                *watcher = WindowsEventWatcher::start(Arc::new(move |event| {
-                    notify_windows_event(&shared, event);
-                }))
+                let stopped_shared = Arc::clone(&self.shared);
+                *watcher = WindowsEventWatcher::start(
+                    Arc::new(move |event| notify_windows_event(&shared, event)),
+                    Arc::new(move || set_windows_event_watcher_active(&stopped_shared, false)),
+                )
                 .ok();
             }
         } else {
             *watcher = None;
         }
 
-        set_windows_event_watcher_active(&self.shared, watcher.is_some());
+        set_windows_event_watcher_active(
+            &self.shared,
+            watcher
+                .as_ref()
+                .is_some_and(WindowsEventWatcher::is_running),
+        );
+        // The watcher may stop between the liveness read and status publication.
+        if watcher
+            .as_ref()
+            .is_some_and(|watcher| !watcher.is_running())
+        {
+            set_windows_event_watcher_active(&self.shared, false);
+        }
     }
 
     fn sync_input_hook(&self, settings: &RuntimeSettingsSnapshot) {
@@ -957,7 +1027,8 @@ fn run_background_automation(
     while let Some(snapshot) = automation_snapshot(&shared) {
         runner.action_log.begin_batch();
         let configured_settings = snapshot.settings;
-        let settings = active_power_source_settings(configured_settings.as_ref(), power_source());
+        let plugged_in = power_source();
+        let settings = active_power_source_settings(configured_settings.as_ref(), plugged_in);
         let change_generation = snapshot.change_generation;
         let cpu_allocation_release_retry_pending_at_pass_start =
             runner.cpu_allocation_release_retry_pending();
@@ -968,10 +1039,57 @@ fn run_background_automation(
         let app_suspension_command_requested = process_control_commands
             .iter()
             .any(ProcessControlCommand::is_app_suspension);
+        let keep_running_command_requested = process_control_commands
+            .iter()
+            .any(|command| matches!(command, ProcessControlCommand::KeepRunningResume { .. }));
         if snapshot.action_log_clear_requested {
             runner.action_log.clear();
         }
         let wake_events = snapshot.wake_events;
+        if wake_events.keep_running_settings_changed {
+            runner.keep_running.invalidate_settings();
+        }
+        runner.keep_running.sync_settings(
+            &configured_settings.keep_running,
+            configured_settings.general.enabled,
+        );
+        if snapshot.instance_limits_resets.all {
+            runner
+                .instance_limits
+                .sync(&configured_settings.instance_limits, false);
+        } else {
+            runner
+                .instance_limits
+                .reset_paths(&snapshot.instance_limits_resets.paths);
+        }
+        runner.instance_limits.sync(
+            &configured_settings.instance_limits,
+            configured_settings.general.enabled,
+        );
+        let instance_balancing_reset = snapshot.instance_balancing_resets.all
+            || !snapshot.instance_balancing_resets.paths.is_empty();
+        runner.instance_balancing.sync(
+            &configured_settings.instance_balancing,
+            configured_settings.general.enabled,
+            snapshot.instance_balancing_resets,
+        );
+        let instance_balancing_context_changed = wake_events.suspend_resume
+            || wake_events.session_changed
+            || wake_events.windows_event_watcher_changed;
+        if instance_balancing_context_changed || !snapshot.windows_event_watcher_active {
+            runner.instance_balancing.invalidate();
+        }
+        if wake_events.suspend_resume || wake_events.session_changed {
+            runner.instance_limits.invalidate(
+                "Waiting for a fresh process count after a session or sleep transition.",
+            );
+        }
+        if wake_events.suspend_resume {
+            runner.keep_running.pause_all(PauseReason::Suspend);
+        }
+        if wake_events.session_changed {
+            runner.keep_running.pause_all(PauseReason::SessionChanged);
+        }
         runner.input_activity = snapshot.input_activity;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
         let mut observations = CycleObservations::default();
@@ -1053,10 +1171,7 @@ fn run_background_automation(
             APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL,
         );
         let event_now = Instant::now();
-        let settings_changed = runner.note_settings(
-            settings,
-            wake_events.settings_changed || wake_events.power_changed,
-        );
+        let settings_changed = runner.note_settings(settings, wake_events, plugged_in);
         if settings_changed {
             scheduler.invalidate(SchedulerEvent::SettingsChanged, event_now);
         }
@@ -1074,6 +1189,16 @@ fn run_background_automation(
         }
         if wake_events.session_changed {
             scheduler.invalidate(SchedulerEvent::SessionChanged, event_now);
+            scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
+        }
+        if wake_events.suspend_resume {
+            scheduler.schedule_now(RefreshDomain::InstanceLimits, event_now);
+        }
+        if instance_balancing_reset || instance_balancing_context_changed {
+            scheduler.schedule_now(RefreshDomain::InstanceBalancing, event_now);
+        }
+        if keep_running_command_requested {
+            scheduler.schedule_now(RefreshDomain::KeepRunning, event_now);
         }
         if wake_events.power_changed || wake_events.session_changed {
             if let Err(error) = runner.refresh_active_plan() {
@@ -1120,7 +1245,8 @@ fn run_background_automation(
             }
         }
         let now = Instant::now();
-        let power_plan_checks_required = power_plan_checks_required(settings);
+        let power_plan_checks_required =
+            power_plan_checks_required(settings) || runner.has_temporary_power_plan();
         let scan_process_appearance = process_appearance_scan_required(settings);
         let background_efficiency_refresh_required = settings_changed
             || feature_refresh_required(settings, settings.background_efficiency.enabled);
@@ -1135,7 +1261,8 @@ fn run_background_automation(
         let cpu_limiter_refresh_required =
             settings_changed || feature_refresh_required(settings, cpu_limiter_required(settings));
         let by_running_app_refresh_required = settings_changed
-            || feature_refresh_required(settings, by_running_app_required(settings));
+            || feature_refresh_required(settings, by_running_app_required(settings))
+            || runner.has_temporary_power_plan();
         let adaptive_engine_process_refresh_required = settings_changed
             || feature_refresh_required(settings, adaptive_engine_process_required(settings));
         let bottleneck_classifier_refresh_required = settings_changed
@@ -1160,11 +1287,32 @@ fn run_background_automation(
                 configured_settings.as_ref(),
                 watchdog_required(configured_settings.as_ref()),
             );
+        let keep_running_refresh_required = settings_changed
+            || keep_running_command_requested
+            || keep_running_required(configured_settings.as_ref())
+            || runner.keep_running.has_pending();
+        let instance_limits_refresh_required =
+            settings_changed || instance_limits_required(configured_settings.as_ref());
+        let instance_balancing_refresh_required = settings_changed
+            || instance_balancing_reset
+            || instance_balancing_context_changed
+            || instance_balancing_required(configured_settings.as_ref())
+            || runner.instance_balancing.active();
         let memory_trim_refresh_required = settings_changed
             || memory_trim_command_requested
             || feature_refresh_required(settings, settings.memory_trim.enabled);
         let timer_resolution_refresh_required = settings_changed
             || feature_refresh_required(settings, timer_resolution_required(settings));
+        let sleep_power_source = plugged_in.or(runner.sleep_prevention_power_source());
+        let sleep_settings = active_power_source_settings(&configured_settings, sleep_power_source);
+        let sleep_prevention_refresh_required = settings_changed
+            || feature_refresh_required(sleep_settings, sleep_prevention_required(sleep_settings))
+            || (sleep_power_source.is_none()
+                && std::iter::once(configured_settings.as_ref())
+                    .chain(configured_settings.on_battery.as_deref())
+                    .any(|settings| {
+                        feature_refresh_required(settings, sleep_prevention_required(settings))
+                    }));
         if app_suspension_command_requested {
             scheduler.invalidate(SchedulerEvent::AppSuspensionRequested, now);
         }
@@ -1370,6 +1518,22 @@ fn run_background_automation(
                 processor_affinity_hard_refresh_interval,
             );
         }
+        if instance_balancing_refresh_required
+            && scheduler.is_due(RefreshDomain::InstanceBalancing, now)
+        {
+            let status = runner.run_instance_balancing_update(
+                &shared,
+                &configured_settings,
+                settings,
+                windows_event_watcher_active,
+            );
+            update_instance_balancing_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::InstanceBalancing,
+                now,
+                INSTANCE_BALANCING_REFRESH_INTERVAL,
+            );
+        }
         if cpu_limiter_refresh_required && scheduler.is_due(RefreshDomain::CpuLimiter, now) {
             let cpu_limiter_status = runner.run_cpu_limiter_update(settings, &mut observations);
             update_cpu_limiter_status(&shared, cpu_limiter_status);
@@ -1380,7 +1544,11 @@ fn run_background_automation(
         let cpu_allocation_release_retry_due = cpu_allocation_release_retry_pending_at_pass_start
             && scheduler.is_due(RefreshDomain::CpuAllocationReconciliation, now);
         if immediate_cpu_allocation_reconciliation || cpu_allocation_release_retry_due {
-            runner.run_cpu_allocation_reconciliation(settings, cpu_allocation_release_retry_due);
+            runner.run_cpu_allocation_reconciliation(
+                settings,
+                &mut observations,
+                cpu_allocation_release_retry_due,
+            );
         }
         let cpu_allocation_release_retry_pending = runner.cpu_allocation_release_retry_pending();
         if cpu_allocation_release_retry_due {
@@ -1445,6 +1613,50 @@ fn run_background_automation(
             );
             scheduler.schedule_after(RefreshDomain::Watchdog, now, Duration::from_secs(1));
         }
+        if keep_running_refresh_required && scheduler.is_due(RefreshDomain::KeepRunning, now) {
+            let status = runner.keep_running.update(
+                &configured_settings.keep_running,
+                configured_settings.general.enabled,
+                windows_event_watcher_active,
+                |_, manager, ticket, now, observation| {
+                    reserve_keep_running_commit(
+                        &shared,
+                        &configured_settings,
+                        windows_event_watcher_active,
+                        manager,
+                        ticket,
+                        now,
+                        observation,
+                    )
+                },
+                &mut runner.action_log,
+            );
+            update_keep_running_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::KeepRunning,
+                Instant::now(),
+                KEEP_RUNNING_REFRESH_INTERVAL,
+            );
+        }
+        if instance_limits_refresh_required && scheduler.is_due(RefreshDomain::InstanceLimits, now)
+        {
+            let status = runner.run_instance_limits_update(
+                &shared,
+                &configured_settings,
+                windows_event_watcher_active,
+            );
+            update_feature_status(
+                &shared,
+                status,
+                |status| &status.instance_limits,
+                |status| &mut status.instance_limits,
+            );
+            scheduler.schedule_after(
+                RefreshDomain::InstanceLimits,
+                Instant::now(),
+                INSTANCE_LIMITS_REFRESH_INTERVAL,
+            );
+        }
         if timer_resolution_refresh_required
             && scheduler.is_due(RefreshDomain::TimerResolution, now)
         {
@@ -1458,6 +1670,23 @@ fn run_background_automation(
             );
         }
 
+        if sleep_prevention_refresh_required
+            && scheduler.is_due(RefreshDomain::SleepPrevention, now)
+        {
+            let status = runner.run_sleep_prevention_update(
+                configured_settings.as_ref(),
+                &mut observations,
+                windows_event_watcher_active,
+                plugged_in,
+            );
+            update_sleep_prevention_status(&shared, status);
+            scheduler.schedule_after(
+                RefreshDomain::SleepPrevention,
+                now,
+                SLEEP_PREVENTION_REFRESH_INTERVAL,
+            );
+        }
+
         let wait_now = Instant::now();
         if let Some(error) = runner.retry_control_releases(wait_now) {
             update_worker_error(&shared, Some(error));
@@ -1467,11 +1696,14 @@ fn run_background_automation(
                 if let Err(error) = runner.run_check(settings, &mut observations) {
                     update_worker_error(&shared, Some(error));
                 }
-                power_plan_check_delay(
+                let delay = power_plan_check_delay(
                     settings,
                     windows_event_watcher_active,
                     runner.activity_snapshot(settings, Instant::now()).idle_for,
-                )
+                );
+                runner
+                    .temporary_power_plan_retry_delay()
+                    .map_or(delay, |retry| Some(min_worker_wait(delay, retry)))
             })
         } else {
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
@@ -1488,6 +1720,21 @@ fn run_background_automation(
                     watchdog_refresh_required,
                     RefreshDomain::Watchdog,
                     Duration::from_secs(1),
+                ),
+                (
+                    keep_running_refresh_required || runner.keep_running.has_pending(),
+                    RefreshDomain::KeepRunning,
+                    KEEP_RUNNING_REFRESH_INTERVAL,
+                ),
+                (
+                    instance_limits_refresh_required,
+                    RefreshDomain::InstanceLimits,
+                    INSTANCE_LIMITS_REFRESH_INTERVAL,
+                ),
+                (
+                    instance_balancing_refresh_required || runner.instance_balancing.active(),
+                    RefreshDomain::InstanceBalancing,
+                    INSTANCE_BALANCING_REFRESH_INTERVAL,
                 ),
                 (
                     background_efficiency_refresh_required,
@@ -1580,6 +1827,11 @@ fn run_background_automation(
                     timer_resolution_refresh_interval,
                 ),
                 (
+                    sleep_prevention_refresh_required,
+                    RefreshDomain::SleepPrevention,
+                    SLEEP_PREVENTION_REFRESH_INTERVAL,
+                ),
+                (
                     scan_process_appearance,
                     RefreshDomain::ProcessAppearance,
                     process_appearance_scan_interval,
@@ -1636,6 +1888,35 @@ fn run_background_automation(
     }
 
     runner.shutdown()
+}
+
+fn reserve_keep_running_commit(
+    shared: &SharedAutomationState,
+    expected_settings: &Settings,
+    expected_watcher_active: bool,
+    manager: &mut KeepRunningManager,
+    ticket: &LaunchTicket,
+    now: Instant,
+    observation: Observation<'_>,
+) -> CommitDisposition {
+    let state = lock_unpoisoned(&shared.state);
+    let current_intents_clear = expected_watcher_active
+        && state.windows_event_watcher_active
+        && !state.stop_requested
+        && state.settings.general.enabled
+        && state.settings.keep_running.enabled
+        && state.settings.general.enabled == expected_settings.general.enabled
+        && state.settings.keep_running == expected_settings.keep_running
+        && !state.pending_events.settings_changed
+        && !state.pending_events.keep_running_settings_changed
+        && !state.pending_events.suspend_resume
+        && !state.pending_events.session_changed
+        && !state
+            .process_control_commands
+            .iter()
+            .any(|command| matches!(command, ProcessControlCommand::StopProcesses { .. }));
+    // This reservation orders accepted intents; native launch calls run after the guard is released.
+    manager.try_reserve_commit(now, ticket, observation, current_intents_clear)
 }
 
 fn active_power_source_settings(settings: &Settings, plugged_in: Option<bool>) -> &Settings {
@@ -1699,3 +1980,234 @@ mod tests;
 
 #[cfg(test)]
 mod self_power_tests;
+
+#[cfg(test)]
+mod keep_running_intake_tests {
+    use super::*;
+    use crate::{
+        config::KeepRunningRule,
+        control::process::ProcessTargetKey,
+        features::advanced_controls::keep_running::{
+            AcceptanceDisposition, CleanupAction, DesktopBindingKey, PrepareDisposition,
+            PreparedDisposition,
+        },
+    };
+
+    fn settings() -> Settings {
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.keep_running.enabled = true;
+        settings
+            .keep_running
+            .rules
+            .push(KeepRunningRule::new(r"C:\Apps\worker.exe".into()));
+        settings
+    }
+
+    fn shared(settings: &Settings) -> SharedAutomationState {
+        SharedAutomationState {
+            state: Mutex::new(AutomationWorkerState {
+                settings: Arc::new(settings.clone()),
+                runtime_revision: SettingsRevision::initial(),
+                persisted_revision: SettingsRevision::initial(),
+                change_generation: 0,
+                status: RuntimeStatusSnapshot::default(),
+                pending_auto_exclusions: AutoExclusionPatch::default(),
+                pending_auto_exclusions_revision: None,
+                pending_auto_exclusions_retry_at: None,
+                process_control_commands: VecDeque::new(),
+                action_log_clear_requested: false,
+                pending_events: AutomationWakeEvents::default(),
+                pending_instance_limits_resets: instance_limits::PendingResets::default(),
+                pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
+                input_activity: InputActivityTracker::default(),
+                windows_event_watcher_active: true,
+                worker_accepting_work: true,
+                stop_requested: false,
+            }),
+            changed: Condvar::new(),
+            status_generation: AtomicU64::new(0),
+            pending_auto_exclusions_generation: AtomicU64::new(0),
+            auto_exclusion_wake: Mutex::new(None),
+        }
+    }
+
+    fn ready(now: Instant, context: &DesktopBindingKey) -> (KeepRunningManager, LaunchTicket) {
+        let key = ProcessTargetKey::new(10, 1, Path::new(r"C:\Apps\worker.exe"));
+        let mut manager = KeepRunningManager::default();
+        manager.enable();
+        manager.observe(
+            now,
+            Observation::Complete {
+                observed_at: now,
+                context,
+                members: std::slice::from_ref(&key),
+            },
+        );
+        manager.exited(now, &key);
+        let due = now + KEEP_RUNNING_REFRESH_INTERVAL;
+        let PrepareDisposition::Prepare(ticket) = manager.try_prepare(
+            due,
+            Observation::Complete {
+                observed_at: due,
+                context,
+                members: &[],
+            },
+        ) else {
+            panic!("Expected one preparation ticket");
+        };
+        assert_eq!(manager.prepared(due, &ticket), PreparedDisposition::Ready);
+        (manager, ticket)
+    }
+
+    #[test]
+    fn pending_intents_and_changed_eligibility_block_the_shared_mutex_reservation() {
+        let base = Instant::now();
+        let now = base + KEEP_RUNNING_REFRESH_INTERVAL;
+        let context = DesktopBindingKey::new("desktop-a".into());
+        let settings = settings();
+        let blockers: [fn(&mut AutomationWorkerState); 8] = [
+            |state| state.stop_requested = true,
+            |state| state.windows_event_watcher_active = false,
+            |state| state.pending_events.settings_changed = true,
+            |state| state.pending_events.keep_running_settings_changed = true,
+            |state| state.pending_events.suspend_resume = true,
+            |state| state.pending_events.session_changed = true,
+            |state| Arc::make_mut(&mut state.settings).general.enabled = false,
+            |state| {
+                Arc::make_mut(&mut state.settings)
+                    .keep_running
+                    .rules
+                    .clear()
+            },
+        ];
+        for block in blockers {
+            let shared = shared(&settings);
+            block(&mut lock_unpoisoned(&shared.state));
+            let (mut manager, ticket) = ready(base, &context);
+            assert_eq!(
+                reserve_keep_running_commit(
+                    &shared,
+                    &settings,
+                    true,
+                    &mut manager,
+                    &ticket,
+                    now,
+                    Observation::Complete {
+                        observed_at: now,
+                        context: &context,
+                        members: &[],
+                    },
+                ),
+                CommitDisposition::Deferred
+            );
+        }
+    }
+
+    #[test]
+    fn stop_intake_orders_before_reservation_and_the_mutex_is_released_before_launch() {
+        let base = Instant::now();
+        let now = base + KEEP_RUNNING_REFRESH_INTERVAL;
+        let context = DesktopBindingKey::new("desktop-a".into());
+        let settings = settings();
+        let shared = shared(&settings);
+        let (mut manager, ticket) = ready(base, &context);
+        let (result, _receiver) = sync_channel(1);
+        lock_unpoisoned(&shared.state)
+            .process_control_commands
+            .push_back(ProcessControlCommand::StopProcesses {
+                targets: vec![],
+                result,
+            });
+        let observation = Observation::Complete {
+            observed_at: now,
+            context: &context,
+            members: &[],
+        };
+        assert_eq!(
+            reserve_keep_running_commit(
+                &shared,
+                &settings,
+                true,
+                &mut manager,
+                &ticket,
+                now,
+                observation,
+            ),
+            CommitDisposition::Deferred
+        );
+        lock_unpoisoned(&shared.state)
+            .process_control_commands
+            .clear();
+        assert_eq!(
+            reserve_keep_running_commit(
+                &shared,
+                &settings,
+                true,
+                &mut manager,
+                &ticket,
+                now,
+                observation,
+            ),
+            CommitDisposition::Reserved
+        );
+        // Native execution can reacquire intake; the reservation helper returned its guard.
+        let mut intake = shared
+            .state
+            .try_lock()
+            .expect("reservation released intake");
+        let (result, _receiver) = sync_channel(1);
+        intake
+            .process_control_commands
+            .push_back(ProcessControlCommand::StopProcesses {
+                targets: vec![],
+                result,
+            });
+        drop(intake);
+        assert_eq!(
+            manager.pause(PauseReason::IntentionalStop),
+            CleanupAction::None
+        );
+        assert_eq!(
+            manager.accepted(
+                &ticket,
+                ProcessTargetKey::new(20, 2, Path::new(r"C:\Apps\worker.exe")),
+            ),
+            AcceptanceDisposition::Accepted
+        );
+    }
+
+    #[test]
+    fn keep_running_owns_global_worker_and_session_events_without_power_rules() {
+        let settings = settings();
+        assert!(automation_worker_required(&settings));
+        assert!(windows_event_watcher_required(&settings));
+        for event in [
+            WindowsAutomationEvent::SuspendResume,
+            WindowsAutomationEvent::SessionChanged,
+        ] {
+            assert!(windows_event_wake_required(&settings, event));
+        }
+        assert!(!power_plan_checks_required(&settings));
+        assert!(!input_hook_required(&settings));
+        let now = Instant::now();
+        let mut scheduler = RefreshScheduler::new(now);
+        scheduler.schedule_after(
+            RefreshDomain::KeepRunning,
+            now,
+            KEEP_RUNNING_REFRESH_INTERVAL,
+        );
+        assert_eq!(
+            scheduler.minimum_wait(
+                None,
+                now,
+                [(
+                    true,
+                    RefreshDomain::KeepRunning,
+                    KEEP_RUNNING_REFRESH_INTERVAL
+                )],
+            ),
+            Some(Duration::from_secs(1))
+        );
+    }
+}

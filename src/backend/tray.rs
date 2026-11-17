@@ -136,7 +136,7 @@ pub(crate) fn show_notification(title: &str, body: &str, critical: bool) -> Resu
     // SAFETY: data is initialized and identifies the registered tray icon. Shell validates
     // the window if teardown raced with this call; no borrowed pointers escape.
     if unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) } == 0 {
-        Err("Windows rejected the Watchdog notification.".into())
+        Err("Windows rejected the notification.".into())
     } else {
         Ok(())
     }

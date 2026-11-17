@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ## Unreleased
 
+## 0.11.0-alpha - 2026-11-16
+
+### Added
+
+- Sleep Prevention - for selected apps, you can keep the display on (similar to Android Caffeine)
+- Keep Running - relaunch selected desktop apps after their last instance closes/exits.
+- Instance Limits - monitor selected apps and notify when their process counts exceed user defined value.
+- Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across app instances as they start or exit.
+- Add Cache Domain presets for CPUs sharing an L3 cache, with cache size and processor-group details.
+- Add a shared Restore previous plan option to Power Plan Control, used when no rule selects a plan.
+- Improve **By CPU Load** Switching stability, with release thresholds and a minimum hold time.
+
+### Changed
+
+- Rename the **By foreground** power-plan mode to **By Focus**.
+- Support CPU selections across processor groups in CPU Sets (Soft).
+- Check saved CPU selections against the current CPU layout and require review when it changes.
+- Label Target plan and Else plan separately in By CPU Load.
+- Report working-set reduction in Memory Trim's Action Log entries.
+
+### Fixed
+
+- Verify the active power plan before reporting a successful switch.
+- Keep By CPU Load timers stable across its own plan changes, and refresh readings after sleep or power-source changes.
+- Verify Advanced Power Plan Tuning values after applying changes, and show actual values after partial failures when available.
+- Reset Memory Trim's idle timer after missing readings or low memory pressure, while preserving protection against repeated trimming.
+- Discard stale per-app CPU samples in Adaptive Engine after missing or invalid readings.
+- Handle confirmed process exits without leaving stale restoration errors.
+- Close power-plan rule dialogs with Escape.
+
+### Upgrade notes
+
+Back up the settings kept beside the executable and any exported presets before updating.
+
+- CPU selection formats have changed. Recreate or update saved CPU related rules.
+- Power Plan Control's focus rules now use the `by_focus` settings section.
+
 ## 0.10.0-alpha - 2026-11-04
 
 ### Added

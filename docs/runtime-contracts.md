@@ -22,6 +22,94 @@ Read the relevant section before changing feature policy, ownership, restoration
   and duplicate launches recreate the window; explicit Exit still completes restoration before
   stopping the daemon. A failed tray registration keeps or reopens the GUI for recovery.
 
+## Keep Running
+
+- Keep Running is a global, opt-in Advanced Controls feature. Each rule names one
+  executable, literal argument tail, and absolute working directory. Arguments are
+  stored as plain text in the portable settings file. Enabling a rule with no
+  existing eligible app never launches it. First observe an ordinary app with the
+  current shell's verified user/logon/session token facts, then retain its exact
+  handles. Fresh launches bind to the verified shell desktop; matching token facts
+  do not prove the original app's desktop or restore it.
+  Cross-session process-control permission does not widen launch eligibility.
+- Missing or incomplete enumeration is not exit evidence. Only a signaled retained
+  process handle retires a member. After the last confirmed exit, retry after 1,
+  5, then 30 seconds, with at most three attempts until 60 seconds of verified
+  overlapping-cohort runtime or explicit Resume. Unknown intervals earn no stable
+  runtime credit. Disjoint replacement cohorts do not inherit it.
+- This is a fresh launch, not crash diagnosis, saved-session recovery, or the
+  Watchdog's restart operation. Winderust never reads another app's arguments or
+  copies its environment. Unsupported/elevated/service/restricted app contexts
+  pause the rule. File-identity aliases and overlapping live membership pause
+  conflicting rules instead of selecting arguments by rule order.
+- One bounded worker owns all preparation, resume/acceptance, and disposal calls.
+  The five-second preparation deadline bounds acceptance of results, not Windows
+  call duration. A timed-out call or unconfirmed cleanup occupies the global slot;
+  disabling, editing, removing, or re-adding a rule cannot discard its ownership.
+  Shutdown cancels provisional work without joining a blocked Windows call.
+  Membership and filesystem queries remain synchronous on RuntimeCore; the
+  preparation deadline is not a bound on the entire runtime cycle.
+- Immediately before launch commitment, re-enumerate membership outside the
+  shared intake mutex, then reserve once under that mutex. Pending Stop commands,
+  settings edits, suspend/session changes, shutdown, or watcher loss block the
+  reservation. Native calls run after unlocking. Later intents pause subsequent
+  retries; they cannot roll back a committed launch. Manual Stop/Stop Process Tree
+  and Watchdog Stop/Restart pause affected rules before acting, even on failure.
+- Closing to tray retains this owner. Suspend/session changes require Resume;
+  power-source handoff does not reset global rules. Disable and Exit never stop
+  an accepted replacement. Fresh launches are not crash-helper recovery records.
+- Atomic Job List creation protects suspended/provisional roots while the private
+  job's kill-on-close flag remains armed. Clearing that flag is irreversible native
+  acceptance, before result publication. Explicit breakaway descendants may survive
+  provisional cleanup; this feature does not promise descendant rollback. Nested
+  jobs, console apps, custom token changes, and shell replacement remain compatibility
+  constraints, not reasons to bypass access checks or enable privileges.
+
+## Instance Limits
+
+- Instance Limits is disabled by default and shares one configuration across power
+  sources. Rules count process objects at the selected full Win32 image path for
+  the current user SID and Windows session. Queryable elevated or restricted apps
+  are included; logon authentication IDs do not partition the count. The feature
+  neither prevents launches nor stops, suspends, relaunches, or places processes.
+- Paths compare by Windows ordinal-ignore-case after slash normalization. Different
+  hardlink names and directories remain separate targets. Normal drive-rooted and
+  UNC syntax is accepted; relative/device paths, dot components, ambiguous trailing
+  dots/spaces, invalid characters and duplicate rules are rejected. Each pass verifies
+  the selected file's final path spelling; missing, inaccessible or differently
+  resolved short/reparse aliases produce Unknown. Case-distinct paths intentionally
+  compare equivalent even on a case-sensitive filesystem; those directories and
+  native UNC behavior have no controlled compatibility evidence yet.
+- One fresh Toolhelp catalog serves all rules. Only a complete usable executable
+  basename may exclude a different name; positive counts require a retained live
+  process handle, creation time, full image path and SID/session checks. Query-only
+  access may exclude a known different path/scope, but cannot prove liveness.
+  The collector returns exact PID/creation/path members with retained observation
+  handles, rechecking liveness before publication. Instance Limits projects these
+  observations to counts and releases the handles before publishing runtime status.
+  Retained observation is not mutation authority: placement still needs fresh scope,
+  safety, identity and settings preflight. A discovered catalog/image-name
+  contradiction invalidates the pass. Basename agreement was measured on ordinary
+  and elevated fixtures, not established for every rename or filesystem behavior.
+- Counts are sampled and non-atomic: short-lived processes may be missed. Incomplete
+  counts expose a verified lower bound; incomplete zero says Count incomplete,
+  never a reassuring zero. Old samples become Unknown with their age. A missing
+  event watcher blocks fresh qualification. Native queries run outside the shared
+  intake mutex; one-second visible/tray cadence is not a Windows-call deadline.
+- Excess and recovery each need two fresh qualifying samples at least one second
+  apart. A lower bound above the maximum proves excess; only complete within-limit
+  counts prove recovery. Uncertainty breaks continuity and preserves an unresolved
+  incident. There is one notification attempt per incident, including failures;
+  acceptance means Windows accepted the request, not that a banner was displayed.
+- Rule edits reset only that rule, while feature/master disable clears all state.
+  Notify-only edits and power-source changes preserve incidents. Pending reset
+  intents survive rapid edits and toggles between worker snapshots. Suspend/session
+  events discard continuity and stale results while preserving attempted incidents.
+  Results are accepted under the intake mutex before notification delivery outside
+  it; a later intent cannot retract an already reserved notification attempt.
+- Action Log records excess as monitoring-only Skipped, complete recovery, changed
+  observation failures and notification results. It contains no raw SID or logon keys.
+
 ## Restoration and process safety
 
 - Never target Winderust itself or protected/system processes. Cross-session targeting
@@ -45,7 +133,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   target accepts replacement ownership or completes restoration/relinquishment;
   failed or uncertain replacements retain unresolved cleanup. Memory Priority
   retries reconcile surviving claims before restoring a baseline.
-- Failed process identity reads remain unavailable, preserving restoration ownership; only verified exit or identity mismatch relinquishes it.
+- Failed process identity reads preserve restoration ownership unless a query on
+  the same handle positively confirms exit; verified identity mismatch also
+  relinquishes it. An unavailable termination query retains the original error.
 - Retained-handle operation errors preserve their native failure code. In
   particular, `ERROR_INVALID_PARAMETER` from a setter is not process-exit
   evidence and must not discard restoration state.
@@ -104,6 +194,27 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Failed Adaptive plan setup retains the created GUID until verified cleanup succeeds. Pending cleanup uses the existing bounded retry interval and does not allocate replacement plans. Ownership starts immediately after duplication, before metadata or idle-state initialization. A never-activated clone whose source remains active preserves the ordinary restoration chain; genuine external plan changes still invalidate it.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global power-plan fallback or load-time mapping migration. The `power_plans` field on `ByActivitySettings` owns the visible Idle/Active selections.
+- Restore previous plan when no rule selects a plan is one global setting on the
+  Power Plan Control landing page. It defaults off, applies to both power
+  profiles, and is stored as `general.restore_previous_power_plan`. Target,
+  Else, Idle, and Active plans remain local selections and take precedence
+  whenever their rules are eligible. There are no per-mode restoration overrides.
+- While restoration is enabled, all ordinary power-plan winners share one
+  temporary episode baseline, captured from the actual plan before the first
+  verified automatic switch and separate from the ordinary controller's original
+  automation baseline. The episode survives app, feature, CPU Else, and Activity
+  Active plan handoffs. Only after every rule yields does the controller restore
+  through its existing verified recovery transaction. Turning the policy off
+  cancels temporary returns without changing the active plan. Any pending
+  journal transaction still requires acknowledgement before another mutation;
+  it cannot recreate the canceled baseline. Ordinary shutdown and recovery
+  safety ownership remain independent of this optional runtime return.
+  External plan changes invalidate the baseline. Unavailable focus, plausible
+  process matches, CPU samples, or activity observations do not prove a condition
+  ended; they defer affected fallthrough while a known higher-priority rule can
+  still take over. Pending restoration keeps the worker alive and retries
+  independently of feature enablement. Failed or no-op returns never log a
+  successful switch.
 - By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
   Invalid clock values fail settings load or import; raw incomplete edits stay in the UI editor.
   Repeated local clock boundaries retain both occurrences. A maximum 60-second
@@ -115,9 +226,32 @@ Read the relevant section before changing feature policy, ownership, restoration
 - By CPU Load requires finite observations from 0% to 100%. Missing or invalid
   observations, settings invalidation, and power-profile changes restart sustained
   duration timers; time in an inactive profile cannot satisfy a rule's duration.
+  Deferring ordinary switching while Adaptive owns the active plan also resets
+  qualification; unobserved time cannot complete an ordinary load condition.
 - By CPU Load durations range from zero through `i64::MAX` seconds, matching TOML
   integer storage. Larger edits remain invalid drafts and fail persistence preflight.
-- The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
+- By CPU Load Switching stability is optional and leaves existing rules unchanged
+  when disabled. Entry still requires the configured sustained duration. Once the
+  primary plan is confirmed active, its inclusive release threshold or wider
+  release range retains the rule; a minimum hold can delay release beyond that
+  range. The hold starts at confirmation, including when the plan is already active,
+  and repeated checks do not extend it. Earlier qualified CPU rules and higher-priority
+  features can preempt it. Else selections never acquire a primary rule's hold.
+- Missing observations, settings/profile changes, pause, Adaptive deferral, and
+  observed external plan changes clear held By CPU Load state. A failed or
+  unconfirmed application cannot start a hold. Active-plan observation precedes
+  retained-rule evaluation, using the controller's existing observation cadence.
+  Release yields to other selected rules or a configured Else plan. The global
+  restoration policy runs only when no plan is selected. An Else plan can begin
+  or continue the shared temporary episode like any other automatic selection.
+- Ordinary power-setting notifications preserve CPU qualification and holds;
+  Winderust's own plan switch must not restart qualification and select Else.
+  Actual power-source changes and suspend/resume restart qualification and holds,
+  including when the two power profiles contain identical settings. They also
+  discard cached CPU usage and prime a fresh sampling interval before any CPU rule,
+  including a zero-duration rule, can select a plan.
+- The global pause for power-plan switching on A/C and shared restoration policy
+  belong on the Power Plan Control landing page.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
   Startup cleanup rechecks the live active GUID after matching metadata and
   verifies restoration before deleting an active managed plan. It preserves
@@ -147,6 +281,16 @@ Read the relevant section before changing feature policy, ownership, restoration
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
 - Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), CPU Limiter, App Suspension.
 - Exclusion-list features append `ProcessExclusionRule`.
+
+## Memory Trim
+
+- Automatic trimming requires current pressure, working-set size, and sustained
+  observed CPU idleness. Missing/invalid samples, low pressure, and a working set
+  below the size threshold break idle qualification without rearming a process
+  already trimmed during that idle episode. Observed activity or a new exact
+  process identity may rearm it; explicitly disabling automation clears tracking.
+- Before/after working-set reduction is not measured system RAM reclaimed.
+  Unavailable readback remains unknown; trimming cannot restore discarded pages.
 
 ## App Suspension and CPU Limiter
 
@@ -186,13 +330,13 @@ Read the relevant section before changing feature policy, ownership, restoration
 
 - Adaptive helpers share a generation-checked foreground descendant workload per observation cycle. Pressure and workload changes invalidate dependent helper schedules. Standalone priority rules retain executable-path matching.
 - Foreground CPU deltas require complete samples of the same exact process generations; missing members and counter regression discard the baseline.
-- CPU Set discovery is lazy and operation-local, including failure caching. Discovery failure preserves existing assignments and does not suppress individual applications; pending handoffs retry on the existing cleanup interval.
+- CPU Set discovery is lazy and operation-local, including failure caching. Existing explicit and Adaptive claims preserve assignments on discovery failure without suppressing applications; pending handoffs retry on the existing cleanup interval. Guarded Instance Balancing claims withdraw instead.
 - Process enrichment cannot replace the identity generation captured by the cycle. Newly available or changed generations are deferred (non-actionable) until a fresh cycle, preserving consistency with cached Adaptive membership and earlier consumers.
 
 ## CPU allocation and Adaptive Engine
 
 - CPU allocation has one runtime coordinator and deterministic precedence: CPU Sets (Soft) >
-  Processor Affinity (Hard) > Adaptive Engine. Feature modules own
+  Processor Affinity (Hard) > Instance Balancing > Adaptive Engine. Feature modules own
   policy only; the coordinator alone owns affinity/CPU Set baselines, mutation, compensation,
   arbitration, and restoration. A higher-owner release queues the exact process key; `RuntimeCore`
   reconciles it once after every CPU producer has processed that worker pass. Shutdown bypasses
@@ -210,17 +354,100 @@ Read the relevant section before changing feature policy, ownership, restoration
   least-used logical processors across All, P-core, or E-core pools with a configurable percentage,
   fixed P/E/no-SMT topology masks, or an exact custom mask. The per-app CPU threshold decides when a background app becomes eligible;
   the shared CPU allocation coordinator remains the only mutation and restoration owner.
+- Adaptive per-process demand requires consecutive valid CPU observations for
+  the same exact identity. Missing samples, invalid deltas, or a non-actionable
+  target discard its old qualification/recovery state without resetting unrelated
+  targets or changing global pressure policy.
 - CPU Sets (Soft) and Processor Affinity (Hard) share one CPU-selection preset catalog. The
   topology-derived Core Presets are read-only: All, P-cores, E-cores, All cores no SMT, P-cores no
   SMT, and E-cores no SMT. Custom presets remain editable. Every rule independently selects Focus,
   Visible Window, and Background masks with Focus > Visible Window > Background precedence.
-  Selecting a preset copies its current mask into that tier; later preset edits or deletion do not
-  silently rewrite configured rules.
-- CPU-selection rule and preset masks serialize as quoted, fixed-width 64-bit
-  hexadecimal strings, such as `"0x8000000000000000"`. All 64 bits round-trip,
-  including logical processor 63. Parsing requires `0x` and 16 hexadecimal digits;
-  serialization uses lowercase. Numeric masks and malformed strings fail settings
-  load or import before any file is rewritten.
+  Selecting a preset copies its complete selection and topology signature into that tier;
+  later preset edits or deletion do not silently rewrite configured rules.
+- CPU-selection rules, custom presets, and Adaptive Engine custom selections store
+  explicit `{ group, number }` members and an optional exact canonical topology
+  snapshot. This signature describes scheduling layout, not permanent hardware
+  identity. Its active-group masks use fixed-width hexadecimal strings to preserve
+  logical processor 63. Malformed members or snapshots fail load/import without
+  rewriting files. Old scalar masks and index arrays are not migrated or aliased.
+  Missing signatures, changed topology, absent processors, and groups unsupported
+  by the selected control remain preserved for review; saving or importing them
+  never binds them implicitly.
+- CPU Allocation topology discovery retains group-qualified logical processors,
+  physical-core membership, efficiency classes, NUMA nodes, and cache domains.
+  `src/cpu_topology.rs` validates these facts; the Windows adapter alone parses
+  native variable-length records. CPU Sets (Soft) resolves complete group-qualified
+  selections to current CPU Set IDs across all discovered groups. Duplicate
+  processor mappings, duplicate IDs, or any missing selected member block the
+  entire request before an ownership handoff. The shared inventory retains each
+  Set's allocated/unallocated flag; it does not prove availability or reserve a
+  processor. Existing explicit and Adaptive selections still resolve either
+  state. Native readback verifies the
+  process-default ID assignment, not actual thread residency; thread-selected
+  CPU Sets, hard affinity, reservations, and Windows scheduling still apply.
+  Processor Affinity (Hard) and Adaptive per-processor sampling remain explicitly
+  limited to group 0. Cache presets require the entire verified L3 data/unified
+  domain to fit the selected control's supported processors; no partial domain or
+  inferred CCD is offered. Persisted selections are checked against a
+  verified current snapshot on activation, including cached claims and pending
+  ownership handoffs. Unresolved allocations restore owned state without gating
+  unrelated Adaptive Engine controls or restoration itself. Discovery has no
+  synthetic topology fallback on this path.
+- Unavailable processor bits are not silently removed from selections. Editors
+  preserve unsupported saved masks and require an explicit valid replacement;
+  explicit review rebinds the entire saved membership only when every processor
+  remains available and representable. Topology changes during preset editing
+  block Save until the current selection is explicitly reviewed or replaced. Soft
+  allocation rejects incomplete or ambiguous CPU Set mappings before mutation.
+  Hard allocation requires the entire requested mask to fit the target's system
+  affinity mask; it never applies a partial intersection.
+  New hard-affinity claims require a verified single group-0 target; group
+  validation does not gate compensation, release, or crash restoration.
+- Instance Balancing has a guarded backend claim, below explicit CPU Sets (Soft)
+  and Processor Affinity (Hard) and above Adaptive Engine. Its global configuration
+  defaults off and is shared across power sources. Its CPU Control page edits
+  executable-path rules and displays runtime status. Literal paths use Instance
+  Limits' scope and ordinal comparison,
+  with duplicate paths rejected even in disabled rules. Claims require a rule generation and a
+  topology-bound Soft CPU Set request, one group-0 topology, complete current CPU
+  Set mappings, and whole physical cores with no allocated siblings. Every selected
+  CPU must fit the original allowed hard mask and the current system mask; no partial share
+  or All fallback is substituted.
+- One-second visible/tray observations qualify two identical complete actionable
+  cohorts at least one second apart. Previously retained live members missing from
+  a new catalog make the rule incomplete; absence alone never proves exit. Fresh
+  SID/session and liveness queries use the retained handles, while mutation still
+  reopens the exact target through shared safety and cross-session checks.
+- Each rule partitions the common eligible whole-core pool, balancing core counts
+  within each numeric efficiency class. Survivor admission order and valid prior
+  core assignments are stability hints only. New accepted plans are at least five
+  seconds apart. Fewer than two eligible members or insufficient whole cores yields
+  the entire rule; no overlapping or empty share substitutes for insufficient capacity.
+- Explicit CPU selections, known denied control, unmanaged defaults and drift
+  suppression exclude members visibly in Action Log. Incomplete observations or
+  unavailable eligibility withdraw that rule's claims. A fresh catalog, topology
+  and eligibility pass must match before group application. Settings, session and
+  watcher changes cancel subsequent work; an admitted native operation may finish.
+  Native writes are not atomic across members. Any failed or shadowed share stops
+  the plan and withdraws every balancing claim for the rule, retaining failed cleanup.
+- Observed cohort, pool or control-context changes withdraw current preferences
+  before qualifying again. Topology changes remain paused until explicit rearm.
+  Rule/feature/master edits preserve reset intents even when reversed between worker
+  passes; power-source changes alone do not rearm drift suppression or discard hints.
+  Different executable rules may prefer the same cores. Readback confirms accepted
+  scheduling preferences, not core exclusivity, thread residency or faster execution.
+- For managed properties, balancing uses the original baseline only while
+  coordinator ownership is confirmed and the live value matches its expected
+  value. Unowned properties use their current native values. Unowned nonempty
+  CPU Sets, unavailable facts, uncertain recovery state, and external drift block
+  placement. Rebalances do not shrink from a prior managed share. A final native
+  read checks the expected affinity/default Sets before applying; the read/write
+  sequence is optimistic, not atomic against another controller.
+- A balancing claim's generation identifies an explicit rearm for an exact
+  process. Observed drift suppresses that generation across release and retries;
+  an older generation cannot rearm it. Other CPU features retain their own
+  reapplication contracts. Guard failure withdraws balancing ownership through
+  the existing reconciliation/restoration paths without losing pending cleanup.
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 
@@ -261,6 +488,34 @@ Read the relevant section before changing feature policy, ownership, restoration
   not retry-spam.
 - Memory Priority has two simultaneous automatic owners rather than an Adaptive replacement policy: static Memory Priority explicitly outranks an overlapping Adaptive Engine claim, while non-overlapping Adaptive Engine claims remain effective. Both owners retain one shared exact-process baseline and restoration chain.
 
+## Sleep Prevention
+
+- Sleep Prevention is an explicit running-app rule under Advanced Controls. It
+  starts disabled, follows the existing Plugged In/On Battery profile selection,
+  and never changes power-plan timeouts. A matching eligible executable requests
+  idle system sleep prevention; keeping the display on is a separate opt-in that
+  also retains the system request. Focus does not affect matching.
+- The feature manager combines exact eligible process instances across rules.
+  One controller owns the shared Windows request object and changes only the
+  required request types. Removing one app cannot release another app's request.
+  Disable, confirmed last-app exit, profile handoff, and Exit release owned
+  requests. Process teardown closes the request object without a crash journal.
+- Accepted Windows requests are reported separately from app observations and
+  do not prove effective inhibition. Missing observations cannot establish new
+  requests or renew existing counts; explicit rule removal still releases them.
+  Normal reconciliation never renews an already accepted system request to defeat
+  Windows policy or Modern Standby battery expiry.
+- Suspend/resume releases requests and suppresses the observed exact instances
+  until they exit or the user explicitly disables/re-enables their rules or the
+  feature. Power-profile changes preserve this suppression. User sleep, lid
+  actions, critical-battery handling, and Windows policy remain authoritative.
+  A missing or stopped Windows event watcher blocks new requests, releases owned
+  requests, and suppresses the current cohort until explicitly rearmed.
+- Running-app reconciliation remains at one second in visible and tray modes;
+  Windows sleep and power-source notifications wake it independently of the UI.
+  Transient power-source read failures retain the last confirmed profile without
+  renewing request counts; before the first confirmed source, requests stay off.
+
 ## Timer Resolution
 
 - Timer Resolution does not use process failure suppression.
@@ -275,7 +530,7 @@ Read the relevant section before changing feature policy, ownership, restoration
 - CPU Pressure Restraint, Limit Background Processors, and Dynamic Resource Zones are independent Adaptive Engine producers. Zones-only work must keep AC/Battery automation alive without enabling priority/efficiency assists.
 - The limiter owns its existing percentage, selector, custom mask, and soft/hard method. `dynamic_resource_zone_settings` owns the separate zone share, selector, and custom mask. Speed defaults zoning off; Performance retains zoning on.
 - Zones require fresh eligible foreground and hot background competition outside startup grace. One combined Adaptive generation applies background first, requires verified effective placement, then applies foreground. Loss of competition withdraws foreground immediately on reconciliation; partial failure resolves to the independently eligible limiter or no allocation, retaining controller cleanup/backoff.
-- The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Adaptive precedence is unchanged. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
+- The existing CPU allocation coordinator remains the only owner of baselines and recovery. Explicit Soft > Hard > Instance Balancing > Adaptive precedence applies to zoning too. Unsupported/multiple processor groups or invalid/empty partitions make zoning unavailable, never a silent All fallback.
 - Disabled zoning may deserialize a missing zone block into inactive defaults without rewriting input. Enabled zoning with a missing block fails at deserialization for root, Battery, and presets. Do not infer zone values from the limiter or add a migration.
 
 ## Thread Priority discovery

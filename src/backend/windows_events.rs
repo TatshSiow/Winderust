@@ -2,7 +2,10 @@ use std::{
     cell::RefCell,
     panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
-    sync::{mpsc, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     thread::{self, JoinHandle},
 };
 
@@ -45,6 +48,7 @@ pub enum WindowsAutomationEvent {
     ForegroundChanged,
     WindowCreated,
     PowerChanged,
+    SuspendResume,
     SessionChanged,
     ClockChanged,
     AppearanceChanged,
@@ -59,6 +63,19 @@ thread_local! {
 pub struct WindowsEventWatcher {
     thread_id: u32,
     thread: Option<JoinHandle<()>>,
+    stopped: Arc<AtomicBool>,
+}
+
+struct WatcherStopped {
+    stopped: Arc<AtomicBool>,
+    callback: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Drop for WatcherStopped {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        (self.callback)();
+    }
 }
 
 struct PowerNotifications {
@@ -68,14 +85,26 @@ struct PowerNotifications {
 }
 
 impl WindowsEventWatcher {
-    pub fn start(callback: EventCallback) -> Result<Self, String> {
+    pub fn start(
+        callback: EventCallback,
+        on_stopped: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
-        let thread = thread::spawn(move || event_thread(sender, callback));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let notification = WatcherStopped {
+            stopped: Arc::clone(&stopped),
+            callback: on_stopped,
+        };
+        let thread = thread::spawn(move || {
+            let _notification = notification;
+            event_thread(sender, callback);
+        });
 
         match receiver.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
                 thread_id,
                 thread: Some(thread),
+                stopped,
             }),
             Ok(Err(err)) => {
                 let _ = thread.join();
@@ -86,6 +115,14 @@ impl WindowsEventWatcher {
                 Err(format!("Windows event watcher did not start: {err}"))
             }
         }
+    }
+
+    pub fn is_running(&self) -> bool {
+        !self.stopped.load(Ordering::Acquire)
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
     }
 }
 
@@ -320,12 +357,12 @@ unsafe extern "system" fn event_window_proc(
     match message {
         WM_POWERBROADCAST => {
             match wparam as u32 {
-                PBT_POWERSETTINGCHANGE
-                | PBT_APMRESUMEAUTOMATIC
+                PBT_POWERSETTINGCHANGE => notify_event(WindowsAutomationEvent::PowerChanged),
+                PBT_APMRESUMEAUTOMATIC
                 | PBT_APMRESUMECRITICAL
                 | PBT_APMRESUMESTANDBY
                 | PBT_APMRESUMESUSPEND
-                | PBT_APMSUSPEND => notify_event(WindowsAutomationEvent::PowerChanged),
+                | PBT_APMSUSPEND => notify_event(WindowsAutomationEvent::SuspendResume),
                 _ => {}
             }
             1
@@ -382,6 +419,82 @@ fn notify_event(event: WindowsAutomationEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watcher_exit_marks_stopped_before_notifying_once_on_return_or_unwind() {
+        use std::sync::atomic::AtomicUsize;
+
+        for unwind in [false, true] {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let observed_stopped = Arc::new(AtomicBool::new(false));
+            let notifications = Arc::new(AtomicUsize::new(0));
+            let callback_stopped = Arc::clone(&stopped);
+            let callback_observed = Arc::clone(&observed_stopped);
+            let callback_notifications = Arc::clone(&notifications);
+            let notification = WatcherStopped {
+                stopped: Arc::clone(&stopped),
+                callback: Arc::new(move || {
+                    callback_observed
+                        .store(callback_stopped.load(Ordering::Acquire), Ordering::Release);
+                    callback_notifications.fetch_add(1, Ordering::Relaxed);
+                }),
+            };
+            let worker = thread::spawn(move || {
+                let _notification = notification;
+                if unwind {
+                    panic!("simulated watcher failure");
+                }
+            });
+            assert_eq!(worker.join().is_err(), unwind);
+            assert!(stopped.load(Ordering::Acquire));
+            assert!(observed_stopped.load(Ordering::Acquire));
+            assert_eq!(notifications.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn power_setting_and_suspend_resume_messages_remain_distinct() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = Arc::clone(&events);
+        EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = Some(Arc::new(move |event| {
+                received.lock().unwrap().push(event);
+            }));
+        });
+        for broadcast in [
+            PBT_POWERSETTINGCHANGE,
+            PBT_APMSUSPEND,
+            PBT_APMRESUMEAUTOMATIC,
+            PBT_APMRESUMECRITICAL,
+            PBT_APMRESUMESTANDBY,
+            PBT_APMRESUMESUSPEND,
+        ] {
+            assert_eq!(
+                // SAFETY: These broadcasts are classified by wparam without reading lparam.
+                unsafe {
+                    event_window_proc(
+                        std::ptr::null_mut(),
+                        WM_POWERBROADCAST,
+                        broadcast as WPARAM,
+                        0,
+                    )
+                },
+                1
+            );
+        }
+        EVENT_CALLBACK.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                WindowsAutomationEvent::PowerChanged,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+                WindowsAutomationEvent::SuspendResume,
+            ]
+        );
+    }
 
     #[test]
     fn appearance_messages_refresh_the_shared_theme() {

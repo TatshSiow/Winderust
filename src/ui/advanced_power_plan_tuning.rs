@@ -699,7 +699,7 @@ fn preset_matches(
     actual: AdvancedPowerPlanTuningValues,
 ) -> bool {
     let preset = preset.normalized();
-    preset.processor == actual.normalized().processor
+    preset.processor == actual.processor
         && preset
             .scheduling_policy
             .is_none_or(|policy| Some(policy) == actual.scheduling_policy)
@@ -859,6 +859,18 @@ fn mode_label(mode: EffectivePowerMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_matching_does_not_normalize_actual_readback() {
+        let mut preset = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        preset.processor.performance_min = 75;
+        preset.processor.performance_max = 75;
+        let mut actual = preset;
+        actual.processor.performance_max = 50;
+        assert!(!preset_matches(preset, actual));
+        assert!(preset_matches(preset, preset));
+    }
+
     #[test]
     fn scheduling_edits_and_presets_preserve_power_source_and_availability() {
         let mut values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);

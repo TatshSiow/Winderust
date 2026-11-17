@@ -1,6 +1,77 @@
 use super::*;
 
 #[test]
+fn instance_limits_validation_guards_persistence_without_overwriting_files() {
+    let path = std::env::temp_dir().join(format!(
+        "winderust-instance-limits-{}.toml",
+        std::process::id()
+    ));
+    for battery in [false, true] {
+        for invalid in 0..3 {
+            let mut settings = Settings::default();
+            let profile = if battery {
+                settings.battery_profile_mut()
+            } else {
+                &mut settings
+            };
+            let mut rule = crate::config::InstanceLimitsRule::new(r"C:\Apps\app.exe".into());
+            match invalid {
+                0 => rule.max_instances = 0,
+                1 => rule.executable_path = "relative.exe".into(),
+                _ => profile.instance_limits.rules.push(rule.clone()),
+            }
+            profile.instance_limits.rules.push(rule);
+            let raw = toml::to_string(&settings).unwrap();
+            fs::write(&path, &raw).unwrap();
+            assert!(load_from_path(&path).is_err());
+            assert!(import_toml_from(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            fs::write(&path, "original settings").unwrap();
+            assert!(write_toml_settings(&path, &settings).is_err());
+            assert!(export_toml_to(&path, &settings).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
+        }
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn keep_running_launch_validation_guards_load_import_save_and_export() {
+    let path = std::env::temp_dir().join(format!(
+        "winderust-keep-running-{}.toml",
+        std::process::id()
+    ));
+    for battery in [false, true] {
+        for invalid in 0..4 {
+            let mut settings = Settings::default();
+            let profile = if battery {
+                settings.battery_profile_mut()
+            } else {
+                &mut settings
+            };
+            let mut rule = crate::config::KeepRunningRule::new(r"C:\Apps\test.exe".into());
+            match invalid {
+                0 => rule.executable_path = "relative.exe".into(),
+                1 => rule.working_directory.push('\0'),
+                2 => rule.arguments = "x".repeat(32_767),
+                _ => profile.keep_running.rules.push(rule.clone()),
+            }
+            profile.keep_running.rules.push(rule);
+            let raw = toml::to_string(&settings).unwrap();
+            fs::write(&path, &raw).unwrap();
+            assert!(load_from_path(&path).is_err());
+            assert!(import_toml_from(&path).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+            fs::write(&path, "original settings").unwrap();
+            assert!(write_toml_settings(&path, &settings).is_err());
+            assert!(export_toml_to(&path, &settings).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), "original settings");
+        }
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn app_suspension_delay_limits_apply_to_both_profiles_before_io() {
     let path = std::env::temp_dir().join(format!(
         "winderust-suspension-delay-{}.toml",
@@ -162,7 +233,7 @@ use crate::config::{
     AdaptiveEngineSettings, AdvancedPowerPlanTuningPreset, AdvancedSettings, AppLanguage,
     AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
     BackgroundEfficiencyRule, BackgroundEfficiencySettings, BackgroundProcessorSelection,
-    ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule, ByForegroundSettings,
+    ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByFocusRule, ByFocusSettings,
     ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings, CpuAllocationMethod,
     CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, CpuLimiterRule,
     CpuLimiterSettings, CpuUsageComparison, DynamicPriorityBoostSettings, GeneralSettings,
@@ -174,59 +245,52 @@ use crate::config::{
     TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
 };
 
-fn set_cpu_allocation_masks(settings: &mut Settings, mask: u64) {
+fn set_cpu_allocation_selections(settings: &mut Settings, mask: u64) {
     let rule = CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\test.exe".into(),
-        focus_core_mask: mask,
-        visible_window_core_mask: mask,
-        background_core_mask: mask,
+        focus_selection: crate::cpu_topology::test_selection(mask),
+        visible_window_selection: crate::cpu_topology::test_selection(mask),
+        background_selection: crate::cpu_topology::test_selection(mask),
     };
     settings.cpu_sets_soft.rules = vec![rule.clone()];
     settings.processor_affinity_hard.rules = vec![rule];
     settings.cpu_allocation_presets = vec![CpuAllocationPreset {
         name: "Selected processors".into(),
-        core_mask: mask,
+        selection: crate::cpu_topology::test_selection(mask),
     }];
 }
 
 #[test]
-fn full_width_cpu_allocation_masks_survive_save_export_load_and_import() {
+fn bound_cpu_selections_survive_save_export_load_and_import() {
     let path = std::env::temp_dir().join(format!(
-        "winderust-cpu-allocation-masks-save-{}.toml",
+        "winderust-cpu-selections-save-{}.toml",
         std::process::id()
     ));
     let export_path = path.with_extension("export.toml");
     let masks = [0, 1 << 63, u64::MAX];
     for (index, root_mask) in masks.into_iter().enumerate() {
-        let battery_mask = masks[(index + 1) % masks.len()];
         let mut settings = Settings::default();
-        set_cpu_allocation_masks(&mut settings, root_mask);
-        set_cpu_allocation_masks(settings.battery_profile_mut(), battery_mask);
-
-        // This is the same atomic serialization path used by Save, with an isolated path.
+        set_cpu_allocation_selections(&mut settings, root_mask);
+        settings.adaptive_engine_process.specific_processors =
+            crate::cpu_topology::test_selection(root_mask);
+        settings
+            .adaptive_engine_process
+            .dynamic_resource_zone_settings
+            .specific_processors = crate::cpu_topology::test_selection(root_mask);
+        let battery_mask = masks[(index + 1) % masks.len()];
+        set_cpu_allocation_selections(settings.battery_profile_mut(), battery_mask);
+        settings
+            .battery_profile_mut()
+            .adaptive_engine_process
+            .specific_processors = crate::cpu_topology::test_selection(battery_mask);
+        settings
+            .battery_profile_mut()
+            .adaptive_engine_process
+            .dynamic_resource_zone_settings
+            .specific_processors = crate::cpu_topology::test_selection(battery_mask);
         write_toml_settings(&path, &settings).unwrap();
         let raw = fs::read_to_string(&path).unwrap();
-        let value: toml::Value = toml::from_str(&raw).unwrap();
-        for (profile, mask) in [(&value, root_mask), (&value["on_battery"], battery_mask)] {
-            let encoded = format!("0x{mask:016x}");
-            for section in ["cpu_sets_soft", "processor_affinity_hard"] {
-                for field in [
-                    "focus_core_mask",
-                    "visible_window_core_mask",
-                    "background_core_mask",
-                ] {
-                    assert_eq!(
-                        profile[section]["rules"][0][field].as_str(),
-                        Some(encoded.as_str())
-                    );
-                }
-            }
-            assert_eq!(
-                profile["cpu_allocation_presets"][0]["core_mask"].as_str(),
-                Some(encoded.as_str())
-            );
-        }
         assert_eq!(load_from_path(&path).unwrap(), settings);
         export_toml_to(&export_path, &settings).unwrap();
         assert_eq!(fs::read_to_string(&export_path).unwrap(), raw);
@@ -237,28 +301,29 @@ fn full_width_cpu_allocation_masks_survive_save_export_load_and_import() {
 }
 
 #[test]
-fn malformed_cpu_allocation_masks_fail_load_and_import_without_rewriting() {
+fn malformed_cpu_selections_fail_load_and_import_without_rewriting() {
     let mut settings = Settings::default();
-    set_cpu_allocation_masks(&mut settings, u64::MAX);
+    set_cpu_allocation_selections(&mut settings, u64::MAX);
     settings.battery_profile_mut();
     let path = std::env::temp_dir().join(format!(
-        "winderust-cpu-allocation-masks-invalid-{}.toml",
+        "winderust-cpu-selections-invalid-{}.toml",
         std::process::id()
     ));
     for battery in [false, true] {
         for (section, field) in [
-            ("cpu_sets_soft", "focus_core_mask"),
-            ("cpu_sets_soft", "visible_window_core_mask"),
-            ("cpu_sets_soft", "background_core_mask"),
-            ("processor_affinity_hard", "focus_core_mask"),
-            ("processor_affinity_hard", "visible_window_core_mask"),
-            ("processor_affinity_hard", "background_core_mask"),
-            ("cpu_allocation_presets", "core_mask"),
+            ("cpu_sets_soft", "focus_selection"),
+            ("cpu_sets_soft", "visible_window_selection"),
+            ("cpu_sets_soft", "background_selection"),
+            ("processor_affinity_hard", "focus_selection"),
+            ("processor_affinity_hard", "visible_window_selection"),
+            ("processor_affinity_hard", "background_selection"),
+            ("cpu_allocation_presets", "selection"),
         ] {
             for invalid in [
-                toml::Value::Integer(0),
-                toml::Value::String("0x800000000000000".into()),
-                toml::Value::String("0x800000000000000g".into()),
+                "value = 0",
+                "value = '0xffffffffffffffff'",
+                "value = { processors = [{ group = 0, number = 64 }] }",
+                "value = { processors = [{ group = 0, number = 1 }, { group = 0, number = 1 }] }",
             ] {
                 let mut value = toml::Value::try_from(&settings).unwrap();
                 let profile = if battery {
@@ -271,7 +336,7 @@ fn malformed_cpu_allocation_masks_fail_load_and_import_without_rewriting() {
                 } else {
                     &mut profile[section]["rules"]
                 };
-                rules[0][field] = invalid;
+                rules[0][field] = toml::from_str::<toml::Value>(invalid).unwrap()["value"].clone();
                 let raw = toml::to_string(&value).unwrap();
                 fs::write(&path, &raw).unwrap();
                 assert!(
@@ -286,6 +351,56 @@ fn malformed_cpu_allocation_masks_fail_load_and_import_without_rewriting() {
             }
         }
     }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn unresolved_cpu_selections_are_preserved_across_profiles_and_presets() {
+    use crate::cpu_topology::{CpuSelection, ProcessorId};
+    let unresolved = CpuSelection::new(
+        vec![ProcessorId {
+            group: 1,
+            number: 63,
+        }],
+        None,
+    )
+    .unwrap();
+    let mut settings = Settings::default();
+    set_cpu_allocation_selections(&mut settings, 1);
+    settings.cpu_sets_soft.rules[0].focus_selection = unresolved.clone();
+    settings.cpu_allocation_presets[0].selection = unresolved.clone();
+    settings.adaptive_engine_process.specific_processors = unresolved.clone();
+    settings
+        .adaptive_engine_process
+        .dynamic_resource_zone_settings
+        .specific_processors = unresolved.clone();
+    settings.adaptive_engine_presets.push(AdaptiveEnginePreset {
+        name: "Review selection".into(),
+        processor_power_policy_enabled: false,
+        base_processor_policy: settings.adaptive_engine.base_processor_policy,
+        background_pressure_profile: settings.adaptive_engine.background_pressure_profile,
+        focus_and_launch_profile: settings.adaptive_engine.focus_and_launch_profile,
+        adaptive_engine_process: settings.adaptive_engine_process.clone(),
+    });
+    settings.battery_profile_mut();
+    let path = std::env::temp_dir().join(format!(
+        "winderust-unresolved-selections-{}.toml",
+        std::process::id()
+    ));
+    write_toml_settings(&path, &settings).unwrap();
+    let raw = fs::read_to_string(&path).unwrap();
+    for parsed in [
+        load_from_path(&path).unwrap(),
+        import_toml_from(&path).unwrap(),
+    ] {
+        assert_eq!(parsed, settings);
+        assert!(parsed
+            .adaptive_engine_process
+            .specific_processors
+            .resolve_group_zero(&crate::cpu_topology::test_topology())
+            .is_err());
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), raw);
     fs::remove_file(path).unwrap();
 }
 
@@ -348,10 +463,74 @@ fn reversed_cpu_load_ranges_fail_export_without_overwriting() {
 }
 
 #[test]
+fn cpu_load_stability_validates_both_profiles_without_overwriting_invalid_settings() {
+    use crate::config::{ByCpuLoadStability, CpuLoadPercent};
+
+    let path = std::env::temp_dir().join(format!(
+        "winderust-cpu-load-stability-{}.toml",
+        std::process::id()
+    ));
+    for battery in [false, true] {
+        let mut settings = Settings::default();
+        let profile = if battery {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_cpu_load.rules[0].stability = Some(ByCpuLoadStability {
+            exit_threshold_percent: CpuLoadPercent::new(20).unwrap(),
+            exit_upper_threshold_percent: None,
+            minimum_hold_seconds: 30,
+        });
+        export_toml_to(&path, &settings).unwrap();
+        assert_eq!(import_toml_from(&path).unwrap(), settings);
+        for (field, invalid) in [
+            ("exit_threshold_percent", 14),
+            ("exit_threshold_percent", 101),
+            ("exit_upper_threshold_percent", 80),
+            ("minimum_hold_seconds", -1),
+        ] {
+            let mut value = toml::Value::try_from(&settings).unwrap();
+            let profile = if battery {
+                &mut value["on_battery"]
+            } else {
+                &mut value
+            };
+            profile["by_cpu_load"]["rules"][0]["stability"]
+                .as_table_mut()
+                .unwrap()
+                .insert(field.into(), invalid.into());
+            let raw = toml::to_string(&value).unwrap();
+            fs::write(&path, &raw).unwrap();
+            assert!(load_from_path(&path).is_err(), "{battery}/{field}");
+            assert!(import_toml_from(&path).is_err(), "{battery}/{field}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        }
+        let profile = if battery {
+            settings.battery_profile_mut()
+        } else {
+            &mut settings
+        };
+        profile.by_cpu_load.rules[0]
+            .stability
+            .as_mut()
+            .unwrap()
+            .minimum_hold_seconds = u64::MAX;
+        fs::write(&path, "existing settings").unwrap();
+        assert!(export_toml_to(&path, &settings)
+            .unwrap_err()
+            .contains("minimum hold"));
+        assert!(write_toml_settings(&path, &settings).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing settings");
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn independent_zone_settings_validate_root_battery_and_presets_without_rewriting() {
     let mut settings = Settings::default();
     settings.adaptive_engine_process.processor_limit_percent = 40;
-    settings.adaptive_engine_process.specific_processors = vec![0];
+    settings.adaptive_engine_process.specific_processors = crate::cpu_topology::test_selection(1);
     settings
         .adaptive_engine_process
         .dynamic_resource_zone_settings
@@ -359,7 +538,7 @@ fn independent_zone_settings_validate_root_battery_and_presets_without_rewriting
     settings
         .adaptive_engine_process
         .dynamic_resource_zone_settings
-        .specific_processors = vec![1];
+        .specific_processors = crate::cpu_topology::test_selection(2);
     let raw = toml::to_string(&settings).unwrap();
     assert_eq!(toml::from_str::<Settings>(&raw).unwrap(), settings);
     let mut value = toml::Value::try_from(&settings).unwrap();
@@ -384,7 +563,10 @@ fn independent_zone_settings_validate_root_battery_and_presets_without_rewriting
             } else {
                 let parsed = result.unwrap();
                 assert_eq!(parsed.adaptive_engine_process.processor_limit_percent, 40);
-                assert_eq!(parsed.adaptive_engine_process.specific_processors, vec![0]);
+                assert_eq!(
+                    parsed.adaptive_engine_process.specific_processors,
+                    crate::cpu_topology::test_selection(1)
+                );
                 assert_eq!(
                     parsed
                         .adaptive_engine_process
@@ -423,12 +605,7 @@ fn independent_zone_settings_validate_root_battery_and_presets_without_rewriting
 
 #[test]
 fn invalid_zone_configuration_is_rejected_before_save_or_deserialization() {
-    for (share, indices, enabled) in [
-        (0, vec![], false),
-        (100, vec![], false),
-        (75, vec![64], false),
-        (75, vec![], true),
-    ] {
+    for (share, enabled) in [(0, false), (100, false), (75, true)] {
         let mut settings = Settings::default();
         let process = &mut settings.adaptive_engine_process;
         process.dynamic_resource_zones_enabled = enabled;
@@ -438,71 +615,10 @@ fn invalid_zone_configuration_is_rejected_before_save_or_deserialization() {
         process
             .dynamic_resource_zone_settings
             .background_processor_selection = BackgroundProcessorSelection::Custom;
-        process.dynamic_resource_zone_settings.specific_processors = indices;
+        process.dynamic_resource_zone_settings.specific_processors =
+            crate::cpu_topology::CpuSelection::default();
         assert!(settings.validate_dynamic_resource_zones().is_err());
         assert!(toml::from_str::<Settings>(&toml::to_string(&settings).unwrap()).is_err());
-    }
-}
-
-#[test]
-fn adaptive_runtime_benchmark_generated_settings_are_valid() {
-    if let Ok(raw) = std::env::var("WINDERUST_BENCHMARK_SETTINGS") {
-        parse_toml_settings(Path::new("benchmark settings"), &raw).unwrap();
-    }
-    let script =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/adaptive_runtime_benchmark.ps1");
-    for arguments in [
-        vec![],
-        vec!["-EnableDynamicResourceZones"],
-        vec![
-            "-DisableBackgroundProcessorLimit",
-            "-ProcessRestraintThresholdPercent",
-            "100",
-            "-MaximumRestrainedApps",
-            "32",
-            "-ForegroundOrSystemCpuThresholdPercent",
-            "1",
-            "-BackgroundPressureAcBoostPolicy",
-            "0",
-            "-BackgroundPressureAcBoostMode",
-            "disabled",
-        ],
-    ] {
-        let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(&script)
-            .arg("-SettingsOnly")
-            .args(&arguments)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let raw = String::from_utf8(output.stdout).unwrap();
-        let settings = parse_toml_settings(&script, &raw).unwrap();
-        assert!(settings.adaptive_engine.enabled);
-        assert!(settings.adaptive_engine.processor_power_policy_enabled);
-        assert_eq!(
-            settings
-                .adaptive_engine_process
-                .dynamic_resource_zones_enabled,
-            arguments.contains(&"-EnableDynamicResourceZones")
-        );
-        assert_eq!(
-            settings
-                .adaptive_engine_process
-                .limit_background_processors_enabled,
-            !arguments.contains(&"-DisableBackgroundProcessorLimit")
-        );
-        assert!(!settings.adaptive_engine_process.custom_rules.is_empty());
-        let missing = raw
-            .lines()
-            .filter(|line| !line.starts_with("dynamic_resource_zones_enabled = "))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(parse_toml_settings(&script, &missing).is_err());
     }
 }
 
@@ -671,6 +787,7 @@ fn toml_round_trip_preserves_settings() {
             show_feature_status_on_cards: false,
             animation_mode: crate::config::AnimationMode::Off,
             pause_power_plan_switching_while_plugged_in: true,
+            restore_previous_power_plan: true,
             search_hotkeys: crate::config::SearchHotkeys::default(),
             check_interval_ms: 2_500,
         },
@@ -723,16 +840,16 @@ fn toml_round_trip_preserves_settings() {
                 performance_guid: Some("activity-active-guid".to_owned()),
             },
         },
-        by_foreground: ByForegroundSettings {
+        by_focus: ByFocusSettings {
             enabled: true,
             rules: vec![
-                ByForegroundRule {
+                ByFocusRule {
                     enabled: true,
                     name: "Game plan".to_owned(),
                     executable_path: "game.exe".to_owned(),
                     power_plan_guid: Some("gaming-guid".to_owned()),
                 },
-                ByForegroundRule {
+                ByFocusRule {
                     enabled: false,
                     name: "Backup plan".to_owned(),
                     executable_path: "backup\\tool.exe".to_owned(),
@@ -760,6 +877,7 @@ fn toml_round_trip_preserves_settings() {
                 threshold_percent: crate::config::CpuLoadPercent::new(18).unwrap(),
                 upper_threshold_percent: None,
                 duration_seconds: 45,
+                stability: None,
                 power_plan_guid: Some("low-cpu-guid".to_owned()),
                 else_enabled: true,
                 else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
@@ -829,16 +947,16 @@ fn toml_round_trip_preserves_settings() {
                 CpuAllocationRule {
                     enabled: true,
                     executable_path: "backup.exe".to_owned(),
-                    focus_core_mask: 0b1111,
-                    visible_window_core_mask: 0b0111,
-                    background_core_mask: 0b0011,
+                    focus_selection: crate::cpu_topology::test_selection(0b1111),
+                    visible_window_selection: crate::cpu_topology::test_selection(0b0111),
+                    background_selection: crate::cpu_topology::test_selection(0b0011),
                 },
                 CpuAllocationRule {
                     enabled: false,
                     executable_path: "indexer.exe".to_owned(),
-                    focus_core_mask: 0b1111,
-                    visible_window_core_mask: 0b1100,
-                    background_core_mask: 0b1000,
+                    focus_selection: crate::cpu_topology::test_selection(0b1111),
+                    visible_window_selection: crate::cpu_topology::test_selection(0b1100),
+                    background_selection: crate::cpu_topology::test_selection(0b1000),
                 },
             ],
         },
@@ -847,14 +965,14 @@ fn toml_round_trip_preserves_settings() {
             rules: vec![CpuAllocationRule {
                 enabled: true,
                 executable_path: "game.exe".to_owned(),
-                focus_core_mask: 0b1111,
-                visible_window_core_mask: 0b0111,
-                background_core_mask: 0b0101,
+                focus_selection: crate::cpu_topology::test_selection(0b1111),
+                visible_window_selection: crate::cpu_topology::test_selection(0b0111),
+                background_selection: crate::cpu_topology::test_selection(0b0101),
             }],
         },
         cpu_allocation_presets: vec![CpuAllocationPreset {
             name: "Performance cores".to_owned(),
-            core_mask: 0b0101,
+            selection: crate::cpu_topology::test_selection(0b0101),
         }],
         advanced_power_plan_tuning_presets: vec![AdvancedPowerPlanTuningPreset {
             name: "Plugged in performance".to_owned(),
@@ -928,7 +1046,7 @@ fn toml_round_trip_preserves_settings() {
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 50,
-            specific_processors: vec![0, 2],
+            specific_processors: crate::cpu_topology::test_selection(0b101),
             foreground_or_system_cpu_threshold_percent: 70,
             background_app_cpu_threshold_percent: 25,
             cpu_recovery_threshold_percent: 5,
@@ -1029,7 +1147,38 @@ fn toml_round_trip_preserves_settings() {
                 desired_100ns: 20_000,
             }],
         },
+        sleep_prevention: crate::config::SleepPreventionSettings {
+            enabled: true,
+            rules: vec![crate::config::SleepPreventionRule {
+                enabled: true,
+                executable_path: r"C:\Apps\encoder.exe".into(),
+                keep_display_on: true,
+            }],
+        },
         watchdog: crate::config::WatchdogSettings::default(),
+        keep_running: crate::config::KeepRunningSettings {
+            enabled: true,
+            rules: vec![crate::config::KeepRunningRule {
+                enabled: true,
+                executable_path: r"C:\Apps\keeper.exe".into(),
+                arguments: r#"--document "C:\Documents\notes.txt""#.into(),
+                working_directory: r"C:\Documents".into(),
+            }],
+        },
+        instance_limits: crate::config::InstanceLimitsSettings {
+            enabled: true,
+            notify: false,
+            rules: vec![crate::config::InstanceLimitsRule::new(
+                r"C:\Apps\app.exe".into(),
+            )],
+        },
+        instance_balancing: crate::config::InstanceBalancingSettings {
+            enabled: true,
+            rules: vec![crate::config::InstanceBalancingRule {
+                enabled: true,
+                executable_path: r"C:\Apps\app.exe".into(),
+            }],
+        },
         memory_trim: MemoryTrimSettings {
             enabled: true,
             system_memory_load_threshold_percent: 80,
@@ -1047,6 +1196,7 @@ fn toml_round_trip_preserves_settings() {
         .battery_profile_mut()
         .memory_trim
         .system_memory_load_threshold_percent = 72;
+    settings.battery_profile_mut().sleep_prevention.enabled = false;
 
     for mode in AppThemeMode::ALL {
         settings.general.theme_mode = mode;

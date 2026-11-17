@@ -13,6 +13,7 @@ mod bottleneck_classifier;
 mod config;
 mod control;
 mod cpu;
+mod cpu_topology;
 mod features;
 mod foreground;
 mod platform;
@@ -27,7 +28,7 @@ use backend::{
     privilege, process_icon, self_power, tray, update_checker, win_util, windows_events,
 };
 use features::{
-    advanced_controls::{app_suspension, timer_resolution},
+    advanced_controls::{app_suspension, sleep_prevention, timer_resolution},
     cpu_control::{cpu_allocation, cpu_limiter},
     priority_control::{
         dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,

@@ -339,10 +339,14 @@ pub(super) fn page_feature_info(page: Page) -> String {
         Page::MemoryTrim => ("memory_trim", 3),
         Page::Watchdog => ("watchdog", 3),
         Page::AppSuspension => ("app_suspension", 3),
+        Page::SleepPrevention => ("sleep_prevention", 4),
+        Page::KeepRunning => ("keep_running", 3),
+        Page::InstanceLimits => ("instance_limits", 3),
+        Page::InstanceBalancing => ("instance_balancing", 3),
         Page::CpuLimiter => ("cpu_limiter", 5),
         Page::ByActivity => ("by_activity", 2),
         Page::ByCpuLoad => ("by_cpu_load", 2),
-        Page::ByForeground => ("by_foreground", 2),
+        Page::ByFocus => ("by_focus", 2),
         Page::ByRunningApp => ("by_running_app", 3),
         Page::ByTime => ("by_time", 2),
         Page::ProcessPriority => ("process_priority", 2),
@@ -366,7 +370,7 @@ pub(super) fn page_feature_info(page: Page) -> String {
         .join("\n\n");
     if matches!(
         page,
-        Page::ByActivity | Page::ByCpuLoad | Page::ByForeground | Page::ByRunningApp | Page::ByTime
+        Page::ByActivity | Page::ByCpuLoad | Page::ByFocus | Page::ByRunningApp | Page::ByTime
     ) {
         for key in [
             "common.power_plan_priority",
@@ -440,6 +444,10 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::AdaptiveEngine => "icons/brain-circuit.svg",
         Page::BackgroundEfficiency => "icons/leaf.svg",
         Page::AppSuspension => "icons/monitor-pause.svg",
+        Page::SleepPrevention => "icons/coffee.svg",
+        Page::KeepRunning => "icons/rotate-ccw.svg",
+        Page::InstanceLimits => "icons/list.svg",
+        Page::InstanceBalancing => "icons/scale.svg",
         Page::ByRunningApp => "icons/footprints.svg",
         Page::IoPriority => "icons/rotate-3d.svg",
         Page::GpuPriority => "icons/gpu.svg",
@@ -447,7 +455,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::MemoryTrim => "icons/scissors.svg",
         Page::Watchdog => "icons/square-activity.svg",
         Page::ProcessorAffinityHard => "icons/monitor-x.svg",
-        Page::ByForeground => "icons/bring-to-front.svg",
+        Page::ByFocus => "icons/bring-to-front.svg",
         Page::ByTime => "icons/calendar-days.svg",
         Page::ActionLog => "icons/square-menu.svg",
         Page::WinderustBehaviour => "icons/settings.svg",
@@ -464,7 +472,10 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
         Page::BackgroundEfficiency => settings.background_efficiency.enabled,
         Page::MemoryTrim => settings.memory_trim.enabled,
         Page::Watchdog => settings.watchdog.enabled,
-        Page::ByForeground => settings.by_foreground.enabled,
+        Page::KeepRunning => settings.keep_running.enabled,
+        Page::InstanceLimits => settings.instance_limits.enabled,
+        Page::InstanceBalancing => settings.instance_balancing.enabled,
+        Page::ByFocus => settings.by_focus.enabled,
         Page::ByRunningApp => settings.by_running_app.enabled,
         Page::ByCpuLoad => settings.by_cpu_load.enabled,
         Page::ByActivity => settings.by_activity.enabled,
@@ -479,6 +490,7 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
         Page::CpuSetsSoft => settings.cpu_sets_soft.enabled,
         Page::ProcessorAffinityHard => settings.processor_affinity_hard.enabled,
         Page::AppSuspension => settings.app_suspension.enabled,
+        Page::SleepPrevention => settings.sleep_prevention.enabled,
         Page::TimerResolution => settings.timer_resolution.enabled,
         _ => return None,
     })
@@ -490,7 +502,10 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
         Page::BackgroundEfficiency => |settings| &mut settings.background_efficiency.enabled,
         Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
         Page::Watchdog => |settings| &mut settings.watchdog.enabled,
-        Page::ByForeground => |settings| &mut settings.by_foreground.enabled,
+        Page::KeepRunning => |settings| &mut settings.keep_running.enabled,
+        Page::InstanceLimits => |settings| &mut settings.instance_limits.enabled,
+        Page::InstanceBalancing => |settings| &mut settings.instance_balancing.enabled,
+        Page::ByFocus => |settings| &mut settings.by_focus.enabled,
         Page::ByRunningApp => |settings| &mut settings.by_running_app.enabled,
         Page::ByCpuLoad => |settings| &mut settings.by_cpu_load.enabled,
         Page::ByActivity => |settings| &mut settings.by_activity.enabled,
@@ -505,6 +520,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
         Page::CpuSetsSoft => |settings| &mut settings.cpu_sets_soft.enabled,
         Page::ProcessorAffinityHard => |settings| &mut settings.processor_affinity_hard.enabled,
         Page::AppSuspension => |settings| &mut settings.app_suspension.enabled,
+        Page::SleepPrevention => |settings| &mut settings.sleep_prevention.enabled,
         Page::TimerResolution => |settings| &mut settings.timer_resolution.enabled,
         _ => return None,
     })
@@ -583,7 +599,9 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("home.intro_2"),
         ),
         Page::PowerPlanControl => format!(
-            "{label} {section} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
+            "{label} {section} {} {} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
+            t!("power_plan_control.restore_previous_plan"),
+            t!("power_plan_control.restore_previous_plan_help"),
         ),
         Page::WinderustFeatures => format!(
             "{label} {section} winderust features background efficiency background_efficiency Adaptive Engine foreground interactivity memory trim working set memory ram background restraint",
@@ -603,7 +621,7 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             "{label} {section} settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette",
         ),
         Page::AdvancedControls => format!(
-            "{label} {section} advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry",
+            "{label} {section} advanced sleep prevention awake display app suspension windows scheduler win32 priority separation quantum foreground boost registry",
         ),
         Page::ByActivity => format!(
             "{label} {section} {} {} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
@@ -611,11 +629,11 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("by_activity.intro_2"),
             t!("by_activity.enable"),
         ),
-        Page::ByForeground => format!(
-            "{label} {section} {} {} {} foreground focused app process window power plan priority rule",
-            t!("by_foreground.intro_1"),
-            t!("by_foreground.intro_2"),
-            t!("by_foreground.enable"),
+        Page::ByFocus => format!(
+            "{label} {section} {} {} {} focus focused app process window power plan priority rule",
+            t!("by_focus.intro_1"),
+            t!("by_focus.intro_2"),
+            t!("by_focus.enable"),
         ),
         Page::ByTime => format!(
             "{label} {section} {} {} {} time schedule clock date weekday overnight power plan",
@@ -695,6 +713,11 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("app_suspension.intro_3"),
             t!("app_suspension.suspendable_help"),
         ),
+        Page::SleepPrevention => format!(
+            "{label} {section} {} {} sleep prevention awake system idle display monitor running app power request",
+            t!("sleep_prevention.intro_1"),
+            t!("sleep_prevention.intro_2"),
+        ),
         Page::ByRunningApp => format!(
             "{label} {section} {} {} {} {} running app performance mode power plan process game gaming active restore",
             t!("by_running_app.intro_1"),
@@ -729,6 +752,19 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
         Page::Watchdog => format!(
             "{label} {section} {} watchdog monitor cpu memory ram threshold warning critical toast notification terminate kill process",
             t!("watchdog.intro_1"),
+        ),
+        Page::InstanceLimits => format!(
+            "{label} {section} {} instance limits count maximum processes monitor notifications full path",
+            t!("instance_limits.intro_1"),
+        ),
+        Page::InstanceBalancing => format!(
+            "{label} {section} {} {} instance balancing instances processes executable full path whole cores scheduling preferences CPU Sets",
+            t!("instance_balancing.intro_1"),
+            t!("instance_balancing.intro_2"),
+        ),
+        Page::KeepRunning => format!(
+            "{label} {section} {} keep running relaunch restart app process exit arguments working directory retry resume",
+            t!("keep_running.intro_1"),
         ),
         Page::MemoryTrim => format!(
             "{label} {section} {} {} {} memory ram trim working set idle background exclusion",
@@ -835,6 +871,11 @@ mod tests {
         let help = super::page_feature_info(crate::ui::Page::TimerResolution);
         assert!(help.contains(&rust_i18n::t!("timer_resolution.intro_3").to_string()));
         assert!(help.contains(&rust_i18n::t!("timer_resolution.warning").to_string()));
+        let help = super::page_feature_info(Page::InstanceBalancing);
+        assert!(help.contains(&t!("instance_balancing.intro_3").to_string()));
+        assert!(
+            dashboard_search_pages("instance balancing", false).contains(&Page::InstanceBalancing)
+        );
     }
 
     use super::*;

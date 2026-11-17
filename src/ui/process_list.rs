@@ -613,7 +613,7 @@ impl ProcessList {
             }
             Message::Details(message) => {
                 if let Some(selection) = &self.selected {
-                    details::update(settings, &selection.path, message);
+                    self.error = details::update(settings, &selection.path, message);
                 }
             }
         }

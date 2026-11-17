@@ -51,14 +51,14 @@ pub(super) fn view<'a, M: Clone + 'static>(
     let mut choices: Vec<_> = candidates
         .iter()
         .filter_map(|candidate| {
-            let path = candidate.info.image_path.to_string_lossy();
+            let path = candidate.info.image_path.to_str()?;
             if !filter.is_empty()
                 && !path.to_lowercase().contains(&filter)
                 && !candidate.info.name.to_lowercase().contains(&filter)
             {
                 return None;
             }
-            allowed(&path).map(|available| (candidate, available))
+            allowed(path).map(|available| (candidate, available))
         })
         .collect();
     choices.sort_by_cached_key(|&(candidate, _)| {

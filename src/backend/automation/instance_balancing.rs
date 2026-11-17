@@ -1,0 +1,595 @@
+use super::*;
+use crate::{
+    action_log::{ActionLogFeature, ActionLogResult},
+    config::{CpuAllocationSettings, InstanceBalancingRule, InstanceBalancingSettings},
+    control::{
+        cpu_allocation::{
+            CpuAllocationApplyError, CpuAllocationApplyOutcome, CpuAllocationClaim,
+            CpuAllocationPlatform, CpuAllocationReconciliationSummary, CpuAllocationReleaseSummary,
+            CpuAllocationRequest, CpuSetInventory, InstanceBalancingEligibilityError,
+        },
+        instance_limits::{self as membership, Member, MemberState, MembershipObservation},
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
+    },
+    cpu_topology::CpuTopology,
+    features::cpu_control::instance_balancing::{Assignment, Cohort, PlanError, Policy},
+};
+use rust_i18n::t;
+use std::{collections::BTreeMap, path::PathBuf};
+
+#[derive(Default)]
+pub(super) struct PendingResets {
+    pub(super) all: bool,
+    pub(super) paths: Vec<String>,
+}
+
+pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, settings: &Settings) {
+    let previous = &state.settings;
+    let pending = &mut state.pending_instance_balancing_resets;
+    pending.all |= previous.general.enabled != settings.general.enabled
+        || previous.instance_balancing.enabled != settings.instance_balancing.enabled;
+    for (rules, other) in [
+        (
+            &previous.instance_balancing.rules,
+            &settings.instance_balancing.rules,
+        ),
+        (
+            &settings.instance_balancing.rules,
+            &previous.instance_balancing.rules,
+        ),
+    ] {
+        for rule in rules.iter().filter(|rule| !other.contains(rule)) {
+            if !pending.paths.contains(&rule.executable_path) {
+                pending.paths.push(rule.executable_path.clone());
+            }
+        }
+    }
+}
+
+struct Rule {
+    settings: InstanceBalancingRule,
+    generation: Option<u64>,
+    policy: Policy,
+    retained: BTreeMap<ProcessTargetKey, Member>,
+    exited: BTreeMap<ProcessTargetKey, ProcessControlTarget>,
+    accepted: BTreeSet<ProcessTargetKey>,
+    last_message: Option<String>,
+}
+
+#[derive(Default)]
+pub(super) struct Runtime {
+    enabled: bool,
+    next_generation: u64,
+    rules: Vec<Rule>,
+    controls: Option<(CpuAllocationSettings, CpuAllocationSettings, bool)>,
+    dirty: bool,
+}
+
+impl Runtime {
+    pub(super) fn sync(
+        &mut self,
+        settings: &InstanceBalancingSettings,
+        master_enabled: bool,
+        resets: PendingResets,
+    ) {
+        let enabled = master_enabled && settings.enabled;
+        let reset_all = resets.all || enabled != self.enabled;
+        let mut previous = std::mem::take(&mut self.rules);
+        self.dirty |= reset_all
+            || !resets.paths.is_empty()
+            || previous
+                .iter()
+                .map(|rule| &rule.settings)
+                .ne(settings.rules.iter());
+        self.rules = settings
+            .rules
+            .iter()
+            .map(|settings| {
+                if !reset_all && !resets.paths.contains(&settings.executable_path) {
+                    if let Some(index) = previous.iter().position(|rule| rule.settings == *settings)
+                    {
+                        return previous.remove(index);
+                    }
+                }
+                let generation = self.next_generation.checked_add(1);
+                if let Some(generation) = generation {
+                    self.next_generation = generation;
+                }
+                Rule {
+                    settings: settings.clone(),
+                    generation,
+                    policy: Policy::default(),
+                    retained: BTreeMap::new(),
+                    exited: BTreeMap::new(),
+                    accepted: BTreeSet::new(),
+                    last_message: None,
+                }
+            })
+            .collect();
+        self.enabled = enabled;
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        self.dirty |= (self.enabled && self.rules.iter().any(|rule| rule.settings.enabled))
+            || self.rules.iter().any(|rule| !rule.accepted.is_empty());
+        for rule in &mut self.rules {
+            rule.policy.invalidate();
+            rule.accepted.clear();
+        }
+    }
+
+    pub(super) fn active(&self) -> bool {
+        self.dirty || self.rules.iter().any(|rule| !rule.accepted.is_empty())
+    }
+
+    fn accepted_targets(&self) -> BTreeSet<ProcessTargetKey> {
+        self.rules
+            .iter()
+            .flat_map(|rule| rule.accepted.iter().cloned())
+            .collect()
+    }
+}
+
+impl Rule {
+    fn observe_members(&mut self, observation: MembershipObservation) -> Result<(), String> {
+        let (members, mut issue) = match observation {
+            MembershipObservation::Complete(members) => (members, None),
+            MembershipObservation::Incomplete { members, reason } => (members, Some(reason)),
+            MembershipObservation::Unavailable { reason } => (Vec::new(), Some(reason)),
+            MembershipObservation::Conflict => (
+                Vec::new(),
+                Some(t!("instance_balancing.conflict").to_string()),
+            ),
+        };
+        let mut seen = BTreeSet::new();
+        for member in members {
+            let target = target(&member)?;
+            seen.insert(target.key());
+            self.retained.insert(target.key(), member);
+        }
+        self.retained
+            .retain(|key, member| match membership::member_state(member) {
+                Ok(state @ (MemberState::Exited | MemberState::OutOfScope)) => {
+                    if state == MemberState::Exited {
+                        match target(member) {
+                            Ok(target) => {
+                                self.exited.insert(target.key(), target);
+                            }
+                            Err(reason) => {
+                                issue.get_or_insert(reason);
+                            }
+                        }
+                    }
+                    if seen.contains(key) {
+                        issue.get_or_insert_with(|| t!("instance_balancing.changed").to_string());
+                    }
+                    false
+                }
+                Ok(MemberState::Current) => {
+                    if !seen.contains(key) {
+                        issue.get_or_insert_with(|| {
+                            t!("instance_balancing.missing_live").to_string()
+                        });
+                    }
+                    true
+                }
+                Err(reason) => {
+                    issue.get_or_insert(reason);
+                    true
+                }
+            });
+        issue.map_or(Ok(()), Err)
+    }
+}
+
+fn target(member: &Member) -> Result<ProcessControlTarget, String> {
+    let path = PathBuf::from(&member.path);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "The observed process image name is unavailable.".to_owned())?
+        .to_owned();
+    Ok(ProcessControlTarget::automatic(
+        member.id,
+        name,
+        path,
+        member.creation_time,
+    ))
+}
+
+fn explicit_selection(settings: &Settings, path: &str) -> Result<bool, String> {
+    for selected in explicit_cpu_allocation_paths(settings) {
+        if membership::paths_equal(&selected, path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn known_exclusion(error: &CpuAllocationApplyError) -> bool {
+    matches!(
+        error,
+        CpuAllocationApplyError::Target(ProcessControlError::AccessDenied(_))
+            | CpuAllocationApplyError::Eligibility(
+                InstanceBalancingEligibilityError::ExternalAssignment
+                    | InstanceBalancingEligibilityError::ExternalChange
+                    | InstanceBalancingEligibilityError::Suppressed
+            )
+    )
+}
+
+fn prepare_cohort<P: CpuAllocationPlatform>(
+    coordinator: &mut CpuAllocationCoordinator<P>,
+    inventory: &mut CpuSetInventory,
+    topology: &CpuTopology,
+    rule: &Rule,
+    settings: &Settings,
+) -> Result<(Cohort, Vec<String>), String> {
+    let generation = rule
+        .generation
+        .ok_or_else(|| "Instance Balancing exhausted its rule generations.".to_owned())?;
+    let mut members = Vec::new();
+    let mut excluded = Vec::new();
+    for member in rule.retained.values() {
+        if membership::member_state(member)? != MemberState::Current {
+            return Err(t!("instance_balancing.changed").to_string());
+        }
+        let target = target(member)?;
+        if explicit_selection(settings, &member.path)? {
+            excluded.push(format!(
+                "{} ({}): {}",
+                target.name,
+                target.id,
+                t!("instance_balancing.explicit_selection")
+            ));
+            continue;
+        }
+        match coordinator.instance_balancing_allowed_processors(
+            inventory,
+            topology,
+            &target,
+            generation,
+            settings.general.allow_cross_session_process_control,
+        ) {
+            Ok(allowed) => members.push((target, allowed)),
+            Err(error) if known_exclusion(&error) => {
+                excluded.push(format!("{} ({}): {error}", target.name, target.id))
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok((Cohort::new(members), excluded))
+}
+
+fn context_is_current(
+    shared: &SharedAutomationState,
+    configured: &Arc<Settings>,
+    active: &Settings,
+) -> bool {
+    let current = active_power_source_settings(configured, power_source::is_plugged_in());
+    if current.general.enabled != active.general.enabled
+        || current.general.allow_cross_session_process_control
+            != active.general.allow_cross_session_process_control
+        || current.cpu_sets_soft != active.cpu_sets_soft
+        || current.processor_affinity_hard != active.processor_affinity_hard
+    {
+        return false;
+    }
+    {
+        let state = lock_unpoisoned(&shared.state);
+        if state.stop_requested
+            || !Arc::ptr_eq(&state.settings, configured)
+            || !state.windows_event_watcher_active
+            || state.pending_events.suspend_resume
+            || state.pending_events.session_changed
+            || state.pending_events.windows_event_watcher_changed
+            || state.pending_instance_balancing_resets.all
+            || !state.pending_instance_balancing_resets.paths.is_empty()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn apply_plan<P: CpuAllocationPlatform>(
+    coordinator: &mut CpuAllocationCoordinator<P>,
+    inventory: &mut CpuSetInventory,
+    topology: &CpuTopology,
+    assignments: &[Assignment],
+    generation: u64,
+    allow_cross_session: bool,
+    mut authorize: impl FnMut(&ProcessControlTarget) -> Result<(), String>,
+) -> Result<(), String> {
+    for assignment in assignments {
+        authorize(&assignment.target)?;
+        let result = coordinator
+            .apply_policy_claim(
+                inventory,
+                Ok(topology),
+                CpuAllocationClaim {
+                    target: assignment.target.clone(),
+                    owner: ControlOwner::InstanceBalancing,
+                    request: CpuAllocationRequest::SoftCpuSets {
+                        selection: assignment.selection.clone(),
+                    },
+                    balancing_generation: Some(generation),
+                },
+                allow_cross_session,
+            )
+            .map_err(|error| error.to_string())?;
+        if !matches!(
+            result,
+            CpuAllocationApplyOutcome::Applied | CpuAllocationApplyOutcome::Unchanged
+        ) {
+            return Err(t!("instance_balancing.not_accepted").to_string());
+        }
+    }
+    Ok(())
+}
+
+fn release<P: CpuAllocationPlatform>(
+    runtime: &Runtime,
+    coordinator: &mut CpuAllocationCoordinator<P>,
+    log: &mut ActionLog,
+) -> Option<String> {
+    let summary = coordinator
+        .release_policy_except(ControlOwner::InstanceBalancing, &runtime.accepted_targets());
+    record_release(summary, log)
+}
+
+fn record_release(summary: CpuAllocationReleaseSummary, log: &mut ActionLog) -> Option<String> {
+    let errors = summary
+        .failures
+        .iter()
+        .map(|failure| failure.error.to_string())
+        .collect::<Vec<_>>();
+    cpu_allocation::record_cpu_allocation_reconciliation(
+        CpuAllocationReconciliationSummary {
+            releases: summary,
+            ..Default::default()
+        },
+        log,
+    );
+    (!errors.is_empty()).then(|| errors.join("; "))
+}
+
+impl RuntimeCore {
+    pub(super) fn run_instance_balancing_update(
+        &mut self,
+        shared: &SharedAutomationState,
+        configured: &Arc<Settings>,
+        active: &Settings,
+        watcher_active: bool,
+    ) -> CpuAllocationSnapshot {
+        let runtime = &mut self.instance_balancing;
+        let controls = (
+            active.cpu_sets_soft.clone(),
+            active.processor_affinity_hard.clone(),
+            active.general.allow_cross_session_process_control,
+        );
+        if runtime
+            .controls
+            .as_ref()
+            .is_some_and(|previous| previous != &controls)
+        {
+            runtime.invalidate();
+        }
+        runtime.controls = Some(controls);
+        let mut snapshot = CpuAllocationSnapshot {
+            enabled: runtime.enabled,
+            scanned_processes: 0,
+            adjusted_processes: 0,
+            skipped_processes: 0,
+            failed_processes: 0,
+            auto_excluded_processes: Vec::new(),
+            message: t!("instance_balancing.waiting").to_string(),
+            last_error: None,
+        };
+        if !runtime.enabled || !active.general.enabled || !watcher_active {
+            runtime.invalidate();
+        }
+        snapshot.last_error = release(
+            runtime,
+            &mut self.cpu_allocation_coordinator,
+            &mut self.action_log,
+        );
+        runtime.dirty = false;
+        if !runtime.enabled || !active.general.enabled || !watcher_active {
+            snapshot.message = if runtime.enabled && active.general.enabled {
+                t!("instance_balancing.waiting_context").to_string()
+            } else {
+                t!("instance_balancing.disabled").to_string()
+            };
+            return snapshot;
+        }
+        let topology = cpu_allocation::processor_topology();
+        let enabled = runtime
+            .rules
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rule)| rule.settings.enabled.then_some(index))
+            .collect::<Vec<_>>();
+        let paths = enabled
+            .iter()
+            .map(|index| runtime.rules[*index].settings.executable_path.clone())
+            .collect::<Vec<_>>();
+        let observations = membership::collect_members(&paths);
+        if observations.len() != enabled.len() {
+            runtime.invalidate();
+            snapshot.last_error =
+                Some("Instance Balancing received a mismatched collector result.".into());
+            if let Some(error) = release(
+                runtime,
+                &mut self.cpu_allocation_coordinator,
+                &mut self.action_log,
+            ) {
+                snapshot.last_error = Some(error);
+            }
+            runtime.dirty = false;
+            return snapshot;
+        }
+        for (index, observation) in enabled.into_iter().zip(observations) {
+            let rule = &mut runtime.rules[index];
+            if !rule.settings.enabled {
+                rule.accepted.clear();
+                continue;
+            }
+            let mut inventory = CpuSetInventory::default();
+            let mut exclusions = Vec::new();
+            let mut waiting_message = t!("instance_balancing.waiting_stable").to_string();
+            let result = (|| -> Result<Option<Vec<Assignment>>, String> {
+                rule.observe_members(observation)?;
+                let topology = topology.as_ref().map_err(Clone::clone)?;
+                rule.policy
+                    .check_topology(topology)
+                    .map_err(|error| error.to_string())?;
+                let (cohort, excluded) = prepare_cohort(
+                    &mut self.cpu_allocation_coordinator,
+                    &mut inventory,
+                    topology,
+                    rule,
+                    active,
+                )?;
+                snapshot.scanned_processes += rule.retained.len();
+                snapshot.skipped_processes += excluded.len();
+                exclusions = excluded;
+                let now = Instant::now();
+                let plan = match rule.policy.observe(topology, &cohort, now) {
+                    Err(PlanError::WaitingForInstances) => {
+                        waiting_message = t!("instance_balancing.waiting").to_string();
+                        return Ok(None);
+                    }
+                    Err(PlanError::InsufficientCapacity) => {
+                        waiting_message =
+                            t!("instance_balancing.insufficient_capacity").to_string();
+                        return Ok(None);
+                    }
+                    result => result.map_err(|error| error.to_string())?,
+                };
+                let Some(plan) = plan else {
+                    return Ok(None);
+                };
+                // The second catalog and fresh allocation facts reserve only this exact observed cohort.
+                let mut fresh = membership::collect_members(std::slice::from_ref(
+                    &rule.settings.executable_path,
+                ));
+                let observation = fresh.pop().ok_or_else(|| {
+                    "Instance Balancing lost its membership observation.".to_owned()
+                })?;
+                rule.observe_members(observation)?;
+                let fresh_topology = cpu_allocation::processor_topology()?;
+                rule.policy
+                    .check_topology(&fresh_topology)
+                    .map_err(|error| error.to_string())?;
+                let mut final_inventory = CpuSetInventory::default();
+                let (fresh_cohort, fresh_excluded) = prepare_cohort(
+                    &mut self.cpu_allocation_coordinator,
+                    &mut final_inventory,
+                    topology,
+                    rule,
+                    active,
+                )?;
+                if fresh_cohort != cohort || fresh_excluded != exclusions {
+                    return Err(t!("instance_balancing.changed").to_string());
+                }
+                apply_plan(
+                    &mut self.cpu_allocation_coordinator,
+                    &mut final_inventory,
+                    topology,
+                    &plan,
+                    rule.generation
+                        .ok_or_else(|| "Instance Balancing has no rule generation.".to_owned())?,
+                    active.general.allow_cross_session_process_control,
+                    |target| {
+                        let member = rule
+                            .retained
+                            .get(&target.key())
+                            .ok_or_else(|| t!("instance_balancing.changed").to_string())?;
+                        if membership::member_state(member)? != MemberState::Current {
+                            return Err(t!("instance_balancing.changed").to_string());
+                        }
+                        if !context_is_current(shared, configured, active) {
+                            return Err(t!("instance_balancing.changed").to_string());
+                        }
+                        Ok(())
+                    },
+                )?;
+                rule.policy.accepted(plan.clone(), Instant::now());
+                Ok(Some(plan))
+            })();
+            rule.exited.retain(|_, target| {
+                !self
+                    .cpu_allocation_coordinator
+                    .retire_exited_instance_balancing(
+                        target,
+                        active.general.allow_cross_session_process_control,
+                    )
+            });
+            let (outcome, mut message) = match result {
+                Ok(Some(plan)) => {
+                    rule.accepted = plan
+                        .iter()
+                        .map(|assignment| assignment.target.key())
+                        .collect();
+                    snapshot.adjusted_processes += plan.len();
+                    (
+                        ActionLogResult::Applied,
+                        t!("instance_balancing.assigned", count = plan.len()).to_string(),
+                    )
+                }
+                Ok(None) => {
+                    rule.accepted.clear();
+                    (ActionLogResult::Skipped, waiting_message)
+                }
+                Err(reason) => {
+                    rule.accepted.clear();
+                    rule.policy.invalidate();
+                    snapshot.failed_processes += 1;
+                    snapshot.last_error = Some(reason.clone());
+                    (ActionLogResult::Skipped, reason)
+                }
+            };
+            if !exclusions.is_empty() {
+                message.push_str(&format!(" {}", exclusions.join("; ")));
+            }
+            snapshot.message.clone_from(&message);
+            if rule.last_message.as_ref() != Some(&message) {
+                self.action_log.record(
+                    ActionLogFeature::InstanceBalancing,
+                    None,
+                    &rule.settings.executable_path,
+                    outcome,
+                    message.clone(),
+                );
+                rule.last_message = Some(message);
+            }
+            if let Some(error) = release(
+                runtime,
+                &mut self.cpu_allocation_coordinator,
+                &mut self.action_log,
+            ) {
+                snapshot.last_error = Some(error);
+            }
+        }
+        if let Some(error) = &snapshot.last_error {
+            snapshot.message.clone_from(error);
+        } else if snapshot.adjusted_processes > 0 {
+            snapshot.message = t!(
+                "instance_balancing.assigned",
+                count = snapshot.adjusted_processes
+            )
+            .to_string();
+        }
+        snapshot
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod intake_tests;
+
+#[cfg(test)]
+mod native_tests;

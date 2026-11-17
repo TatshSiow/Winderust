@@ -215,7 +215,7 @@ dynamic_resource_zones_enabled = false
 cpu_allocation_method = "cpu_sets_soft"
 background_processor_selection = "least_used"
 processor_limit_percent = 100
-specific_processors = []
+specific_processors = { processors = [] }
 foreground_or_system_cpu_threshold_percent = 100
 background_app_cpu_threshold_percent = 100
 cpu_recovery_threshold_percent = 100
@@ -246,7 +246,7 @@ enabled = false
 idle_timeout_seconds = 300
 switch_to_performance_on_resume = false
 
-[by_foreground]
+[by_focus]
 enabled = false
 rules = []
 

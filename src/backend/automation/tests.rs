@@ -7,7 +7,7 @@ use crate::action_log::{
 };
 use crate::application::settings::{RuntimeSettingsSnapshot, SettingsRevision};
 use crate::config::{
-    AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
+    AppSuspensionRule, ByFocusRule, ByRunningAppRule, ByTimeRule, CpuAllocationRule,
     CpuLimiterRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
     ProcessGpuPrioritySetting, ProcessRuleMode, ProcessThreadPrioritySetting, TimerResolutionRule,
     WeekdaySetting,
@@ -41,6 +41,76 @@ fn watchdog_alone_keeps_automation_alive_without_power_plan_rules() {
     assert!(!automation_worker_required(&settings));
     settings.watchdog.rules[0].enabled = true;
     settings.general.enabled = false;
+    assert!(!automation_worker_required(&settings));
+}
+
+#[test]
+fn sleep_prevention_keeps_battery_only_automation_and_sleep_events_alive() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    let mut battery = settings.clone();
+    battery.sleep_prevention.enabled = true;
+    assert!(!automation_worker_required(&battery));
+    battery
+        .sleep_prevention
+        .rules
+        .push(crate::config::SleepPreventionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".into(),
+            keep_display_on: false,
+        });
+    settings.on_battery = Some(Box::new(battery));
+    assert!(automation_worker_required(&settings));
+    assert!(windows_event_watcher_required(&settings));
+    for event in [
+        WindowsAutomationEvent::PowerChanged,
+        WindowsAutomationEvent::SuspendResume,
+        WindowsAutomationEvent::SessionChanged,
+        WindowsAutomationEvent::WindowCreated,
+    ] {
+        assert!(windows_event_wake_required(&settings, event));
+    }
+    assert!(!windows_event_wake_required(
+        &settings,
+        WindowsAutomationEvent::ForegroundChanged,
+    ));
+    assert!(!power_plan_checks_required(settings.battery_profile()));
+    assert!(!input_hook_required(&settings));
+    settings.on_battery.as_mut().unwrap().sleep_prevention.rules[0].enabled = false;
+    assert!(!automation_worker_required(&settings));
+}
+
+#[test]
+fn instance_balancing_owns_a_worker_and_context_events_without_process_scans() {
+    let mut settings = Settings::default();
+    settings.general.theme_mode = AppThemeMode::Amoled;
+    settings.general.accent.source = AccentColorSource::Custom;
+    settings.instance_balancing.enabled = true;
+    assert!(!instance_balancing_required(&settings));
+    settings
+        .instance_balancing
+        .rules
+        .push(crate::config::InstanceBalancingRule {
+            enabled: true,
+            executable_path: r"C:\Apps\worker.exe".into(),
+        });
+    assert!(instance_balancing_required(&settings));
+    assert!(automation_worker_required(&settings));
+    assert!(windows_event_watcher_required(&settings));
+    assert!(!process_appearance_scan_required(&settings));
+    assert!(!power_plan_checks_required(&settings));
+    for event in [
+        WindowsAutomationEvent::SuspendResume,
+        WindowsAutomationEvent::SessionChanged,
+    ] {
+        assert!(windows_event_wake_required(&settings, event));
+    }
+    settings.instance_balancing.rules[0].enabled = false;
+    assert!(!automation_worker_required(&settings));
+    assert!(!windows_event_watcher_required(&settings));
+    settings.instance_balancing.rules[0].enabled = true;
+    settings.general.enabled = false;
+    assert!(!instance_balancing_required(&settings));
     assert!(!automation_worker_required(&settings));
 }
 
@@ -189,8 +259,8 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
 #[test]
 fn power_plan_action_logs_are_attributed_to_the_winning_rule_family() {
     assert_eq!(
-        power_plan_action_log_feature(DecisionState::ByForeground),
-        Some(ActionLogFeature::ByForeground)
+        power_plan_action_log_feature(DecisionState::ByFocus),
+        Some(ActionLogFeature::ByFocus)
     );
     assert_eq!(
         power_plan_action_log_feature(DecisionState::ByRunningApp),
@@ -813,15 +883,15 @@ fn process_appearance_scan_sleeps_when_process_features_are_off() {
 }
 
 #[test]
-fn foreground_lookup_runs_only_for_configured_by_foreground() {
+fn foreground_lookup_runs_only_for_configured_by_focus() {
     let mut settings = Settings::default();
 
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.enabled = true;
+    settings.by_focus.enabled = true;
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "editor.exe".to_owned(),
         executable_path: String::new(),
@@ -829,13 +899,13 @@ fn foreground_lookup_runs_only_for_configured_by_foreground() {
     });
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules[0].power_plan_guid = Some("active-guid".to_owned());
+    settings.by_focus.rules[0].power_plan_guid = Some("active-guid".to_owned());
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules[0].executable_path = r"C:\Apps\editor.exe".to_owned();
+    settings.by_focus.rules[0].executable_path = r"C:\Apps\editor.exe".to_owned();
     assert!(foreground_lookup_required(&settings));
 
-    settings.by_foreground.rules[0].enabled = false;
+    settings.by_focus.rules[0].enabled = false;
     assert!(!foreground_lookup_required(&settings));
 }
 
@@ -847,7 +917,7 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.cpu_limiter.enabled = true;
     settings.by_running_app.enabled = true;
     settings.timer_resolution.enabled = true;
-    settings.by_foreground.enabled = true;
+    settings.by_focus.enabled = true;
 
     assert!(!automation_worker_required(&settings));
 
@@ -858,9 +928,9 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: " ".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     });
     settings.cpu_limiter.rules.push(CpuLimiterRule {
         enabled: true,
@@ -883,7 +953,7 @@ fn enabled_empty_rule_features_do_not_poll() {
         executable_path: " ".to_owned(),
         desired_100ns: 5_000,
     });
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "Empty".to_owned(),
         executable_path: " ".to_owned(),
@@ -913,9 +983,9 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     });
     settings.cpu_limiter.enabled = true;
     settings.cpu_limiter.rules.push(CpuLimiterRule {
@@ -941,8 +1011,8 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
         executable_path: r"C:\Apps\chat.exe".to_owned(),
         desired_100ns: 5_000,
     });
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.enabled = true;
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "Chat".to_owned(),
         executable_path: r"C:\Apps\chat.exe".to_owned(),
@@ -994,9 +1064,9 @@ fn cpu_sets_soft_owns_duplicate_cpu_allocation_rules() {
     let rule = CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\chat.exe".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     };
     settings.cpu_sets_soft.rules.push(rule.clone());
     settings.processor_affinity_hard.rules.push(rule);
@@ -1013,9 +1083,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
     settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
         executable_path: r"C:\Apps\soft.exe".to_owned(),
-        focus_core_mask: 1,
-        visible_window_core_mask: 1,
-        background_core_mask: 1,
+        focus_selection: crate::cpu_topology::test_selection(1),
+        visible_window_selection: crate::cpu_topology::test_selection(1),
+        background_selection: crate::cpu_topology::test_selection(1),
     });
     settings.processor_affinity_hard.enabled = true;
     settings
@@ -1024,9 +1094,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
         .push(CpuAllocationRule {
             enabled: false,
             executable_path: r"C:\Apps\disabled.exe".to_owned(),
-            focus_core_mask: 1,
-            visible_window_core_mask: 1,
-            background_core_mask: 1,
+            focus_selection: crate::cpu_topology::test_selection(1),
+            visible_window_selection: crate::cpu_topology::test_selection(1),
+            background_selection: crate::cpu_topology::test_selection(1),
         });
     settings
         .processor_affinity_hard
@@ -1034,9 +1104,9 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
         .push(CpuAllocationRule {
             enabled: true,
             executable_path: r"C:\Apps\empty.exe".to_owned(),
-            focus_core_mask: 0,
-            visible_window_core_mask: 0,
-            background_core_mask: 0,
+            focus_selection: crate::cpu_topology::test_selection(0),
+            visible_window_selection: crate::cpu_topology::test_selection(0),
+            background_selection: crate::cpu_topology::test_selection(0),
         });
 
     let paths = explicit_cpu_allocation_paths(&settings);
@@ -1049,7 +1119,7 @@ fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
 fn automation_worker_runs_for_adaptive_power_plan_alone() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
-    settings.by_foreground.enabled = false;
+    settings.by_focus.enabled = false;
     settings.adaptive_engine.enabled = true;
     settings.adaptive_engine.processor_power_policy_enabled = true;
 
@@ -1060,7 +1130,7 @@ fn automation_worker_runs_for_adaptive_power_plan_alone() {
 fn automation_worker_runs_for_bottleneck_classifier_alone() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
-    settings.by_foreground.enabled = false;
+    settings.by_focus.enabled = false;
     settings.adaptive_engine.enabled = true;
     settings.adaptive_engine.processor_power_policy_enabled = false;
 
@@ -1989,11 +2059,11 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
 }
 
 #[test]
-fn event_driven_power_checks_drop_idle_polling_for_foreground_only_rules() {
+fn event_driven_power_checks_drop_idle_polling_for_focus_only_rules() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.enabled = true;
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "chat.exe".to_owned(),
         executable_path: r"C:\Apps\chat.exe".to_owned(),
@@ -2232,11 +2302,13 @@ fn automation_feature_execution_order_is_characterized() {
             "runner.run_app_suspension_update(",
             "runner.run_cpu_sets_soft_update(",
             "runner.run_processor_affinity_hard_update(",
+            "runner.run_instance_balancing_update(",
             "runner.run_cpu_limiter_update(",
             "runner.run_cpu_allocation_reconciliation(",
             "runner.run_by_running_app_update(",
             "runner.run_memory_trim_",
             "runner.run_timer_resolution_update(",
+            "runner.run_sleep_prevention_update(",
         ],
     );
 }
@@ -2252,9 +2324,6 @@ fn cpu_allocation_handoffs_bypass_release_retry_deadlines() {
     assert!(route.contains("runner.cpu_allocation_immediate_reconciliation_pending()"));
     assert!(route.contains("cpu_allocation_release_retry_pending_at_pass_start"));
     assert!(route.contains("cpu_allocation_release_retry_due"));
-    assert!(route.contains(
-        "runner.run_cpu_allocation_reconciliation(settings, cpu_allocation_release_retry_due)"
-    ));
 }
 
 #[test]
@@ -2296,6 +2365,7 @@ fn shared_property_precedence_inputs_are_characterized() {
         &[
             "ControlOwner::CpuSetsSoft",
             "ControlOwner::ProcessorAffinityHard",
+            "ControlOwner::InstanceBalancing",
             "ControlOwner::AdaptiveEngine",
         ],
     );
@@ -2334,6 +2404,7 @@ fn automation_shutdown_restores_reversible_features_in_reverse_order() {
         "pub(super) fn shutdown(&mut self)",
         "pub(super) fn note_settings",
         &[
+            "self.sleep_prevention_manager",
             "self.run_timer_resolution_update(",
             "self.run_by_running_app_update(",
             "self.run_cpu_limiter_update(",
@@ -2447,6 +2518,8 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             process_control_commands: VecDeque::new(),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
+            pending_instance_limits_resets: instance_limits::PendingResets::default(),
+            pending_instance_balancing_resets: instance_balancing::PendingResets::default(),
             input_activity: InputActivityTracker::default(),
             windows_event_watcher_active: true,
             worker_accepting_work: false,
@@ -2472,8 +2545,8 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
             power_plan_guid: Some("time-plan".into()),
             ..Default::default()
         });
-        profile.by_foreground.enabled = true;
-        profile.by_foreground.rules.push(ByForegroundRule {
+        profile.by_focus.enabled = true;
+        profile.by_focus.rules.push(ByFocusRule {
             enabled: true,
             executable_path: r"C:\Apps\test.exe".into(),
             power_plan_guid: Some("test-plan".into()),
@@ -2484,6 +2557,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         for event in [
             WindowsAutomationEvent::ForegroundChanged,
             WindowsAutomationEvent::PowerChanged,
+            WindowsAutomationEvent::SuspendResume,
             WindowsAutomationEvent::SessionChanged,
             WindowsAutomationEvent::ClockChanged,
         ] {
@@ -2502,7 +2576,7 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         } else {
             &mut settings
         };
-        profile.by_foreground.enabled = false;
+        profile.by_focus.enabled = false;
         profile.process_priority.enabled = true;
         lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
         notify_windows_event(&shared, WindowsAutomationEvent::PowerChanged);
@@ -2579,8 +2653,8 @@ fn idle_battery_worker_survives_source_changes_without_settings_updates() {
         on_battery: Some(Box::new(Settings::default())),
         ..Default::default()
     };
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
+    settings.by_focus.enabled = true;
+    settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "nonexistent audit target".into(),
         executable_path: r"C:\WinderustAuditNonexistent	arget.exe".into(),

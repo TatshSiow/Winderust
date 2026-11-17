@@ -7,7 +7,7 @@ use rust_i18n::t;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
-    Foreground,
+    Focus,
     RunningApp,
 }
 
@@ -74,11 +74,7 @@ impl Editor {
             }};
         }
         match kind {
-            Kind::Foreground => update_rules!(
-                by_foreground,
-                can_add_foreground_process,
-                new_foreground_rule
-            ),
+            Kind::Focus => update_rules!(by_focus, can_add_by_focus_process, new_by_focus_rule),
             Kind::RunningApp => update_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
@@ -97,7 +93,7 @@ impl Editor {
     ) -> Element<'a, Message> {
         let master_enabled = settings.general.enabled;
         let state = match kind {
-            Kind::Foreground => crate::rules::DecisionState::ByForeground,
+            Kind::Focus => crate::rules::DecisionState::ByFocus,
             Kind::RunningApp => crate::rules::DecisionState::ByRunningApp,
         };
         macro_rules! render_rules {
@@ -174,11 +170,7 @@ impl Editor {
             }};
         }
         match kind {
-            Kind::Foreground => render_rules!(
-                by_foreground,
-                can_add_foreground_process,
-                "by_foreground.enable"
-            ),
+            Kind::Focus => render_rules!(by_focus, can_add_by_focus_process, "by_focus.enable"),
             Kind::RunningApp => render_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
@@ -191,13 +183,14 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn process_plan_status_requires_selected_rule_and_confirmed_plan() {
         use crate::{
             control::power_plan::{PowerPlanOwner, PowerPlanStatus},
             rules::DecisionState,
         };
-        for state in [DecisionState::ByForeground, DecisionState::ByRunningApp] {
+        for state in [DecisionState::ByFocus, DecisionState::ByRunningApp] {
             let mut status = PowerPlanStatus {
                 owner: Some(PowerPlanOwner::OrdinaryAutomation),
                 decision_state: Some(state),
@@ -227,27 +220,27 @@ mod tests {
     fn rules_stay_with_their_feature_and_duplicates_are_rejected() {
         let mut settings = Settings::default();
         let mut editor = Editor::default();
-        editor.update(Kind::Foreground, &mut settings, &[], Message::Enabled(true));
+        editor.update(Kind::Focus, &mut settings, &[], Message::Enabled(true));
         for _ in 0..2 {
             editor.update(
-                Kind::Foreground,
+                Kind::Focus,
                 &mut settings,
                 &[],
                 Message::Path(r"C:\Apps\game.exe".into()),
             );
-            editor.update(Kind::Foreground, &mut settings, &[], Message::Add);
+            editor.update(Kind::Focus, &mut settings, &[], Message::Add);
         }
-        assert_eq!(settings.by_foreground.rules.len(), 1);
+        assert_eq!(settings.by_focus.rules.len(), 1);
         assert!(settings.by_running_app.rules.is_empty());
-        assert_eq!(settings.by_foreground.rules[0].power_plan_guid, None);
+        assert_eq!(settings.by_focus.rules[0].power_plan_guid, None);
         editor.update(
-            Kind::Foreground,
+            Kind::Focus,
             &mut settings,
             &[],
             Message::Plan(0, Some("selected".into())),
         );
         assert_eq!(
-            settings.by_foreground.rules[0].power_plan_guid.as_deref(),
+            settings.by_focus.rules[0].power_plan_guid.as_deref(),
             Some("selected")
         );
     }

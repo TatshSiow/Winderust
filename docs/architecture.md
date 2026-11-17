@@ -39,6 +39,14 @@ Windows events / UI intent / persisted settings
 - `RuntimeHandle` owns worker lifecycle, event sources, typed commands, and published status.
 - `RuntimeCore` owns reconciliation order, shared observations, controller composition, and
   shutdown.
+- Keep Running adds one bounded native-launch worker behind its runtime coordinator.
+  Per-rule policy stays separate from native resources; unresolved operations retain
+  their owner even after rule removal. Native calls never hold the shared intake lock.
+- Instance Limits uses one fresh read-only process catalog per pass, a control-layer
+  safety adapter, and a pure incident manager. The collector retains exact observed
+  members and their live handles; the count adapter drops them before publishing
+  runtime status. Its own one-second scheduler domain
+  remains active in the tray; it has no mutation or recovery ownership.
 - Feature managers own rules, target selection, timers, hysteresis, suppression, status, and
   Action Log policy.
 - Typed controllers own exact identities, claims, baselines, precedence, verification,
@@ -66,7 +74,7 @@ target, but every mutation reopens and revalidates the exact process or thread i
   watchdog journal, verification, and reverse clean release.
 - Automatic power-plan state belongs to `PowerPlanController`, including the first baseline,
   verified switching, managed-plan cleanup, and watchdog recovery.
-- Process-lifetime state belongs to Timer Resolution or the Winderust self-power controller. It
+- Process-lifetime state belongs to Sleep Prevention, Timer Resolution, or the Winderust self-power controller. It
   has explicit clean release, with process teardown as the forced-exit boundary.
 - Persistent configuration belongs to `SettingsEditor` or a typed application service. It uses
   explicit user intent and readback without temporary claims or recovery entries.
@@ -87,7 +95,7 @@ target, but every mutation reopens and revalidates the exact process or thread i
 - Process List reversible actions use the same RuntimeCore controllers as automatic policy and
   may be superseded by a later automatic reconciliation.
 - CPU allocation has one coordinator with this precedence: CPU Sets (Soft), Processor Affinity
-  (Hard), then Adaptive Engine.
+  (Hard), guarded Instance Balancing, then Adaptive Engine.
 - App Suspension and CPU Limiter share one Job Object suspension controller. Their independent
   claims combine into one effective frozen state, so releasing either feature cannot thaw the
   other feature's claim.
@@ -158,10 +166,22 @@ remain available in Git history rather than in the active documentation set.
   time.
 - `src/control/cpu_allocation.rs`: sole live CPU Sets and process-affinity baseline, claim
   arbitration, compensation, and clean-release boundary for CPU Sets (Soft), Processor Affinity
-  (Hard), and Adaptive Engine CPU allocation. Its precedence is CPU Sets (Soft) > Processor
-  Affinity (Hard) > Adaptive Engine.
+  (Hard), guarded Instance Balancing, and Adaptive Engine CPU allocation. Its precedence is
+  CPU Sets (Soft) > Processor Affinity (Hard) > Instance Balancing > Adaptive Engine.
+  Adjacent `instance_balancing.rs` and `eligibility.rs` enforce the guarded backend contract.
+  `src/features/cpu_control/instance_balancing/` owns deterministic whole-core planning
+  and stable-cohort qualification. `src/backend/automation/instance_balancing.rs`
+  connects retained exact membership, fresh eligibility and group application on a
+  dedicated one-second visible/tray cadence. Its global configuration defaults off;
+  `src/ui/instance_balancing.rs` edits shared executable-path rules under CPU Control.
   `src/platform/windows/cpu_allocation.rs` owns the raw affinity/CPU Set query and write calls plus
   packed system CPU Set topology conversion.
+- `src/cpu_topology.rs`: validated, canonical read-only processor-group, core,
+  efficiency, NUMA, and cache facts with exact group-qualified selection resolution
+  and checked group-0 projection for Processor Affinity (Hard) and Adaptive Engine.
+  Saved selections retain group-qualified members and an exact validated topology signature.
+  `src/platform/windows/cpu_allocation/topology.rs` owns native topology capture
+  and packed-record validation; topology discovery grants no mutation authority.
 - `src/control/memory_trim.rs` and `src/control/process_termination.rs`: sole
   irreversible working-set trim and process-termination adapters. They use the
   bounded runtime command queue, exact process-instance validation, current
@@ -216,15 +236,16 @@ Pages are grouped in `src/ui.rs`:
 - Home: dashboard.
 - Process List: process table and per-process policy surface.
 - Winderust Features: Adaptive Engine, Background Efficiency, Memory Trim, Watchdog.
-- Power Plan Control: By Foreground, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
+- Power Plan Control: By Focus, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
 - Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
   IO Priority, GPU Priority, Memory Priority.
-- CPU Control: CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard).
+- CPU Control: CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), Instance Balancing.
 - Action Log.
 - Settings: Winderust Behaviour, Language and Appearance, Experimental
   Features.
 - About.
-- Advanced: App Suspension, Timer Resolution, Win32 Priority Separation.
+- Advanced Controls: App Suspension, Sleep Prevention, Keep Running, Instance
+  Limits, Timer Resolution, Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 `WinderustApp::page_view` in `src/ui/app.rs` together.

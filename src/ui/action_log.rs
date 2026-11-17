@@ -452,12 +452,16 @@ fn process_group<'a>(
 
 pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
     let page = match feature {
+        ActionLogFeature::InstanceBalancing => super::Page::InstanceBalancing,
         ActionLogFeature::AppSuspension => super::Page::AppSuspension,
+        ActionLogFeature::SleepPrevention => super::Page::SleepPrevention,
+        ActionLogFeature::KeepRunning => super::Page::KeepRunning,
+        ActionLogFeature::InstanceLimits => super::Page::InstanceLimits,
         ActionLogFeature::CpuSetsSoft => super::Page::CpuSetsSoft,
         ActionLogFeature::ProcessorAffinityHard => super::Page::ProcessorAffinityHard,
         ActionLogFeature::BackgroundEfficiency => super::Page::BackgroundEfficiency,
         ActionLogFeature::CpuLimiter => super::Page::CpuLimiter,
-        ActionLogFeature::ByForeground => super::Page::ByForeground,
+        ActionLogFeature::ByFocus => super::Page::ByFocus,
         ActionLogFeature::ByRunningApp => super::Page::ByRunningApp,
         ActionLogFeature::ByCpuLoad => super::Page::ByCpuLoad,
         ActionLogFeature::ByActivity => super::Page::ByActivity,
@@ -536,13 +540,17 @@ const RESULTS: [ActionLogResult; 4] = [
     ActionLogResult::Skipped,
     ActionLogResult::Failed,
 ];
-const FEATURES: [ActionLogFeature; 20] = [
+const FEATURES: [ActionLogFeature; 24] = [
     ActionLogFeature::AppSuspension,
+    ActionLogFeature::SleepPrevention,
+    ActionLogFeature::KeepRunning,
+    ActionLogFeature::InstanceLimits,
     ActionLogFeature::CpuSetsSoft,
+    ActionLogFeature::InstanceBalancing,
     ActionLogFeature::ProcessorAffinityHard,
     ActionLogFeature::BackgroundEfficiency,
     ActionLogFeature::CpuLimiter,
-    ActionLogFeature::ByForeground,
+    ActionLogFeature::ByFocus,
     ActionLogFeature::ByRunningApp,
     ActionLogFeature::ByCpuLoad,
     ActionLogFeature::ByActivity,

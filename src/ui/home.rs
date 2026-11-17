@@ -1217,13 +1217,9 @@ fn enabled_features(
         };
     }
     feature!(
-        ByForeground,
-        by_foreground,
-        t!(
-            "common.rule_count",
-            count = settings.by_foreground.rules.len()
-        )
-        .to_string()
+        ByFocus,
+        by_focus,
+        t!("common.rule_count", count = settings.by_focus.rules.len()).to_string()
     );
     feature!(
         ByRunningApp,
@@ -1271,6 +1267,15 @@ fn enabled_features(
         t!(
             "home.adjusted_count",
             count = status.processor_affinity_hard.adjusted_processes
+        )
+        .to_string()
+    );
+    feature!(
+        InstanceBalancing,
+        instance_balancing,
+        t!(
+            "home.adjusted_count",
+            count = status.instance_balancing.adjusted_processes
         )
         .to_string()
     );
@@ -1388,6 +1393,33 @@ fn enabled_features(
         .to_string()
     );
     feature!(
+        SleepPrevention,
+        sleep_prevention,
+        t!(
+            "common.rule_count",
+            count = settings.sleep_prevention.rules.len()
+        )
+        .to_string()
+    );
+    feature!(
+        KeepRunning,
+        keep_running,
+        t!(
+            "common.rule_count",
+            count = settings.keep_running.rules.len()
+        )
+        .to_string()
+    );
+    feature!(
+        InstanceLimits,
+        instance_limits,
+        t!(
+            "common.rule_count",
+            count = settings.instance_limits.rules.len()
+        )
+        .to_string()
+    );
+    feature!(
         TimerResolution,
         timer_resolution,
         t!(
@@ -1430,7 +1462,7 @@ mod tests {
         use crate::ui::navigation::feature_toggle;
 
         let pages = [
-            Page::ByForeground,
+            Page::ByFocus,
             Page::ByRunningApp,
             Page::ByCpuLoad,
             Page::ByActivity,
@@ -1438,6 +1470,7 @@ mod tests {
             Page::CpuLimiter,
             Page::CpuSetsSoft,
             Page::ProcessorAffinityHard,
+            Page::InstanceBalancing,
             Page::BackgroundEfficiency,
             Page::AppSuspension,
             Page::AdaptiveEngine,
@@ -1449,6 +1482,9 @@ mod tests {
             Page::MemoryPriority,
             Page::Watchdog,
             Page::MemoryTrim,
+            Page::SleepPrevention,
+            Page::KeepRunning,
+            Page::InstanceLimits,
             Page::TimerResolution,
         ];
         let mut settings = Settings::default();
@@ -1461,6 +1497,7 @@ mod tests {
         let mut status = RuntimeFeatureStatus::default();
         status.by_running_app.active_process = Some("example.exe".into());
         status.cpu_sets_soft.adjusted_processes = 7;
+        status.instance_balancing.adjusted_processes = 2;
         status.app_suspension.suspended_processes = 3;
         let sample = Sample {
             cpu: CpuUsageSnapshot {
@@ -1482,6 +1519,10 @@ mod tests {
             (
                 Page::CpuSetsSoft,
                 t!("home.adjusted_count", count = 7).to_string(),
+            ),
+            (
+                Page::InstanceBalancing,
+                t!("home.adjusted_count", count = 2).to_string(),
             ),
             (
                 Page::AppSuspension,
@@ -2069,7 +2110,8 @@ mod tests {
                 if (3..148).contains(&(x % 150)) {
                     for y in [25, 75] {
                         assert_ne!(
-                            pixels.pixel(x, y), blank.pixel(x, y),
+                            pixels.pixel(x, y),
+                            blank.pixel(x, y),
                             "ordinary {cadence:?}ms sampling left a false stroke/fill gap at {x},{y}"
                         );
                     }

@@ -34,12 +34,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     let window = app.window?;
     let run = app.smoke.as_mut()?;
     let extra = run.index.checked_sub(run.pages.len() * 2);
-    if extra == Some(54) {
+    if extra == Some(70) {
         return Some(app.shutdown());
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(index, 1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52)
+            matches!(
+                index,
+                1 | 5 | 7 | 9 | 11 | 36 | 40 | 42 | 45 | 52 | 55 | 56 | 59 | 61 | 63 | 65 | 67 | 69
+            )
         });
         let page = match extra {
             Some(0) => Page::BackgroundEfficiency,
@@ -48,7 +51,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(3) => Page::Home,
             Some(4..=10) => Page::AdaptiveEngine,
             Some(11) => Page::MemoryTrim,
-            Some(12) => Page::ByForeground,
+            Some(12) => Page::ByFocus,
             Some(13) => Page::Home,
             Some(14) => Page::ProcessList,
             Some(15) => Page::PowerPlanControl,
@@ -74,6 +77,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(49) => Page::ActionLog,
             Some(50) => Page::WinderustBehaviour,
             Some(51..=53) => Page::Watchdog,
+            Some(54..=57) => Page::ByCpuLoad,
+            Some(58..=59) => Page::SleepPrevention,
+            Some(60..=61) => Page::KeepRunning,
+            Some(62..=65) => Page::InstanceLimits,
+            Some(66..=69) => Page::InstanceBalancing,
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -98,13 +106,122 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         };
         rust_i18n::set_locale(app.settings.general.language.locale());
         app.appearance = settings_pages::theme(&app.settings.general);
-        if extra.is_some_and(|i| i >= 38) {
+        if extra.is_some_and(|i| (38..=53).contains(&i)) {
             let _ = app.update(Message::Preferences(settings_pages::Message::Theme(
                 crate::config::AppThemeMode::Amoled,
             )));
             assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
         }
         // Exercise disclosure messages and long/compact navigation without enabling automation.
+        if matches!(extra, Some(62..=65)) {
+            use crate::{
+                control::instance_limits::CountObservation,
+                features::advanced_controls::instance_limits::{
+                    InstanceLimitsRuleSnapshot, NotificationStatus,
+                },
+            };
+            let paths = [
+                r"C:\Apps\Long Application Name\renderer.exe",
+                r"C:\Apps\editor.exe",
+                r"C:\Apps\worker.exe",
+            ];
+            app.settings.edit_global(|settings| {
+                settings.instance_limits.enabled = true;
+                settings.instance_limits.rules = paths
+                    .iter()
+                    .map(|path| crate::config::InstanceLimitsRule::new((*path).into()))
+                    .collect();
+            });
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).instance_limits;
+            status.enabled = true;
+            status.rules = paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| InstanceLimitsRuleSnapshot {
+                    executable_path: (*path).into(),
+                    max_instances: 1,
+                    enabled: true,
+                    count: match index {
+                        0 => CountObservation::Complete(3),
+                        1 => CountObservation::Incomplete {
+                            known_lower_bound: 2,
+                            reason: "A matching process could not be queried.".into(),
+                        },
+                        _ => CountObservation::Incomplete {
+                            known_lower_bound: 0,
+                            reason: "Process scope could not be verified.".into(),
+                        },
+                    },
+                    sampled_at: Some(std::time::Instant::now()),
+                    incident: index == 0,
+                    notification: if index == 0 {
+                        NotificationStatus::Failed(
+                            "Windows rejected the notification request.".into(),
+                        )
+                    } else {
+                        NotificationStatus::NotAttempted
+                    },
+                })
+                .collect();
+            if matches!(extra, Some(64..=65)) {
+                let _ = app.update(Message::InstanceLimits(instance_limits::Message::Edit(0)));
+            }
+        }
+        if matches!(extra, Some(60..=61)) {
+            use crate::features::advanced_controls::keep_running::{
+                KeepRunningRuleSnapshot, KeepRunningState, PauseReason,
+            };
+            let paths = [
+                r"C:\Apps\Long Application Name\renderer.exe",
+                r"C:\Apps\editor.exe",
+            ];
+            app.settings.edit_global(|settings| {
+                settings.keep_running.enabled = true;
+                settings.keep_running.rules = paths
+                    .iter()
+                    .map(|path| crate::config::KeepRunningRule::new((*path).into()))
+                    .collect();
+            });
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).keep_running;
+            status.enabled = true;
+            status.observation_known = true;
+            status.rules = paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| KeepRunningRuleSnapshot {
+                    executable_path: (*path).into(),
+                    state: if index == 0 {
+                        KeepRunningState::Armed
+                    } else {
+                        KeepRunningState::Paused(PauseReason::RetryBudgetExhausted)
+                    },
+                    attempts: if index == 0 { 0 } else { 3 },
+                    next_retry_seconds: None,
+                    last_error: None,
+                })
+                .collect();
+            if extra == Some(61) {
+                let _ = app.update(Message::KeepRunning(keep_running::Message::Edit(0)));
+            }
+        }
+        if matches!(extra, Some(58..=59)) {
+            let _ = app.update(Message::PowerRules(
+                power_rules::Kind::CpuLoad,
+                power_rules::Message::Cancel,
+            ));
+            app.settings.sleep_prevention.rules = vec![
+                crate::config::SleepPreventionRule {
+                    executable_path: r"C:\Apps\Long Application Name\video-renderer.exe".into(),
+                    enabled: true,
+                    keep_display_on: false,
+                },
+                crate::config::SleepPreventionRule {
+                    executable_path: r"C:\Apps\presentation.exe".into(),
+                    enabled: true,
+                    keep_display_on: true,
+                },
+            ];
+        }
         if matches!(extra, Some(51..=53)) {
             let mut rule =
                 crate::config::WatchdogRule::new(r"C:\Apps\Resource Monitor\sample.exe".into());
@@ -118,8 +235,143 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.watchdog = watchdog::Editor::default();
             let _ = app.update(Message::Watchdog(watchdog::Message::Edit(0)));
         }
+        if matches!(extra, Some(54..=57)) {
+            use crate::config::{
+                ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison,
+            };
+            let _ = app.update(Message::Watchdog(watchdog::Message::CancelRule));
+            let _ = app.update(Message::PowerRules(
+                power_rules::Kind::CpuLoad,
+                power_rules::Message::Cancel,
+            ));
+            let (comparison, threshold, upper, release, release_upper) = match extra {
+                Some(54) => (CpuUsageComparison::AtOrAbove, 75, None, 65, None),
+                Some(57) => (CpuUsageComparison::AtOrBelow, 25, None, 35, None),
+                _ => (CpuUsageComparison::Between, 40, Some(60), 30, Some(70)),
+            };
+            let percent = |value| CpuLoadPercent::new(value).expect("valid smoke CPU percentage");
+            let power_plan_guid = app.power_plans.first().map(|plan| plan.guid.clone());
+            app.settings.edit_global(|settings| {
+                settings.general.enabled = false;
+                settings.by_cpu_load.rules = vec![ByCpuLoadRule {
+                    name: "CPU load stability".into(),
+                    comparison,
+                    threshold_percent: percent(threshold),
+                    upper_threshold_percent: upper.map(percent),
+                    duration_seconds: 5,
+                    stability: Some(ByCpuLoadStability {
+                        exit_threshold_percent: percent(release),
+                        exit_upper_threshold_percent: release_upper.map(percent),
+                        minimum_hold_seconds: 30,
+                    }),
+                    power_plan_guid,
+                    ..ByCpuLoadRule::default()
+                }];
+            });
+            if extra == Some(54) {
+                let before = app.settings.by_time.clone();
+                let _ = app.update(Message::Page(Page::ByTime));
+                let _ = app.update(Message::PowerRules(
+                    power_rules::Kind::Time,
+                    power_rules::Message::Edit(0),
+                ));
+                let _ = app.update(Message::PowerRules(
+                    power_rules::Kind::Time,
+                    power_rules::Message::Start(0, String::new()),
+                ));
+                let _ = app.search_keyboard(
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    iced::keyboard::Modifiers::empty(),
+                    false,
+                    iced::event::Status::Ignored,
+                );
+                assert!(!app.pending_editor());
+                assert_eq!(app.settings.by_time, before);
+            }
+        }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
+        if matches!(extra, Some(66..=69)) {
+            app.reset_editors();
+            app.settings.edit_global(|settings| {
+                settings.general.enabled = true;
+                settings.instance_balancing.enabled = true;
+                settings.instance_balancing.rules = [
+                    r"C:\Apps\Long Application Name\renderer.exe",
+                    r"C:\Apps\editor.exe",
+                ]
+                .into_iter()
+                .map(|path| crate::config::InstanceBalancingRule {
+                    enabled: true,
+                    executable_path: path.into(),
+                })
+                .collect();
+            });
+            // Only the UI's saved-state projection changes; the smoke runtime stays disabled.
+            app.settings = SettingsEditor::with_settings(app.settings.global().clone());
+            app.status.generation = app.status.generation.max(1);
+            let status = &mut Arc::make_mut(&mut app.status.feature_status).instance_balancing;
+            status.enabled = true;
+            status.scanned_processes = 4;
+            status.adjusted_processes = if extra == Some(66) { 4 } else { 0 };
+            status.message = if extra == Some(66) {
+                t!("instance_balancing.assigned", count = 4)
+            } else {
+                t!("instance_balancing.waiting_stable")
+            }
+            .to_string();
+            if matches!(extra, Some(68..=69)) {
+                let before = app.settings.global().instance_balancing.clone();
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Edit(0),
+                ));
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Path("relative.exe".into()),
+                ));
+                let _ = app.search_keyboard(
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    iced::keyboard::Modifiers::empty(),
+                    false,
+                    iced::event::Status::Ignored,
+                );
+                assert!(!app.pending_editor());
+                assert_eq!(app.settings.global().instance_balancing, before);
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Edit(0),
+                ));
+                let _ = app.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Path(if extra == Some(68) {
+                        before.rules[1].executable_path.clone()
+                    } else {
+                        r"C:\Apps\Long Application Name\renderer-updated.exe".into()
+                    }),
+                ));
+                assert!(app.pending_editor());
+            }
+        }
+        if matches!(extra, Some(54..=57)) {
+            let edit =
+                || Message::PowerRules(power_rules::Kind::CpuLoad, power_rules::Message::Edit(0));
+            if extra == Some(54) {
+                let before = app.settings.by_cpu_load.clone();
+                let _ = app.update(edit());
+                let _ = app.update(Message::PowerRules(
+                    power_rules::Kind::CpuLoad,
+                    power_rules::Message::ExitThreshold(0, String::new()),
+                ));
+                let _ = app.search_keyboard(
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    iced::keyboard::Modifiers::empty(),
+                    false,
+                    iced::event::Status::Ignored,
+                );
+                assert!(!app.pending_editor());
+                assert_eq!(app.settings.by_cpu_load, before);
+            }
+            let _ = app.update(edit());
+            assert!(app.cpu_rules.has_pending_editor());
+            assert!(!app.settings.general.enabled);
+        }
         if matches!(extra, Some(51..=53)) {
             let before = app.settings.global().watchdog.clone();
             assert!(app.pending_editor());
@@ -240,12 +492,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     });
                 let _ = app.update(Message::Trim(memory_trim::Message::Collapse(0)));
             } else {
-                app.settings.by_foreground.rules.push(
-                    crate::ui::process_rules::new_foreground_rule(
+                app.settings
+                    .by_focus
+                    .rules
+                    .push(crate::ui::process_rules::new_by_focus_rule(
                         r"C:\Apps\Example\example.exe",
                         None,
-                    ),
-                );
+                    ));
             }
         }
         if extra == Some(9) {
@@ -447,8 +700,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.side_panel_open);
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
         }
+        if matches!(extra, Some(66..=69)) {
+            app.side_panel_open = true;
+            app.side_panel_tab = SidePanelTab::Status;
+        }
         let size = match extra {
-            Some(35..=37 | 40 | 42 | 44..=50 | 52..=53) => iced::Size::new(900.0, 620.0),
+            Some(35..=37 | 40 | 42 | 44..=50 | 52..=69) => iced::Size::new(900.0, 620.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -485,6 +742,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
+    if matches!(extra, Some(56 | 57)) && run.ticks == 3 {
+        return Some(iced::widget::operation::snap_to(
+            "by-cpu-load-rule-details",
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+        ));
+    }
     if run.ticks
         == if extra.is_some_and(|i| i >= 13) {
             12
@@ -492,6 +755,14 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             4
         }
     {
+        if matches!(extra, Some(62..=65)) {
+            for rule in &mut Arc::make_mut(&mut app.status.feature_status)
+                .instance_limits
+                .rules
+            {
+                rule.sampled_at = Some(std::time::Instant::now());
+            }
+        }
         Some(iced::window::screenshot(window).map(Message::SmokeScreenshot))
     } else {
         Some(Task::none())
@@ -539,6 +810,6 @@ pub(crate) fn render_all_pages() {
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count(),
-        124
+        148
     );
 }

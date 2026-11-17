@@ -156,6 +156,7 @@ pub(crate) struct PowerPlanController<P: PowerPlanPlatform = WindowsPowerPlanPla
         Option<UncertainSwitch<<P::RecoveryIntent as PowerPlanRecoveryIntent>::Deferred>>,
     ordinary_original_guid: Option<String>,
     ordinary_expected_guid: Option<String>,
+    temporary_plan: Option<TemporaryPowerPlan>,
     adaptive_plan: Option<ActiveAdaptivePowerPlan>,
     setup_cleanup_due: Option<Instant>,
     last_decision: Option<DecisionOutcome>,
@@ -170,6 +171,28 @@ impl Default for PowerPlanController {
     }
 }
 
+#[cfg(test)]
+impl PowerPlanController {
+    pub(crate) fn temporary_adaptive_fixture() -> Self {
+        Self {
+            temporary_plan: Some(TemporaryPowerPlan {
+                original_guid: "fixture-original".into(),
+                expected_guid: "fixture-selected".into(),
+                owner: TemporaryOwner::Time,
+            }),
+            adaptive_plan: Some(ActiveAdaptivePowerPlan {
+                original_guid: "fixture-selected".into(),
+                plan_guid: "fixture-adaptive".into(),
+                profile: AdaptivePowerProfile::Responsive,
+                values: None,
+                lower_demand_since: None,
+                active: true,
+            }),
+            ..Self::default()
+        }
+    }
+}
+
 impl<P: PowerPlanPlatform> PowerPlanController<P> {
     fn with_platform(platform: P) -> Self {
         Self {
@@ -180,6 +203,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             uncertain_switch: None,
             ordinary_original_guid: None,
             ordinary_expected_guid: None,
+            temporary_plan: None,
             adaptive_plan: None,
             setup_cleanup_due: None,
             last_decision: None,
@@ -191,6 +215,55 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
 
     pub(crate) fn adaptive_active(&self) -> bool {
         self.adaptive_plan.as_ref().is_some_and(|plan| plan.active)
+    }
+
+    pub(crate) fn has_focus_plan(&self) -> bool {
+        self.temporary_plan
+            .as_ref()
+            .is_some_and(|plan| matches!(plan.owner, TemporaryOwner::Focus(_)))
+            || self.uncertain_switch.as_ref().is_some_and(|pending| {
+                matches!(
+                    pending.temporary_effect,
+                    TemporaryEffect::Acquire(TemporaryOwner::Focus(_))
+                )
+            })
+    }
+
+    pub(crate) fn has_temporary_plan(&self) -> bool {
+        self.temporary_plan.is_some()
+            || self.uncertain_switch.as_ref().is_some_and(|pending| {
+                matches!(
+                    pending.temporary_effect,
+                    TemporaryEffect::Acquire(_) | TemporaryEffect::Release
+                )
+            })
+    }
+
+    pub(crate) fn cancel_temporary_restoration(&mut self) {
+        self.temporary_plan = None;
+        if let Some(pending) = &mut self.uncertain_switch {
+            // Cancel the optional return without discarding the recovery acknowledgement.
+            pending.temporary_effect = TemporaryEffect::Release;
+        }
+    }
+
+    pub(crate) fn temporary_release_retry_delay(&self) -> Option<Duration> {
+        (self.has_temporary_plan()
+            && (self.uncertain_switch.is_some()
+                || self.next_active_plan_refresh.is_none()
+                || self.last_decision.as_ref().is_some_and(|decision| {
+                    !decision.restore_previous_plan
+                        || self
+                            .temporary_plan
+                            .as_ref()
+                            .is_some_and(|plan| plan.owner.observation_unavailable(decision))
+                        || decision
+                            .power_plan_guid
+                            .as_deref()
+                            .zip(self.current_guid.as_deref())
+                            .is_none_or(|(target, current)| !same_guid(target, current))
+                })))
+        .then_some(Duration::from_secs(1))
     }
 
     pub(crate) fn cleanup_retry_delay(&self, now: Instant) -> Option<Duration> {
@@ -253,12 +326,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
     }
 
     pub(crate) fn refresh_active_plan(&mut self, now: Instant) -> Result<(), String> {
-        self.next_active_plan_refresh = Some(now + ACTIVE_PLAN_REFRESH_INTERVAL);
+        self.next_active_plan_refresh = None;
         let actual_guid = self.platform.active_guid()?;
-        if let Err(error) = self.observe_active_plan(&actual_guid) {
-            self.next_active_plan_refresh = None;
-            return Err(error);
-        }
+        self.observe_active_plan(&actual_guid)?;
+        self.next_active_plan_refresh = Some(now + ACTIVE_PLAN_REFRESH_INTERVAL);
         self.cleanup_inactive_adaptive_plan()
     }
 
@@ -300,16 +371,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     }
                 });
                 if !adaptive_transition {
-                    self.ordinary_original_guid
-                        .get_or_insert_with(|| transition.previous_guid.clone());
-                    self.ordinary_expected_guid = Some(actual_guid.to_owned());
-                    if self
-                        .ordinary_original_guid
-                        .as_deref()
-                        .is_some_and(|original| same_guid(original, actual_guid))
-                    {
-                        self.clear_ordinary_ownership();
-                    }
+                    self.record_ordinary_switch(transition, uncertain.temporary_effect);
                 }
                 self.last_verified_application = Some(actual_guid.to_owned());
             }
@@ -332,6 +394,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.platform.forget_switches()?;
         self.ownership_release_pending = false;
         self.uncertain_switch = None;
+        self.temporary_plan = None;
         self.last_verified_application = None;
         self.clear_ordinary_ownership();
         self.last_switch_attempt = None;
@@ -341,7 +404,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         Ok(())
     }
 
-    fn switch_active_verified(&mut self, target_guid: &str) -> Result<SwitchTransition, String> {
+    fn switch_active_verified(
+        &mut self,
+        target_guid: &str,
+        temporary_effect: TemporaryEffect,
+    ) -> Result<SwitchTransition, String> {
         let previous_guid = self.platform.active_guid()?;
         self.observe_active_plan(&previous_guid)?;
         if let Some(plan) = self
@@ -351,13 +418,14 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         {
             plan.original_guid = previous_guid.clone();
         }
-        self.switch_from_current(previous_guid, target_guid)
+        self.switch_from_current(previous_guid, target_guid, temporary_effect)
     }
 
     fn switch_from_current(
         &mut self,
         previous_guid: String,
         target_guid: &str,
+        temporary_effect: TemporaryEffect,
     ) -> Result<SwitchTransition, String> {
         match switch_from_verified(&mut self.platform, previous_guid.clone(), target_guid) {
             Ok(transition) => Ok(transition),
@@ -388,6 +456,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                             },
                             recovery,
                             allow_previous,
+                            temporary_effect,
                         });
                     }
                 }
@@ -400,6 +469,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         &mut self,
         expected_guid: &str,
         original_guid: &str,
+        temporary_effect: TemporaryEffect,
     ) -> Result<bool, String> {
         let actual_guid = self.platform.active_guid()?;
         if self.ownership_release_pending || !same_guid(&actual_guid, expected_guid) {
@@ -407,8 +477,45 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.current_guid = Some(actual_guid);
             return Ok(false);
         }
-        self.switch_from_current(actual_guid, original_guid)?;
+        let transition = self.switch_from_current(actual_guid, original_guid, temporary_effect)?;
+        if !matches!(temporary_effect, TemporaryEffect::Preserve) {
+            self.record_ordinary_switch(&transition, temporary_effect);
+        }
         Ok(true)
+    }
+
+    fn record_ordinary_switch(
+        &mut self,
+        transition: &SwitchTransition,
+        temporary_effect: TemporaryEffect,
+    ) {
+        self.ordinary_original_guid
+            .get_or_insert_with(|| transition.previous_guid.clone());
+        self.ordinary_expected_guid = Some(transition.target_guid.clone());
+        self.current_guid = Some(transition.target_guid.clone());
+        self.last_verified_application = Some(transition.target_guid.clone());
+        if self
+            .ordinary_original_guid
+            .as_deref()
+            .is_some_and(|original| same_guid(original, &transition.target_guid))
+        {
+            self.clear_ordinary_ownership();
+        }
+        match temporary_effect {
+            TemporaryEffect::Preserve => {}
+            TemporaryEffect::Acquire(owner) => {
+                let plan = self
+                    .temporary_plan
+                    .get_or_insert_with(|| TemporaryPowerPlan {
+                        original_guid: transition.previous_guid.clone(),
+                        expected_guid: transition.target_guid.clone(),
+                        owner,
+                    });
+                plan.expected_guid.clone_from(&transition.target_guid);
+                plan.owner = owner;
+            }
+            TemporaryEffect::Release => self.temporary_plan = None,
+        }
     }
 
     pub(crate) fn reconcile_ordinary(
@@ -416,6 +523,9 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         decision: DecisionOutcome,
         now: Instant,
     ) -> Result<bool, String> {
+        if !decision.restore_previous_plan {
+            self.cancel_temporary_restoration();
+        }
         self.last_decision = Some(decision);
         if self.adaptive_active()
             && !self.ownership_release_pending
@@ -425,18 +535,50 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
         self.refresh_active_plan_if_due(now)?;
 
-        let Some(target_guid) = self
+        let decision = self
             .last_decision
             .as_ref()
-            .and_then(|decision| decision.power_plan_guid.clone())
-        else {
+            .ok_or_else(|| "Power-plan reconciliation lost its decision.".to_owned())?;
+        let stop_requested = matches!(
+            decision.state,
+            DecisionState::Disabled | DecisionState::PausedWhilePluggedIn
+        );
+        if !stop_requested
+            && self
+                .temporary_plan
+                .as_ref()
+                .is_some_and(|plan| plan.owner.observation_unavailable(decision))
+        {
             return Ok(false);
+        }
+        let Some(target_guid) = decision.power_plan_guid.clone() else {
+            return self.restore_temporary_plan(now);
         };
+        let temporary_effect = if decision.restore_previous_plan {
+            TemporaryEffect::Acquire(TemporaryOwner::from_decision(decision)?)
+        } else {
+            TemporaryEffect::Release
+        };
+        if matches!(temporary_effect, TemporaryEffect::Acquire(_)) && self.temporary_plan.is_none()
+        {
+            // A cached match cannot establish the plan that preceded this episode.
+            // Rebase external changes before deciding whether acquisition needs a switch.
+            self.refresh_active_plan(now)?;
+        }
         if self
             .current_guid
             .as_deref()
             .is_some_and(|current| same_guid(current, &target_guid))
         {
+            match temporary_effect {
+                TemporaryEffect::Acquire(owner) => {
+                    if let Some(plan) = &mut self.temporary_plan {
+                        plan.owner = owner;
+                    }
+                }
+                TemporaryEffect::Release => self.temporary_plan = None,
+                TemporaryEffect::Preserve => {}
+            }
             self.clear_switch_failure(&target_guid);
             return Ok(false);
         }
@@ -450,27 +592,67 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
 
         self.last_switch_attempt = Some((target_guid.clone(), now));
-        match self.switch_active_verified(&target_guid) {
+        match self.switch_active_verified(&target_guid, temporary_effect) {
             Ok(transition) => {
-                if self.ordinary_original_guid.is_none() {
-                    self.ordinary_original_guid = Some(transition.previous_guid);
-                }
-                self.ordinary_expected_guid = Some(target_guid.clone());
-                self.current_guid = Some(target_guid.clone());
-                self.last_verified_application = Some(target_guid.clone());
                 self.clear_switch_failure(&target_guid);
-                if self
-                    .ordinary_original_guid
-                    .as_deref()
-                    .is_some_and(|original| same_guid(original, &target_guid))
-                {
-                    self.clear_ordinary_ownership();
+                let applied = !same_guid(&transition.previous_guid, &transition.target_guid);
+                if applied {
+                    self.record_ordinary_switch(&transition, temporary_effect);
                 }
-                Ok(true)
+                Ok(applied)
             }
             Err(error) => {
                 self.record_switch_failure(&target_guid);
                 Err(error)
+            }
+        }
+    }
+
+    fn restore_temporary_plan(&mut self, now: Instant) -> Result<bool, String> {
+        let Some(plan) = self.temporary_plan.clone() else {
+            return Ok(false);
+        };
+        let decision = self
+            .last_decision
+            .as_mut()
+            .ok_or_else(|| "Temporary restoration has no power-plan decision.".to_owned())?;
+        let previous_decision = decision.clone();
+        decision.state = plan.owner.state();
+        decision.rule_index = None;
+        decision.power_plan_guid = Some(plan.original_guid.clone());
+        decision.reason = format!(
+            "{} no longer selects a plan; restoring the previous power plan.",
+            plan.owner.label()
+        );
+        decision.restore_previous_plan = false;
+        if !same_guid(&plan.expected_guid, &plan.original_guid)
+            && self.last_switch_attempt.as_ref().is_some_and(|(guid, at)| {
+                same_guid(guid, &plan.original_guid)
+                    && now.saturating_duration_since(*at) < SWITCH_RETRY_INTERVAL
+            })
+        {
+            return Ok(false);
+        }
+        self.last_switch_attempt = Some((plan.original_guid.clone(), now));
+        match self.restore_active_verified(
+            &plan.expected_guid,
+            &plan.original_guid,
+            TemporaryEffect::Release,
+        ) {
+            Ok(restored) => {
+                self.clear_switch_failure(&plan.original_guid);
+                let applied = restored && !same_guid(&plan.expected_guid, &plan.original_guid);
+                if !applied {
+                    self.last_decision = Some(previous_decision);
+                }
+                Ok(applied)
+            }
+            Err(error) => {
+                self.record_switch_failure(&plan.original_guid);
+                Err(format!(
+                    "Cannot restore the previous {} plan: {error}",
+                    plan.owner.label()
+                ))
             }
         }
     }
@@ -515,7 +697,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 .platform
                 .initialize_adaptive_plan(&plan_guid, &original_guid)
                 .and_then(|()| self.platform.apply_processor_values(&plan_guid, values))
-                .and_then(|()| self.switch_active_verified(&plan_guid));
+                .and_then(|()| self.switch_active_verified(&plan_guid, TemporaryEffect::Preserve));
             let transition = match transition {
                 Ok(transition) => transition,
                 Err(error) => {
@@ -581,7 +763,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 .as_deref()
                 .is_some_and(|current| same_guid(current, &plan.plan_guid));
             if current_matches {
-                match self.restore_active_verified(&plan.plan_guid, &plan.original_guid) {
+                match self.restore_active_verified(
+                    &plan.plan_guid,
+                    &plan.original_guid,
+                    TemporaryEffect::Preserve,
+                ) {
                     Ok(restored) => {
                         if restored {
                             self.current_guid = Some(plan.original_guid.clone());
@@ -642,6 +828,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.ordinary_original_guid.clone(),
             self.ordinary_expected_guid.clone(),
         ) else {
+            self.temporary_plan = None;
             self.clear_ordinary_ownership();
             return Ok(());
         };
@@ -654,12 +841,17 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             return Ok(());
         }
 
-        match self.restore_active_verified(&expected_guid, &original_guid) {
+        match self.restore_active_verified(
+            &expected_guid,
+            &original_guid,
+            TemporaryEffect::Preserve,
+        ) {
             Ok(restored) => {
                 if restored {
                     self.current_guid = Some(original_guid);
                 }
                 self.last_verified_application = None;
+                self.temporary_plan = None;
                 self.clear_ordinary_ownership();
                 Ok(())
             }
@@ -669,7 +861,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
     }
 
-    fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), String> {
+    pub(crate) fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), String> {
         if self.ownership_release_pending
             || self.uncertain_switch.is_some()
             || self
@@ -725,10 +917,102 @@ struct SwitchTransition {
     target_guid: String,
 }
 
+#[derive(Debug, Clone)]
+struct TemporaryPowerPlan {
+    original_guid: String,
+    expected_guid: String,
+    owner: TemporaryOwner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemporaryOwner {
+    Focus(Option<u32>),
+    RunningApp,
+    CpuLoad,
+    ActivityIdle,
+    ActivityActive,
+    Time,
+}
+
+impl TemporaryOwner {
+    fn from_decision(decision: &DecisionOutcome) -> Result<Self, String> {
+        match decision.state {
+            DecisionState::ByFocus => Ok(Self::Focus(decision.focus.process_id)),
+            DecisionState::ByRunningApp => Ok(Self::RunningApp),
+            DecisionState::ByCpuLoad => Ok(Self::CpuLoad),
+            DecisionState::ByActivityIdle => Ok(Self::ActivityIdle),
+            DecisionState::ByActivityActive => Ok(Self::ActivityActive),
+            DecisionState::ByTime => Ok(Self::Time),
+            _ => Err("Power-plan restoration was requested without a temporary owner.".into()),
+        }
+    }
+
+    fn state(self) -> DecisionState {
+        match self {
+            Self::Focus(_) => DecisionState::ByFocus,
+            Self::RunningApp => DecisionState::ByRunningApp,
+            Self::CpuLoad => DecisionState::ByCpuLoad,
+            Self::ActivityIdle => DecisionState::ByActivityIdle,
+            Self::ActivityActive => DecisionState::ByActivityActive,
+            Self::Time => DecisionState::ByTime,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Focus(_) => "By Focus",
+            Self::RunningApp => "By Running App",
+            Self::CpuLoad => "By CPU Load",
+            Self::ActivityIdle | Self::ActivityActive => "By Activity",
+            Self::Time => "By Time",
+        }
+    }
+
+    fn observation_unavailable(self, decision: &DecisionOutcome) -> bool {
+        let priority = |state| match state {
+            DecisionState::ByFocus => 0,
+            DecisionState::ByRunningApp => 1,
+            DecisionState::ByCpuLoad => 2,
+            DecisionState::ByActivityIdle | DecisionState::ByActivityActive => 3,
+            DecisionState::ByTime => 4,
+            _ => 5,
+        };
+        let selected_priority = priority(decision.state);
+        if (!decision.running_app_known && selected_priority >= 1)
+            || (!decision.cpu_load_known && selected_priority >= 2)
+            || (!decision.activity_known && selected_priority >= 3)
+        {
+            return true;
+        }
+        match self {
+            Self::Focus(process_id) => {
+                decision.focus.enabled
+                    && !decision.focus.known
+                    && process_id
+                        .zip(decision.focus.process_id)
+                        .is_none_or(|(previous, current)| previous == current)
+            }
+            Self::RunningApp
+            | Self::CpuLoad
+            | Self::ActivityIdle
+            | Self::ActivityActive
+            | Self::Time => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TemporaryEffect {
+    Preserve,
+    Acquire(TemporaryOwner),
+    Release,
+}
+
 struct UncertainSwitch<D> {
     transition: SwitchTransition,
     recovery: D,
     allow_previous: bool,
+    temporary_effect: TemporaryEffect,
 }
 
 #[derive(Debug)]
@@ -925,7 +1209,14 @@ mod tests {
     };
 
     use super::*;
-    use crate::rules::DecisionState;
+    use crate::{
+        config::{
+            ByCpuLoadRule, ByCpuLoadSettings, ByCpuLoadStability, CpuLoadPercent,
+            CpuUsageComparison,
+        },
+        features::power_plan_control::{ByCpuLoadDecision, ByCpuLoadScheduler},
+        rules::DecisionState,
+    };
 
     fn switch_active_verified<P: PowerPlanPlatform>(
         platform: &mut P,
@@ -1382,6 +1673,765 @@ mod tests {
             power_plan_guid: target.map(str::to_owned),
             state: DecisionState::NoPowerPlanSelected,
             reason: "test decision".to_owned(),
+            focus: Default::default(),
+            restore_previous_plan: false,
+            running_app_known: true,
+            cpu_load_known: true,
+            activity_known: true,
+        }
+    }
+
+    fn restoration_observation() -> DecisionOutcome {
+        let mut decision = decision(None);
+        decision.restore_previous_plan = true;
+        decision
+    }
+
+    fn focus_decision(target: &str, process_id: u32) -> DecisionOutcome {
+        let mut decision = decision(Some(target));
+        decision.state = DecisionState::ByFocus;
+        decision.focus.enabled = true;
+        decision.focus.known = true;
+        decision.focus.process_id = Some(process_id);
+        decision.restore_previous_plan = true;
+        decision
+    }
+
+    fn focus_observation(known: bool, process_id: Option<u32>) -> DecisionOutcome {
+        let mut decision = restoration_observation();
+        decision.focus.enabled = true;
+        decision.focus.known = known;
+        decision.focus.process_id = process_id;
+        decision.restore_previous_plan = true;
+        decision
+    }
+
+    fn temporary_decision(target: &str, state: DecisionState) -> DecisionOutcome {
+        let mut decision = decision(Some(target));
+        decision.state = state;
+        decision.restore_previous_plan = true;
+        decision
+    }
+
+    #[test]
+    fn running_app_handoffs_restore_the_plan_before_the_first_app_took_over() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(
+                temporary_decision("first", DecisionState::ByRunningApp),
+                now,
+            )
+            .unwrap();
+        controller
+            .reconcile_ordinary(
+                temporary_decision("second", DecisionState::ByRunningApp),
+                now,
+            )
+            .unwrap();
+        assert!(controller.has_temporary_plan());
+        assert!(!controller.has_focus_plan());
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+        assert!(!controller.has_temporary_plan());
+        assert_eq!(
+            controller.status().decision_state,
+            Some(DecisionState::ByRunningApp)
+        );
+    }
+
+    #[test]
+    fn unavailable_app_observations_defer_release_even_after_focus_preemption() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(
+                temporary_decision("running", DecisionState::ByRunningApp),
+                now,
+            )
+            .unwrap();
+        let mut unknown = restoration_observation();
+        unknown.running_app_known = false;
+        assert!(!controller.reconcile_ordinary(unknown.clone(), now).unwrap());
+        assert_eq!(controller.platform.active, "running");
+        assert!(controller.temporary_release_retry_delay().is_some());
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        assert!(!controller.reconcile_ordinary(unknown, now).unwrap());
+        assert_eq!(controller.platform.active, "focused");
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+    }
+
+    #[test]
+    fn time_windows_share_a_baseline_across_focus_and_running_app_handoffs() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        for (target, state) in [
+            ("scheduled", DecisionState::ByTime),
+            ("running", DecisionState::ByRunningApp),
+        ] {
+            controller
+                .reconcile_ordinary(temporary_decision(target, state), now)
+                .unwrap();
+        }
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        assert!(controller
+            .reconcile_ordinary(
+                temporary_decision("next window", DecisionState::ByTime),
+                now
+            )
+            .unwrap());
+        assert_eq!(controller.platform.active, "next window");
+        assert_eq!(
+            controller.temporary_plan.as_ref().unwrap().original_guid,
+            "original"
+        );
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+        assert_eq!(
+            controller.status().decision_state,
+            Some(DecisionState::ByTime)
+        );
+    }
+
+    #[test]
+    fn cpu_and_activity_restore_only_after_known_release() {
+        for state in [
+            DecisionState::ByCpuLoad,
+            DecisionState::ByActivityIdle,
+            DecisionState::ByActivityActive,
+        ] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(temporary_decision("temporary", state), now)
+                .unwrap();
+            let mut unknown = restoration_observation();
+            unknown.cpu_load_known = state != DecisionState::ByCpuLoad;
+            unknown.activity_known = !matches!(
+                state,
+                DecisionState::ByActivityIdle | DecisionState::ByActivityActive
+            );
+            assert!(!controller.reconcile_ordinary(unknown, now).unwrap());
+            assert_eq!(controller.platform.active, "temporary");
+            assert!(controller.temporary_release_retry_delay().is_some());
+            assert!(controller
+                .reconcile_ordinary(restoration_observation(), now)
+                .unwrap());
+            assert_eq!(controller.platform.active, "original");
+            assert_eq!(controller.status().decision_state, Some(state));
+        }
+    }
+
+    #[test]
+    fn ended_cpu_condition_under_focus_does_not_restore_the_stale_cpu_target() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(temporary_decision("cpu", DecisionState::ByCpuLoad), now)
+            .unwrap();
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        let mut unknown = restoration_observation();
+        unknown.cpu_load_known = false;
+        assert!(!controller.reconcile_ordinary(unknown, now).unwrap());
+        assert_eq!(controller.platform.active, "focused");
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+    }
+
+    #[test]
+    fn disabling_restoration_keeps_the_selected_plan_and_ordinary_safety_ownership() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(temporary_decision("scheduled", DecisionState::ByTime), now)
+            .unwrap();
+        controller.platform.failure = Some(FailurePoint::Commit);
+        assert!(controller
+            .reconcile_ordinary(decision(Some("persistent")), now)
+            .is_err());
+        assert!(controller.has_temporary_plan());
+        assert!(controller.temporary_plan.is_none());
+        controller.platform.failure = None;
+        assert!(!controller
+            .reconcile_ordinary(decision(Some("persistent")), now)
+            .unwrap());
+        assert!(!controller.has_temporary_plan());
+        assert!(!controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "persistent");
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "original");
+    }
+
+    #[test]
+    fn deferred_acquisition_keeps_the_episode_baseline_for_each_temporary_owner() {
+        for state in [
+            DecisionState::ByRunningApp,
+            DecisionState::ByTime,
+            DecisionState::ByCpuLoad,
+            DecisionState::ByActivityIdle,
+            DecisionState::ByActivityActive,
+        ] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller.platform.failure = Some(FailurePoint::Commit);
+            assert!(controller
+                .reconcile_ordinary(temporary_decision("temporary", state), now)
+                .is_err());
+            assert!(controller.has_temporary_plan());
+            assert!(controller.temporary_plan.is_none());
+            controller.platform.failure = None;
+            assert!(controller
+                .reconcile_ordinary(restoration_observation(), now)
+                .unwrap());
+            assert_eq!(controller.platform.active, "original");
+            assert!(!controller.has_temporary_plan());
+            assert_eq!(controller.status().decision_state, Some(state));
+        }
+    }
+
+    #[test]
+    fn focus_handoffs_restore_the_immediate_baseline_then_shutdown_restores_the_original() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(decision(Some("ordinary")), now)
+            .unwrap();
+        controller
+            .reconcile_ordinary(focus_decision("first", 10), now)
+            .unwrap();
+        controller
+            .reconcile_ordinary(focus_decision("second", 20), now)
+            .unwrap();
+        // Two focused apps may use the same plan without replacing the baseline.
+        controller
+            .reconcile_ordinary(focus_decision("second", 30), now)
+            .unwrap();
+        assert_eq!(
+            controller.temporary_plan.as_ref().unwrap().owner,
+            TemporaryOwner::Focus(Some(30))
+        );
+
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "ordinary");
+        assert!(!controller.has_focus_plan());
+        assert_eq!(
+            controller.ordinary_original_guid.as_deref(),
+            Some("original")
+        );
+        assert_eq!(
+            controller.status().decision_state,
+            Some(DecisionState::ByFocus)
+        );
+        assert_eq!(controller.status().target_guid.as_deref(), Some("ordinary"));
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "original");
+    }
+
+    #[test]
+    fn focus_handoff_back_to_the_baseline_does_not_report_a_restore_on_blur() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        controller
+            .reconcile_ordinary(focus_decision("original", 20), now)
+            .unwrap();
+        assert!(!controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+        assert!(!controller.has_focus_plan());
+        assert!(controller.status().target_guid.is_none());
+        assert!(controller.status().owner.is_none());
+    }
+
+    #[test]
+    fn disabling_restoration_after_no_match_or_unknown_data_does_not_restore() {
+        for unknown in [false, true] {
+            for pending_commit in [false, true] {
+                let now = Instant::now();
+                let mut controller =
+                    PowerPlanController::with_platform(FakePlatform::new("original"));
+                if pending_commit {
+                    controller.platform.failure = Some(FailurePoint::Commit);
+                }
+                assert_eq!(
+                    controller
+                        .reconcile_ordinary(focus_decision("focused", 10), now)
+                        .is_err(),
+                    pending_commit
+                );
+                let mut disabled = decision(None);
+                if unknown {
+                    disabled.focus.enabled = true;
+                    disabled.focus.process_id = Some(10);
+                    disabled.running_app_known = false;
+                    disabled.cpu_load_known = false;
+                    disabled.activity_known = false;
+                }
+                if pending_commit {
+                    *controller.platform.resolution_failure.borrow_mut() = true;
+                    assert!(controller
+                        .reconcile_ordinary(disabled.clone(), now)
+                        .is_err());
+                    assert!(controller.has_temporary_plan());
+                    controller.platform.failure = None;
+                    *controller.platform.resolution_failure.borrow_mut() = false;
+                }
+                assert!(!controller.reconcile_ordinary(disabled, now).unwrap());
+                assert_eq!(controller.platform.active, "focused");
+                assert!(!controller.has_temporary_plan());
+                assert!(controller.platform.pending.borrow().is_empty());
+                assert_eq!(
+                    controller.ordinary_original_guid.as_deref(),
+                    Some("original")
+                );
+                // Re-enabling restoration cannot revive an abandoned episode.
+                assert!(!controller
+                    .reconcile_ordinary(restoration_observation(), now)
+                    .unwrap());
+                assert_eq!(controller.platform.active, "focused");
+                controller.shutdown(now).unwrap();
+                assert_eq!(controller.platform.active, "original");
+            }
+        }
+    }
+
+    #[test]
+    fn canceling_a_pending_return_survives_reenable_and_both_recovery_outcomes() {
+        for at_previous in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(focus_decision("first", 10), now)
+                .unwrap();
+            if at_previous {
+                controller.platform.apply_results = VecDeque::from([
+                    (true, Err("application failed after mutation".into())),
+                    (true, Err("compensation failed after mutation".into())),
+                ]);
+            } else {
+                controller.platform.failure = Some(FailurePoint::Commit);
+            }
+            assert!(controller
+                .reconcile_ordinary(focus_decision("second", 20), now)
+                .is_err());
+            *controller.platform.resolution_failure.borrow_mut() = true;
+            controller.cancel_temporary_restoration();
+            assert!(controller.temporary_plan.is_none());
+            assert!(controller.has_temporary_plan());
+            assert!(controller.temporary_release_retry_delay().is_some());
+            assert!(controller
+                .reconcile_ordinary(restoration_observation(), now)
+                .is_err());
+            assert_eq!(controller.platform.pending.borrow().len(), 1);
+            controller.platform.failure = None;
+            *controller.platform.resolution_failure.borrow_mut() = false;
+            assert!(!controller
+                .reconcile_ordinary(restoration_observation(), now)
+                .unwrap());
+            assert_eq!(
+                controller.platform.active,
+                if at_previous { "first" } else { "second" }
+            );
+            assert!(!controller.has_temporary_plan());
+            assert!(controller.platform.pending.borrow().is_empty());
+            controller.shutdown(now).unwrap();
+            assert_eq!(controller.platform.active, "original");
+        }
+    }
+
+    #[test]
+    fn an_already_selected_focus_plan_does_not_claim_a_restoration_baseline() {
+        for changes_before_switch in [false, true] {
+            let now = Instant::now();
+            let initial = if changes_before_switch {
+                "original"
+            } else {
+                "focused"
+            };
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new(initial));
+            if changes_before_switch {
+                controller
+                    .platform
+                    .query_changes
+                    .extend([None, Some("focused".into())]);
+            }
+            assert!(!controller
+                .reconcile_ordinary(focus_decision("focused", 10), now)
+                .unwrap());
+            assert!(!controller.has_focus_plan());
+            assert!(controller.ordinary_original_guid.is_none());
+            controller
+                .reconcile_ordinary(restoration_observation(), now)
+                .unwrap();
+            assert_eq!(controller.platform.active, "focused");
+            assert!(!controller
+                .platform
+                .events
+                .borrow()
+                .iter()
+                .any(|event| event.starts_with("apply:")));
+        }
+    }
+
+    #[test]
+    fn unreadable_focus_defers_a_lower_priority_target_and_schedules_another_observation() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        assert!(controller.temporary_release_retry_delay().is_none());
+        let mut unknown = focus_observation(false, Some(10));
+        unknown.power_plan_guid = Some("scheduled".into());
+        unknown.state = DecisionState::ByTime;
+        assert!(!controller.reconcile_ordinary(unknown, now).unwrap());
+        assert_eq!(controller.platform.active, "focused");
+        assert_eq!(
+            controller.temporary_release_retry_delay(),
+            Some(Duration::from_secs(1))
+        );
+        controller
+            .reconcile_ordinary(decision(Some("scheduled")), now)
+            .unwrap();
+        assert_eq!(controller.platform.active, "scheduled");
+        assert!(!controller.has_focus_plan());
+    }
+
+    #[test]
+    fn focus_entry_rechecks_a_cached_target_and_captures_the_actual_previous_plan() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(decision(Some("focused")), now)
+            .unwrap();
+        controller.platform.active = "external".into();
+        // Ordinary cache still says focused and its refresh deadline has not elapsed.
+        assert!(controller
+            .reconcile_ordinary(focus_decision("focused", 10), now + Duration::from_secs(1))
+            .unwrap());
+        assert_eq!(
+            controller.temporary_plan.as_ref().unwrap().original_guid,
+            "external"
+        );
+        assert_eq!(controller.platform.active, "focused");
+        controller
+            .reconcile_ordinary(restoration_observation(), now + Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(controller.platform.active, "external");
+        assert!(!controller.has_focus_plan());
+        assert!(controller.ordinary_original_guid.is_none());
+    }
+
+    #[test]
+    fn selected_else_and_active_plans_preempt_restoration_until_they_yield() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        for (target, state) in [
+            ("cpu-else", DecisionState::ByCpuLoad),
+            ("active", DecisionState::ByActivityActive),
+        ] {
+            assert!(controller
+                .reconcile_ordinary(temporary_decision(target, state), now)
+                .unwrap());
+            assert_eq!(controller.platform.active, target);
+            assert_eq!(
+                controller.temporary_plan.as_ref().unwrap().original_guid,
+                "original"
+            );
+        }
+        assert!(!controller
+            .platform
+            .events
+            .borrow()
+            .iter()
+            .any(|event| event == "apply:original"));
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+        assert_eq!(
+            controller.status().decision_state,
+            Some(DecisionState::ByActivityActive)
+        );
+    }
+
+    #[test]
+    fn uncertain_focus_samples_defer_but_known_nonmatches_and_stop_conditions_release() {
+        for (known, process_id, enabled, state, restore) in [
+            (false, None, true, DecisionState::NoPowerPlanSelected, false),
+            (
+                false,
+                Some(10),
+                true,
+                DecisionState::NoPowerPlanSelected,
+                false,
+            ),
+            (
+                false,
+                Some(20),
+                true,
+                DecisionState::NoPowerPlanSelected,
+                true,
+            ),
+            (
+                true,
+                Some(10),
+                true,
+                DecisionState::NoPowerPlanSelected,
+                true,
+            ),
+            (
+                false,
+                Some(10),
+                false,
+                DecisionState::NoPowerPlanSelected,
+                true,
+            ),
+            (false, None, true, DecisionState::Disabled, true),
+            (false, None, true, DecisionState::PausedWhilePluggedIn, true),
+        ] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(focus_decision("focused", 10), now)
+                .unwrap();
+            let mut observation = focus_observation(known, process_id);
+            observation.state = state;
+            observation.focus.enabled = enabled;
+            assert_eq!(
+                controller.reconcile_ordinary(observation, now).unwrap(),
+                restore
+            );
+            assert_eq!(
+                controller.platform.active,
+                if restore { "original" } else { "focused" }
+            );
+            assert_eq!(controller.has_focus_plan(), !restore);
+        }
+    }
+
+    #[test]
+    fn external_plan_changes_before_or_during_focus_release_are_preserved() {
+        for change_during_final_query in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(focus_decision("focused", 10), now)
+                .unwrap();
+            if change_during_final_query {
+                controller
+                    .platform
+                    .query_changes
+                    .push_back(Some("external".into()));
+            } else {
+                controller.platform.active = "external".into();
+                controller.refresh_active_plan(now).unwrap();
+            }
+            assert!(!controller
+                .reconcile_ordinary(restoration_observation(), now)
+                .unwrap());
+            assert_eq!(controller.platform.active, "external");
+            assert!(!controller.has_focus_plan());
+            assert!(controller.ordinary_original_guid.is_none());
+            assert!(controller.status().target_guid.is_none());
+            assert!(controller.status().owner.is_none());
+        }
+    }
+
+    #[test]
+    fn failed_focus_restore_retains_ownership_and_retries_after_the_interval() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        controller.platform.failure = Some(FailurePoint::Apply);
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .is_err());
+        assert_eq!(controller.platform.active, "focused");
+        assert!(controller.has_focus_plan());
+        assert!(controller.temporary_release_retry_delay().is_some());
+        let attempts = controller
+            .platform
+            .events
+            .borrow()
+            .iter()
+            .filter(|event| *event == "apply:original")
+            .count();
+        assert!(!controller
+            .reconcile_ordinary(restoration_observation(), now + SWITCH_RETRY_INTERVAL / 2)
+            .unwrap());
+        assert_eq!(
+            controller
+                .platform
+                .events
+                .borrow()
+                .iter()
+                .filter(|event| *event == "apply:original")
+                .count(),
+            attempts
+        );
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now + SWITCH_RETRY_INTERVAL)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+        assert!(!controller.has_focus_plan());
+    }
+
+    #[test]
+    fn uncertain_focus_activation_commits_the_baseline_before_releasing_it() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.platform.failure = Some(FailurePoint::Commit);
+        assert!(controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .is_err());
+        assert!(controller.has_focus_plan());
+        assert!(controller.temporary_plan.is_none());
+        assert!(controller.temporary_release_retry_delay().is_some());
+        controller.platform.failure = None;
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+        assert!(!controller.has_focus_plan());
+        assert!(controller.uncertain_switch.is_none());
+        assert!(controller.platform.pending.borrow().is_empty());
+    }
+
+    #[test]
+    fn uncertain_focus_release_preserves_the_older_ordinary_restoration_chain() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(decision(Some("ordinary")), now)
+            .unwrap();
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        controller.platform.failure = Some(FailurePoint::Commit);
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .is_err());
+        assert_eq!(controller.platform.active, "ordinary");
+        assert!(controller.has_focus_plan());
+        controller.platform.failure = None;
+        assert!(!controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert!(!controller.has_focus_plan());
+        assert_eq!(
+            controller.ordinary_expected_guid.as_deref(),
+            Some("ordinary")
+        );
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "original");
+    }
+
+    #[test]
+    fn adaptive_ownership_defers_focus_restoration_until_released() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        controller
+            .reconcile_adaptive(adaptive_request(), now)
+            .unwrap();
+        assert!(!controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "adaptive-1");
+        assert!(controller.has_focus_plan());
+        controller.release_adaptive(now).unwrap();
+        assert_eq!(controller.platform.active, "focused");
+        assert!(controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "original");
+    }
+
+    #[test]
+    fn disabling_restoration_during_adaptive_ownership_abandons_the_old_episode() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(focus_decision("focused", 10), now)
+            .unwrap();
+        controller
+            .reconcile_adaptive(adaptive_request(), now)
+            .unwrap();
+        assert!(!controller.reconcile_ordinary(decision(None), now).unwrap());
+        assert!(!controller.has_temporary_plan());
+        assert_eq!(controller.platform.active, "adaptive-1");
+        assert!(!controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        controller.release_adaptive(now).unwrap();
+        assert_eq!(controller.platform.active, "focused");
+        assert!(!controller
+            .reconcile_ordinary(restoration_observation(), now)
+            .unwrap());
+        assert_eq!(controller.platform.active, "focused");
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "original");
+    }
+
+    fn cpu_load_settings() -> ByCpuLoadSettings {
+        ByCpuLoadSettings {
+            enabled: true,
+            rules: vec![ByCpuLoadRule {
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
+                duration_seconds: 0,
+                stability: Some(ByCpuLoadStability {
+                    exit_threshold_percent: CpuLoadPercent::new(65).unwrap(),
+                    exit_upper_threshold_percent: None,
+                    minimum_hold_seconds: 30,
+                }),
+                power_plan_guid: Some("managed".into()),
+                ..ByCpuLoadRule::default()
+            }],
+        }
+    }
+
+    fn cpu_load_decision(candidate: &ByCpuLoadDecision) -> DecisionOutcome {
+        DecisionOutcome {
+            rule_index: Some(candidate.rule_index),
+            power_plan_guid: Some(candidate.power_plan_guid.clone()),
+            state: DecisionState::ByCpuLoad,
+            reason: "test CPU load decision".into(),
+            focus: Default::default(),
+            restore_previous_plan: false,
+            running_app_known: true,
+            cpu_load_known: true,
+            activity_known: true,
         }
     }
 
@@ -1554,7 +2604,9 @@ mod tests {
         controller.platform.query_changes =
             VecDeque::from([None, None, Some("external".to_owned())]);
         let events_before = controller.platform.events.borrow().len();
-        assert!(controller.switch_active_verified("second").is_err());
+        assert!(controller
+            .switch_active_verified("second", TemporaryEffect::Preserve)
+            .is_err());
         assert_eq!(controller.platform.active, "second");
         controller.refresh_active_plan(now).unwrap();
         assert_eq!(controller.platform.active, "external");
@@ -1586,14 +2638,18 @@ mod tests {
             .reconcile_ordinary(decision(Some("first")), now)
             .unwrap();
         controller.platform.failure = Some(FailurePoint::Commit);
-        assert!(controller.switch_active_verified("second").is_err());
+        assert!(controller
+            .switch_active_verified("second", TemporaryEffect::Preserve)
+            .is_err());
         assert_eq!(controller.platform.active, "second");
         assert_eq!(controller.platform.journal.borrow().len(), 1);
         assert_eq!(controller.platform.pending.borrow().len(), 1);
         controller.platform.failure = None;
         *controller.platform.resolution_failure.borrow_mut() = true;
         let events_before = controller.platform.events.borrow().len();
-        assert!(controller.switch_active_verified("third").is_err());
+        assert!(controller
+            .switch_active_verified("third", TemporaryEffect::Preserve)
+            .is_err());
         assert_eq!(
             &controller.platform.events.borrow()[events_before..],
             ["query", "resolve:true"]
@@ -1630,7 +2686,9 @@ mod tests {
             .reconcile_ordinary(decision(Some("first")), now)
             .unwrap();
         controller.platform.failure = Some(FailurePoint::Commit);
-        assert!(controller.switch_active_verified("second").is_err());
+        assert!(controller
+            .switch_active_verified("second", TemporaryEffect::Preserve)
+            .is_err());
         controller.platform.active = "first".to_owned();
         controller.platform.failure = None;
         controller.shutdown(now).unwrap();
@@ -1650,7 +2708,9 @@ mod tests {
         let query_count = controller.platform.query_count;
         controller.platform.query_failures.insert(query_count + 2);
         controller.platform.apply_results = VecDeque::from([(true, Ok(())), (false, Ok(()))]);
-        assert!(controller.switch_active_verified("second").is_err());
+        assert!(controller
+            .switch_active_verified("second", TemporaryEffect::Preserve)
+            .is_err());
         assert!(controller.uncertain_switch.is_some());
         assert_eq!(controller.platform.active, "second");
         controller.refresh_active_plan(now).unwrap();
@@ -1677,7 +2737,9 @@ mod tests {
             (true, Err("application failed after mutation".to_owned())),
             (true, Err("compensation failed after mutation".to_owned())),
         ]);
-        assert!(controller.switch_active_verified("second").is_err());
+        assert!(controller
+            .switch_active_verified("second", TemporaryEffect::Preserve)
+            .is_err());
         assert!(controller.uncertain_switch.is_some());
         assert_eq!(controller.platform.active, "first");
         controller.refresh_active_plan(now).unwrap();
@@ -1702,7 +2764,9 @@ mod tests {
             .platform
             .query_failures
             .extend([query_count + 2, query_count + 3]);
-        assert!(controller.switch_active_verified("second").is_err());
+        assert!(controller
+            .switch_active_verified("second", TemporaryEffect::Preserve)
+            .is_err());
         controller.platform.active = "external".to_owned();
         controller.platform.failure = Some(FailurePoint::Forget);
         assert!(controller.refresh_active_plan(now).is_err());
@@ -1731,7 +2795,9 @@ mod tests {
                 .platform
                 .query_failures
                 .extend([query_count + 2, query_count + 3]);
-            assert!(controller.switch_active_verified("second").is_err());
+            assert!(controller
+                .switch_active_verified("second", TemporaryEffect::Preserve)
+                .is_err());
             if failed_query {
                 let next_query = controller.platform.query_count + 1;
                 controller
@@ -1834,6 +2900,200 @@ mod tests {
         assert!(!controller
             .reconcile_ordinary(decision(Some("target")), now + Duration::from_secs(1))
             .unwrap());
+    }
+
+    #[test]
+    fn failed_active_plan_query_is_retried_before_using_the_cached_plan() {
+        let start = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.refresh_active_plan_if_due(start).unwrap();
+        controller.platform.active = "external".into();
+        controller
+            .platform
+            .query_failures
+            .insert(controller.platform.query_count + 1);
+        let failed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
+
+        assert!(controller.refresh_active_plan_if_due(failed_at).is_err());
+        controller
+            .refresh_active_plan_if_due(failed_at + Duration::from_secs(1))
+            .unwrap();
+
+        assert_eq!(
+            controller.status().current_guid.as_deref(),
+            Some("external")
+        );
+        assert_eq!(controller.platform.query_count, 3);
+    }
+
+    #[test]
+    fn already_effective_cpu_plan_begins_hold_after_confirmation() {
+        let start = Instant::now();
+        let settings = cpu_load_settings();
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("MANAGED"));
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), start)
+            .unwrap();
+        let confirmed_at = start + Duration::from_secs(20);
+
+        assert!(!controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), confirmed_at)
+            .unwrap());
+        scheduler.confirm_applied_rule(
+            Some(candidate.rule_index),
+            controller.status().current_guid.as_deref(),
+            confirmed_at,
+        );
+
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(49))
+            .is_some());
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(50))
+            .is_none());
+        assert!(!controller
+            .platform
+            .events
+            .borrow()
+            .iter()
+            .any(|event| event.starts_with("apply:")));
+    }
+
+    #[test]
+    fn failed_and_delayed_cpu_plan_switches_do_not_begin_a_hold() {
+        let start = Instant::now();
+        let settings = cpu_load_settings();
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.platform.failure = Some(FailurePoint::Begin);
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), start)
+            .unwrap();
+
+        assert!(controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), start)
+            .is_err());
+        scheduler.confirm_applied_rule(None, None, start);
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(1))
+            .is_none());
+
+        controller.platform.failure = None;
+        let retry_at = start + Duration::from_secs(2);
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), retry_at)
+            .unwrap();
+        assert!(!controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), retry_at)
+            .unwrap());
+        scheduler.confirm_applied_rule(
+            Some(candidate.rule_index),
+            controller.status().current_guid.as_deref(),
+            retry_at,
+        );
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(3))
+            .is_none());
+
+        let applied_at = start + SWITCH_RETRY_INTERVAL;
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), applied_at)
+            .unwrap();
+        assert!(controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), applied_at)
+            .unwrap());
+        scheduler.confirm_applied_rule(
+            Some(candidate.rule_index),
+            controller.status().current_guid.as_deref(),
+            applied_at,
+        );
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), applied_at + Duration::from_secs(1))
+            .is_some());
+    }
+
+    #[test]
+    fn higher_priority_same_plan_handoff_restarts_cpu_rule_hold() {
+        for state in [DecisionState::ByFocus, DecisionState::ByRunningApp] {
+            let start = Instant::now();
+            let settings = cpu_load_settings();
+            let mut scheduler = ByCpuLoadScheduler::default();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            let candidate = scheduler
+                .current_decision_at(&settings, Some(80.0), start)
+                .unwrap();
+            controller
+                .reconcile_ordinary(cpu_load_decision(&candidate), start)
+                .unwrap();
+            scheduler.confirm_applied_rule(
+                Some(0),
+                controller.status().current_guid.as_deref(),
+                start,
+            );
+
+            let preempted_at = start + Duration::from_secs(1);
+            let mut higher_priority = decision(Some("managed"));
+            higher_priority.state = state;
+            assert!(!controller
+                .reconcile_ordinary(higher_priority, preempted_at)
+                .unwrap());
+            scheduler.confirm_applied_rule(
+                None,
+                controller.status().current_guid.as_deref(),
+                preempted_at,
+            );
+            assert!(scheduler
+                .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(2))
+                .is_none());
+
+            let resumed_at = start + Duration::from_secs(20);
+            let candidate = scheduler
+                .current_decision_at(&settings, Some(80.0), resumed_at)
+                .unwrap();
+            assert!(!controller
+                .reconcile_ordinary(cpu_load_decision(&candidate), resumed_at)
+                .unwrap());
+            scheduler.confirm_applied_rule(
+                Some(candidate.rule_index),
+                controller.status().current_guid.as_deref(),
+                resumed_at,
+            );
+            assert!(scheduler
+                .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(49))
+                .is_some());
+            assert!(scheduler
+                .current_decision_at(&settings, Some(20.0), start + Duration::from_secs(50))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn observing_external_plan_releases_cpu_hold_before_proposing_a_plan() {
+        let start = Instant::now();
+        let settings = cpu_load_settings();
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let candidate = scheduler
+            .current_decision_at(&settings, Some(80.0), start)
+            .unwrap();
+        controller
+            .reconcile_ordinary(cpu_load_decision(&candidate), start)
+            .unwrap();
+        scheduler.confirm_applied_rule(Some(0), controller.status().current_guid.as_deref(), start);
+        controller.platform.active = "external".into();
+        let observed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
+
+        controller.refresh_active_plan_if_due(observed_at).unwrap();
+        scheduler.observe_active_plan(controller.status().current_guid.as_deref());
+        assert!(scheduler
+            .current_decision_at(&settings, Some(20.0), observed_at)
+            .is_none());
+        assert!(!controller
+            .reconcile_ordinary(decision(None), observed_at)
+            .unwrap());
+        assert_eq!(controller.platform.active, "external");
+        assert!(controller.platform.journal.borrow().is_empty());
     }
 
     #[test]

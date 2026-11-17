@@ -1,20 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    mem::size_of,
     path::{Path, PathBuf},
-    ptr::{null_mut, read_unaligned},
-    slice,
     time::{Duration, Instant},
 };
 
-use windows_sys::Win32::System::{
-    SystemInformation::{
-        GetLogicalProcessorInformationEx, RelationProcessorCore, GROUP_AFFINITY,
-        LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
-        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-    },
-    Threading::{GetActiveProcessorGroupCount, GetCurrentProcessId},
-};
+use windows_sys::Win32::System::Threading::{GetActiveProcessorGroupCount, GetCurrentProcessId};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -27,6 +17,7 @@ use crate::{
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
+    cpu_topology::{CpuSelection, CpuTopology, ProcessorId},
     features::priority_control::PriorityProcessTier,
     foreground::{
         contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
@@ -59,7 +50,7 @@ pub(crate) struct CpuAllocationTarget {
     pub(crate) process_name: String,
     pub(crate) executable_path: String,
     pub(crate) mode: CpuAllocationMode,
-    pub(crate) core_mask: u64,
+    pub(crate) selection: CpuSelection,
     pub(crate) creation_time: u64,
 }
 
@@ -76,13 +67,6 @@ pub struct LogicalProcessorInfo {
     pub core_index: usize,
     pub kind: LogicalProcessorKind,
     pub efficiency_class: u8,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct LogicalProcessorInformationHeader {
-    relationship: LOGICAL_PROCESSOR_RELATIONSHIP,
-    size: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -104,7 +88,7 @@ pub(crate) struct CpuAllocationGeneration {
 pub struct CpuAllocationManager {
     failure_suppression: ExecutionFailureTracker,
     action_log_feature: ActionLogFeature,
-    zone_generation: Vec<(ProcessTargetKey, u64)>,
+    zone_generation: Vec<(ProcessTargetKey, CpuSelection)>,
     zone_retry_after: Option<Instant>,
     zone_error: Option<String>,
     zone_failure: ZoneAllocationFailure,
@@ -295,8 +279,8 @@ impl CpuAllocationManager {
                 );
                 let visible_window =
                     !foreground && visible_processes.contains(process.id, &executable_path);
-                let core_mask = cpu_allocation_rule_core_mask(rule, foreground, visible_window);
-                if core_mask == 0 {
+                let selection = cpu_allocation_rule_selection(rule, foreground, visible_window);
+                if selection.is_empty() {
                     continue;
                 }
                 targets.push(CpuAllocationTarget {
@@ -304,14 +288,16 @@ impl CpuAllocationManager {
                     process_name: process.name.clone(),
                     executable_path: executable_path.to_string_lossy().into_owned(),
                     mode,
-                    core_mask,
+                    selection: selection.clone(),
                     creation_time,
                 });
             }
         }
 
+        let topology = observations.cpu_topology();
         self.apply_targets(
             coordinator,
+            topology.as_deref().map_err(String::as_str),
             owner,
             targets,
             scanned_processes,
@@ -321,29 +307,14 @@ impl CpuAllocationManager {
         )
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Adaptive Engine supplies already-discovered exact process targets"
-    )]
-    pub(crate) fn update_discovered_targets(
+    pub(crate) fn clear_discovered_targets<P: CpuAllocationPlatform>(
         &mut self,
-        coordinator: &mut CpuAllocationCoordinator,
+        coordinator: &mut CpuAllocationCoordinator<P>,
         owner: ControlOwner,
-        targets: Vec<CpuAllocationTarget>,
-        scanned_processes: usize,
-        message: &str,
-        allow_cross_session_process_control: bool,
+        reason: &str,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
-        self.apply_targets(
-            coordinator,
-            owner,
-            targets,
-            scanned_processes,
-            message.to_owned(),
-            allow_cross_session_process_control,
-            action_log,
-        )
+        self.disabled_snapshot(coordinator, owner, false, reason, reason, action_log)
     }
 
     #[expect(
@@ -353,6 +324,7 @@ impl CpuAllocationManager {
     fn apply_targets(
         &mut self,
         coordinator: &mut CpuAllocationCoordinator,
+        topology: Result<&CpuTopology, &str>,
         owner: ControlOwner,
         targets: Vec<CpuAllocationTarget>,
         scanned_processes: usize,
@@ -362,6 +334,7 @@ impl CpuAllocationManager {
     ) -> CpuAllocationSnapshot {
         self.reconcile_targets(
             coordinator,
+            topology,
             owner,
             targets,
             None,
@@ -380,6 +353,7 @@ impl CpuAllocationManager {
     pub(crate) fn reconcile_targets<P: CpuAllocationPlatform>(
         &mut self,
         coordinator: &mut CpuAllocationCoordinator<P>,
+        topology: Result<&CpuTopology, &str>,
         owner: ControlOwner,
         targets: Vec<CpuAllocationTarget>,
         zones: Option<(Vec<CpuAllocationTarget>, Vec<CpuAllocationTarget>)>,
@@ -388,6 +362,20 @@ impl CpuAllocationManager {
         allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
     ) -> CpuAllocationGeneration {
+        let topology_summary = coordinator.reconcile_topology(topology);
+        let topology_error = topology_summary
+            .failures
+            .first()
+            .map(|failure| failure.error.to_string());
+        let topology_releases = topology_summary.releases;
+        record_cpu_allocation_reconciliation(
+            CpuAllocationReconciliationSummary {
+                applications: topology_summary.applications,
+                failures: topology_summary.failures,
+                ..Default::default()
+            },
+            action_log,
+        );
         let (background, foreground) = zones.unwrap_or_default();
         let active_target_names = targets
             .iter()
@@ -399,7 +387,7 @@ impl CpuAllocationManager {
         let generation = background
             .iter()
             .chain(&foreground)
-            .map(|target| (cpu_allocation_target_key(target), target.core_mask))
+            .map(|target| (cpu_allocation_target_key(target), target.selection.clone()))
             .collect::<BTreeMap<_, _>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -422,7 +410,17 @@ impl CpuAllocationManager {
             .chain(&foreground)
             .map(cpu_allocation_target_key)
             .collect::<BTreeSet<_>>();
-        let mut failures = CpuAllocationFailures::default();
+        let mut failures = CpuAllocationFailures {
+            last_error: topology_error,
+            ..Default::default()
+        };
+        self.merge_release_summary(
+            topology_releases,
+            owner,
+            action_log,
+            "saved CPU selection is unavailable",
+            &mut failures,
+        );
         let mut skipped_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
         let mut zone_failure = self.zone_failure;
@@ -434,15 +432,26 @@ impl CpuAllocationManager {
         } else {
             self.feature_label().to_owned()
         };
+        let mut unresolved_targets = BTreeSet::new();
         let mut apply = |target: CpuAllocationTarget, zone_role: Option<&str>| {
             let role = zone_role.unwrap_or(&fallback_label);
             let mut effective = false;
-            let suppression = self.check_process_suppression(
-                target.process_id,
-                &target.process_name,
-                &target.executable_path,
-                action_log,
-            );
+            let selection_valid = topology.is_ok_and(|topology| match target.mode {
+                CpuAllocationMode::SoftCpuSets if owner != ControlOwner::AdaptiveEngine => {
+                    target.selection.resolve_processors(topology).is_ok()
+                }
+                _ => target.selection.resolve_group_zero(topology).is_ok(),
+            });
+            let suppression = if selection_valid {
+                self.check_process_suppression(
+                    target.process_id,
+                    &target.process_name,
+                    &target.executable_path,
+                    action_log,
+                )
+            } else {
+                ExecutionSuppression::default()
+            };
             if suppression.suppressed {
                 skipped_processes += 1;
                 if suppression.newly_suppressed {
@@ -456,10 +465,10 @@ impl CpuAllocationManager {
 
             let request = match target.mode {
                 CpuAllocationMode::SoftCpuSets => CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: target.core_mask,
+                    selection: target.selection.clone(),
                 },
                 CpuAllocationMode::HardAffinity => CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: target.core_mask,
+                    selection: target.selection.clone(),
                 },
             };
             let claim = CpuAllocationClaim {
@@ -471,9 +480,11 @@ impl CpuAllocationManager {
                 ),
                 owner,
                 request,
+                balancing_generation: None,
             };
             match coordinator.apply_policy_claim(
                 &mut inventory,
+                topology,
                 claim,
                 allow_cross_session_process_control,
             ) {
@@ -488,9 +499,8 @@ impl CpuAllocationManager {
                         target.process_name,
                         ActionLogResult::Applied,
                         format!(
-                            "{role}: allowed CPU mask {:#X} ({} logical CPUs).",
-                            target.core_mask,
-                            target.core_mask.count_ones()
+                            "{role}: allowed {} logical CPUs.",
+                            target.selection.processors().len()
                         ),
                     );
                 }
@@ -537,12 +547,27 @@ impl CpuAllocationManager {
                         message,
                     );
                 }
+                Err(CpuAllocationApplyError::Topology(error)) => {
+                    unresolved_targets.insert(cpu_allocation_target_key(&target));
+                    zone_failure = ZoneAllocationFailure::Unavailable;
+                    failures.last_error.get_or_insert_with(|| error.to_string());
+                }
                 Err(CpuAllocationApplyError::Discovery(error)) => {
                     zone_failure = ZoneAllocationFailure::Unavailable;
                     if failures.last_error.is_none() {
                         failures.count += 1;
                         failures.last_error = Some(error.to_string());
                     }
+                }
+                Err(CpuAllocationApplyError::Eligibility(error)) => {
+                    skipped_processes += 1;
+                    action_log.record(
+                        self.action_log_feature,
+                        Some(target.process_id),
+                        target.process_name,
+                        ActionLogResult::Skipped,
+                        error.to_string(),
+                    );
                 }
                 Err(CpuAllocationApplyError::Target(error)) => {
                     if zone_role.is_some() {
@@ -596,6 +621,7 @@ impl CpuAllocationManager {
         if inventory.failed() {
             active_targets.extend(desired_keys);
         }
+        active_targets.retain(|key| !unresolved_targets.contains(key));
         self.zone_failure = zone_failure;
         if !self.zone_generation.is_empty() && zone_counts.is_none() {
             if attempt_zones {
@@ -635,9 +661,9 @@ impl CpuAllocationManager {
         }
     }
 
-    fn disabled_snapshot(
+    fn disabled_snapshot<P: CpuAllocationPlatform>(
         &mut self,
-        coordinator: &mut CpuAllocationCoordinator,
+        coordinator: &mut CpuAllocationCoordinator<P>,
         owner: ControlOwner,
         enabled: bool,
         message: &str,
@@ -799,7 +825,7 @@ pub(crate) fn record_cpu_allocation_reconciliation(
             ActionLogResult::Applied,
             format!(
                 "Applied {} after CPU allocation precedence changed.",
-                cpu_allocation_request_label(application.request)
+                cpu_allocation_request_label(application.owner, application.request)
             ),
         );
     }
@@ -840,6 +866,9 @@ pub(crate) fn cpu_allocation_action_log_context(
             "Processor Affinity (Hard)",
         ),
         ControlOwner::AdaptiveEngine => (ActionLogFeature::AdaptiveEngine, "Adaptive Engine"),
+        ControlOwner::InstanceBalancing => {
+            (ActionLogFeature::InstanceBalancing, "Instance Balancing")
+        }
         unsupported => {
             unreachable!("unsupported CPU allocation Action Log owner: {unsupported:?}")
         }
@@ -894,7 +923,13 @@ fn cpu_allocation_target_key(target: &CpuAllocationTarget) -> ProcessTargetKey {
     )
 }
 
-fn cpu_allocation_request_label(request: CpuAllocationRequest) -> &'static str {
+fn cpu_allocation_request_label(
+    owner: ControlOwner,
+    request: CpuAllocationRequest,
+) -> &'static str {
+    if owner == ControlOwner::InstanceBalancing {
+        return "Instance Balancing";
+    }
     match request {
         CpuAllocationRequest::SoftCpuSets { .. } => "CPU Sets (Soft)",
         CpuAllocationRequest::HardAffinity { .. } => "Processor Affinity (Hard)",
@@ -934,13 +969,7 @@ pub fn contains_process(list: &[String], executable_path: &str) -> bool {
     })
 }
 
-pub(crate) fn zone_logical_processors() -> Option<Vec<LogicalProcessorInfo>> {
-    let groups = active_processor_group_count();
-    let processors = logical_processors_from_topology()?;
-    zone_domain_supported(groups, &processors).then_some(processors)
-}
-
-fn zone_domain_supported(groups: u16, processors: &[LogicalProcessorInfo]) -> bool {
+pub(crate) fn zone_domain_supported(groups: u16, processors: &[LogicalProcessorInfo]) -> bool {
     groups == 1
         && processors.len() >= 2
         && processors.len() <= 64
@@ -971,13 +1000,6 @@ pub fn logical_processor_kind_mask(
         .fold(0, |mask, bit| mask | bit)
 }
 
-pub fn logical_processor_indices_mask(indices: &[u8]) -> u64 {
-    indices
-        .iter()
-        .filter(|index| **index < u64::BITS as u8)
-        .fold(0, |mask, index| mask | (1_u64 << index))
-}
-
 pub fn logical_processor_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
     let mut seen_cores = Vec::new();
     let mut mask = 0;
@@ -991,21 +1013,6 @@ pub fn logical_processor_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64
         }
     }
     mask
-}
-
-pub fn default_cpu_mask() -> u64 {
-    let processors = logical_processors();
-    let mask = logical_processor_mask(&processors);
-    if mask != 0 {
-        return mask;
-    }
-
-    let processor_count = processors.len().clamp(1, 64);
-    if processor_count == 64 {
-        u64::MAX
-    } else {
-        (1_u64 << processor_count) - 1
-    }
 }
 
 pub fn has_multiple_processor_groups() -> bool {
@@ -1023,7 +1030,7 @@ fn cpu_allocation_message(mode: CpuAllocationMode) -> String {
 
 fn processor_affinity_hard_message_for_group_count(group_count: u16) -> String {
     if group_count > 1 {
-        "Processor Affinity (Hard) active. Multi-group CPU detected: affinity can only control CPUs in the process primary processor group. Apps that are not processor-group-aware may not use the full CPU."
+        "Processor Affinity (Hard) active. Multi-group CPU detected: new allocations require an app assigned only to processor group 0. Other or uncertain group assignments are unavailable."
             .to_owned()
     } else {
         "Processor Affinity (Hard) active.".to_owned()
@@ -1035,112 +1042,65 @@ fn active_processor_group_count() -> u16 {
     unsafe { GetActiveProcessorGroupCount() }
 }
 
-fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
-    let mut returned_length = 0;
-    // SAFETY: A null buffer with zero length requests the required byte count in returned_length.
-    unsafe {
-        GetLogicalProcessorInformationEx(RelationProcessorCore, null_mut(), &mut returned_length);
-    }
-
-    if returned_length == 0 {
-        return None;
-    }
-
-    let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
-    let mut buffer = vec![0_usize; word_count];
-    // SAFETY: buffer provides at least returned_length writable bytes and returned_length remains
-    // writable for the actual result size.
-    let ok = unsafe {
-        GetLogicalProcessorInformationEx(
-            RelationProcessorCore,
-            buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
-            &mut returned_length,
-        )
-    };
-    if ok == 0 || returned_length == 0 {
-        return None;
-    }
-
-    // SAFETY: The successful topology query initialized returned_length bytes within buffer.
-    let bytes =
-        unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) };
-
-    logical_processors_from_topology_bytes(bytes)
+pub(crate) fn processor_topology() -> Result<crate::cpu_topology::CpuTopology, String> {
+    crate::platform::windows::cpu_allocation::topology::query()
+        .map_err(|error| format!("CPU topology discovery failed: {error:?}"))
 }
 
-fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalProcessorInfo>> {
-    let mut processors = Vec::new();
-    let mut core_index = 0;
-    let mut offset = 0;
-    let header_size = size_of::<LogicalProcessorInformationHeader>();
-    let processor_size = size_of::<PROCESSOR_RELATIONSHIP>();
-    let group_mask_offset = header_size + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask);
-    let group_mask_size = size_of::<GROUP_AFFINITY>();
+fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
+    let topology = processor_topology().ok()?;
+    let processors = logical_processors_for_group_zero(&topology);
+    (!processors.is_empty()).then_some(processors)
+}
 
-    while offset + header_size <= buffer.len() {
-        // SAFETY: The header bounds check above guarantees enough bytes; unaligned reads are used
-        // because the Win32 records are byte-packed.
-        let header = unsafe {
-            read_unaligned(buffer.as_ptr().add(offset) as *const LogicalProcessorInformationHeader)
-        };
-        let record_size = header.size as usize;
-        if record_size < header_size || offset + record_size > buffer.len() {
-            break;
-        }
+pub(crate) fn logical_processors_for_group_zero(
+    topology: &crate::cpu_topology::CpuTopology,
+) -> Vec<LogicalProcessorInfo> {
+    logical_processors_for_topology(topology)
+        .into_iter()
+        .filter_map(|(id, processor)| (id.group == 0).then_some(processor))
+        .collect()
+}
 
-        if header.relationship == RelationProcessorCore
-            && record_size >= header_size + processor_size
-        {
-            // SAFETY: record_size was validated against the buffer and includes a complete
-            // PROCESSOR_RELATIONSHIP.
-            let processor = unsafe {
-                read_unaligned(
-                    buffer.as_ptr().add(offset + header_size) as *const PROCESSOR_RELATIONSHIP
-                )
-            };
-            let available_group_count =
-                record_size.saturating_sub(group_mask_offset) / group_mask_size;
-            let group_count = usize::from(processor.GroupCount).min(available_group_count);
-            for group_index in 0..group_count {
-                // SAFETY: group_count is capped by the number of complete GROUP_AFFINITY records
-                // inside this validated record.
-                let group_affinity = unsafe {
-                    read_unaligned(
-                        buffer
-                            .as_ptr()
-                            .add(offset + group_mask_offset + group_index * group_mask_size)
-                            as *const GROUP_AFFINITY,
-                    )
-                };
-                if group_affinity.Group != 0 {
-                    continue;
-                }
-
-                for bit in 0..usize::BITS as usize {
-                    if (group_affinity.Mask & (1_usize << bit)) != 0 && bit < 64 {
-                        processors.push(LogicalProcessorInfo {
-                            index: bit,
-                            core_index,
-                            kind: LogicalProcessorKind::Standard,
-                            efficiency_class: processor.EfficiencyClass,
-                        });
-                    }
-                }
-            }
-            core_index += 1;
-        }
-
-        offset += record_size;
-    }
-
-    if processors.is_empty() {
-        None
-    } else {
-        classify_logical_processors(&mut processors);
-        processors.sort_by_key(|processor| processor.index);
-        processors.dedup_by_key(|processor| processor.index);
-        Some(processors)
-    }
+pub(crate) fn logical_processors_for_topology(
+    topology: &crate::cpu_topology::CpuTopology,
+) -> Vec<(ProcessorId, LogicalProcessorInfo)> {
+    let cores = topology
+        .processors()
+        .iter()
+        .map(|processor| processor.core)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .enumerate()
+        .map(|(index, core)| (core, index))
+        .collect::<BTreeMap<_, _>>();
+    let minimum = topology
+        .processors()
+        .iter()
+        .map(|processor| processor.efficiency_class)
+        .min()
+        .unwrap_or(0);
+    let maximum = topology
+        .processors()
+        .iter()
+        .map(|processor| processor.efficiency_class)
+        .max()
+        .unwrap_or(minimum);
+    topology
+        .processors()
+        .iter()
+        .map(|processor| {
+            (
+                processor.id,
+                LogicalProcessorInfo {
+                    index: usize::from(processor.id.number),
+                    core_index: cores[&processor.core],
+                    kind: processor_kind(processor.efficiency_class, minimum, maximum),
+                    efficiency_class: processor.efficiency_class,
+                },
+            )
+        })
+        .collect()
 }
 
 fn fallback_logical_processors() -> Vec<LogicalProcessorInfo> {
@@ -1157,29 +1117,6 @@ fn fallback_logical_processors() -> Vec<LogicalProcessorInfo> {
             efficiency_class: 0,
         })
         .collect()
-}
-
-fn classify_logical_processors(processors: &mut [LogicalProcessorInfo]) {
-    let Some(min_efficiency_class) = processors
-        .iter()
-        .map(|processor| processor.efficiency_class)
-        .min()
-    else {
-        return;
-    };
-    let max_efficiency_class = processors
-        .iter()
-        .map(|processor| processor.efficiency_class)
-        .max()
-        .unwrap_or(min_efficiency_class);
-
-    for processor in processors {
-        processor.kind = processor_kind(
-            processor.efficiency_class,
-            min_efficiency_class,
-            max_efficiency_class,
-        );
-    }
 }
 
 fn processor_kind(
@@ -1219,21 +1156,21 @@ fn cpu_allocation_observation_requirements(rules: &[CpuAllocationRule]) -> (bool
         .iter()
         .filter(|rule| cpu_allocation_rule_is_active(rule))
     {
-        needs_foreground |= rule.focus_core_mask != rule.visible_window_core_mask;
-        needs_visible_windows |= rule.visible_window_core_mask != rule.background_core_mask;
+        needs_foreground |= rule.focus_selection != rule.visible_window_selection;
+        needs_visible_windows |= rule.visible_window_selection != rule.background_selection;
     }
     (needs_foreground, needs_visible_windows)
 }
 
-fn cpu_allocation_rule_core_mask(
+fn cpu_allocation_rule_selection(
     rule: &CpuAllocationRule,
     foreground: bool,
     visible_window: bool,
-) -> u64 {
+) -> &CpuSelection {
     PriorityProcessTier::from_flags(foreground, visible_window).select(
-        rule.focus_core_mask,
-        rule.visible_window_core_mask,
-        rule.background_core_mask,
+        &rule.focus_selection,
+        &rule.visible_window_selection,
+        &rule.background_selection,
     )
 }
 
@@ -1269,23 +1206,23 @@ mod tests {
             CpuAllocationRule {
                 enabled: false,
                 executable_path: r"C:\Apps\Browser\browser.exe".to_owned(),
-                focus_core_mask: 1,
-                visible_window_core_mask: 1,
-                background_core_mask: 1,
+                focus_selection: crate::cpu_topology::test_selection(1),
+                visible_window_selection: crate::cpu_topology::test_selection(1),
+                background_selection: crate::cpu_topology::test_selection(1),
             },
             CpuAllocationRule {
                 enabled: true,
                 executable_path: r"C:\Apps\Backup\backup.exe".to_owned(),
-                focus_core_mask: 0,
-                visible_window_core_mask: 0,
-                background_core_mask: 0,
+                focus_selection: crate::cpu_topology::test_selection(0),
+                visible_window_selection: crate::cpu_topology::test_selection(0),
+                background_selection: crate::cpu_topology::test_selection(0),
             },
             CpuAllocationRule {
                 enabled: true,
                 executable_path: r" C:\Apps\Worker\Worker.EXE ".to_owned(),
-                focus_core_mask: 0b001,
-                visible_window_core_mask: 0b010,
-                background_core_mask: 0b100,
+                focus_selection: crate::cpu_topology::test_selection(0b001),
+                visible_window_selection: crate::cpu_topology::test_selection(0b010),
+                background_selection: crate::cpu_topology::test_selection(0b100),
             },
         ];
 
@@ -1300,14 +1237,29 @@ mod tests {
         let rule = CpuAllocationRule {
             enabled: true,
             executable_path: r"C:\Apps\Worker\worker.exe".to_owned(),
-            focus_core_mask: 0b001,
-            visible_window_core_mask: 0b010,
-            background_core_mask: 0b100,
+            focus_selection: crate::cpu_topology::test_selection(0b001),
+            visible_window_selection: crate::cpu_topology::test_selection(0b010),
+            background_selection: crate::cpu_topology::test_selection(0b100),
         };
 
-        assert_eq!(cpu_allocation_rule_core_mask(&rule, true, true), 0b001);
-        assert_eq!(cpu_allocation_rule_core_mask(&rule, false, true), 0b010);
-        assert_eq!(cpu_allocation_rule_core_mask(&rule, false, false), 0b100);
+        assert_eq!(
+            cpu_allocation_rule_selection(&rule, true, true)
+                .resolve_group_zero(&crate::cpu_topology::test_topology())
+                .unwrap(),
+            0b001
+        );
+        assert_eq!(
+            cpu_allocation_rule_selection(&rule, false, true)
+                .resolve_group_zero(&crate::cpu_topology::test_topology())
+                .unwrap(),
+            0b010
+        );
+        assert_eq!(
+            cpu_allocation_rule_selection(&rule, false, false)
+                .resolve_group_zero(&crate::cpu_topology::test_topology())
+                .unwrap(),
+            0b100
+        );
     }
 
     #[test]
@@ -1321,9 +1273,9 @@ mod tests {
             let rule = CpuAllocationRule {
                 enabled: true,
                 executable_path: r"C:\Apps\Worker\worker.exe".to_owned(),
-                focus_core_mask: focus,
-                visible_window_core_mask: visible,
-                background_core_mask: background,
+                focus_selection: crate::cpu_topology::test_selection(focus),
+                visible_window_selection: crate::cpu_topology::test_selection(visible),
+                background_selection: crate::cpu_topology::test_selection(background),
             };
             assert_eq!(cpu_allocation_observation_requirements(&[rule]), expected);
         }
@@ -1404,17 +1356,19 @@ mod tests {
                 ControlOwner::CpuSetsSoft,
                 ControlOwner::AdaptiveEngine,
                 ControlOwner::CpuSetsSoft,
+                ControlOwner::InstanceBalancing,
             ],
             "settings changed",
             &mut log,
         );
 
         let entries = log.entries();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].feature, ActionLogFeature::CpuSetsSoft);
         assert!(entries[0].reason.contains("2 CPU allocation properties"));
-        assert_eq!(entries[1].feature, ActionLogFeature::AdaptiveEngine);
+        assert_eq!(entries[1].feature, ActionLogFeature::InstanceBalancing);
         assert!(entries[1].reason.contains("1 CPU allocation property"));
+        assert_eq!(entries[2].feature, ActionLogFeature::AdaptiveEngine);
     }
 
     #[test]
@@ -1465,7 +1419,15 @@ mod tests {
                         process_id: 42,
                         process_name: "worker.exe".to_owned(),
                         request: CpuAllocationRequest::HardAffinity {
-                            logical_processor_mask: 0b0011,
+                            selection: crate::cpu_topology::test_selection(0b0011),
+                        },
+                    },
+                    crate::control::cpu_allocation::CpuAllocationReconciledApplication {
+                        owner: ControlOwner::InstanceBalancing,
+                        process_id: 43,
+                        process_name: "balanced.exe".to_owned(),
+                        request: CpuAllocationRequest::SoftCpuSets {
+                            selection: crate::cpu_topology::test_selection(0b0011),
                         },
                     },
                 ],
@@ -1475,10 +1437,12 @@ mod tests {
         );
 
         let entries = log.entries();
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].feature, ActionLogFeature::AdaptiveEngine);
         assert_eq!(entries[0].result, ActionLogResult::Applied);
         assert!(entries[0].reason.contains("Processor Affinity (Hard)"));
+        assert_eq!(entries[1].feature, ActionLogFeature::InstanceBalancing);
+        assert!(entries[1].reason.contains("Instance Balancing"));
     }
 
     #[test]
@@ -1508,7 +1472,7 @@ mod tests {
         );
         let message = processor_affinity_hard_message_for_group_count(2);
         assert!(message.contains("Multi-group CPU detected"));
-        assert!(message.contains("processor-group-aware"));
+        assert!(message.contains("only to processor group 0"));
     }
 
     #[test]
@@ -1519,88 +1483,12 @@ mod tests {
     }
 
     #[test]
-    fn homogeneous_topology_is_standard() {
-        let mut processors = vec![
-            LogicalProcessorInfo {
-                index: 0,
-                core_index: 0,
-                kind: LogicalProcessorKind::Performance,
-                efficiency_class: 0,
-            },
-            LogicalProcessorInfo {
-                index: 1,
-                core_index: 1,
-                kind: LogicalProcessorKind::Efficiency,
-                efficiency_class: 0,
-            },
-        ];
-
-        classify_logical_processors(&mut processors);
-
-        assert!(processors
-            .iter()
-            .all(|processor| processor.kind == LogicalProcessorKind::Standard));
-    }
-
-    #[test]
     fn hybrid_topology_classifies_min_and_max_efficiency_classes() {
         assert_eq!(processor_kind(0, 0, 1), LogicalProcessorKind::Efficiency);
         assert_eq!(processor_kind(1, 0, 1), LogicalProcessorKind::Performance);
         assert_eq!(processor_kind(2, 0, 3), LogicalProcessorKind::Standard);
     }
-
-    #[test]
-    fn topology_parser_reads_final_minimal_processor_record() {
-        let mut buffer = Vec::new();
-        append_processor_record(&mut buffer, 1, 1);
-        append_processor_record(&mut buffer, 1_usize << 11, 0);
-
-        let processors = logical_processors_from_topology_bytes(&buffer).unwrap();
-
-        assert_eq!(
-            processors
-                .iter()
-                .map(|processor| processor.index)
-                .collect::<Vec<_>>(),
-            vec![0, 11]
-        );
-        assert_eq!(processors[0].kind, LogicalProcessorKind::Performance);
-        assert_eq!(processors[1].kind, LogicalProcessorKind::Efficiency);
-    }
-
-    fn append_processor_record(buffer: &mut Vec<u8>, mask: usize, efficiency_class: u8) {
-        let header_size = size_of::<LogicalProcessorInformationHeader>();
-        let processor_size = size_of::<PROCESSOR_RELATIONSHIP>();
-        let record_size = header_size + processor_size;
-        let start = buffer.len();
-        buffer.resize(start + record_size, 0);
-
-        let header = LogicalProcessorInformationHeader {
-            relationship: RelationProcessorCore,
-            size: record_size as u32,
-        };
-        let processor = PROCESSOR_RELATIONSHIP {
-            EfficiencyClass: efficiency_class,
-            GroupCount: 1,
-            GroupMask: [GROUP_AFFINITY {
-                Mask: mask,
-                Group: 0,
-                Reserved: [0; 3],
-            }],
-            ..Default::default()
-        };
-
-        // SAFETY: buffer was allocated for the complete header and processor records, and
-        // write_unaligned matches their byte-packed representation.
-        unsafe {
-            std::ptr::write_unaligned(
-                buffer.as_mut_ptr().add(start) as *mut LogicalProcessorInformationHeader,
-                header,
-            );
-            std::ptr::write_unaligned(
-                buffer.as_mut_ptr().add(start + header_size) as *mut PROCESSOR_RELATIONSHIP,
-                processor,
-            );
-        }
-    }
 }
+
+#[cfg(test)]
+mod topology_tests;

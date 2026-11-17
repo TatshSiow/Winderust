@@ -1,8 +1,9 @@
 use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
-    by_activity, cpu_allocation, cpu_limiter, design, home, memory_trim, navigation, power_rules,
-    priority_control, process_list, process_power_plans, settings_pages, status_rail, tasks,
-    timer_resolution, watchdog, widgets, win32_priority_separation, window_frame,
+    by_activity, cpu_allocation, cpu_limiter, design, home, instance_balancing, instance_limits,
+    keep_running, memory_trim, navigation, power_rules, priority_control, process_list,
+    process_power_plans, settings_pages, sleep_prevention, status_rail, tasks, timer_resolution,
+    watchdog, widgets, win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -256,8 +257,12 @@ pub(crate) fn run(
                 sampling: false,
                 catalog_sampled_at: std::time::Instant::now(),
                 suspension: app_suspension::Editor::default(),
+                sleep_prevention: sleep_prevention::Editor::default(),
                 trim: memory_trim::Editor::default(),
                 watchdog: watchdog::Editor::default(),
+                keep_running: keep_running::Editor::default(),
+                instance_limits: instance_limits::Editor::default(),
+                instance_balancing: instance_balancing::Editor::default(),
                 timer: timer_resolution::Editor::default(),
                 priority_separation: win32_priority_separation::Editor::default(),
                 power_tuning: advanced_power_plan_tuning::Editor::default(),
@@ -305,7 +310,8 @@ pub(crate) fn run(
                 power_plans: Vec::new(),
                 power_plans_loading: false,
                 power_plans_loaded: false,
-                foreground_plans: process_power_plans::Editor::default(),
+                power_plans_reload_pending: false,
+                focus_plans: process_power_plans::Editor::default(),
                 running_app_plans: process_power_plans::Editor::default(),
                 activity_inputs: by_activity::Inputs::default(),
             };
@@ -556,8 +562,12 @@ struct WinderustApp {
     sampling: bool,
     catalog_sampled_at: std::time::Instant,
     suspension: app_suspension::Editor,
+    sleep_prevention: sleep_prevention::Editor,
     trim: memory_trim::Editor,
     watchdog: watchdog::Editor,
+    keep_running: keep_running::Editor,
+    instance_limits: instance_limits::Editor,
+    instance_balancing: instance_balancing::Editor,
     timer: timer_resolution::Editor,
     priority_separation: win32_priority_separation::Editor,
     power_tuning: advanced_power_plan_tuning::Editor,
@@ -597,7 +607,8 @@ struct WinderustApp {
     power_plans: Vec<crate::power::PowerPlan>,
     power_plans_loading: bool,
     power_plans_loaded: bool,
-    foreground_plans: process_power_plans::Editor,
+    power_plans_reload_pending: bool,
+    focus_plans: process_power_plans::Editor,
     running_app_plans: process_power_plans::Editor,
     activity_inputs: by_activity::Inputs,
 }
@@ -632,8 +643,12 @@ enum Message {
     ActionLog(action_log::Message),
     ExportLog(Option<PathBuf>),
     Suspension(app_suspension::Message),
+    SleepPrevention(sleep_prevention::Message),
     Trim(memory_trim::Message),
     Watchdog(watchdog::Message),
+    KeepRunning(keep_running::Message),
+    InstanceLimits(instance_limits::Message),
+    InstanceBalancing(instance_balancing::Message),
     Timer(timer_resolution::Message),
     PrioritySeparation(win32_priority_separation::Message),
     PowerTuning(advanced_power_plan_tuning::Message),
@@ -659,6 +674,7 @@ enum Message {
     Save,
     Cancel,
     PausePowerPlans(bool),
+    RestorePreviousPowerPlan(bool),
     SettingsFile(FileDialogMode),
     SettingsFileChosen(FileDialogMode, Option<PathBuf>),
     Stay,
@@ -761,15 +777,38 @@ impl WinderustApp {
                     return self.scroll_search_selection();
                 }
                 Key::Named(Named::Enter) if status == iced::event::Status::Ignored && !repeat => {
-                    return self.update(Message::ConfirmSearch)
+                    return self.update(Message::ConfirmSearch);
                 }
                 _ => return Task::none(),
             }
         }
-        if self.page == Page::Watchdog && self.watchdog.has_pending_editor() {
+        let cancel_rule = match self.page {
+            Page::Watchdog if self.watchdog.has_pending_editor() => {
+                Some(Message::Watchdog(watchdog::Message::CancelRule))
+            }
+            Page::InstanceLimits if self.instance_limits.has_pending_editor() => Some(
+                Message::InstanceLimits(instance_limits::Message::CancelRule),
+            ),
+            Page::InstanceBalancing if self.instance_balancing.has_pending_editor() => Some(
+                Message::InstanceBalancing(instance_balancing::Message::CancelRule),
+            ),
+            Page::KeepRunning if self.keep_running.has_pending_editor() => {
+                Some(Message::KeepRunning(keep_running::Message::CancelRule))
+            }
+            Page::ByTime if self.time_rules.has_pending_editor() => Some(Message::PowerRules(
+                power_rules::Kind::Time,
+                power_rules::Message::Cancel,
+            )),
+            Page::ByCpuLoad if self.cpu_rules.has_pending_editor() => Some(Message::PowerRules(
+                power_rules::Kind::CpuLoad,
+                power_rules::Message::Cancel,
+            )),
+            _ => None,
+        };
+        if let Some(cancel_rule) = cancel_rule {
             return match key {
                 Key::Named(Named::Escape) if !repeat && status == iced::event::Status::Ignored => {
-                    self.update(Message::Watchdog(watchdog::Message::CancelRule))
+                    self.update(cancel_rule)
                 }
                 Key::Named(Named::Tab) if status == iced::event::Status::Ignored => {
                     if modifiers.shift() {
@@ -1070,7 +1109,7 @@ impl WinderustApp {
                 }
             }
             Message::Home(home::Message::Navigate(page)) => {
-                return self.update(Message::Page(page))
+                return self.update(Message::Page(page));
             }
             Message::Home(home::Message::HoverChart(kind, slot)) => {
                 self.home.hover_chart(kind, slot)
@@ -1083,10 +1122,10 @@ impl WinderustApp {
                 }
             }
             Message::Preferences(settings_pages::Message::Export) => {
-                return self.update(Message::SettingsFile(FileDialogMode::Save))
+                return self.update(Message::SettingsFile(FileDialogMode::Save));
             }
             Message::Preferences(settings_pages::Message::Import) => {
-                return self.update(Message::SettingsFile(FileDialogMode::Open))
+                return self.update(Message::SettingsFile(FileDialogMode::Open));
             }
             Message::Preferences(
                 message @ (settings_pages::Message::Check | settings_pages::Message::CheckStartup),
@@ -1188,7 +1227,7 @@ impl WinderustApp {
                         self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
                     ),
                     Message::ExportLog,
-                )
+                );
             }
             Message::ActionLog(message) => {
                 let reset = matches!(
@@ -1232,7 +1271,7 @@ impl WinderustApp {
                 }
             }
             Message::Suspension(app_suspension::Message::Browse) => {
-                return self.browse(Page::AppSuspension)
+                return self.browse(Page::AppSuspension);
             }
             Message::Suspension(message) => {
                 if let Some((path, freeze)) = self.suspension.update(
@@ -1252,7 +1291,7 @@ impl WinderustApp {
                                     .map_err(|e| e.to_string())
                                     .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
                             })
-                            .map(|r| Message::CommandFinished(r.and_then(|r| r)))
+                            .map(|r| Message::CommandFinished(r.and_then(|r| r)));
                         }
                         Err(error) => self.error_message = error.to_string(),
                     }
@@ -1268,13 +1307,47 @@ impl WinderustApp {
                                 .map_err(|e| e.to_string())
                                 .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
                         })
-                        .map(|r| Message::CommandFinished(r.and_then(|r| r)))
+                        .map(|r| Message::CommandFinished(r.and_then(|r| r)));
                     }
                     Err(error) => self.error_message = error.to_string(),
                 }
             }
             Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
             Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
+            Message::InstanceBalancing(instance_balancing::Message::Browse) => {
+                return self.browse(Page::InstanceBalancing);
+            }
+            Message::InstanceBalancing(message) => {
+                self.settings.edit_global(|settings| {
+                    self.instance_balancing
+                        .update(&mut settings.instance_balancing, message)
+                });
+            }
+            Message::InstanceLimits(instance_limits::Message::Browse) => {
+                return self.browse(Page::InstanceLimits);
+            }
+            Message::InstanceLimits(message) => {
+                self.settings.edit_global(|settings| {
+                    self.instance_limits
+                        .update(&mut settings.instance_limits, message)
+                });
+            }
+            Message::KeepRunning(keep_running::Message::Browse) => {
+                return self.browse(Page::KeepRunning);
+            }
+            Message::KeepRunning(keep_running::Message::Resume(path)) => {
+                if self.pending_changes() {
+                    self.error_message = t!("keep_running.save_before_resume").to_string();
+                } else if let Err(error) = self.runtime.request_keep_running_resume(path) {
+                    self.error_message = error.to_string();
+                }
+            }
+            Message::KeepRunning(message) => {
+                self.settings.edit_global(|settings| {
+                    self.keep_running
+                        .update(&mut settings.keep_running, message)
+                });
+            }
             Message::Watchdog(watchdog::Message::Tab(resource)) => {
                 self.watchdog.select_tab(resource);
             }
@@ -1282,8 +1355,14 @@ impl WinderustApp {
                 self.settings
                     .edit_global(|settings| self.watchdog.update(&mut settings.watchdog, message));
             }
+            Message::SleepPrevention(sleep_prevention::Message::Browse) => {
+                return self.browse(Page::SleepPrevention);
+            }
+            Message::SleepPrevention(message) => self
+                .sleep_prevention
+                .update(&mut self.settings.sleep_prevention, message),
             Message::Timer(timer_resolution::Message::Browse) => {
-                return self.browse(Page::TimerResolution)
+                return self.browse(Page::TimerResolution);
             }
             Message::Timer(message) => self.timer.update(
                 &mut self.settings.timer_resolution,
@@ -1310,20 +1389,20 @@ impl WinderustApp {
                 editor.update(kind, &mut self.settings, &self.power_plans, message);
             }
             Message::Priority(kind, priority_control::Message::Browse) => {
-                return self.browse(priority_page(kind))
+                return self.browse(priority_page(kind));
             }
             Message::Priority(kind, message) => {
                 self.priority.update(&mut self.settings, kind, message)
             }
             Message::Efficiency(background_efficiency::Message::Browse) => {
-                return self.browse(Page::BackgroundEfficiency)
+                return self.browse(Page::BackgroundEfficiency);
             }
             Message::Efficiency(message) => self.efficiency.update(&mut self.settings, message),
             Message::Allocation(kind, cpu_allocation::Message::Browse) => {
                 return self.browse(match kind {
                     cpu_allocation::Kind::Soft => Page::CpuSetsSoft,
                     cpu_allocation::Kind::Hard => Page::ProcessorAffinityHard,
-                })
+                });
             }
             Message::Allocation(kind, message) => {
                 if matches!(
@@ -1342,7 +1421,7 @@ impl WinderustApp {
                 })
             }
             Message::Adaptive(adaptive_engine::Message::Browse) => {
-                return self.browse(Page::AdaptiveEngine)
+                return self.browse(Page::AdaptiveEngine);
             }
             Message::Adaptive(message) => {
                 if matches!(
@@ -1373,8 +1452,19 @@ impl WinderustApp {
                 }
             }
             Message::ExecutableChosen(page, profile, path) => {
-                if profile == self.power_source {
+                if profile == self.power_source || page == Page::InstanceBalancing {
                     if let Some(path) = path {
+                        if matches!(page, Page::InstanceLimits | Page::InstanceBalancing)
+                            && path.to_str().is_none()
+                        {
+                            self.error_message = t!(match page {
+                                Page::InstanceBalancing =>
+                                    "instance_balancing.unsupported_unicode_path",
+                                _ => "instance_limits.unsupported_unicode_path",
+                            })
+                            .to_string();
+                            return Task::none();
+                        }
                         let path = path.to_string_lossy().into_owned();
                         if let Some(kind) = priority_kind(page) {
                             return self.update(Message::Priority(
@@ -1383,59 +1473,80 @@ impl WinderustApp {
                             ));
                         }
                         match page {
+                            Page::SleepPrevention => {
+                                return self.update(Message::SleepPrevention(
+                                    sleep_prevention::Message::Path(path),
+                                ));
+                            }
                             Page::AppSuspension => {
                                 return self.update(Message::Suspension(
                                     app_suspension::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::Watchdog => {
                                 return self
                                     .update(Message::Watchdog(watchdog::Message::Path(path)));
                             }
+                            Page::InstanceLimits => {
+                                return self.update(Message::InstanceLimits(
+                                    instance_limits::Message::Path(path),
+                                ));
+                            }
+                            Page::InstanceBalancing => {
+                                return self.update(Message::InstanceBalancing(
+                                    instance_balancing::Message::Path(path),
+                                ));
+                            }
+                            Page::KeepRunning => {
+                                return self.update(Message::KeepRunning(
+                                    keep_running::Message::Path(path),
+                                ));
+                            }
                             Page::MemoryTrim => {
-                                return self.update(Message::Trim(memory_trim::Message::Path(path)))
+                                return self
+                                    .update(Message::Trim(memory_trim::Message::Path(path)));
                             }
                             Page::TimerResolution => {
                                 return self
-                                    .update(Message::Timer(timer_resolution::Message::Path(path)))
+                                    .update(Message::Timer(timer_resolution::Message::Path(path)));
                             }
                             Page::CpuSetsSoft => {
                                 return self.update(Message::Allocation(
                                     cpu_allocation::Kind::Soft,
                                     cpu_allocation::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::ProcessorAffinityHard => {
                                 return self.update(Message::Allocation(
                                     cpu_allocation::Kind::Hard,
                                     cpu_allocation::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::BackgroundEfficiency => {
                                 return self.update(Message::Efficiency(
                                     background_efficiency::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::AdaptiveEngine => {
                                 return self.update(Message::Adaptive(
                                     adaptive_engine::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::CpuLimiter => {
                                 return self
-                                    .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)))
+                                    .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)));
                             }
-                            Page::ByForeground => {
+                            Page::ByFocus => {
                                 return self.update(Message::ProcessPowerPlans(
-                                    process_power_plans::Kind::Foreground,
+                                    process_power_plans::Kind::Focus,
                                     process_power_plans::Message::Path(path),
-                                ))
+                                ));
                             }
                             Page::ByRunningApp => {
                                 return self.update(Message::ProcessPowerPlans(
                                     process_power_plans::Kind::RunningApp,
                                     process_power_plans::Message::Path(path),
-                                ))
+                                ));
                             }
                             _ => {}
                         }
@@ -1444,13 +1555,13 @@ impl WinderustApp {
             }
             Message::ProcessPowerPlans(kind, process_power_plans::Message::Browse) => {
                 return self.browse(match kind {
-                    process_power_plans::Kind::Foreground => Page::ByForeground,
+                    process_power_plans::Kind::Focus => Page::ByFocus,
                     process_power_plans::Kind::RunningApp => Page::ByRunningApp,
-                })
+                });
             }
             Message::ProcessPowerPlans(kind, message) => {
                 let editor = match kind {
-                    process_power_plans::Kind::Foreground => &mut self.foreground_plans,
+                    process_power_plans::Kind::Focus => &mut self.focus_plans,
                     process_power_plans::Kind::RunningApp => &mut self.running_app_plans,
                 };
                 editor.update(kind, &mut self.settings, &self.power_plans, message);
@@ -1461,9 +1572,13 @@ impl WinderustApp {
             }
             Message::PowerPlans(result) => {
                 self.power_plans_loading = false;
-                match result {
-                    Ok(plans) => {
-                        self.power_plans = plans;
+                match accept_power_plan_catalog(
+                    &mut self.power_plans,
+                    result,
+                    &mut self.power_plans_reload_pending,
+                ) {
+                    Ok(false) => return self.load_power_plans(),
+                    Ok(true) => {
                         self.power_plans_loaded = true;
                         if self.page == Page::AdvancedPowerPlanTuning {
                             self.power_tuning.ensure_plan(&self.power_plans);
@@ -1473,7 +1588,7 @@ impl WinderustApp {
                 }
             }
             Message::CpuLimiter(cpu_limiter::Message::Browse) => {
-                return self.browse(Page::CpuLimiter)
+                return self.browse(Page::CpuLimiter);
             }
             Message::CpuLimiter(message) => self
                 .cpu_limiter
@@ -1487,7 +1602,7 @@ impl WinderustApp {
                 self.reset_editors();
             }
             Message::WindowAction(window_frame::Event::Close) => {
-                return self.update(Message::WindowClose)
+                return self.update(Message::WindowClose);
             }
             Message::WindowAction(action) => {
                 if let Some(window) = self.window {
@@ -1608,7 +1723,14 @@ impl WinderustApp {
                     );
                 }
                 if (page.supports_power_source_profiles()
-                    || matches!(page, Page::ActionLog | Page::Watchdog))
+                    || matches!(
+                        page,
+                        Page::ActionLog
+                            | Page::Watchdog
+                            | Page::KeepRunning
+                            | Page::InstanceLimits
+                            | Page::InstanceBalancing
+                    ))
                     && !self.catalog_loading
                 {
                     self.catalog_loading = true;
@@ -1669,6 +1791,21 @@ impl WinderustApp {
                         {
                             self.settings.set_watchdog_enabled(enabled)
                         }
+                        tray::MenuAction::Feature { id, enabled, .. }
+                            if id == Page::InstanceLimits as usize =>
+                        {
+                            self.settings.set_instance_limits_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature { id, enabled, .. }
+                            if id == Page::InstanceBalancing as usize =>
+                        {
+                            self.settings.set_instance_balancing_enabled(enabled)
+                        }
+                        tray::MenuAction::Feature { id, enabled, .. }
+                            if id == Page::KeepRunning as usize =>
+                        {
+                            self.settings.set_keep_running_enabled(enabled)
+                        }
                         tray::MenuAction::Feature {
                             id,
                             profile,
@@ -1710,6 +1847,13 @@ impl WinderustApp {
                     work.push(self.show_window());
                 }
                 if let Some(status) = self.runtime.status_snapshot_since(self.status.generation) {
+                    if sync_active_power_plan(
+                        &mut self.power_plans,
+                        self.status.power_plan_status.current_guid.as_deref(),
+                        status.power_plan_status.current_guid.as_deref(),
+                    ) {
+                        self.power_plans_reload_pending |= self.power_plans_loading;
+                    }
                     if status.appearance_change_generation
                         != self.status.appearance_change_generation
                     {
@@ -1746,7 +1890,14 @@ impl WinderustApp {
                         );
                     }
                     if (self.page.supports_power_source_profiles()
-                        || matches!(self.page, Page::ActionLog | Page::Watchdog))
+                        || matches!(
+                            self.page,
+                            Page::ActionLog
+                                | Page::Watchdog
+                                | Page::KeepRunning
+                                | Page::InstanceLimits
+                                | Page::InstanceBalancing
+                        ))
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
                     {
@@ -1811,6 +1962,15 @@ impl WinderustApp {
             Message::Save if self.settings.validate_watchdog().is_err() => {
                 self.error_message = t!("watchdog.invalid").to_string();
             }
+            Message::Save if self.settings.validate_instance_limits().is_err() => {
+                self.error_message = t!("instance_limits.invalid").to_string();
+            }
+            Message::Save if self.settings.validate_instance_balancing().is_err() => {
+                self.error_message = t!("instance_balancing.invalid").to_string();
+            }
+            Message::Save if self.settings.validate_keep_running().is_err() => {
+                self.error_message = t!("keep_running.invalid").to_string();
+            }
             Message::Save if self.watchdog.has_invalid_inputs() => {
                 self.error_message = t!("watchdog.invalid_duration").to_string();
             }
@@ -1861,6 +2021,9 @@ impl WinderustApp {
             Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
                 settings.general.pause_power_plan_switching_while_plugged_in = value
             }),
+            Message::RestorePreviousPowerPlan(value) => self
+                .settings
+                .edit_global(|settings| settings.general.restore_previous_power_plan = value),
             Message::ShutdownFinished(result) => {
                 if let Err(error) = result {
                     crate::backend::diagnostics::error(&error);
@@ -1925,6 +2088,9 @@ impl WinderustApp {
     }
     fn invalid_inputs(&self) -> bool {
         self.settings.validate_watchdog().is_err()
+            || self.settings.validate_keep_running().is_err()
+            || self.settings.validate_instance_limits().is_err()
+            || self.settings.validate_instance_balancing().is_err()
             || self.watchdog.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
             || self.timer.has_invalid_inputs()
@@ -1985,6 +2151,9 @@ impl WinderustApp {
             || self.hard_allocation.has_pending_editor()
             || self.cpu_limiter.has_pending_editor()
             || self.watchdog.has_pending_editor()
+            || self.keep_running.has_pending_editor()
+            || self.instance_limits.has_pending_editor()
+            || self.instance_balancing.has_pending_editor()
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
     }
@@ -1993,7 +2162,7 @@ impl WinderustApp {
         self.power_tuning.discard_editor();
         self.cpu_limiter = Default::default();
         self.activity_inputs = Default::default();
-        self.foreground_plans = Default::default();
+        self.focus_plans = Default::default();
         self.running_app_plans = Default::default();
         self.priority = Default::default();
         self.efficiency = Default::default();
@@ -2003,8 +2172,12 @@ impl WinderustApp {
         self.time_rules = Default::default();
         self.cpu_rules = Default::default();
         self.suspension = Default::default();
+        self.sleep_prevention = Default::default();
         self.trim = Default::default();
         self.watchdog = Default::default();
+        self.keep_running = Default::default();
+        self.instance_limits = Default::default();
+        self.instance_balancing = Default::default();
         self.timer = Default::default();
         self.appearance = settings_pages::theme(&self.settings.global().general);
     }
@@ -2037,7 +2210,7 @@ impl WinderustApp {
     fn tray_retry_pending(&self) -> bool {
         (self.settings.global().general.hide_to_tray
             || self.settings.persisted().general.start_minimized
-            || watchdog_notifications_required(self.settings.persisted()))
+            || notifications_required(self.settings.persisted()))
             && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
     }
 
@@ -2068,7 +2241,13 @@ impl WinderustApp {
                         .iter()
                         .filter_map(|page| {
                             navigation::feature_page_enabled(
-                                if *page == Page::Watchdog {
+                                if matches!(
+                                    *page,
+                                    Page::Watchdog
+                                        | Page::KeepRunning
+                                        | Page::InstanceLimits
+                                        | Page::InstanceBalancing
+                                ) {
                                     saved
                                 } else {
                                     settings
@@ -2089,7 +2268,7 @@ impl WinderustApp {
         let intent = (
             self.settings.global().general.hide_to_tray,
             self.settings.persisted().general.start_minimized
-                || watchdog_notifications_required(self.settings.persisted()),
+                || notifications_required(self.settings.persisted()),
         );
         if !intent.0 && !intent.1 {
             self.tray = None;
@@ -2299,7 +2478,7 @@ impl WinderustApp {
         } else if page == Page::CpuSetsSoft && self.side_panel_tab == SidePanelTab::Presets {
             Some(
                 self.soft_allocation
-                    .presets_panel(&self.settings)
+                    .presets_panel(&self.settings, cpu_allocation::Kind::Soft)
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m)),
             )
         } else if page == Page::ProcessorAffinityHard
@@ -2307,7 +2486,7 @@ impl WinderustApp {
         {
             Some(
                 self.hard_allocation
-                    .presets_panel(&self.settings)
+                    .presets_panel(&self.settings, cpu_allocation::Kind::Hard)
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
@@ -2689,17 +2868,29 @@ impl WinderustApp {
             return navigation_search_overlay(layout, search);
         }
         let modal = match self.page {
+            Page::InstanceBalancing => self
+                .instance_balancing
+                .modal(&self.settings.global().instance_balancing, &self.candidates)
+                .map(|modal| modal.map(Message::InstanceBalancing)),
+            Page::InstanceLimits => self
+                .instance_limits
+                .modal(&self.candidates)
+                .map(|modal| modal.map(Message::InstanceLimits)),
+            Page::KeepRunning => self
+                .keep_running
+                .modal(&self.candidates)
+                .map(|modal| modal.map(Message::KeepRunning)),
             Page::Watchdog => self
                 .watchdog
                 .modal(&self.candidates)
                 .map(|modal| modal.map(Message::Watchdog)),
             Page::CpuSetsSoft => self
                 .soft_allocation
-                .modal(&self.settings)
+                .modal(&self.settings, cpu_allocation::Kind::Soft)
                 .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Soft, m))),
             Page::ProcessorAffinityHard => self
                 .hard_allocation
-                .modal(&self.settings)
+                .modal(&self.settings, cpu_allocation::Kind::Hard)
                 .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m))),
             Page::CpuLimiter => self
                 .cpu_limiter
@@ -2788,6 +2979,14 @@ impl WinderustApp {
             widgets::toggle_card(label, value, Some(action))
         };
         match self.page {
+            Page::SleepPrevention => self
+                .sleep_prevention
+                .view(
+                    &self.settings.sleep_prevention,
+                    &self.status.feature_status.sleep_prevention,
+                    &self.candidates,
+                )
+                .map(Message::SleepPrevention),
             Page::AppSuspension => self
                 .suspension
                 .view(
@@ -2801,6 +3000,26 @@ impl WinderustApp {
                 .watchdog
                 .view(&self.settings.global().watchdog, &self.candidates)
                 .map(Message::Watchdog),
+            Page::InstanceLimits => self
+                .instance_limits
+                .view(
+                    &self.settings.global().instance_limits,
+                    &self.status.feature_status.instance_limits,
+                    &self.candidates,
+                )
+                .map(Message::InstanceLimits),
+            Page::InstanceBalancing => self
+                .instance_balancing
+                .view(&self.settings.global().instance_balancing, &self.candidates)
+                .map(Message::InstanceBalancing),
+            Page::KeepRunning => self
+                .keep_running
+                .view(
+                    &self.settings.global().keep_running,
+                    &self.status.feature_status.keep_running,
+                    &self.candidates,
+                )
+                .map(Message::KeepRunning),
             Page::MemoryTrim => self
                 .trim
                 .view(&self.settings.memory_trim, &self.candidates)
@@ -2907,17 +3126,17 @@ impl WinderustApp {
                 )
                 .map(|m| Message::Priority(priority_control::Kind::DynamicBoost, m)),
 
-            Page::ByForeground => self
-                .foreground_plans
+            Page::ByFocus => self
+                .focus_plans
                 .view(
-                    process_power_plans::Kind::Foreground,
+                    process_power_plans::Kind::Focus,
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
                     &self.status.power_plan_status,
                 )
                 .map(|message| {
-                    Message::ProcessPowerPlans(process_power_plans::Kind::Foreground, message)
+                    Message::ProcessPowerPlans(process_power_plans::Kind::Focus, message)
                 }),
             Page::ByRunningApp => self
                 .running_app_plans
@@ -2978,6 +3197,11 @@ impl WinderustApp {
                     "power_plan_control.pause_plugged",
                     general.pause_power_plan_switching_while_plugged_in,
                     Message::PausePowerPlans
+                ),
+                toggle(
+                    "power_plan_control.restore_previous_plan",
+                    general.restore_previous_power_plan,
+                    Message::RestorePreviousPowerPlan
                 ),
                 self.child_pages(),
             ]
@@ -3076,8 +3300,10 @@ fn priority_kind(page: Page) -> Option<priority_control::Kind> {
     }
 }
 
-fn watchdog_notifications_required(settings: &crate::config::Settings) -> bool {
-    settings.general.enabled && settings.watchdog.notifications_required()
+fn notifications_required(settings: &crate::config::Settings) -> bool {
+    settings.general.enabled
+        && (settings.watchdog.notifications_required()
+            || settings.instance_limits.notifications_required())
 }
 
 fn tray_retry_due(
@@ -3093,6 +3319,36 @@ fn tray_retry_due(
 fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
     (page == Page::ProcessList && process_rulesets_open)
         || page.section_landing_page() == Page::PowerPlanControl
+}
+
+fn sync_active_power_plan(
+    plans: &mut [crate::power::PowerPlan],
+    previous_guid: Option<&str>,
+    current_guid: Option<&str>,
+) -> bool {
+    let Some(current_guid) = current_guid else {
+        return false;
+    };
+    // An unchanged cached status must not overwrite a freshly enumerated catalog.
+    if previous_guid.is_some_and(|previous| previous.eq_ignore_ascii_case(current_guid)) {
+        return false;
+    }
+    for plan in plans {
+        plan.active = plan.guid.eq_ignore_ascii_case(current_guid);
+    }
+    true
+}
+
+fn accept_power_plan_catalog(
+    plans: &mut Vec<crate::power::PowerPlan>,
+    result: Result<Vec<crate::power::PowerPlan>, String>,
+    reload_pending: &mut bool,
+) -> Result<bool, String> {
+    if std::mem::take(reload_pending) {
+        return Ok(false);
+    }
+    *plans = result?;
+    Ok(true)
 }
 
 fn ui_wake_channel() -> (
@@ -3714,6 +3970,77 @@ mod tests {
             ));
             assert!(!page_needs_power_plans(Page::Home, process_rulesets_open));
         }
+    }
+
+    #[test]
+    fn runtime_plan_changes_refresh_catalog_markers_without_overwriting_fresh_queries() {
+        let mut plans = vec![
+            crate::power::PowerPlan {
+                guid: "balanced".into(),
+                name: "Balanced".into(),
+                active: true,
+            },
+            crate::power::PowerPlan {
+                guid: "ultimate".into(),
+                name: "Ultimate".into(),
+                active: false,
+            },
+        ];
+        assert!(!sync_active_power_plan(&mut plans, None, None));
+        assert_eq!(plans[0].display_name(), "Balanced (active)");
+
+        assert!(sync_active_power_plan(
+            &mut plans,
+            Some("balanced"),
+            Some("ULTIMATE")
+        ));
+        assert_eq!(plans[0].display_name(), "Balanced");
+        assert_eq!(plans[1].display_name(), "Ultimate (active)");
+
+        // A later native enumeration may be newer than the cached runtime GUID.
+        plans[0].active = true;
+        plans[1].active = false;
+        assert!(!sync_active_power_plan(
+            &mut plans,
+            Some("ULTIMATE"),
+            Some("ultimate")
+        ));
+        assert!(!sync_active_power_plan(&mut plans, Some("ULTIMATE"), None));
+        assert_eq!(plans[0].display_name(), "Balanced (active)");
+        assert_eq!(plans[1].display_name(), "Ultimate");
+    }
+
+    #[test]
+    fn catalog_completion_after_a_runtime_switch_requires_a_fresh_query() {
+        let balanced = crate::power::PowerPlan {
+            guid: "balanced".into(),
+            name: "Balanced".into(),
+            active: true,
+        };
+        let mut plans = vec![balanced.clone()];
+        let mut reload_pending =
+            sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+        assert!(!accept_power_plan_catalog(
+            &mut plans,
+            Ok(vec![balanced.clone()]),
+            &mut reload_pending,
+        )
+        .unwrap());
+        assert!(!plans[0].active);
+        assert!(!reload_pending);
+
+        assert!(
+            accept_power_plan_catalog(&mut plans, Ok(vec![balanced]), &mut reload_pending,)
+                .unwrap()
+        );
+        assert!(plans[0].active);
+
+        reload_pending |= sync_active_power_plan(&mut plans, Some("ultimate"), Some("balanced"));
+        reload_pending |= sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+        assert!(
+            !accept_power_plan_catalog(&mut plans, Ok(Vec::new()), &mut reload_pending).unwrap()
+        );
+        assert_eq!(plans.len(), 1);
     }
 
     use super::*;

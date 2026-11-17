@@ -58,6 +58,8 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   pointer/touch actions, scrolling, typing, focus operations, and existing background
   overlays. Outside presses may dismiss a popup but must never activate the content
   behind it. Keep window chrome usable and preserve background scroll/input state.
+- Unhandled Escape cancels By Time, By CPU Load, and Watchdog rule dialogs without
+  saving their drafts. Open pickers and focused controls handle Escape first.
 - Use shared 10px surface and 6px control corner radii consistently. Do not introduce large rounded marketing panels.
 - Use the shared scroll helpers and scrollbar settings for both axes. Keep a permanent gutter for page, tab, and table scrolling, including when the thumb is hidden, so page/tab changes cannot shift content; never paint tracks over cards, controls, or table cells. Use a transparent track and a slim rounded neutral thumb, with stronger hover/drag contrast and no accent-colored strip.
 - Floating menus and hover popups use balanced surface padding. Reserve scrollbar
@@ -162,14 +164,35 @@ hover/press; background shading supplies feedback.
   em dash rather than a fabricated zero. Action counts and latest outcomes are runtime telemetry,
   independent of Action Log visibility mode and its bounded visible history; clearing the Action
   Log resets both.
-- By Foreground, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
+- By Focus, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
+- Power Plan Control exposes one Restore previous plan when no rule selects a
+  plan switch beside the global A/C pause. It defaults off and applies to both
+  power profiles. Help explains that every selected rule, including explicit
+  Else and Active plans, takes precedence and external plan changes are kept.
+  Overlapping rules share the plan captured before automatic switching began.
+- By Focus, By Running App, and By Time keep their rule editors without separate
+  restoration controls. By CPU Load retains Target plan and optional Else plan;
+  By Activity retains Idle plan and Active plan. These local choices remain
+  visible independently of the shared restoration switch.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
   tabs, alongside Info in the shared docked panel.
+- Instance Balancing lives under CPU Control and shares one configuration across
+  power sources. Use executable-path rules with activation, edit and delete actions;
+  keep configuration editable while disabled. Its Info / Status panel shows the
+  actual assignment or waiting reason without presenting preferences as reserved cores.
 - Core Presets use compact read-only rows; custom presets use the same row geometry with edit and
   delete actions. Resting rows have no fill or divider, and hover supplies the background. Add,
   edit, and view use the existing full-window modal style.
+- Verified, fully representable L3 selections appear as Cache Domain presets
+  with group and cache-size labels. Missing cache metadata creates no inferred
+  preset. Unsupported saved selections remain visible; selection controls do
+  not quietly shrink them to the processors currently available or replace
+  their saved topology signature on load, opening an editor, or copying a preset.
+  A separate explicit review action confirms the entire selection against the
+  current topology. A topology change while editing blocks Save until explicit
+  review or replacement; discovery failure disables confirmation.
 - Rule tables use Active, App Name, Executable Path, Focus, Visible Window, Background, and Actions
   columns. Each policy column selects a Core or custom preset; do not restore expandable per-rule
   CPU grids.

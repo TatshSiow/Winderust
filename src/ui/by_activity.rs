@@ -129,6 +129,26 @@ pub(super) fn view<'a>(
         .spacing(design::space::SMALL)
         .into()
     };
+    let power_plans = widgets::settings_rows([
+        widgets::setting_row(
+            "by_activity.idle_plan",
+            iced::widget::container(plan_picker(
+                &activity.power_plans.power_save_guid,
+                Message::IdlePlan,
+            ))
+            .width(design::SELECT_WIDTH),
+        )
+        .into(),
+        widgets::setting_row(
+            "by_activity.active_plan",
+            iced::widget::container(plan_picker(
+                &activity.power_plans.performance_guid,
+                Message::ActivePlan,
+            ))
+            .width(design::SELECT_WIDTH),
+        )
+        .into(),
+    ]);
     scrollable(
         column![
             widgets::toggle_card(
@@ -140,26 +160,7 @@ pub(super) fn view<'a>(
                 rust_i18n::t!("by_activity.power_plans").to_string(),
                 design::typography::BODY
             ),
-            widgets::settings_card(widgets::settings_rows([
-                widgets::setting_row(
-                    "by_activity.idle_plan",
-                    iced::widget::container(plan_picker(
-                        &activity.power_plans.power_save_guid,
-                        Message::IdlePlan
-                    ))
-                    .width(design::SELECT_WIDTH)
-                )
-                .into(),
-                widgets::setting_row(
-                    "by_activity.active_plan",
-                    iced::widget::container(plan_picker(
-                        &activity.power_plans.performance_guid,
-                        Message::ActivePlan
-                    ))
-                    .width(design::SELECT_WIDTH)
-                )
-                .into(),
-            ])),
+            widgets::settings_card(power_plans),
             widgets::heading(
                 rust_i18n::t!("by_activity.input_detection").to_string(),
                 design::typography::BODY

@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
+    let mut settings = Settings::default();
+    assert!(!settings.sleep_prevention.enabled);
+    assert!(settings.sleep_prevention.rules.is_empty());
+    assert!(!settings.battery_profile().sleep_prevention.enabled);
+    settings.battery_profile_mut();
+    settings.sleep_prevention.enabled = true;
+    settings.sleep_prevention.rules.push(SleepPreventionRule {
+        enabled: true,
+        executable_path: r"C:\Apps\worker.exe".into(),
+        keep_display_on: true,
+    });
+    assert!(!settings.battery_profile().sleep_prevention.enabled);
+    assert!(settings
+        .sleep_prevention
+        .contains_rule_for(r"c:/apps/WORKER.exe"));
+    assert!(!settings
+        .sleep_prevention
+        .contains_rule_for(r"C:\Other\worker.exe"));
+    let raw = toml::to_string(&settings).unwrap();
+    assert_eq!(toml::from_str::<Settings>(&raw).unwrap(), settings);
+    let rule: SleepPreventionRule =
+        toml::from_str("executable_path = 'C:\\Apps\\worker.exe'").unwrap();
+    assert!(rule.enabled);
+    assert!(!rule.keep_display_on);
+}
+
+#[test]
+fn sleep_prevention_rejects_unqualified_paths_in_both_power_profiles() {
+    for battery in [false, true] {
+        for path in ["", "worker.exe", r"C:\Apps\worker.exe\0"] {
+            let path = path.replace("\\0", "\0");
+            let mut settings = Settings::default();
+            let profile = if battery {
+                settings.battery_profile_mut()
+            } else {
+                &mut settings
+            };
+            profile.sleep_prevention.rules.push(SleepPreventionRule {
+                enabled: false,
+                executable_path: path,
+                keep_display_on: false,
+            });
+            assert!(settings
+                .validate()
+                .unwrap_err()
+                .contains("Sleep Prevention"));
+        }
+    }
+}
+
+#[test]
 fn cpu_load_percent_preserves_numeric_toml_and_rejects_out_of_range_values() {
     #[derive(Debug, Serialize, Deserialize)]
     struct Threshold {
@@ -39,6 +91,70 @@ fn cpu_load_ranges_match_inclusive_bounds_without_reordering() {
     rule.upper_threshold_percent = Some(CpuLoadPercent(20));
     assert!(rule.validate().is_err());
     assert!(!rule.matches_usage(50.0));
+}
+
+#[test]
+fn cpu_load_stability_is_opt_in_and_release_bounds_enclose_entry_bounds() {
+    let mut rule = ByCpuLoadRule::default();
+    let raw = toml::to_string(&rule).unwrap();
+    assert!(!raw.contains("stability"));
+    assert_eq!(toml::from_str::<ByCpuLoadRule>(&raw).unwrap(), rule);
+    for (comparison, entry, upper, exit, exit_upper, valid) in [
+        (CpuUsageComparison::AtOrAbove, 75, None, 65, None, true),
+        (CpuUsageComparison::AtOrAbove, 75, None, 76, None, false),
+        (CpuUsageComparison::AtOrBelow, 25, None, 35, None, true),
+        (CpuUsageComparison::AtOrBelow, 25, None, 24, None, false),
+        (CpuUsageComparison::AtOrBelow, 25, None, 35, Some(80), false),
+        (
+            CpuUsageComparison::Between,
+            40,
+            Some(60),
+            30,
+            Some(70),
+            true,
+        ),
+        (
+            CpuUsageComparison::Between,
+            40,
+            Some(60),
+            41,
+            Some(70),
+            false,
+        ),
+        (
+            CpuUsageComparison::Between,
+            40,
+            Some(60),
+            30,
+            Some(59),
+            false,
+        ),
+        (CpuUsageComparison::Between, 40, Some(60), 30, None, false),
+        (CpuUsageComparison::Between, 40, None, 30, Some(100), true),
+        (CpuUsageComparison::Between, 40, None, 30, Some(99), false),
+        (CpuUsageComparison::Else, 40, None, 30, None, false),
+    ] {
+        rule.comparison = comparison;
+        rule.threshold_percent = CpuLoadPercent(entry);
+        rule.upper_threshold_percent = upper.map(CpuLoadPercent);
+        rule.stability = Some(ByCpuLoadStability {
+            exit_threshold_percent: CpuLoadPercent(exit),
+            exit_upper_threshold_percent: exit_upper.map(CpuLoadPercent),
+            minimum_hold_seconds: 0,
+        });
+        assert_eq!(rule.validate().is_ok(), valid, "{rule:?}");
+        let parsed = toml::from_str::<ByCpuLoadRule>(&toml::to_string(&rule).unwrap());
+        if valid {
+            assert_eq!(parsed.unwrap(), rule);
+        } else {
+            assert!(parsed.is_err());
+        }
+    }
+    rule.comparison = CpuUsageComparison::AtOrAbove;
+    for seconds in [i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+        rule.stability.as_mut().unwrap().minimum_hold_seconds = seconds;
+        assert_eq!(rule.validate().is_ok(), seconds <= i64::MAX as u64);
+    }
 }
 
 #[test]
@@ -132,13 +248,52 @@ fn visible_window_priority_override_is_not_an_exclusion() {
 }
 
 #[test]
+fn restore_previous_power_plan_is_shared_without_replacing_local_plans() {
+    use crate::application::SettingsEditor;
+
+    for existing_battery in [false, true] {
+        let mut initial = Settings::default();
+        initial.by_activity.power_plans.performance_guid = Some("ac-active".into());
+        if existing_battery {
+            initial
+                .battery_profile_mut()
+                .by_activity
+                .power_plans
+                .performance_guid = Some("battery-active".into());
+        }
+        let mut settings = SettingsEditor::with_settings(initial.clone());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        settings.edit_global(|settings| settings.general.restore_previous_power_plan = true);
+        assert!(settings.general.restore_previous_power_plan);
+        assert!(settings.global().general.restore_previous_power_plan);
+        assert_eq!(
+            settings.by_activity.power_plans.performance_guid.as_deref(),
+            Some(if existing_battery {
+                "battery-active"
+            } else {
+                "ac-active"
+            })
+        );
+        settings.select_power_source(PowerSourceProfile::PluggedIn);
+        assert!(settings.general.restore_previous_power_plan);
+        assert_eq!(
+            settings.by_activity.power_plans.performance_guid.as_deref(),
+            Some("ac-active")
+        );
+        settings.cancel();
+        assert_eq!(settings.global(), &initial);
+    }
+}
+
+#[test]
 fn first_run_rule_modules_are_disabled() {
     let settings = Settings::default();
+    assert!(!settings.general.restore_previous_power_plan);
 
     assert!(![
         settings.adaptive_engine.enabled,
         settings.by_activity.enabled,
-        settings.by_foreground.enabled,
+        settings.by_focus.enabled,
         settings.by_time.enabled,
         settings.by_cpu_load.enabled,
         settings.background_efficiency.enabled,

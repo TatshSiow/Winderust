@@ -60,6 +60,7 @@ pub(super) fn adaptive_processor_demand(
 pub(super) struct RuntimeCore {
     shutdown_started: bool,
     last_settings: Option<Settings>,
+    last_power_source: Option<Option<bool>>,
     power_plan_controller: PowerPlanController,
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
@@ -81,7 +82,8 @@ pub(super) struct RuntimeCore {
     last_app_suspension_shell_user_intent: Option<Instant>,
     cpu_sets_soft_manager: CpuAllocationManager,
     processor_affinity_hard_manager: CpuAllocationManager,
-    cpu_allocation_coordinator: CpuAllocationCoordinator,
+    pub(super) cpu_allocation_coordinator: CpuAllocationCoordinator,
+    pub(super) instance_balancing: instance_balancing::Runtime,
     cpu_limiter_controller: Option<CpuLimiterController>,
     cpu_limiter_manager: CpuLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
@@ -110,6 +112,10 @@ pub(super) struct RuntimeCore {
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
+    sleep_prevention_manager: SleepPreventionManager,
+    sleep_prevention_controller: SleepPreventionController,
+    pub(super) keep_running: keep_running::KeepRunningCoordinator,
+    pub(super) instance_limits: InstanceLimitsManager,
     pub(super) known_process_ids: BTreeSet<u32>,
     published_action_log_revision: u64,
 }
@@ -215,6 +221,8 @@ impl RuntimeCore {
             };
             let mut action_detail = t!("watchdog.no_action").to_string();
             if event.response.action != WatchdogAction::None {
+                self.keep_running
+                    .pause_targets(&event.targets, PauseReason::Watchdog);
                 let targets: Vec<_> = event
                     .targets
                     .iter()
@@ -339,6 +347,7 @@ impl RuntimeCore {
             return Ok(());
         }
         self.shutdown_started = true;
+        self.keep_running.shutdown();
 
         let mut errors = Vec::<String>::new();
         let mut settings = self.last_settings.clone().unwrap_or_default();
@@ -351,6 +360,13 @@ impl RuntimeCore {
         // Priority, allocation, and timer controllers retry any state left by the disabled
         // feature update. Their final shutdown result is authoritative; keeping a transient
         // update error would report failure even after that retry restored everything.
+        collect_restore_error(
+            &mut errors,
+            "Sleep Prevention",
+            self.sleep_prevention_manager
+                .reset(&mut self.sleep_prevention_controller, &mut self.action_log)
+                .last_error,
+        );
         self.run_timer_resolution_update(&settings, &mut observations);
         if let Err(error) = self.timer_resolution_controller.shutdown() {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
@@ -434,12 +450,34 @@ impl RuntimeCore {
         }
     }
 
-    pub(super) fn note_settings(&mut self, settings: &Settings, explicitly_changed: bool) -> bool {
+    pub(super) fn note_settings(
+        &mut self,
+        settings: &Settings,
+        events: AutomationWakeEvents,
+        plugged_in: Option<bool>,
+    ) -> bool {
+        if !settings.general.restore_previous_power_plan {
+            self.power_plan_controller.cancel_temporary_restoration();
+        }
         self.action_log.set_mode(settings.advanced.action_log_mode);
         set_execution_failure_suppression_threshold(
             settings.advanced.execution_failure_suppression_threshold(),
         );
 
+        let source_changed = self
+            .last_power_source
+            .replace(plugged_in)
+            .is_some_and(|previous| previous != plugged_in);
+        if events.suspend_resume {
+            self.sleep_prevention_manager
+                .suspend(&mut self.sleep_prevention_controller, &mut self.action_log);
+        }
+        if source_changed || events.suspend_resume {
+            self.cpu_usage = CpuUsageSnapshot::default();
+            self.next_cpu_usage_refresh = None;
+            self.cpu_monitor = CpuUsageMonitor::default();
+        }
+        let explicitly_changed = events.settings_changed || events.suspend_resume || source_changed;
         let changed = self.last_settings.as_ref() != Some(settings);
         if changed {
             self.last_settings = Some(settings.clone());
@@ -731,9 +769,12 @@ impl RuntimeCore {
     pub(super) fn run_cpu_allocation_reconciliation(
         &mut self,
         settings: &Settings,
+        observations: &mut CycleObservations,
         include_release_retries: bool,
     ) {
+        let topology = observations.cpu_topology();
         let summary = self.cpu_allocation_coordinator.reconcile_pending(
+            topology.as_deref().map_err(String::as_str),
             settings.general.allow_cross_session_process_control,
             include_release_retries,
         );
@@ -1244,11 +1285,16 @@ impl RuntimeCore {
                     statuses.memory_trim = Some(status);
                 }
                 ProcessControlCommand::StopProcesses { targets, result } => {
+                    self.keep_running
+                        .pause_targets(&targets, PauseReason::IntentionalStop);
                     let outcome = self.process_termination_controller.terminate_batch(
                         targets,
                         settings.general.allow_cross_session_process_control,
                     );
                     let _ = result.try_send(Ok(outcome));
+                }
+                ProcessControlCommand::KeepRunningResume { executable_path } => {
+                    self.keep_running.resume(&executable_path);
                 }
             }
         }
@@ -1364,6 +1410,7 @@ impl RuntimeCore {
     pub(super) fn has_managed_process_control_state(&self) -> bool {
         let app_suspension_active = self.app_suspension_active();
         self.power_plan_controller.has_pending_cleanup()
+            || self.power_plan_controller.has_temporary_plan()
             || self.cpu_allocation_coordinator.has_managed_state()
             || self.cpu_allocation_coordinator.has_pending_reconciliation()
             || self.dynamic_priority_boost_controller.has_managed_state()
@@ -1377,6 +1424,7 @@ impl RuntimeCore {
                 .as_ref()
                 .is_some_and(CpuLimiterController::has_managed_state)
             || app_suspension_active
+            || self.keep_running.has_pending()
     }
 
     pub(super) fn app_suspension_active(&self) -> bool {
@@ -1390,6 +1438,14 @@ impl RuntimeCore {
 
     pub(super) fn adaptive_power_plan_active(&self) -> bool {
         self.power_plan_controller.adaptive_active()
+    }
+
+    pub(super) fn has_temporary_power_plan(&self) -> bool {
+        self.power_plan_controller.has_temporary_plan()
+    }
+
+    pub(super) fn temporary_power_plan_retry_delay(&self) -> Option<Duration> {
+        self.power_plan_controller.temporary_release_retry_delay()
     }
 
     pub(super) fn run_gpu_priority_update(
@@ -1460,6 +1516,27 @@ impl RuntimeCore {
         )
     }
 
+    pub(super) fn run_sleep_prevention_update(
+        &mut self,
+        settings: &Settings,
+        observations: &mut CycleObservations,
+        windows_event_watcher_active: bool,
+        plugged_in: Option<bool>,
+    ) -> SleepPreventionSnapshot {
+        self.sleep_prevention_manager.update(
+            &mut self.sleep_prevention_controller,
+            settings,
+            plugged_in,
+            windows_event_watcher_active,
+            observations,
+            &mut self.action_log,
+        )
+    }
+
+    pub(super) fn sleep_prevention_power_source(&self) -> Option<bool> {
+        self.sleep_prevention_manager.last_known_power_source()
+    }
+
     pub(super) fn run_timer_resolution_update(
         &mut self,
         settings: &Settings,
@@ -1485,12 +1562,42 @@ impl RuntimeCore {
         observations: &mut CycleObservations,
     ) -> Result<(), String> {
         if self.power_plan_controller.adaptive_active() {
+            self.by_cpu_load_scheduler.reset();
             return Ok(());
         }
 
+        if let Err(error) = self
+            .power_plan_controller
+            .refresh_active_plan_if_due(Instant::now())
+        {
+            self.by_cpu_load_scheduler.reset();
+            if let Some(feature) = self
+                .power_plan_controller
+                .status()
+                .decision_state
+                .and_then(power_plan_action_log_feature)
+            {
+                self.action_log.record(
+                    feature,
+                    None,
+                    String::new(),
+                    ActionLogResult::Failed,
+                    format!("Refreshing the active power plan failed: {error}"),
+                );
+            }
+            return Err(error);
+        }
+        self.by_cpu_load_scheduler
+            .observe_active_plan(self.power_plan_controller.status().current_guid.as_deref());
+
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
-        let foreground_executable_path = foreground_lookup_required(settings)
+        let observe_foreground =
+            foreground_lookup_required(settings) || self.power_plan_controller.has_focus_plan();
+        let foreground_process_id = observe_foreground
+            .then(|| observations.foreground_process_id())
+            .flatten();
+        let foreground_executable_path = observe_foreground
             .then(|| observations.foreground_process())
             .flatten()
             .filter(|process| process_is_critical(process.id) == Some(false))
@@ -1499,6 +1606,10 @@ impl RuntimeCore {
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
+        let primary_cpu_load_rule_index = by_cpu_load_decision
+            .as_ref()
+            .filter(|decision| !decision.is_else)
+            .map(|decision| decision.rule_index);
         let by_running_app = self.by_running_app_manager.active_decision().map(
             |(rule_index, rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
                 rule_index,
@@ -1514,20 +1625,45 @@ impl RuntimeCore {
         let decision_input = DecisionInput {
             activity_state: activity.state,
             foreground_executable_path,
+            foreground_process_id,
+            by_running_app_known: self.by_running_app_manager.observation_known(),
+            cpu_load_known: self
+                .cpu_usage
+                .percent
+                .is_some_and(|usage| usage.is_finite() && (0.0..=100.0).contains(&usage)),
             plugged_in: power_source::is_plugged_in(),
             by_running_app,
             by_time: by_time_decision,
             by_cpu_load: by_cpu_load_decision,
         };
         let decision = decide(settings, decision_input);
-        let feature = power_plan_action_log_feature(decision.state);
-        let target_guid = decision.power_plan_guid.clone().unwrap_or_default();
-        let reason = decision.reason.clone();
-        match self
+        let winning_cpu_load_rule_index = if decision.state == DecisionState::ByCpuLoad {
+            primary_cpu_load_rule_index
+        } else {
+            None
+        };
+        if matches!(
+            decision.state,
+            DecisionState::Disabled | DecisionState::PausedWhilePluggedIn
+        ) {
+            self.by_cpu_load_scheduler.reset();
+        }
+        let result = self
             .power_plan_controller
-            .reconcile_ordinary(decision, Instant::now())
-        {
+            .reconcile_ordinary(decision, Instant::now());
+        let status = self.power_plan_controller.status();
+        let feature = status
+            .decision_state
+            .and_then(power_plan_action_log_feature);
+        let target_guid = status.target_guid.unwrap_or_default();
+        let reason = status.reason.unwrap_or_default();
+        match result {
             Ok(applied) => {
+                self.by_cpu_load_scheduler.confirm_applied_rule(
+                    winning_cpu_load_rule_index,
+                    self.power_plan_controller.status().current_guid.as_deref(),
+                    Instant::now(),
+                );
                 if let (true, Some(feature)) = (applied, feature) {
                     self.action_log.record(
                         feature,
@@ -1540,6 +1676,8 @@ impl RuntimeCore {
                 Ok(())
             }
             Err(error) => {
+                self.by_cpu_load_scheduler
+                    .confirm_applied_rule(None, None, Instant::now());
                 if let Some(feature) = feature {
                     self.action_log.record(
                         feature,
@@ -1576,7 +1714,7 @@ impl RuntimeCore {
 
 pub(super) fn power_plan_action_log_feature(state: DecisionState) -> Option<ActionLogFeature> {
     match state {
-        DecisionState::ByForeground => Some(ActionLogFeature::ByForeground),
+        DecisionState::ByFocus => Some(ActionLogFeature::ByFocus),
         DecisionState::ByRunningApp => Some(ActionLogFeature::ByRunningApp),
         DecisionState::ByTime => Some(ActionLogFeature::ByTime),
         DecisionState::ByCpuLoad => Some(ActionLogFeature::ByCpuLoad),
@@ -1630,13 +1768,261 @@ mod settings_tests {
     use super::*;
 
     #[test]
-    fn cpu_load_duration_restarts_after_an_inactive_power_profile() {
+    #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop, preventing struct update.
+    fn settings_cancel_restoration_even_while_adaptive_checks_are_paused() {
+        let mut runner = RuntimeCore::default();
+        // The fixture contains synthetic plan IDs and must never run native shutdown.
+        runner.shutdown_started = true;
+        runner.power_plan_controller = PowerPlanController::temporary_adaptive_fixture();
+        let mut settings = Settings::default();
+        settings.general.restore_previous_power_plan = true;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(runner.has_temporary_power_plan());
+        settings.general.restore_previous_power_plan = false;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(!runner.has_temporary_power_plan());
+        settings.general.restore_previous_power_plan = true;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(runner
+            .run_check(&settings, &mut CycleObservations::default())
+            .is_ok());
+        assert!(!runner.has_temporary_power_plan());
+        assert!(runner.power_plan_controller.adaptive_active());
+        assert!(runner.next_cpu_usage_refresh.is_none());
+        runner.power_plan_controller = PowerPlanController::default();
+    }
+
+    #[test]
+    fn cpu_load_source_boundaries_discard_cached_usage_before_zero_duration_rules() {
         use crate::config::{ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison};
+
+        let mut settings = Settings::default();
+        settings.by_cpu_load.enabled = true;
+        settings.by_cpu_load.rules = vec![ByCpuLoadRule {
+            comparison: CpuUsageComparison::AtOrAbove,
+            threshold_percent: CpuLoadPercent::new(75).unwrap(),
+            duration_seconds: 0,
+            power_plan_guid: Some("target".into()),
+            ..Default::default()
+        }];
+        let mut power_changed = AutomationWakeEvents::default();
+        power_changed.insert_windows_event(WindowsAutomationEvent::PowerChanged);
+        let mut suspend_resume = AutomationWakeEvents::default();
+        suspend_resume.insert_windows_event(WindowsAutomationEvent::SuspendResume);
+        let settings_changed = AutomationWakeEvents {
+            settings_changed: true,
+            ..Default::default()
+        };
+        for (previous_source, next_source, events, discard) in [
+            (Some(true), Some(false), power_changed, true),
+            (Some(false), Some(true), power_changed, true),
+            (Some(true), None, power_changed, true),
+            (None, Some(true), power_changed, true),
+            (Some(true), Some(true), suspend_resume, true),
+            (Some(true), Some(true), power_changed, false),
+            (Some(true), Some(true), settings_changed, false),
+        ] {
+            let mut runner = RuntimeCore::default();
+            runner.note_settings(&settings, AutomationWakeEvents::default(), previous_source);
+            let start = Instant::now();
+            let refresh_at = start + Duration::from_secs(1);
+            runner.cpu_usage.percent = Some(80.0);
+            runner.next_cpu_usage_refresh = Some(refresh_at);
+
+            runner.note_settings(&settings, events, next_source);
+            let decision = runner.by_cpu_load_scheduler.current_decision_at(
+                &settings.by_cpu_load,
+                runner.cpu_usage.percent,
+                start,
+            );
+            assert_eq!(decision.is_none(), discard);
+            assert_eq!(
+                runner.next_cpu_usage_refresh,
+                (!discard).then_some(refresh_at)
+            );
+        }
+    }
+
+    #[test]
+    fn power_plan_notifications_preserve_cpu_load_qualification_and_holds() {
+        use crate::config::{
+            ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison,
+        };
+
+        for stability in [
+            None,
+            Some(ByCpuLoadStability {
+                exit_threshold_percent: CpuLoadPercent::new(65).unwrap(),
+                exit_upper_threshold_percent: None,
+                minimum_hold_seconds: 30,
+            }),
+        ] {
+            let mut settings = Settings::default();
+            settings.by_cpu_load.enabled = true;
+            settings.by_cpu_load.rules = vec![ByCpuLoadRule {
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: CpuLoadPercent::new(75).unwrap(),
+                duration_seconds: 2,
+                stability: stability.clone(),
+                power_plan_guid: Some("target".into()),
+                else_enabled: true,
+                else_power_plan_guid: Some("return".into()),
+                ..Default::default()
+            }];
+            let mut runner = RuntimeCore::default();
+            runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+            let start = Instant::now();
+            assert!(
+                runner
+                    .by_cpu_load_scheduler
+                    .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
+                    .unwrap()
+                    .is_else
+            );
+            let decision = runner
+                .by_cpu_load_scheduler
+                .current_decision_at(
+                    &settings.by_cpu_load,
+                    Some(80.0),
+                    start + Duration::from_secs(2),
+                )
+                .unwrap();
+            assert!(!decision.is_else);
+            runner.by_cpu_load_scheduler.confirm_applied_rule(
+                Some(decision.rule_index),
+                Some("target"),
+                start + Duration::from_secs(2),
+            );
+
+            let mut events = AutomationWakeEvents::default();
+            events.insert_windows_event(WindowsAutomationEvent::PowerChanged);
+            assert!(!runner.note_settings(&settings, events, Some(true)));
+            let usage = if stability.is_some() { 70.0 } else { 80.0 };
+            assert!(
+                !runner
+                    .by_cpu_load_scheduler
+                    .current_decision_at(
+                        &settings.by_cpu_load,
+                        Some(usage),
+                        start + Duration::from_secs(3),
+                    )
+                    .unwrap()
+                    .is_else
+            );
+            if stability.is_some() {
+                assert!(
+                    !runner
+                        .by_cpu_load_scheduler
+                        .current_decision_at(
+                            &settings.by_cpu_load,
+                            Some(20.0),
+                            start + Duration::from_secs(4),
+                        )
+                        .unwrap()
+                        .is_else
+                );
+                assert!(
+                    runner
+                        .by_cpu_load_scheduler
+                        .current_decision_at(
+                            &settings.by_cpu_load,
+                            Some(20.0),
+                            start + Duration::from_secs(32),
+                        )
+                        .unwrap()
+                        .is_else
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_transitions_and_suspend_resume_restart_cpu_load_qualification_and_holds() {
+        use crate::config::{
+            ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison,
+        };
+
+        for (previous_source, next_source, suspend_resume) in [
+            (Some(true), Some(false), false),
+            (Some(false), Some(true), false),
+            (Some(true), None, false),
+            (None, Some(true), false),
+            (Some(true), Some(true), true),
+        ] {
+            for activated in [false, true] {
+                let mut settings = Settings::default();
+                settings.by_cpu_load.enabled = true;
+                settings.by_cpu_load.rules = vec![ByCpuLoadRule {
+                    comparison: CpuUsageComparison::AtOrAbove,
+                    threshold_percent: CpuLoadPercent::new(75).unwrap(),
+                    duration_seconds: 2,
+                    stability: Some(ByCpuLoadStability {
+                        exit_threshold_percent: CpuLoadPercent::new(65).unwrap(),
+                        exit_upper_threshold_percent: None,
+                        minimum_hold_seconds: 30,
+                    }),
+                    power_plan_guid: Some("target".into()),
+                    ..Default::default()
+                }];
+                let mut runner = RuntimeCore::default();
+                runner.note_settings(&settings, AutomationWakeEvents::default(), previous_source);
+                let start = Instant::now();
+                assert!(runner
+                    .by_cpu_load_scheduler
+                    .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
+                    .is_none());
+                if activated {
+                    let decision = runner
+                        .by_cpu_load_scheduler
+                        .current_decision_at(
+                            &settings.by_cpu_load,
+                            Some(80.0),
+                            start + Duration::from_secs(2),
+                        )
+                        .unwrap();
+                    runner.by_cpu_load_scheduler.confirm_applied_rule(
+                        Some(decision.rule_index),
+                        Some("target"),
+                        start + Duration::from_secs(2),
+                    );
+                }
+
+                let mut events = AutomationWakeEvents::default();
+                events.insert_windows_event(if suspend_resume {
+                    WindowsAutomationEvent::SuspendResume
+                } else {
+                    WindowsAutomationEvent::PowerChanged
+                });
+                assert!(events.power_changed);
+                assert_eq!(events.suspend_resume, suspend_resume);
+                assert!(runner.note_settings(&settings, events, next_source));
+                assert!(!runner.note_settings(
+                    &settings,
+                    AutomationWakeEvents::default(),
+                    next_source,
+                ));
+                assert!(runner
+                    .by_cpu_load_scheduler
+                    .current_decision_at(
+                        &settings.by_cpu_load,
+                        Some(if activated { 70.0 } else { 80.0 }),
+                        start + Duration::from_secs(3),
+                    )
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_load_qualification_and_hold_restart_after_an_inactive_power_profile() {
+        use crate::config::{
+            ByCpuLoadRule, ByCpuLoadStability, CpuLoadPercent, CpuUsageComparison,
+        };
 
         let mut settings = Settings::default();
         settings.by_activity.enabled = false;
         settings.by_time.enabled = false;
-        settings.by_foreground.enabled = false;
+        settings.by_focus.enabled = false;
         settings.by_running_app.enabled = false;
         settings.by_cpu_load.enabled = true;
         settings.by_cpu_load.rules = vec![ByCpuLoadRule {
@@ -1646,6 +2032,11 @@ mod settings_tests {
             threshold_percent: CpuLoadPercent::new(75).unwrap(),
             upper_threshold_percent: None,
             duration_seconds: 30,
+            stability: Some(ByCpuLoadStability {
+                exit_threshold_percent: CpuLoadPercent::new(65).unwrap(),
+                exit_upper_threshold_percent: None,
+                minimum_hold_seconds: 30,
+            }),
             power_plan_guid: Some("high-load-plan".into()),
             else_enabled: false,
             else_power_plan_guid: None,
@@ -1656,14 +2047,18 @@ mod settings_tests {
 
         let mut runner = RuntimeCore::default();
         let start = Instant::now();
-        runner.note_settings(&settings, false);
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(runner
             .by_cpu_load_scheduler
             .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
             .is_none());
-        runner.note_settings(settings.battery_profile(), true);
+        runner.note_settings(
+            settings.battery_profile(),
+            AutomationWakeEvents::default(),
+            Some(false),
+        );
         // The idle Battery profile keeps the worker alive without calling the scheduler.
-        runner.note_settings(&settings, true);
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(runner
             .by_cpu_load_scheduler
             .current_decision_at(
@@ -1672,7 +2067,7 @@ mod settings_tests {
                 start + Duration::from_secs(60),
             )
             .is_none());
-        assert!(!runner.note_settings(&settings, false));
+        assert!(!runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true)));
         let decision = runner
             .by_cpu_load_scheduler
             .current_decision_at(
@@ -1682,6 +2077,33 @@ mod settings_tests {
             )
             .unwrap();
         assert_eq!(decision.power_plan_guid, "high-load-plan");
+        runner.by_cpu_load_scheduler.confirm_applied_rule(
+            Some(decision.rule_index),
+            Some("high-load-plan"),
+            start + Duration::from_secs(90),
+        );
+        assert!(runner
+            .by_cpu_load_scheduler
+            .current_decision_at(
+                &settings.by_cpu_load,
+                Some(20.0),
+                start + Duration::from_secs(91),
+            )
+            .is_some());
+        runner.note_settings(
+            settings.battery_profile(),
+            AutomationWakeEvents::default(),
+            Some(false),
+        );
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(runner
+            .by_cpu_load_scheduler
+            .current_decision_at(
+                &settings.by_cpu_load,
+                Some(20.0),
+                start + Duration::from_secs(92),
+            )
+            .is_none());
     }
 
     #[test]
@@ -1691,13 +2113,20 @@ mod settings_tests {
                 let mut runner = RuntimeCore::default();
                 let mut settings = Settings::default();
                 settings.advanced.action_log_mode = crate::config::ActionLogMode::Off;
-                runner.note_settings(&settings, false);
+                runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
                 if changed {
                     settings.advanced.action_log_mode = crate::config::ActionLogMode::Full;
                     settings.general.enabled = !settings.general.enabled;
                 }
                 assert_eq!(
-                    runner.note_settings(&settings, explicit),
+                    runner.note_settings(
+                        &settings,
+                        AutomationWakeEvents {
+                            settings_changed: explicit,
+                            ..Default::default()
+                        },
+                        Some(true),
+                    ),
                     changed || explicit
                 );
                 assert_eq!(runner.last_settings.as_ref(), Some(&settings));
@@ -1709,7 +2138,11 @@ mod settings_tests {
                     "test",
                 );
                 assert_eq!(runner.action_log.entries().len(), usize::from(changed));
-                assert!(!runner.note_settings(&settings, false));
+                assert!(!runner.note_settings(
+                    &settings,
+                    AutomationWakeEvents::default(),
+                    Some(true),
+                ));
             }
         }
     }

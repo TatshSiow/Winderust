@@ -45,7 +45,7 @@ pub(super) fn view<'a>(
     let settings = saved_runtime_settings(settings, crate::backend::power_source::is_plugged_in());
     let power_feature = match page {
         Page::ByActivity => Some(ActionLogFeature::ByActivity),
-        Page::ByForeground => Some(ActionLogFeature::ByForeground),
+        Page::ByFocus => Some(ActionLogFeature::ByFocus),
         Page::ByRunningApp => Some(ActionLogFeature::ByRunningApp),
         Page::ByCpuLoad => Some(ActionLogFeature::ByCpuLoad),
         Page::ByTime => Some(ActionLogFeature::ByTime),
@@ -66,6 +66,21 @@ pub(super) fn view<'a>(
     let available = runtime.generation != 0;
     let state = sidebar_state(page, settings, runtime, &summary);
     let (state_label, detail, color) = match state {
+        FeatureRunState::Running if page == Page::SleepPrevention => (
+            "sleep_prevention.request_accepted",
+            "sleep_prevention.request_status_help",
+            "common.applied",
+        ),
+        FeatureRunState::Paused if page == Page::SleepPrevention => (
+            "sleep_prevention.requests_paused",
+            "sleep_prevention.paused_help",
+            "common.waiting",
+        ),
+        FeatureRunState::Running if page == Page::InstanceLimits => (
+            "instance_limits.monitoring",
+            "instance_limits.intro_1",
+            "common.applied",
+        ),
         FeatureRunState::Running => (
             "common.running",
             "sidebar_status.running_help",
@@ -102,9 +117,20 @@ pub(super) fn view<'a>(
         container(text(t!(state_label).to_string()).size(design::typography::SECONDARY))
             .padding([4, 8])
             .style(move |theme| super::widgets::rule_status_chip(theme, color)),
-        text(t!(detail).to_string())
-            .size(design::typography::CAPTION)
-            .style(text::secondary)
+        text(
+            if page == Page::InstanceBalancing
+                && available
+                && !matches!(state, FeatureRunState::Inactive | FeatureRunState::Unknown)
+                && runtime.worker_error.is_none()
+                && !runtime.feature_status.instance_balancing.message.is_empty()
+            {
+                runtime.feature_status.instance_balancing.message.clone()
+            } else {
+                t!(detail).to_string()
+            }
+        )
+        .size(design::typography::CAPTION)
+        .style(text::secondary)
     ]
     .spacing(design::space::MEDIUM);
     if power_feature.is_some() {
@@ -121,6 +147,63 @@ pub(super) fn view<'a>(
             })
             .unwrap_or_else(|| t!("common.unknown").to_string());
         body = body.push(section("common.current_power_plan", column![text(plan)]));
+    } else if page == Page::InstanceLimits {
+        let limits = &runtime.feature_status.instance_limits;
+        body = body.push(section(
+            "instance_limits.monitoring",
+            column![
+                metric(
+                    "common.rules",
+                    count(
+                        available.then(|| limits.rules.iter().filter(|rule| rule.enabled).count())
+                    )
+                ),
+                metric(
+                    "instance_limits.incidents",
+                    count(
+                        available.then(|| limits.rules.iter().filter(|rule| rule.incident).count())
+                    )
+                ),
+                text(t!("instance_limits.intro_2").to_string()).size(design::typography::CAPTION),
+            ]
+            .spacing(design::space::CONTROL),
+        ));
+    } else if page == Page::SleepPrevention {
+        let sleep = &runtime.feature_status.sleep_prevention;
+        let accepted = |requested| {
+            if !available {
+                t!("common.unknown")
+            } else if requested {
+                t!("sleep_prevention.request_accepted")
+            } else {
+                t!("sleep_prevention.not_requested")
+            }
+            .to_string()
+        };
+        body = body.push(section(
+            "sleep_prevention.requests",
+            column![
+                metric(
+                    "sleep_prevention.matching_rules",
+                    count((available && sleep.observation_known).then_some(sleep.matched_rules))
+                ),
+                metric(
+                    "sleep_prevention.matching_processes",
+                    count(
+                        (available && sleep.observation_known).then_some(sleep.matched_processes)
+                    )
+                ),
+                metric(
+                    "sleep_prevention.system_request",
+                    accepted(sleep.system_requested)
+                ),
+                metric(
+                    "sleep_prevention.display_request",
+                    accepted(sleep.display_requested)
+                ),
+            ]
+            .spacing(design::space::CONTROL),
+        ));
     } else {
         body = body.push(section(
             "common.process_activity",
@@ -348,7 +431,7 @@ fn sidebar_state(
             plan.decision_state,
             Some(DecisionState::ByActivityIdle | DecisionState::ByActivityActive)
         )),
-        Page::ByForeground => Some(plan.decision_state == Some(DecisionState::ByForeground)),
+        Page::ByFocus => Some(plan.decision_state == Some(DecisionState::ByFocus)),
         Page::ByRunningApp => Some(plan.decision_state == Some(DecisionState::ByRunningApp)),
         Page::ByCpuLoad => Some(plan.decision_state == Some(DecisionState::ByCpuLoad)),
         Page::ByTime => Some(plan.decision_state == Some(DecisionState::ByTime)),
@@ -374,6 +457,68 @@ fn sidebar_state(
         };
     }
     let features = &runtime.feature_status;
+    if page == Page::InstanceBalancing
+        && (!features.instance_balancing.enabled || features.instance_balancing.message.is_empty())
+    {
+        return FeatureRunState::Unknown;
+    }
+    if page == Page::InstanceLimits {
+        use crate::{
+            control::instance_limits::CountObservation,
+            features::advanced_controls::instance_limits::NotificationStatus,
+        };
+        let limits = &features.instance_limits;
+        return if limits
+            .rules
+            .iter()
+            .any(|rule| matches!(rule.notification, NotificationStatus::Failed(_)))
+        {
+            FeatureRunState::Error
+        } else if limits.rules.iter().filter(|rule| rule.enabled).any(|rule| {
+            !super::instance_limits::sample_fresh(rule.sampled_at)
+                || !matches!(rule.count, CountObservation::Complete(_))
+        }) {
+            FeatureRunState::Unknown
+        } else if limits.rules.iter().any(|rule| rule.enabled) {
+            FeatureRunState::Running
+        } else {
+            FeatureRunState::Waiting
+        };
+    }
+    if page == Page::KeepRunning {
+        use crate::features::advanced_controls::keep_running::KeepRunningState;
+        let keep_running = &features.keep_running;
+        return if !keep_running.observation_known {
+            FeatureRunState::Unknown
+        } else if keep_running
+            .rules
+            .iter()
+            .any(|rule| matches!(rule.state, KeepRunningState::Paused(_)))
+        {
+            FeatureRunState::Paused
+        } else if keep_running.rules.iter().any(|rule| {
+            matches!(
+                rule.state,
+                KeepRunningState::Armed | KeepRunningState::Starting
+            )
+        }) {
+            FeatureRunState::Running
+        } else {
+            FeatureRunState::Waiting
+        };
+    }
+    if page == Page::SleepPrevention {
+        let sleep = &features.sleep_prevention;
+        return if !sleep.observation_known {
+            FeatureRunState::Unknown
+        } else if sleep.system_requested {
+            FeatureRunState::Running
+        } else if !sleep.suppressed_apps.is_empty() && sleep.requesting_apps.is_empty() {
+            FeatureRunState::Paused
+        } else {
+            FeatureRunState::Waiting
+        };
+    }
     if (page == Page::BackgroundEfficiency && features.background_efficiency.unsupported)
         || (page == Page::AppSuspension && features.app_suspension.unsupported)
     {
@@ -500,6 +645,24 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::Watchdog,
             }
         }
+        Page::InstanceLimits => FeatureStatusSummary {
+            scanned: None,
+            adjusted: None,
+            protected_or_denied: None,
+            skipped: None,
+            last_error: runtime.feature_status.instance_limits.rules.iter().find_map(|rule| {
+                if let crate::features::advanced_controls::instance_limits::NotificationStatus::Failed(error) = &rule.notification { Some(error.as_str()) } else { None }
+            }),
+            action_log_feature: ActionLogFeature::InstanceLimits,
+        },
+        Page::KeepRunning => FeatureStatusSummary {
+            scanned: None,
+            adjusted: None,
+            protected_or_denied: None,
+            skipped: None,
+            last_error: runtime.feature_status.keep_running.last_error.as_deref(),
+            action_log_feature: ActionLogFeature::KeepRunning,
+        },
         Page::MemoryTrim => {
             let status = &runtime.feature_status.memory_trim;
             FeatureStatusSummary {
@@ -588,23 +751,28 @@ fn feature_status_summary(
                 action_log_feature: ActionLogFeature::CpuLimiter,
             }
         }
-        Page::CpuSetsSoft | Page::ProcessorAffinityHard => {
-            let (status, feature) = if page == Page::CpuSetsSoft {
-                (
+        Page::CpuSetsSoft | Page::ProcessorAffinityHard | Page::InstanceBalancing => {
+            let (status, feature) = match page {
+                Page::CpuSetsSoft => (
                     &runtime.feature_status.cpu_sets_soft,
                     ActionLogFeature::CpuSetsSoft,
-                )
-            } else {
-                (
+                ),
+                Page::InstanceBalancing => (
+                    &runtime.feature_status.instance_balancing,
+                    ActionLogFeature::InstanceBalancing,
+                ),
+                _ => (
                     &runtime.feature_status.processor_affinity_hard,
                     ActionLogFeature::ProcessorAffinityHard,
-                )
+                ),
             };
+            let observed = page != Page::InstanceBalancing
+                || (status.enabled && !status.message.is_empty());
             FeatureStatusSummary {
-                scanned: Some(status.scanned_processes),
-                adjusted: Some(status.adjusted_processes),
+                scanned: observed.then_some(status.scanned_processes),
+                adjusted: observed.then_some(status.adjusted_processes),
                 protected_or_denied: None,
-                skipped: Some(status.skipped_processes),
+                skipped: observed.then_some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: feature,
             }
@@ -618,6 +786,17 @@ fn feature_status_summary(
                 skipped: Some(status.skipped_processes),
                 last_error: status.last_error.as_deref(),
                 action_log_feature: ActionLogFeature::AppSuspension,
+            }
+        }
+        Page::SleepPrevention => {
+            let status = &runtime.feature_status.sleep_prevention;
+            FeatureStatusSummary {
+                scanned: status.observation_known.then_some(status.matched_processes),
+                adjusted: None,
+                protected_or_denied: None,
+                skipped: None,
+                last_error: status.last_error.as_deref(),
+                action_log_feature: ActionLogFeature::SleepPrevention,
             }
         }
         Page::TimerResolution => {
@@ -685,6 +864,52 @@ mod tests {
             .last_error = Some("apply failed".into());
         assert_eq!(state(&settings, &runtime), FeatureRunState::Error);
         settings.process_priority.enabled = false;
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Inactive);
+    }
+
+    #[test]
+    fn instance_balancing_sidebar_waits_for_accepted_runtime_work() {
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.instance_balancing.enabled = true;
+        let mut runtime = RuntimeStatusSnapshot {
+            generation: 1,
+            ..Default::default()
+        };
+        let state = |settings: &Settings, runtime: &RuntimeStatusSnapshot| {
+            let summary = feature_status_summary(Page::InstanceBalancing, runtime).unwrap();
+            assert_eq!(
+                summary.action_log_feature,
+                ActionLogFeature::InstanceBalancing
+            );
+            sidebar_state(Page::InstanceBalancing, settings, runtime, &summary)
+        };
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Unknown);
+        let pending = feature_status_summary(Page::InstanceBalancing, &runtime).unwrap();
+        assert_eq!(
+            (pending.scanned, pending.adjusted, pending.skipped),
+            (None, None, None)
+        );
+        let balancing =
+            &mut std::sync::Arc::make_mut(&mut runtime.feature_status).instance_balancing;
+        balancing.enabled = true;
+        balancing.message = t!("instance_balancing.waiting_stable").to_string();
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Waiting);
+        assert_eq!(
+            feature_status_summary(Page::InstanceBalancing, &runtime)
+                .unwrap()
+                .adjusted,
+            Some(0)
+        );
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
+            .instance_balancing
+            .adjusted_processes = 2;
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Running);
+        std::sync::Arc::make_mut(&mut runtime.feature_status)
+            .instance_balancing
+            .last_error = Some("apply failed".into());
+        assert_eq!(state(&settings, &runtime), FeatureRunState::Error);
+        settings.instance_balancing.enabled = false;
         assert_eq!(state(&settings, &runtime), FeatureRunState::Inactive);
     }
 

@@ -24,11 +24,15 @@ pub(crate) enum RefreshDomain {
     MemoryTrim,
     Watchdog,
     TimerResolution,
+    SleepPrevention,
+    KeepRunning,
+    InstanceLimits,
+    InstanceBalancing,
     ProcessAppearance,
     ControllerActivity,
 }
 
-pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 23] = [
+pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 27] = [
     RefreshDomain::PowerPlanCheck,
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::AppSuspension,
@@ -50,6 +54,10 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 23] = [
     RefreshDomain::MemoryTrim,
     RefreshDomain::Watchdog,
     RefreshDomain::TimerResolution,
+    RefreshDomain::SleepPrevention,
+    RefreshDomain::KeepRunning,
+    RefreshDomain::InstanceLimits,
+    RefreshDomain::InstanceBalancing,
     RefreshDomain::ProcessAppearance,
     RefreshDomain::ControllerActivity,
 ];
@@ -73,9 +81,10 @@ const FOREGROUND_DOMAINS: [RefreshDomain; 16] = [
     RefreshDomain::TimerResolution,
 ];
 
-const WINDOW_CREATED_DOMAINS: [RefreshDomain; 2] = [
+const WINDOW_CREATED_DOMAINS: [RefreshDomain; 3] = [
     RefreshDomain::ProcessAppearance,
     RefreshDomain::AppSuspension,
+    RefreshDomain::SleepPrevention,
 ];
 
 const APP_SWITCH_DOMAINS: [RefreshDomain; 2] = [
@@ -83,12 +92,13 @@ const APP_SWITCH_DOMAINS: [RefreshDomain; 2] = [
     RefreshDomain::TimerResolution,
 ];
 
-const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 13] = [
+const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 14] = [
     RefreshDomain::BackgroundEfficiency,
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
     RefreshDomain::ByRunningApp,
+    RefreshDomain::SleepPrevention,
     RefreshDomain::AdaptiveEngineProcess,
     RefreshDomain::ProcessPriority,
     RefreshDomain::ThreadPriority,
@@ -176,6 +186,8 @@ impl RefreshScheduler {
             SchedulerEvent::SessionChanged => {
                 self.schedule_domains_now(&FOREGROUND_DOMAINS, now);
                 self.schedule_domains_now(&WINDOW_CREATED_DOMAINS, now);
+                self.schedule_now(RefreshDomain::InstanceLimits, now);
+                self.schedule_now(RefreshDomain::InstanceBalancing, now);
             }
             SchedulerEvent::AppSwitch | SchedulerEvent::AppSwitchMouseClick => {
                 self.schedule_domains_now(&APP_SWITCH_DOMAINS, now);
@@ -299,7 +311,10 @@ mod tests {
         let expected = ALL_REFRESH_DOMAINS
             .into_iter()
             .filter(|domain| {
-                FOREGROUND_DOMAINS.contains(domain) || WINDOW_CREATED_DOMAINS.contains(domain)
+                FOREGROUND_DOMAINS.contains(domain)
+                    || WINDOW_CREATED_DOMAINS.contains(domain)
+                    || *domain == RefreshDomain::InstanceLimits
+                    || *domain == RefreshDomain::InstanceBalancing
             })
             .collect::<Vec<_>>();
 

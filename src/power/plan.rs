@@ -296,17 +296,11 @@ impl ProcessorBoostMode {
         Self::EfficientAggressiveAtGuaranteed,
     ];
 
-    pub const fn from_power_value(value: u32) -> Self {
-        match value {
-            0 => Self::Disabled,
-            1 => Self::Enabled,
-            2 => Self::Aggressive,
-            3 => Self::EfficientEnabled,
-            4 => Self::EfficientAggressive,
-            5 => Self::AggressiveAtGuaranteed,
-            6 => Self::EfficientAggressiveAtGuaranteed,
-            _ => Self::Enabled,
-        }
+    pub fn from_power_value(value: u32) -> Result<Self, String> {
+        Self::ALL
+            .get(value as usize)
+            .copied()
+            .ok_or_else(|| format!("Unknown processor boost mode value: {value}."))
     }
 
     pub const fn power_value(self) -> u32 {
@@ -595,6 +589,19 @@ mod adaptive_tests {
             efficiency_peak_cpu_percent: None,
             foreground_cpu_percent: Some(0.0),
             io_bytes_per_second: Some(0.0),
+        }
+    }
+
+    #[test]
+    fn boost_modes_round_trip_and_reject_unknown_native_values() {
+        for mode in ProcessorBoostMode::ALL {
+            assert_eq!(
+                ProcessorBoostMode::from_power_value(mode.power_value()),
+                Ok(mode)
+            );
+        }
+        for unknown in [7, 100, u32::MAX] {
+            assert!(ProcessorBoostMode::from_power_value(unknown).is_err());
         }
     }
 

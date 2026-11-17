@@ -378,14 +378,22 @@ fn read_tuning_source(guid: &str, battery: bool) -> Result<AdvancedPowerPlanTuni
             windows_power::read_ac_value(guid, setting)
         }
     };
+    let read_percent = |setting| {
+        let value = read(setting)?;
+        if value > 100 {
+            return Err(format!(
+                "Processor power percentage is outside 0-100: {value}."
+            ));
+        }
+        Ok(value)
+    };
     let processor = ProcessorPowerValues::new_with_boost_mode(
-        read(PowerSetting::CoreParkingMinimum)?,
-        read(PowerSetting::PerformanceMinimum)?,
-        read(PowerSetting::PerformanceMaximum)?,
-        read(PowerSetting::BoostPolicy)?,
-        ProcessorBoostMode::from_power_value(read(PowerSetting::BoostMode)?),
-    )
-    .normalized();
+        read_percent(PowerSetting::CoreParkingMinimum)?,
+        read_percent(PowerSetting::PerformanceMinimum)?,
+        read_percent(PowerSetting::PerformanceMaximum)?,
+        read_percent(PowerSetting::BoostPolicy)?,
+        ProcessorBoostMode::from_power_value(read(PowerSetting::BoostMode)?)?,
+    );
     let scheduling = |setting| {
         windows_power::read_optional_value(guid, setting, battery)?
             .map(ProcessorSchedulingPolicy::from_power_value)

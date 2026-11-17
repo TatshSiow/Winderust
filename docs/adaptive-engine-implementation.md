@@ -80,7 +80,7 @@ The status rail reports eligibility, effective foreground/background counts, and
 [adaptive_engine_process.dynamic_resource_zone_settings]
 foreground_share_percent = 75
 background_processor_selection = "least_used"
-specific_processors = []
+specific_processors = { processors = [] }
 ```
 
 The share accepts 1?99. Existing files with zoning disabled may omit this block; defaults are
@@ -111,6 +111,9 @@ migration or copying from the limiter is performed.
 - When a selected process falls below its recovery threshold, Winderust removes processor
   allocation first, keeps the softer restraint during the recovery period, and then restores the
   original state. Renewed CPU demand cancels recovery.
+- Missing per-process samples or invalid CPU deltas discard that target's old
+  baseline and restraint/recovery episode. Re-entry requires a fresh valid interval;
+  skipped/excluded targets cannot retain stale candidate tracking.
 - Least-used selection samples its configured All, P-core, or E-core pool and changes the selected mask only after
   the existing rebalance interval or a meaningful load improvement. Fixed topology and custom
   selections do not rebalance.
@@ -127,7 +130,7 @@ name and description identify the current `Winderust Adaptive` plan may be recov
 abnormal exit. Other power plans remain owned by Windows or the user.
 
 Power-plan automation remains separate: By Activity owns its Idle and Active
-selections, while By Foreground, By Running App, By CPU Load, and By Time rules
+selections, while By Focus, By Running App, By CPU Load, and By Time rules
 own their selected plan GUIDs. There is no global plan fallback.
 
 ## Validation
@@ -147,8 +150,11 @@ not be presented as universal battery-life claims.
 - Broader media classification should be added only if active-audio protection
   proves insufficient in real usage.
 
-The fixed-policy runtime benchmark keeps zoning off by default. Use
-`scripts/adaptive_runtime_benchmark.ps1 -EnableDynamicResourceZones` for the separate opt-in
-scenario (`-SettingsOnly` validates/generates its configuration without starting workloads).
+The runtime benchmark generates canonical Balanced settings, with zoning and
+CPU Pressure Restraint off unless explicitly requested. See the
+[benchmark guide](adaptive-engine-benchmark.md#benchmark-command) for the opt-in
+host build, configuration export, activation checks, and runtime comparisons.
+Its excluded-host I/O and message-loop scenarios measure latency under load;
+they do not validate real foreground detection.
 Unit/fake-backend tests establish safety and configuration behavior, not performance gains;
 foreground-only and mixed-workload A/B measurements remain necessary on the target hardware.

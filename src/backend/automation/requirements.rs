@@ -147,6 +147,15 @@ pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
+pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
+    settings.sleep_prevention.enabled
+        && settings
+            .sleep_prevention
+            .rules
+            .iter()
+            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+}
+
 pub(super) fn io_priority_required(settings: &Settings) -> bool {
     settings.io_priority.enabled
         || (settings.adaptive_engine.enabled
@@ -360,14 +369,17 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
 pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (activity_power_plan_required(settings)
-            || by_foreground_required(settings)
+            || by_focus_required(settings)
             || by_time_rules_required(settings)
             || by_cpu_load_rules_required(settings)
             || by_running_app_required(settings))
 }
 
 pub(super) fn automation_worker_required(settings: &Settings) -> bool {
-    automation_worker_required_for_profile(settings)
+    keep_running_required(settings)
+        || instance_limits_required(settings)
+        || instance_balancing_required(settings)
+        || automation_worker_required_for_profile(settings)
         || settings
             .on_battery
             .as_deref()
@@ -382,7 +394,8 @@ fn automation_worker_required_for_profile(settings: &Settings) -> bool {
             || bottleneck_classifier_required(settings)
             || app_suspension_required(settings)
             || process_appearance_scan_required(settings)
-            || timer_resolution_required(settings))
+            || timer_resolution_required(settings)
+            || sleep_prevention_required(settings))
 }
 
 pub(super) fn bottleneck_classifier_required(settings: &Settings) -> bool {
@@ -393,8 +406,41 @@ pub(super) fn watchdog_required(settings: &Settings) -> bool {
     settings.watchdog.enabled && settings.watchdog.rules.iter().any(|rule| rule.enabled)
 }
 
+pub(super) fn keep_running_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.keep_running.enabled
+        && settings
+            .keep_running
+            .rules
+            .iter()
+            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+}
+
+pub(super) fn instance_limits_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.instance_limits.enabled
+        && settings
+            .instance_limits
+            .rules
+            .iter()
+            .any(|rule| rule.enabled)
+}
+
+pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.instance_balancing.enabled
+        && settings
+            .instance_balancing
+            .rules
+            .iter()
+            .any(|rule| rule.enabled)
+}
+
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
-    windows_event_watcher_required_for_profile(settings)
+    keep_running_required(settings)
+        || instance_limits_required(settings)
+        || instance_balancing_required(settings)
+        || windows_event_watcher_required_for_profile(settings)
         || settings
             .on_battery
             .as_deref()
@@ -408,7 +454,9 @@ fn windows_event_watcher_required_for_profile(settings: &Settings) -> bool {
 
 pub(super) fn automation_windows_event_watcher_required(settings: &Settings) -> bool {
     settings.general.enabled
-        && (power_plan_checks_required(settings) || event_driven_process_work_required(settings))
+        && (power_plan_checks_required(settings)
+            || event_driven_process_work_required(settings)
+            || sleep_prevention_required(settings))
 }
 
 pub(super) fn event_driven_process_work_required(settings: &Settings) -> bool {
@@ -420,6 +468,16 @@ pub(super) fn windows_event_wake_required(
     settings: &Settings,
     event: WindowsAutomationEvent,
 ) -> bool {
+    if (keep_running_required(settings)
+        || instance_limits_required(settings)
+        || instance_balancing_required(settings))
+        && matches!(
+            event,
+            WindowsAutomationEvent::SuspendResume | WindowsAutomationEvent::SessionChanged
+        )
+    {
+        return true;
+    }
     std::iter::once(settings)
         .chain(settings.on_battery.as_deref())
         .any(|profile| windows_event_wake_required_for_profile(profile, event))
@@ -438,8 +496,10 @@ fn windows_event_wake_required_for_profile(
             WindowsAutomationEvent::ForegroundChanged => {
                 power_plan_checks_required(settings) || event_driven_process_work_required(settings)
             }
-            WindowsAutomationEvent::WindowCreated => event_driven_process_work_required(settings),
-            WindowsAutomationEvent::PowerChanged => {
+            WindowsAutomationEvent::WindowCreated => {
+                event_driven_process_work_required(settings) || sleep_prevention_required(settings)
+            }
+            WindowsAutomationEvent::PowerChanged | WindowsAutomationEvent::SuspendResume => {
                 automation_worker_required_for_profile(settings)
             }
             WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
@@ -473,16 +533,16 @@ pub(super) fn controller_activity_poll_required(settings: &Settings) -> bool {
                 && has_active_plan(&settings.by_activity.power_plans)))
 }
 
-pub(super) fn by_foreground_required(settings: &Settings) -> bool {
-    settings.by_foreground.enabled
-        && (settings.by_foreground.rules.iter().any(|rule| {
+pub(super) fn by_focus_required(settings: &Settings) -> bool {
+    settings.by_focus.enabled
+        && (settings.by_focus.rules.iter().any(|rule| {
             enabled_executable_path_rule(rule.enabled, &rule.executable_path)
                 && rule.power_plan_guid.is_some()
         }))
 }
 
 pub(super) fn foreground_lookup_required(settings: &Settings) -> bool {
-    by_foreground_required(settings)
+    by_focus_required(settings)
 }
 
 pub(super) fn by_time_rules_required(settings: &Settings) -> bool {

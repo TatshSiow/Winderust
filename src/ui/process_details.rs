@@ -20,7 +20,7 @@ pub(in crate::ui) enum Message {
     Efficiency(bool),
     Power(bool, Option<String>),
     CpuEnabled(bool, bool),
-    CpuMask(bool, Tier, u64),
+    CpuMask(bool, Tier, crate::cpu_topology::CpuSelection),
     Limiter(bool),
     LimiterMode(Tier, ProcessRuleMode),
     LimiterLimit(Tier, u8),
@@ -44,9 +44,9 @@ impl std::fmt::Display for Mode {
         .fmt(f)
     }
 }
-pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
+pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String> {
     if !std::path::Path::new(path).is_absolute() {
-        return;
+        return None;
     }
     let path = executable_path_key(std::path::Path::new(path));
     match m {
@@ -56,7 +56,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                 .choices(s.advanced.expose_all_priority_values)
                 .contains(&value)
             {
-                return;
+                return None;
             }
             let rules = kind.rules_mut(s);
             let i = rules
@@ -111,9 +111,9 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                     });
             }
         }
-        Message::Power(foreground, guid) => {
-            if foreground {
-                let rules = &mut s.by_foreground.rules;
+        Message::Power(focus, guid) => {
+            if focus {
+                let rules = &mut s.by_focus.rules;
                 if let Some(guid) = guid {
                     if let Some(r) = rules
                         .iter_mut()
@@ -122,7 +122,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                         r.enabled = true;
                         r.power_plan_guid = Some(guid);
                     } else {
-                        rules.push(crate::ui::process_rules::new_foreground_rule(
+                        rules.push(crate::ui::process_rules::new_by_focus_rule(
                             &path,
                             Some(guid),
                         ));
@@ -157,7 +157,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                 &s.cpu_sets_soft
             };
             if enabled && other.contains_rule_for(&path) {
-                return;
+                return None;
             }
             let setting = if soft {
                 &mut s.cpu_sets_soft
@@ -171,19 +171,26 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
             } else if !setting.contains_rule_for(&path)
                 && !crate::cpu_allocation::is_builtin_excluded(&path)
             {
-                let all = crate::cpu_allocation::logical_processor_mask(
-                    &crate::cpu_allocation::logical_processors(),
-                );
+                let kind = if soft {
+                    cpu_allocation::Kind::Soft
+                } else {
+                    cpu_allocation::Kind::Hard
+                };
+                let selection =
+                    match cpu_allocation::SelectionCatalog::capture(kind).all_selection() {
+                        Ok(selection) => selection,
+                        Err(error) => return Some(error),
+                    };
                 setting.rules.push(CpuAllocationRule {
                     enabled: true,
                     executable_path: path,
-                    focus_core_mask: all,
-                    visible_window_core_mask: all,
-                    background_core_mask: all,
+                    focus_selection: selection.clone(),
+                    visible_window_selection: selection.clone(),
+                    background_selection: selection,
                 });
             }
         }
-        Message::CpuMask(soft, tier, mask) => {
+        Message::CpuMask(soft, tier, selection) => {
             let setting = if soft {
                 &mut s.cpu_sets_soft
             } else {
@@ -194,14 +201,18 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
                 .iter_mut()
                 .find(|r| process_setting_matches(&r.executable_path, &path))
             {
-                let mask = mask
-                    & crate::cpu_allocation::logical_processor_mask(
-                        &crate::cpu_allocation::logical_processors(),
-                    );
+                let kind = if soft {
+                    cpu_allocation::Kind::Soft
+                } else {
+                    cpu_allocation::Kind::Hard
+                };
+                if let Err(error) = cpu_allocation::verify_selection(&selection, kind) {
+                    return Some(error);
+                }
                 match tier {
-                    Tier::Focus => r.focus_core_mask = mask,
-                    Tier::VisibleWindow => r.visible_window_core_mask = mask,
-                    Tier::Background => r.background_core_mask = mask,
+                    Tier::Focus => r.focus_selection = selection,
+                    Tier::VisibleWindow => r.visible_window_selection = selection,
+                    Tier::Background => r.background_selection = selection,
                 }
             }
         }
@@ -247,6 +258,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) {
             }
         }
     }
+    None
 }
 fn limiter_tier(tier: Tier) -> cpu_limiter::Tier {
     match tier {
@@ -312,9 +324,9 @@ pub(super) fn view<'a>(
     ));
     if let PlanCatalog::Loaded(plans) = plans {
         let mut power = Vec::new();
-        for foreground in [true, false] {
-            let selected = if foreground {
-                s.by_foreground
+        for focus in [true, false] {
+            let selected = if focus {
+                s.by_focus
                     .rules
                     .iter()
                     .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
@@ -343,12 +355,12 @@ pub(super) fn view<'a>(
             let selected = options.iter().find(|p| p.0 == selected).cloned();
             power.push(
                 setting_row(
-                    if foreground {
-                        "process_list.power_plan_foreground"
+                    if focus {
+                        "process_list.power_plan_focus"
                     } else {
                         "process_list.power_plan_running"
                     },
-                    pick_list(options, selected, move |p| Message::Power(foreground, p.0))
+                    pick_list(options, selected, move |p| Message::Power(focus, p.0))
                         .width(design::SELECT_WIDTH),
                 )
                 .into(),
@@ -446,6 +458,13 @@ pub(super) fn view<'a>(
             .rules
             .iter()
             .find(|r| process_setting_matches(&r.executable_path, path));
+        let catalog = rule.map(|_| {
+            cpu_allocation::SelectionCatalog::capture(if soft {
+                cpu_allocation::Kind::Soft
+            } else {
+                cpu_allocation::Kind::Hard
+            })
+        });
         let mut card = column![setting_row(
             if soft {
                 "nav.cpu_sets_soft"
@@ -456,19 +475,19 @@ pub(super) fn view<'a>(
         )]
         .spacing(widgets::CARD_GAP);
         if let Some(rule) = rule {
-            let processors = crate::cpu_allocation::logical_processors();
             for tier in Tier::ALL {
-                let mask = match tier {
-                    Tier::Focus => rule.focus_core_mask,
-                    Tier::VisibleWindow => rule.visible_window_core_mask,
-                    Tier::Background => rule.background_core_mask,
+                let selection = match tier {
+                    Tier::Focus => &rule.focus_selection,
+                    Tier::VisibleWindow => &rule.visible_window_selection,
+                    Tier::Background => &rule.background_selection,
                 };
+                let Some(catalog) = &catalog else { continue };
                 card = card
                     .push(widgets::settings_divider())
                     .push(text(tier.label()))
                     .push(cpu_allocation::mask_selector(
-                        mask,
-                        &processors,
+                        selection,
+                        catalog,
                         &s.cpu_allocation_presets,
                         move |v| Message::CpuMask(soft, tier, v),
                     ));
@@ -524,7 +543,7 @@ mod tests {
     #[test]
     fn details_priority_edits_do_not_enable_master_or_other_tiers() {
         let mut s = Settings::default();
-        update(
+        let _ = update(
             &mut s,
             r"C:\App\app.exe",
             Message::Priority(
@@ -550,11 +569,11 @@ mod tests {
         s.cpu_sets_soft.rules.push(CpuAllocationRule {
             enabled: true,
             executable_path: r"C:\App\app.exe".into(),
-            focus_core_mask: 1,
-            visible_window_core_mask: 1,
-            background_core_mask: 1,
+            focus_selection: crate::cpu_topology::test_selection(1),
+            visible_window_selection: crate::cpu_topology::test_selection(1),
+            background_selection: crate::cpu_topology::test_selection(1),
         });
-        update(&mut s, r"C:\App\app.exe", Message::CpuEnabled(false, true));
+        let _ = update(&mut s, r"C:\App\app.exe", Message::CpuEnabled(false, true));
         assert!(s.processor_affinity_hard.rules.is_empty());
     }
 }

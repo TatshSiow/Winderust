@@ -13,6 +13,9 @@ mod cpu_limiter;
 mod design;
 mod home;
 mod hotkeys;
+mod instance_balancing;
+mod instance_limits;
+mod keep_running;
 mod memory_trim;
 mod modal;
 mod motion;
@@ -27,6 +30,7 @@ mod process_power_plans;
 mod scrolling;
 mod select;
 mod settings_pages;
+mod sleep_prevention;
 mod status_rail;
 mod tasks;
 mod timer_resolution;
@@ -61,6 +65,9 @@ pub enum Page {
     AdaptiveEngine,
     BackgroundEfficiency,
     AppSuspension,
+    SleepPrevention,
+    KeepRunning,
+    InstanceLimits,
     ByRunningApp,
     IoPriority,
     GpuPriority,
@@ -68,7 +75,8 @@ pub enum Page {
     MemoryTrim,
     Watchdog,
     ProcessorAffinityHard,
-    ByForeground,
+    InstanceBalancing,
+    ByFocus,
     ByTime,
     ActionLog,
     WinderustBehaviour,
@@ -87,17 +95,18 @@ pub struct PageSection {
 const HOME_PAGES: [Page; 1] = [Page::Home];
 const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
 const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
-    Page::ByForeground,
+    Page::ByFocus,
     Page::ByRunningApp,
     Page::ByCpuLoad,
     Page::ByActivity,
     Page::ByTime,
     Page::AdvancedPowerPlanTuning,
 ];
-const CPU_CONTROL_PAGES: [Page; 3] = [
+const CPU_CONTROL_PAGES: [Page; 4] = [
     Page::CpuLimiter,
     Page::CpuSetsSoft,
     Page::ProcessorAffinityHard,
+    Page::InstanceBalancing,
 ];
 const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::ProcessPriority,
@@ -120,8 +129,11 @@ const SETTINGS_PAGES: [Page; 3] = [
     Page::ExperimentalFeatures,
 ];
 const ABOUT_PAGES: [Page; 1] = [Page::About];
-const ADVANCED_CONTROLS_PAGES: [Page; 3] = [
+const ADVANCED_CONTROLS_PAGES: [Page; 6] = [
     Page::AppSuspension,
+    Page::SleepPrevention,
+    Page::KeepRunning,
+    Page::InstanceLimits,
     Page::TimerResolution,
     Page::Win32PrioritySeparation,
 ];
@@ -182,13 +194,14 @@ impl Page {
                 | Self::AdaptiveEngine
                 | Self::BackgroundEfficiency
                 | Self::AppSuspension
+                | Self::SleepPrevention
                 | Self::ByRunningApp
                 | Self::IoPriority
                 | Self::GpuPriority
                 | Self::MemoryPriority
                 | Self::MemoryTrim
                 | Self::ProcessorAffinityHard
-                | Self::ByForeground
+                | Self::ByFocus
                 | Self::ByTime
                 | Self::TimerResolution
         )
@@ -215,6 +228,9 @@ impl Page {
             Self::AdaptiveEngine => t!("nav.adaptive_engine"),
             Self::BackgroundEfficiency => t!("nav.background_efficiency"),
             Self::AppSuspension => t!("nav.app_suspension"),
+            Self::SleepPrevention => t!("nav.sleep_prevention"),
+            Self::KeepRunning => t!("nav.keep_running"),
+            Self::InstanceLimits => t!("nav.instance_limits"),
             Self::ByRunningApp => t!("nav.by_running_app"),
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
@@ -222,7 +238,8 @@ impl Page {
             Self::MemoryTrim => t!("nav.memory_trim"),
             Self::Watchdog => t!("nav.watchdog"),
             Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
-            Self::ByForeground => t!("nav.by_foreground"),
+            Self::InstanceBalancing => t!("nav.instance_balancing"),
+            Self::ByFocus => t!("nav.by_focus"),
             Self::ByTime => t!("nav.by_time"),
             Self::ActionLog => t!("nav.action_log"),
             Self::WinderustBehaviour => t!("settings.winderust_behaviour"),
@@ -251,13 +268,14 @@ impl Page {
             Self::PowerPlanControl
             | Self::ByActivity
             | Self::ByTime
-            | Self::ByForeground
+            | Self::ByFocus
             | Self::ByRunningApp
             | Self::ByCpuLoad
             | Self::AdvancedPowerPlanTuning => Self::PowerPlanControl,
             Self::CpuControl
             | Self::CpuLimiter
             | Self::CpuSetsSoft
+            | Self::InstanceBalancing
             | Self::ProcessorAffinityHard => Self::CpuControl,
             Self::PriorityControl
             | Self::ProcessPriority
@@ -274,6 +292,9 @@ impl Page {
             Self::About => Self::About,
             Self::AdvancedControls
             | Self::AppSuspension
+            | Self::SleepPrevention
+            | Self::KeepRunning
+            | Self::InstanceLimits
             | Self::TimerResolution
             | Self::Win32PrioritySeparation => Self::AdvancedControls,
         }
@@ -313,10 +334,13 @@ mod tests {
     #[test]
     fn power_source_profiles_are_limited_to_configurable_feature_pages() {
         assert!(Page::AdaptiveEngine.supports_power_source_profiles());
-        assert!(Page::ByForeground.supports_power_source_profiles());
+        assert!(Page::ByFocus.supports_power_source_profiles());
         assert!(Page::TimerResolution.supports_power_source_profiles());
         assert!(!Page::Home.supports_power_source_profiles());
         assert!(!Page::Watchdog.supports_power_source_profiles());
+        assert!(!Page::KeepRunning.supports_power_source_profiles());
+        assert!(!Page::InstanceLimits.supports_power_source_profiles());
+        assert!(!Page::InstanceBalancing.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
         assert!(!Page::ProcessList.supports_power_source_profiles());
         assert!(!Page::ActionLog.supports_power_source_profiles());

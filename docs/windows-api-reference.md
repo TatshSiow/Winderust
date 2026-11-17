@@ -29,6 +29,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
 | Stop Process / Stop Process Tree | `src/foreground/process_list.rs`, `src/control/process_termination.rs`, and `src/platform/windows/process_termination.rs` | Read-side tree capture, typed batch command, and raw termination adapter |
+| Keep Running | `src/features/advanced_controls/keep_running.rs`, `src/backend/automation/keep_running/`, `src/control/keep_running.rs`, and `src/platform/windows/keep_running.rs` | Current shell context, retained process membership, provisional-launch ownership, atomic Job List creation, and one-shot native acceptance |
 | CPU Control | `src/features/cpu_control/`, `src/control/cpu_allocation.rs`, `src/control/cpu_limiter.rs`, `src/control/suspension.rs`, and the CPU allocation, CPU Limiter timing, and shared Job Object adapters under `src/platform/windows/` | Policy, shared affinity/CPU Set ownership, wall-clock duty-cycle scheduling, shared freeze/thaw ownership, and narrow raw Windows adapters |
 | Priority Control | `src/features/priority_control/`, `src/control/process.rs`, `src/control/priority_efficiency.rs`, `src/control/thread_priority.rs`, `src/control/dynamic_priority_boost.rs`, `src/control/io_priority.rs`, `src/control/gpu_priority.rs`, `src/control/memory_priority.rs`, and mechanism adapters in `src/platform/windows/` | Policy-only feature routes, typed property ownership/transactions, and narrow raw Windows adapters, including the compound Process Priority / Power Throttling adapter |
 | Shared process-control acquisition | `src/control/process.rs` and `src/platform/windows/process.rs` | Typed exact identity/safety validation plus the sole operation-specific `OpenProcess` adapter for control commands |
@@ -80,7 +81,19 @@ User-facing behavior:
 - It reads each scheme's friendly display name.
 - It reads the currently active scheme GUID.
 - By Activity maps its visible `Idle plan` and `Active plan` settings to Windows power scheme GUIDs.
-- By Foreground, By Running App, By CPU Load, and By Time store a selected GUID on each rule; missing selections do not fall back to a global plan.
+- By Focus, By Running App, By CPU Load, and By Time store a selected GUID on each rule; missing selections do not fall back to a global plan.
+- By Focus resolves the app with input focus through `src/foreground/active_window.rs`
+  and [GetForegroundWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow).
+  A temporarily null window is an unavailable observation.
+- The global Restore previous plan when no rule selects a plan policy belongs to
+  the Power Plan Control landing page and `src/control/power_plan.rs`. Capture the
+  actual active GUID before the first verified automatic switch, preserve it
+  across all ordinary feature, CPU Else, and Activity Active plan handoffs, and
+  restore only while the expected GUID is still owned and every rule yields.
+  Unavailable process, CPU, and activity observations defer
+  affected fallthrough; they are not confirmed exits. Restoration uses the
+  existing power-scheme APIs and recovery transaction; it adds no native mutation
+  owner or persistent power-plan tuning.
 - When automation decides to switch mode, Winderust calls the Windows API to set the selected scheme as active.
 - Adaptive Engine creates a temporary plan named `Winderust Adaptive`; startup recovery only recognizes that exact current Winderust name/description pair.
 - Ordinary automation and the temporary Adaptive plan are mutually exclusive typed controller owners. Window visibility changes cadence, not ownership.
@@ -123,12 +136,22 @@ User-facing behavior:
 
 `RuntimeHandle` owns `src/backend/windows_events.rs` as an RAII event source. The watcher retains one dedicated hidden-window thread for event-driven automation wakes. Startup is all-or-nothing: the hidden window, foreground hook, window-creation hook, every configured power-setting notification, suspend/resume notification, and current-session notification must all register successfully. Partial registrations are released immediately and the watcher remains inactive so automation retains its polling fallback. Runtime shutdown posts the source's quit message and joins its thread before automatic state is released.
 
+The watcher also notifies its owner when its thread stops, including startup
+failure or unwinding. Its exit guard marks liveness false before invoking that
+notification, so `is_running` cannot report an already-stopping source as active
+while the thread finishes. The owner checks liveness again after publishing
+startup availability. A stopped source wakes automation to release Sleep
+Prevention requests; ordinary feature polling remains available.
+
+The watcher distinguishes ordinary [power-setting notifications](https://learn.microsoft.com/en-us/windows/win32/power/pbt-powersettingchange) from suspend/resume broadcasts without dereferencing their payloads. Both wake automation and refresh the active plan. `src/backend/automation.rs` samples the power source for profile selection; `RuntimeCore::note_settings` in `src/backend/automation/runner.rs` resets CPU qualification, holds, cached usage, and the sampling baseline on actual source transitions or suspend/resume, rather than every battery-percentage or plan-personality notification. Rules wait for a fresh CPU interval after these boundaries. This preserves a CPU rule across notifications generated by its own successful plan switch. External plan changes still invalidate held state through the controller's active-GUID observation.
+
 | API | Used for | Reference |
 | --- | --- | --- |
 | `SetWinEventHook` | Receives foreground changes and top-level window creation events outside Winderust's own process. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook |
 | `RegisterPowerSettingNotification` | Delivers A/C source, battery percentage, and power-scheme personality changes to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerpowersettingnotification |
 | `RegisterSuspendResumeNotification` | Delivers suspend and resume notifications to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registersuspendresumenotification |
 | `WTSRegisterSessionNotification` | Delivers current-session lock, unlock, logon, logoff, and related session changes. | https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsregistersessionnotification |
+| `GetMessageW` | The watcher dispatches positive results and exits for quit (`0`) or failure (`-1`), then reports lost availability. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmessagew |
 
 ## By Time clock invalidation
 
@@ -403,6 +426,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | `OpenProcess` | `src/platform/windows/process.rs` maps each typed control operation to its minimal access profile and owns raw acquisition for process-control commands. `src/control/process.rs` then validates PID, creation time, absolute executable path, session policy, process name, critical/protected state, and operation-specific capability on that same retained handle. Other read-only discovery and recovery paths keep their independently justified openers. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | `GetProcessTimes` | Captures creation time in the lightweight shared process snapshot using its existing query handle. Typed controls pair that value with the exact executable path, then revalidate both immediately before mutation so PID reuse fails closed without requiring a full path-enrichment pass. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes |
 | `QueryFullProcessImageNameW` | Reads executable paths through `src/foreground/process_list.rs` for process discovery, foreground/cursor identification, and exact executable-path matching across every user-configured process rule. Process mutation paths revalidate the expected executable path on the same opened handle immediately before the change; built-in Windows safety exclusions remain filename-based. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew |
+| `GetExitCodeProcess` | After an identity-query failure, `src/control/process.rs` asks `src/platform/windows/process.rs::exit_confirmed` for positive termination evidence on the same handle. Confirmed exits enter existing restoration cleanup; `STILL_ACTIVE` (including explicit exit code 259) and failed queries preserve the original identity error. Existing query rights suffice; no debug privilege or additional access is requested. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess |
 | Process handles and identifiers | Documents that a process ID is valid only until process termination and can be reused, while an open handle continues to identify that process object. Winderust pairs executable-path checks with creation-time checks wherever sampled state crosses into a later mutation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers |
 | Process Security and Access Rights | Documents the query-only `PROCESS_QUERY_LIMITED_INFORMATION` right and the `PROCESS_SET_INFORMATION` right required by `SetProcessInformation`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
 
@@ -427,6 +451,10 @@ The explicit tuning service applies ten ordered A/C and battery processor settin
 attempt, including a partial failure, so the UI reflects the values Windows now
 holds rather than the pre-apply draft. This persistent user command does not use
 the automatic power-plan recovery journal or claim ledger.
+Success requires readback to match every requested processor value and selected
+scheduling override on both power sources. Unselected scheduling fields remain
+unowned. Unknown native boost modes and out-of-range percentages fail reading
+instead of being normalized into apparently successful settings.
 
 | API / Setting | Used for | Reference |
 | --- | --- | --- |
@@ -523,13 +551,50 @@ Implementation entry points:
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GlobalMemoryStatusEx` | Reads overall physical-memory load and availability. | https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex |
-| `K32GetProcessMemoryInfo` | The typed command boundary reads the working set before a trim and, when available, after it; a failed post-trim query leaves the freed-memory estimate unknown rather than treating the whole prior working set as freed. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
+| `K32GetProcessMemoryInfo` | The typed command boundary measures before/after working-set reduction, not system RAM reclaimed; failed post-trim queries leave the reduction unknown. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
 | `SetProcessWorkingSetSize` | `src/platform/windows/memory_trim.rs` alone passes `SIZE_T(-1)` for both bounds to remove as many pages as possible. `MemoryTrimController` supplies a handle with exact creation/path identity, critical/PPL, current-session policy, and `PROCESS_SET_QUOTA` validation immediately before the irreversible call. | https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setprocessworkingsetsize |
 
 
 ## CPU Sets (Soft) and Processor Affinity (Hard)
 
-Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers processor group 0 only, so CPU Sets (Soft) discloses that limit when multiple groups are present. All automatic CPU allocation shares one coordinator with this order: CPU Sets (Soft) > Processor Affinity (Hard) > Adaptive Engine. CPU Sets and affinity cannot remain simultaneously Winderust-owned for one exact process instance. Adaptive Engine may select the least-used logical processors across the All, P-core, or E-core pool from per-processor samples, a fixed P/E/no-SMT topology mask, or an exact custom mask; these policy choices do not create another mutation owner.
+Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies
+preferred Windows CPU Sets and is the recommended default. Its editor and
+coordinator retain group-qualified selections, resolving every selected
+`{ group, number }` to a current CPU Set ID. Processor Affinity (Hard) applies a
+strict process affinity mask and remains limited to group 0. New hard claims
+require GetProcessGroupAffinity to report exactly group 0 before any ownership
+handoff, preventing a group-0 mask from being reinterpreted in another primary
+group. Compensation, release, and recovery do not depend on this new-claim guard.
+All automatic CPU allocation shares one coordinator with this order: CPU Sets
+(Soft) > Processor Affinity (Hard) > Instance Balancing > Adaptive Engine. CPU Sets and affinity cannot
+remain simultaneously Winderust-owned for one exact process instance. Adaptive
+Engine retains group-0 selection and sampling; its policy choices do not create
+another mutation owner.
+
+`src/platform/windows/cpu_allocation.rs::cpu_set_inventory_from_bytes` retains
+`SYSTEM_CPU_SET_INFORMATION.CpuSet.Group`, `LogicalProcessorIndex`, and the
+`Allocated` flag for every record. `CpuSetRecord` distinguishes allocated from
+unallocated mappings; unallocated does not prove scheduling eligibility. The
+documented `AllFlags` bit 1 carries `Allocated`. The shared query uses a null
+process handle, so it does not classify `AllocatedToTargetProcess`. CPU Set IDs
+and allocation flags are sampled runtime facts, not saved processor identities
+or reservations made by Winderust.
+`src/control/cpu_allocation.rs::CpuSetInventory` rejects duplicate processor
+identities, duplicate IDs, and incomplete selected membership before changing
+ownership and retains allocation state in the same per-operation cache. Existing
+CPU Sets (Soft) and Adaptive Engine selections continue to resolve both allocated
+and unallocated IDs; Windows determines their effect. CPU Set application,
+verification, compensation, and restoration still
+use the complete ID list through the existing process-default APIs; an empty
+baseline is restored as an empty list. No new setter, recovery schema, affinity
+override, or undocumented multi-group contract is introduced.
+
+Readback confirms the process-default assignment, not effective thread residency.
+Windows documents that thread-selected CPU Sets supersede process defaults, hard
+affinity takes precedence, reserved CPU Sets may be unavailable, and assignments
+outside a thread's hard-affinity groups may be ignored. Winderust does not alter
+thread affinity to work around these restrictions. See [CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
+and [SYSTEM_CPU_SET_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_cpu_set_information).
 
 Background Efficiency exposes Foreground Detection and Visible Window Detection. CPU Limiter,
 CPU Sets (Soft), and Processor Affinity (Hard) classify each matched process as Focus, Visible
@@ -546,8 +611,18 @@ Implementation paths:
 - `src/control/cpu_allocation.rs`: sole live affinity and CPU Set ownership coordinator,
   exact-identity validation, claim arbitration, baseline/expected state, mutual exclusion,
   recovery sequencing, compensation, and clean release.
+- `src/control/cpu_allocation/instance_balancing.rs` and `eligibility.rs`:
+  guarded Instance Balancing backend requests, exact-process drift suppression,
+  confirmed original-state eligibility, and whole-core/unallocated-Set validation.
+  The automatic producer in `src/backend/automation/instance_balancing.rs` uses
+  retained membership and owner-aware preflight; the feature module owns whole-core
+  planning and qualification. Configuration defaults off; the UI editor is pending.
 - `src/platform/windows/cpu_allocation.rs`: sole live affinity/CPU Set query and setter adapter,
-  including packed `GetSystemCpuSetInformation` topology-buffer conversion.
+  including packed `GetSystemCpuSetInformation` conversion and new-claim processor-group validation.
+- `src/platform/windows/cpu_allocation/topology.rs`: read-only `RelationAll` capture and
+  packed core, active-group, cache, and NUMA relationship validation.
+- `src/cpu_topology.rs`: canonical, validated group-qualified topology facts and
+  topology-bound saved selections and fallible group-0 projection; no native APIs or mutation ownership.
 - `src/features/cpu_control/cpu_allocation.rs`: explicit-rule discovery,
   Focus/Visible Window/Background tier selection, topology policy, failure suppression,
   status, and Action Log reporting.
@@ -564,16 +639,39 @@ worker pass, `RuntimeCore` asks the coordinator to re-resolve the effective
 claim and reopen it with the current cross-session setting. If no claim remains,
 the coordinator restores the first baseline only while the live state still
 matches Winderust's expected value. External changes break ownership and are
-left untouched after the recovery entry is relinquished. Shutdown skips the
+left untouched after the recovery entry is relinquished. A fresh effective CPU
+Sets (Soft), Processor Affinity (Hard), or Adaptive Engine claim can deliberately
+reapply its selection after drift, capturing the external value
+as its new restoration baseline. Equality with an expected value alone does not
+prove a recovery Commit was acknowledged. Shutdown skips the
 pass-end handoff and directly restores coordinator-owned state in reverse
 application order. Failed release-only cleanup retries with bounded one-to-60
 second backoff; repeated identical attempts do not create repeated Action Log
 failures, and a newly queued handoff bypasses an older retry deadline.
 
+Instance Balancing uses the same native adapter, process-control safety boundary,
+and recovery journal. Its direct claims and delayed handoffs both check the
+original allowed affinity, empty original default Sets, complete current CPU Set
+mappings, whole active SMT cores, and the documented `Allocated` flag. It excludes
+all allocated Sets without interpreting target-specific reservation ownership.
+Native read failures and uncertain journal state cannot authorize placement;
+expected-value equality alone cannot turn uncertain state into confirmed state.
+Fresh affinity/default-Set reads guard the final apply path against observed
+drift, but do not lock another process's native writes. The backend validates
+individual shares. The producer separately plans sampled cohort membership and
+disjoint desired shares; neither layer proves physical-core exclusivity or performance.
+
 `GetProcessDefaultCpuSets` buffer discovery accepts
 `ERROR_INSUFFICIENT_BUFFER` as the only larger-buffer signal. A successful
 zero-count probe represents a genuinely empty CPU Set list. Both the live
 Windows adapter and crash-recovery mirror follow this contract.
+
+The read-only native helper in `scripts/adaptive_runtime_benchmark.ps1` also
+queries `GetProcessDefaultCpuSets` for generated benchmark workers. The runner
+uses those observations to reject an unclean baseline and confirm actual CPU
+Set allocation with CPU Pressure Restraint off. The helper does not set CPU Sets
+or own process state; the headless production runtime and its recovery client
+retain restoration ownership.
 
 ### CPU Allocation APIs
 
@@ -581,8 +679,9 @@ Windows adapter and crash-recovery mirror follow this contract.
 | --- | --- | --- |
 | `GetProcessAffinityMask` | `src/platform/windows/cpu_allocation.rs` reads the current process and system affinity masks before the coordinator changes them. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessaffinitymask |
 | `SetProcessAffinityMask` | The same adapter is the sole live writer for the coordinator's configured hard affinity mask; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessaffinitymask |
-| `GetSystemCpuSetInformation` | The adapter converts the packed variable-length topology buffer into group-zero logical-processor-to-CPU-Set IDs for soft mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
-| `GetProcessDefaultCpuSets` | The adapter reads existing process default CPU Set IDs so the coordinator can capture and restore the exact baseline. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
+| `GetSystemCpuSetInformation` | The adapter converts the packed variable-length buffer into group-qualified CPU Set mappings with the documented `Allocated` flag. The null process argument leaves target-specific reservation ownership unclassified. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
+| `GetProcessGroupAffinity` | The adapter verifies new hard-affinity targets belong only to group 0 before releasing another allocation. Unknown, multiple, or nonzero groups decline new claims without preventing owned-state restoration. | https://learn.microsoft.com/en-us/windows/win32/api/processtopologyapi/nf-processtopologyapi-getprocessgroupaffinity |
+| `GetProcessDefaultCpuSets` | The adapter reads existing process default CPU Set IDs so the coordinator can capture and restore the exact baseline. The runtime benchmark helper also reads generated workers' IDs to verify real-runtime allocation. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
 | `SetProcessDefaultCpuSets` | The adapter is the sole live writer that applies or clears process default CPU Set IDs; crash recovery retains a separate replay-only writer. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets |
 | `GetActiveProcessorGroupCount` | Detects multi-group systems where single-mask affinity APIs are group-relative. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount |
 | Processor Groups | Explains why hard affinity masks are group-relative and why multi-group systems need special handling. | https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups |
@@ -630,6 +729,34 @@ a valid limiter rule is active, including hidden and Adaptive Engine modes.
 multi-object wait. `src/control/suspension.rs` owns exact-process Job Object acquisition and combines
 CPU Limiter and App Suspension owner phases into one effective frozen state. Recovery stays armed
 across limiter duty cycles and is forgotten only after the last owner releases the job.
+
+The opt-in mechanism comparison in `src/ui/runtime_benchmark/cpu_limiter.rs`
+uses these production controllers and the CPU allocation coordinator on disposable
+child processes. It reads process CPU time through the existing
+[`GetProcessTimes`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
+adapter, brackets counter reads with a monotonic clock, and verifies exact baseline
+affinity/CPU Sets restoration before each child exits. It adds no native mutation
+adapter or automatic CPU Limiter policy.
+
+`src/platform/windows/runtime_benchmark.rs`, gated by `runtime-benchmark`, adds
+read-only accounting diagnostics. It borrows the worker's retained compute-thread
+`JoinHandle`s and queries its current handler-thread pseudo-handle with
+[`GetThreadTimes`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes).
+Pseudo-handles are never owned or closed. The host records the existing
+`src/cpu.rs::PerProcessorUsageMonitor` result as whole-system busy time, preserving
+an unavailable observation or processor-count mismatch rather than substituting
+zero. These counters do not establish per-thread processor residency.
+
+Each worker also queries `IsProcessInJob` and
+[`QueryInformationJobObject`](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject)
+with a null job handle before and after restraint. A null handle selects the
+calling process's immediate job. The adapter retains native query errors and
+interprets the
+[`JOBOBJECT_CPU_RATE_CONTROL_INFORMATION`](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_cpu_rate_control_information)
+union only for its enabled mode. Disabled or conflicting modes supply no rate
+interpretation. Weight, minimum/maximum rates, and hard-cap rates stay distinct.
+Ancestor-job limits remain unknown: [nested job CPU limits](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs)
+can apply beyond the queried job. Diagnostics neither change nor bypass them.
 
 | API or behavior | Used for | Reference |
 | --- | --- | --- |
@@ -925,6 +1052,37 @@ src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, T
 
 `src/features/winderust_features/adaptive_engine_process.rs` and `src/features/cpu_control/cpu_allocation.rs` compose complementary foreground/background CPU Sets (Soft) through the existing coordinator. Zoning declines topology unless `GetActiveProcessorGroupCount` returns exactly one and native topology discovery succeeds; it does not use fallback topology. Existing baseline restoration preserves an empty process-default list as empty, rather than an explicit All list. No new native setter or undocumented contract is introduced.
 
+`src/platform/windows/cpu_allocation/topology.rs` queries `RelationAll` with a
+bounded buffer retry. It advances by each record's declared size, validates
+relationship-specific array extents before unaligned reads, and rejects partial,
+empty, duplicate, or inconsistent core/group membership. Unknown relationship
+records are skipped only after their bounds are verified. Group-qualified
+processor numbers are retained; Processor Affinity (Hard) and Adaptive Engine
+mask consumers receive an explicit group-0 projection, never flattened indices.
+
+Cache records supply cache level, byte size, type, and full processor membership.
+CPU Sets (Soft) offers complete L3 unified/data cache domains across discovered
+groups. Processor Affinity (Hard) offers only fully group-0-representable domains.
+Cache sharing does not establish CCD identity. NUMA membership remains a separate
+fact, including nodes spanning groups. `RelationAll` avoids the primary-group-only
+NUMA view on recent Windows; legacy NUMA zero `GroupCount` uses the documented
+single `GroupMask`. The current SDK also overlays cache `GroupMasks` with the
+legacy single-mask layout. Winderust interprets cache `GroupCount == 0` as that
+single, fully bounds-checked mask. Microsoft's cache member documentation does
+not specify this version transition: this is an explicit ABI assumption, not an
+inferred multi-group cache or CCD contract. Malformed data is unavailable rather
+than a partial successful discovery.
+
+Official references:
+
+- [GetLogicalProcessorInformationEx](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getlogicalprocessorinformationex)
+- [SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_logical_processor_information_ex)
+- [PROCESSOR_RELATIONSHIP](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-processor_relationship)
+- [GROUP_RELATIONSHIP](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-group_relationship)
+- [CACHE_RELATIONSHIP](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-cache_relationship)
+- [NUMA_NODE_RELATIONSHIP](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-numa_node_relationship)
+- [Microsoft SDK cache layout](https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/um/winnt.h)
+
 - https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount ? zero means failure; multiple groups are outside this mask domain.
 - https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets ? thread-selected sets and restrictive affinity still apply; placement is not exclusive physical-core ownership.
 - https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets ? a null list with zero count clears the process-default assignment.
@@ -960,7 +1118,7 @@ and recovery ownership. Missing-PID classification stays at the separate
 - `src/backend/win_util.rs::WinHandle::process_times` returns creation and CPU counters from one [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) call, preserving its native failure code. `src/control/process.rs` treats failed reads as unavailable rather than proof of exit.
 - `src/foreground/process_list.rs::query_process_image_path` preserves [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) errors. Successful path or creation mismatches remain identity failures.
 - `src/runtime/observations.rs::foreground_process_group_ids` validates creation times on ancestry edges. Parent PID can identify an exited or reused process: [Win32_Process](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process).
-- `src/platform/windows/cpu_allocation.rs::cpu_set_inventory` captures [GetSystemCpuSetInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation) with the existing null process argument. `src/control/cpu_allocation.rs::CpuSetInventory` shares one complete result or failure per operation. Partial records are rejected; the existing group-zero, 64-bit mask domain is unchanged. No undocumented API was introduced.
+- `src/platform/windows/cpu_allocation.rs::cpu_set_inventory` captures [GetSystemCpuSetInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation) with the existing null process argument. `src/control/cpu_allocation.rs::CpuSetInventory` shares one complete group-qualified mapping, including each Set's allocated/unallocated state, or failure per operation. Partial records, duplicate mappings, and incomplete selected membership are rejected. The allocation bit follows the documented [SYSTEM_CPU_SET_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_cpu_set_information) layout; target-specific reservation ownership is not queried. Processor Affinity (Hard) and Adaptive Engine retain group-0 limits. No undocumented API was introduced.
 
 ## Mixed-DPI window geometry
 
@@ -972,3 +1130,130 @@ This application workaround addresses [Winit 0.30.13 mixed-DPI growth issue #460
 ## Themed window chrome
 
 src/ui/window_frame.rs renders the themed title bar and restored-window resize targets; src/ui/app.rs disables Iced window decorations and routes its events through Iced 0.14 [drag](https://docs.rs/iced/0.14.0/iced/window/fn.drag.html), [drag_resize](https://docs.rs/iced/0.14.0/iced/window/fn.drag_resize.html), minimize, and toggle_maximize tasks. Window resize events refresh the native maximized state; no polling or new raw Windows adapter is introduced. Winit retains native size constraints and maximized work-area handling. Caption close and native close requests share the existing WindowClose lifecycle. The mixed-DPI subclass above remains unchanged.
+
+## Sleep Prevention
+
+`src/platform/windows/sleep_prevention.rs` owns the documented
+[`PowerCreateRequest`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powercreaterequest),
+[`PowerSetRequest`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powersetrequest),
+and [`PowerClearRequest`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powerclearrequest)
+boundary. It supplies a caller-localized reason in a
+[`REASON_CONTEXT`](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-reason_context)
+simple string, checks the create call's `INVALID_HANDLE_VALUE` failure, and
+retains native error codes. The owned request handle uses the existing
+`WinHandle` cleanup; it is never inherited or duplicated.
+
+`src/control/sleep_prevention.rs` keeps one accepted System request while any
+eligible rule claims it, plus one Display request when requested. Display always
+holds System too. Unchanged reconciliation and display-mode changes do not
+renew the System count. Shutdown clears accepted counts and closes the object
+even when a clear fails; process termination also closes Winderust's handles.
+These self-owned requests do not mutate another process or a persistent power
+plan, and need no crash-recovery journal.
+
+Accepted calls do not prove effective sleep inhibition. Windows policy and user
+actions still govern sleep. User-initiated sleep terminates these requests; on
+Modern Standby with battery power, System requests terminate five minutes after
+the system sleep timeout. The controller does not query effective inhibition or
+periodically renew requests to defeat these limits. No Away Mode or Execution
+request, undocumented information class, or persistent timeout change is used.
+
+## Keep Running
+
+Policy lives in `src/features/advanced_controls/keep_running.rs`; the bounded
+worker and intake ordering live in `src/backend/automation/keep_running.rs`.
+`src/control/keep_running.rs` applies the shared protected-process and exact-target
+acquisition checks. The raw boundary is `src/platform/windows/keep_running.rs`.
+
+- [GetShellWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getshellwindow)
+  selects the actual shell, without enumerating substitute Explorer processes.
+  Launch window-station/desktop names come from `GetProcessWindowStation`,
+  `GetThreadDesktop`, and `GetUserObjectInformationW`. Retained shell and member
+  handles must agree on ordinary user/logon/session/token facts. This does not
+  establish which desktop each observed app originally used.
+- [GetTokenInformation](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation)
+  supplies SID, authentication ID, session, integrity, elevation, AppContainer,
+  UIAccess, groups, privileges, and restricting SIDs. An elevated caller's
+  `TokenLinkedToken` must bind to the selected ordinary shell. This conservative
+  comparison does not prove arbitrary token equivalence. It changes no token
+  privileges and calls no token-based process-creation API.
+- [CreateEnvironmentBlock](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createenvironmentblock)
+  builds a fresh shell-user environment with inheritance disabled. Explicit
+  executable, literal arguments, and working directory go to
+  [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
+  No shell expansion, command-line discovery, or Winderust environment inheritance
+  is used. Creation is suspended at Normal priority with no inherited handles.
+- [UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)
+  supplies the selected parent and atomic Job List. A private unnamed job starts
+  with `KILL_ON_JOB_CLOSE | BREAKAWAY_OK`. The root requests no breakaway and does
+  not modify inherited jobs. Native verification covers its token object DACL
+  and mandatory label, executable, retained identity, context, priority, and job.
+- `ResumeThread` runs once. Successful clearing of the private job's kill flag is
+  irreversible acceptance; later readback or publication failure cannot authorize
+  termination. Explicit disposal targets only the exact unaccepted created root,
+  then confirms exit through its retained synchronization handle. Accepted-member
+  observation duplicates that same process object, avoiding a PID-reopen race.
+- [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+  define nested-job and breakaway behavior. Ordinary descendants may remain in
+  the private job; explicit breakaway children can escape it. Cleanup is not a
+  descendant rollback guarantee. Kill-on-close protects the provisional root only
+  while armed; it cannot make native disarm and result publication atomic.
+- Fresh Toolhelp enumeration inspects accessible candidates and treats plausible
+  same-name inspection failures as unknown. Resolved aliases use volume serial
+  plus [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info)
+  file ID. An inaccessible differently named alias cannot be ruled out, and a
+  path's current file identity does not prove an unchanged loaded image section.
+  Retained exact process handles, not missing enumeration, prove member exit.
+
+No undocumented token layouts, privilege enabling, service/session launch,
+credentials, or crash-helper launch recovery are used. Console apps, custom
+token changes, shell replacement, and unusual inherited jobs require separate
+compatibility evidence; unsupported contexts fail closed.
+
+## Instance Limits
+
+`src/platform/windows/instance_limits.rs` owns the read-only catalog, path, token
+and liveness queries. `src/control/instance_limits.rs` applies shared protected-process
+checks on the same retained handle. The native result retains exact PID, creation
+time, observed image path and observation handle after a final liveness check;
+`collect_members` preserves those observations, while `collect` projects them to
+counts and releases the handles. Scope is sampled during acquisition, so retained
+membership alone does not authorize a later process mutation. `member_state`
+refreshes retained-handle liveness and current SID/session scope for Instance Balancing,
+distinguishing confirmed exit from a known scope mismatch or unavailable evidence.
+The balancing producer repeats complete catalog/topology/eligibility preparation
+before a group plan and rechecks each retained member before the shared mutation
+preflight. These sampled reads do not make a native group update atomic. Policy lives in
+`src/features/advanced_controls/instance_limits.rs`; runtime intake and notification
+ordering live in `src/backend/automation/instance_limits.rs`.
+
+- [PROCESSENTRY32W](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w)
+  supplies a candidate executable filename. Missing, malformed, unterminated or
+  potentially truncated names cannot prove absence. Windows documents this as a
+  filename, without a universal alias/rename equivalence guarantee. Negative name
+  preselection therefore retains a measured naming assumption; a discovered
+  contradiction invalidates the entire pass.
+- [QueryFullProcessImageNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew)
+  with flags zero supplies the Win32 full image path, using limited-query access.
+  [CompareStringOrdinal](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal)
+  compares explicit UTF-16 lengths with ordinal case ignoring; zero is an error.
+  Slash normalization does not resolve aliases or identify files.
+- [GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)
+  checks the selected file's normalized DOS path through a read-attributes handle
+  shared for read, write and deletion. Only documented extended DOS/UNC prefixes
+  are converted for comparison. A different resolved spelling is unavailable,
+  rather than silently changing the rule. Hardlink file IDs are never merged.
+- [GetTokenInformation](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation)
+  reads TokenUser and TokenSessionId with TOKEN_QUERY. Caller and candidate must
+  agree on SID and session. No authentication-ID, integrity, elevation, restriction,
+  AppContainer or UIAccess equality is required for this read-only count.
+- [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+  with zero timeout verifies liveness through a SYNCHRONIZE handle. Query-only
+  fallback can rule out a known different path or scope, but STILL_ACTIVE cannot
+  prove liveness because it is also a possible exit code. Exact PID/creation keys
+  and retained handles avoid PID-only joins; the catalog is still non-atomic.
+
+No privilege enabling, process mutation, launch prevention or recovery journal is
+involved. Ordinary/elevated local fixtures establish a bounded compatibility claim;
+UNC, unusual filesystem naming, process renames and actual PID reuse need separate
+controlled evidence.

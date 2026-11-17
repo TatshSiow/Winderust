@@ -1,16 +1,20 @@
 use super::{
     AppSuspensionSettings, ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison, Settings,
-    NESTED_BATTERY_PROFILE_ERROR,
+    SleepPreventionSettings, NESTED_BATTERY_PROFILE_ERROR,
 };
 
 impl Settings {
     pub fn validate(&self) -> Result<(), String> {
         self.validate_power_source_profiles()?;
         self.validate_watchdog()?;
+        self.validate_keep_running()?;
+        self.validate_instance_limits()?;
+        self.validate_instance_balancing()?;
         self.validate_dynamic_resource_zones()?;
         self.validate_by_cpu_load_rules()?;
         for profile in self.profiles() {
             profile.app_suspension.validate()?;
+            profile.sleep_prevention.validate()?;
         }
         Ok(())
     }
@@ -47,6 +51,27 @@ impl Settings {
         Ok(())
     }
 
+    pub fn validate_keep_running(&self) -> Result<(), String> {
+        for profile in self.profiles() {
+            profile.keep_running.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_instance_limits(&self) -> Result<(), String> {
+        for profile in self.profiles() {
+            profile.instance_limits.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_instance_balancing(&self) -> Result<(), String> {
+        for profile in self.profiles() {
+            profile.instance_balancing.validate()?;
+        }
+        Ok(())
+    }
+
     pub fn validate_dynamic_resource_zones(&self) -> Result<(), String> {
         for profile in self.profiles() {
             let process = &profile.adaptive_engine_process;
@@ -59,6 +84,18 @@ impl Settings {
                     .dynamic_resource_zone_settings
                     .validate(process.dynamic_resource_zones_enabled)
                     .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SleepPreventionSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        for rule in &self.rules {
+            let path = rule.executable_path.trim();
+            if !std::path::Path::new(path).is_absolute() || path.contains('\0') {
+                return Err("Sleep Prevention rules require an absolute executable path.".into());
             }
         }
         Ok(())
@@ -126,6 +163,39 @@ impl ByCpuLoadRule {
             && self.threshold_percent > self.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX)
         {
             return Err("Between threshold must not exceed the upper threshold".to_owned());
+        }
+        self.validate_stability()
+    }
+
+    pub fn validate_stability(&self) -> Result<(), String> {
+        let Some(stability) = &self.stability else {
+            return Ok(());
+        };
+        if !Self::duration_is_valid(stability.minimum_hold_seconds) {
+            return Err(format!(
+                "minimum hold must not exceed {} seconds",
+                Self::MAX_DURATION_SECONDS
+            ));
+        }
+        let valid_thresholds = match self.comparison {
+            CpuUsageComparison::AtOrAbove => {
+                stability.exit_threshold_percent <= self.threshold_percent
+                    && stability.exit_upper_threshold_percent.is_none()
+            }
+            CpuUsageComparison::AtOrBelow => {
+                stability.exit_threshold_percent >= self.threshold_percent
+                    && stability.exit_upper_threshold_percent.is_none()
+            }
+            CpuUsageComparison::Between => {
+                stability.exit_threshold_percent <= self.threshold_percent
+                    && stability.exit_upper_threshold_percent.is_some_and(|upper| {
+                        upper >= self.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX)
+                    })
+            }
+            CpuUsageComparison::Else => false,
+        };
+        if !valid_thresholds {
+            return Err("switching stability release thresholds must include the entry condition; Else rules cannot use stability".to_owned());
         }
         Ok(())
     }

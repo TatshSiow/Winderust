@@ -65,6 +65,85 @@ process intents; they do not exercise machine-wide power-plan cleanup, jobs,
 threads, or GUI startup. Fixture modes are absent from default builds. If a
 running app locks the debug executable, add `--target-dir target/recovery-smoke`.
 
+## Sleep Prevention checks
+
+The ignored native checks briefly create Winderust-owned system/display sleep
+requests. One also starts a hidden, bounded-lifetime `ping.exe` worker to verify
+running-app matching and disable/release through production observations:
+
+```powershell
+cargo test --locked sleep_prevention::tests::native_ -- --ignored --nocapture --test-threads=1
+```
+
+These checks do not suspend Windows or change saved settings or power plans.
+They establish accepted requests and clean release, not actual idle sleep,
+Modern Standby expiry, lid behavior, or resume after a real sleep transition.
+
+## Instance Limits checks
+
+The ignored native check exercises the production read-only collector with bounded
+owned workers. It checks counts through zero, one, two, one and zero while differently
+named and differently located hardlinks remain alive:
+
+```powershell
+cargo test --locked control::instance_limits::tests::native_counts_only_the_selected_image_path -- --ignored --nocapture --test-threads=1
+```
+
+It changes no process settings, privileges or power plans. It establishes full-path
+matching on local files, not atomic process counts or universal filesystem support.
+
+## Instance Balancing checks
+
+The ignored producer smoke uses the production event watcher, direct runtime
+ticks and bounded private workers. It checks two, three, then two instances,
+empty preferences during qualification, disjoint accepted CPU Set readback,
+five-second replan spacing, unchanged affinity and disable restoration:
+
+```powershell
+cargo test --locked instance_balancing::native_tests:: -- --ignored --nocapture --test-threads=1
+```
+
+It requires one active group 0 with at least three physical cores and reports a
+skip otherwise. It changes only its owned workers' CPU Set preferences. Its loop
+deadline does not cancel blocking Windows calls. Test recovery transport does not
+establish watchdog acknowledgement or crash recovery; direct ticks do not prove
+outer scheduler timing, actual thread residency or performance benefits.
+
+## CPU Limiter mechanism comparison
+
+The `runtime-benchmark` feature also provides a disposable-worker comparison of
+unrestricted execution, production 50% Allowed CPU Time, and fixed half-pool
+Processor Affinity (Hard):
+
+```powershell
+cargo build --locked --release --features runtime-benchmark
+New-Item -ItemType Directory -Path target/limiter-comparison
+Start-Process target/release/winderust.exe -ArgumentList '--cpu-limiter-benchmark', 'target/limiter-comparison' -WindowStyle Hidden -Wait
+```
+
+Close Winderust first and use an existing output directory. The comparison needs
+one processor group, a reducible inherited affinity mask, no inherited CPU Sets,
+and no Winderust Adaptive plan. It does not load settings or change power plans.
+Four alternating passes take roughly three minutes. Confirm `finished.txt` is
+`ok`, `result.json` has `complete: true`, and all 24 samples verify restoration;
+the process exit code alone does not establish success.
+
+The report retains useful-work counts, CPU time, target response latency, exact
+placement readback, and counter-capture spans. Half-pool selection keeps eligible
+siblings together and halves physical cores within each efficiency class, rounding
+up. It limits concurrency rather than CPU time. This synthetic comparison does
+not establish foreground-app protection, energy savings, or an automatic policy.
+
+Diagnostics also record CPU time for every owned compute thread and the request
+handler, the signed process-minus-known-thread difference, and system-wide
+per-processor usage over a separately recorded interval. Missing or mismatched
+processor observations stay unavailable. Job queries run inside each worker
+before and after applying restraint; they describe only its immediate job and
+cannot rule out ancestor-job restrictions. Process and thread CPU counters share
+Windows accounting, and per-processor busy time does not identify target residency.
+The report also retains initial process priority and Power Throttling masks
+through the existing read-only adapters; it never changes them.
+
 ## Rendering and performance
 
 - `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.
@@ -260,9 +339,11 @@ to typed controllers and their narrow Windows adapters.
 - If a setting is edited through the UI, update the relevant page module and
   editor reset and message handling in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
-- CPU-selection masks use quoted `0x` plus 16 hexadecimal digits in TOML. Keep
-  the complete 64-bit value through rule, preset, and power-profile round trips;
-  TOML signed integers cannot represent a mask containing processor 63.
+- CPU selections store explicit `{ group, number }` members and a topology
+  snapshot. Active-group masks inside that snapshot use quoted `0x` plus 16
+  hexadecimal digits; TOML signed integers cannot represent processor 63. Keep
+  complete group identities and masks through rule, preset, and power-profile
+  round trips.
 
 ## Naming
 

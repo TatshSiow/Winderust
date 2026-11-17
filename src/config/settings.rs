@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::RuleTime;
 
+use crate::cpu_topology::CpuSelection;
 use crate::foreground::same_executable_path;
 use crate::power::plan::{
     AdaptivePowerBoostValues, AdvancedPowerPlanTuningValues, ProcessorBoostMode,
@@ -29,7 +30,7 @@ pub struct Settings {
     pub adaptive_engine: AdaptiveEngineSettings,
     pub adaptive_engine_presets: Vec<AdaptiveEnginePreset>,
     pub by_activity: ByActivitySettings,
-    pub by_foreground: ByForegroundSettings,
+    pub by_focus: ByFocusSettings,
     pub by_time: ByTimeSettings,
     #[serde(default)]
     pub by_cpu_load: ByCpuLoadSettings,
@@ -41,6 +42,8 @@ pub struct Settings {
     pub cpu_sets_soft: CpuAllocationSettings,
     #[serde(default)]
     pub processor_affinity_hard: CpuAllocationSettings,
+    #[serde(default)]
+    pub instance_balancing: super::InstanceBalancingSettings,
     #[serde(default)]
     pub cpu_allocation_presets: Vec<CpuAllocationPreset>,
     #[serde(default)]
@@ -67,7 +70,13 @@ pub struct Settings {
     #[serde(default)]
     pub watchdog: super::WatchdogSettings,
     #[serde(default)]
+    pub keep_running: super::KeepRunningSettings,
+    #[serde(default)]
+    pub instance_limits: super::InstanceLimitsSettings,
+    #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
+    #[serde(default)]
+    pub sleep_prevention: SleepPreventionSettings,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -123,6 +132,9 @@ impl Settings {
         battery.general = self.general.clone();
         battery.advanced = self.advanced.clone();
         battery.watchdog = self.watchdog.clone();
+        battery.keep_running = self.keep_running.clone();
+        battery.instance_limits = self.instance_limits.clone();
+        battery.instance_balancing = self.instance_balancing.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
         battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
         battery.advanced_power_plan_tuning_presets =
@@ -193,6 +205,8 @@ pub struct GeneralSettings {
     pub animation_mode: AnimationMode,
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
+    #[serde(default)]
+    pub restore_previous_power_plan: bool,
     #[serde(default)]
     pub search_hotkeys: super::SearchHotkeys,
     pub check_interval_ms: u64,
@@ -338,15 +352,15 @@ pub struct InputDetectionSettings {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ByForegroundSettings {
+pub struct ByFocusSettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub rules: Vec<ByForegroundRule>,
+    pub rules: Vec<ByFocusRule>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ByForegroundRule {
+pub struct ByFocusRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -604,10 +618,10 @@ pub struct CpuAllocationSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CpuAllocationPreset {
     pub name: String,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub core_mask: u64,
+    pub selection: CpuSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -915,23 +929,21 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CpuAllocationRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub focus_core_mask: u64,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub visible_window_core_mask: u64,
-    #[serde(with = "super::cpu_allocation_mask")]
-    pub background_core_mask: u64,
+    pub focus_selection: CpuSelection,
+    pub visible_window_selection: CpuSelection,
+    pub background_selection: CpuSelection,
 }
 
 impl CpuAllocationRule {
     pub fn has_cpu_selection(&self) -> bool {
-        self.focus_core_mask != 0
-            || self.visible_window_core_mask != 0
-            || self.background_core_mask != 0
+        !self.focus_selection.is_empty()
+            || !self.visible_window_selection.is_empty()
+            || !self.background_selection.is_empty()
     }
 }
 
@@ -1045,7 +1057,7 @@ pub struct AdaptiveEngineProcessSettings {
     pub cpu_allocation_method: CpuAllocationMethod,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
-    pub specific_processors: Vec<u8>,
+    pub specific_processors: CpuSelection,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1105,7 +1117,7 @@ struct AdaptiveEngineProcessSettingsWire {
     pub cpu_allocation_method: CpuAllocationMethod,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
-    pub specific_processors: Vec<u8>,
+    pub specific_processors: CpuSelection,
     pub foreground_or_system_cpu_threshold_percent: u8,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
@@ -1187,14 +1199,14 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
 pub struct DynamicResourceZoneSettings {
     pub foreground_share_percent: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
-    pub specific_processors: Vec<u8>,
+    pub specific_processors: CpuSelection,
 }
 impl Default for DynamicResourceZoneSettings {
     fn default() -> Self {
         Self {
             foreground_share_percent: 75,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
-            specific_processors: Vec::new(),
+            specific_processors: CpuSelection::default(),
         }
     }
 }
@@ -1203,12 +1215,6 @@ impl DynamicResourceZoneSettings {
         if !(1..=99).contains(&self.foreground_share_percent) {
             return Err(
                 "Dynamic Resource Zones foreground share must be between 1 and 99 percent.".into(),
-            );
-        }
-        if self.specific_processors.iter().any(|index| *index >= 64) {
-            return Err(
-                "Dynamic Resource Zones supports logical processor indices 0 through 63 only."
-                    .into(),
             );
         }
         if enabled
@@ -1362,6 +1368,23 @@ pub struct TimerResolutionSettings {
     pub desired_100ns: u32,
     #[serde(default)]
     pub rules: Vec<TimerResolutionRule>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepPreventionSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<SleepPreventionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepPreventionRule {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub executable_path: String,
+    #[serde(default)]
+    pub keep_display_on: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1779,6 +1802,8 @@ pub struct ByCpuLoadRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upper_threshold_percent: Option<CpuLoadPercent>,
     pub duration_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stability: Option<ByCpuLoadStability>,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
     #[serde(default)]
@@ -1798,6 +1823,8 @@ struct ByCpuLoadRuleWire {
     upper_threshold_percent: Option<CpuLoadPercent>,
     duration_seconds: u64,
     #[serde(default)]
+    stability: Option<ByCpuLoadStability>,
+    #[serde(default)]
     power_plan_guid: Option<String>,
     #[serde(default)]
     else_enabled: bool,
@@ -1816,6 +1843,7 @@ impl TryFrom<ByCpuLoadRuleWire> for ByCpuLoadRule {
             threshold_percent: wire.threshold_percent,
             upper_threshold_percent: wire.upper_threshold_percent,
             duration_seconds: wire.duration_seconds,
+            stability: wire.stability,
             power_plan_guid: wire.power_plan_guid,
             else_enabled: wire.else_enabled,
             else_power_plan_guid: wire.else_power_plan_guid,
@@ -1834,11 +1862,20 @@ impl Default for ByCpuLoadRule {
             threshold_percent: CpuLoadPercent(20),
             upper_threshold_percent: None,
             duration_seconds: 30,
+            stability: None,
             power_plan_guid: None,
             else_enabled: false,
             else_power_plan_guid: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByCpuLoadStability {
+    pub exit_threshold_percent: CpuLoadPercent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_upper_threshold_percent: Option<CpuLoadPercent>,
+    pub minimum_hold_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1880,6 +1917,7 @@ impl Default for Settings {
                 show_feature_status_on_cards: true,
                 animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
+                restore_previous_power_plan: false,
                 search_hotkeys: super::SearchHotkeys::default(),
                 check_interval_ms: 1000,
             },
@@ -1893,7 +1931,7 @@ impl Default for Settings {
                 input_detection: InputDetectionSettings::default(),
                 power_plans: PowerPlanSettings::default(),
             },
-            by_foreground: ByForegroundSettings::default(),
+            by_focus: ByFocusSettings::default(),
             by_time: ByTimeSettings {
                 enabled: false,
                 rules: vec![ByTimeRule {
@@ -1909,6 +1947,7 @@ impl Default for Settings {
             app_suspension: AppSuspensionSettings::default(),
             cpu_sets_soft: CpuAllocationSettings::default(),
             processor_affinity_hard: CpuAllocationSettings::default(),
+            instance_balancing: super::InstanceBalancingSettings::default(),
             cpu_allocation_presets: Vec::new(),
             advanced_power_plan_tuning_presets: Vec::new(),
             cpu_limiter: CpuLimiterSettings::default(),
@@ -1922,7 +1961,10 @@ impl Default for Settings {
             memory_priority: MemoryPrioritySettings::default(),
             memory_trim: MemoryTrimSettings::default(),
             watchdog: super::WatchdogSettings::default(),
+            keep_running: super::KeepRunningSettings::default(),
+            instance_limits: super::InstanceLimitsSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
+            sleep_prevention: SleepPreventionSettings::default(),
             on_battery: None,
         }
     }
@@ -1970,6 +2012,7 @@ impl Default for ByCpuLoadSettings {
                     threshold_percent: CpuLoadPercent(15),
                     upper_threshold_percent: None,
                     duration_seconds: 60,
+                    stability: None,
                     power_plan_guid: None,
                     else_enabled: false,
                     else_power_plan_guid: None,
@@ -1981,6 +2024,7 @@ impl Default for ByCpuLoadSettings {
                     threshold_percent: CpuLoadPercent(50),
                     upper_threshold_percent: None,
                     duration_seconds: 10,
+                    stability: None,
                     power_plan_guid: None,
                     else_enabled: false,
                     else_power_plan_guid: None,
@@ -2268,7 +2312,7 @@ impl Default for AdaptiveEngineProcessSettings {
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
-            specific_processors: Vec::new(),
+            specific_processors: CpuSelection::default(),
             foreground_or_system_cpu_threshold_percent: 75,
             background_app_cpu_threshold_percent: 30,
             cpu_recovery_threshold_percent: 10,
@@ -2555,6 +2599,14 @@ impl TimerResolutionSettings {
         self.rules
             .iter()
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
+    }
+}
+
+impl SleepPreventionSettings {
+    pub fn contains_rule_for(&self, executable_path: &str) -> bool {
+        self.rules
+            .iter()
+            .any(|rule| same_rule_executable_path(&rule.executable_path, executable_path))
     }
 }
 

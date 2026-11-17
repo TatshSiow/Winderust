@@ -24,8 +24,8 @@ requests it; promote tested changes to `main` for an explicitly requested releas
 Read the guides relevant to the task. Before changing runtime policy or Windows
 mutations, read the runtime contracts and the corresponding API reference.
 [Contributing](../CONTRIBUTING.md) covers external contributions;
-[benchmark reports](../benchmark/README.md) retain measurements with their hardware
-and test conditions.
+[benchmark instructions](../benchmark/README.md) describe the reusable runners.
+Machine-specific reports, raw results, and captures stay local in ignored paths.
 
 ## Maintaining documentation
 

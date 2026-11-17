@@ -24,10 +24,11 @@ pub struct ActionLogEntry {
 pub enum ActionLogFeature {
     AppSuspension,
     CpuSetsSoft,
+    InstanceBalancing,
     ProcessorAffinityHard,
     BackgroundEfficiency,
     CpuLimiter,
-    ByForeground,
+    ByFocus,
     ByRunningApp,
     ByCpuLoad,
     ByActivity,
@@ -42,6 +43,9 @@ pub enum ActionLogFeature {
     MemoryTrim,
     Watchdog,
     TimerResolution,
+    SleepPrevention,
+    KeepRunning,
+    InstanceLimits,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -424,14 +428,14 @@ mod tests {
         let mut log = ActionLog::new(1);
         log.set_mode(ActionLogMode::Off);
         log.record(
-            ActionLogFeature::ByForeground,
+            ActionLogFeature::ByFocus,
             None,
             "",
             ActionLogResult::Applied,
             "first",
         );
         log.record(
-            ActionLogFeature::ByForeground,
+            ActionLogFeature::ByFocus,
             None,
             "",
             ActionLogResult::Failed,
@@ -439,7 +443,7 @@ mod tests {
         );
 
         assert!(log.entries().is_empty());
-        let summary = &log.summaries()[&ActionLogFeature::ByForeground];
+        let summary = &log.summaries()[&ActionLogFeature::ByFocus];
         assert_eq!(summary.successful_actions, 1);
         assert_eq!(summary.failed_actions, 1);
         assert_eq!(summary.last_success.as_ref().unwrap().reason, "first");

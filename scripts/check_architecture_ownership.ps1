@@ -359,7 +359,17 @@ Assert-NoSourceMatch `
 Assert-NoSourceMatch `
     -Boundary 'CPU allocation Windows adapter imports no policy layer' `
     -Pattern 'crate::(?:control|features|foreground|rules|ui)' `
-    -Paths @('src/platform/windows/cpu_allocation.rs')
+    -Paths @('src/platform/windows/cpu_allocation.rs', 'src/platform/windows/cpu_allocation/topology.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'CPU Allocation topology model contains no raw Windows APIs' `
+    -Pattern 'windows_sys|unsafe|GetLogicalProcessorInformationEx' `
+    -Paths @('src/cpu_topology.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'CPU Allocation policy does not parse native topology' `
+    -Pattern 'GetLogicalProcessorInformationEx|SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX|PROCESSOR_RELATIONSHIP|GROUP_AFFINITY' `
+    -Paths @('src/features/cpu_control/cpu_allocation.rs', 'src/control/cpu_allocation.rs')
 
 Assert-NoSourceMatch `
     -Boundary 'legacy CPU allocation feature mutation or restore owner' `
@@ -374,7 +384,7 @@ Assert-NoSourceMatch `
 Assert-NoUnexpectedWriter `
     -Mechanism 'Job Object information' `
     -ApiPattern 'SetInformationJobObject' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:job|suspension))\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:job|suspension|keep_running))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'single App Suspension production adapter call' `
@@ -428,7 +438,7 @@ Assert-NoUnexpectedWriter `
 Assert-NoUnexpectedWriter `
     -Mechanism 'thread resumption' `
     -ApiPattern 'ResumeThread\s*(?:,|\()' `
-    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:thread_suspension|process_restart))\.rs:'
+    -AllowedLocationPattern '^src\\(?:backend\\crash_recovery(?:\\tests)?|platform\\windows\\(?:thread_suspension|process_restart|keep_running))\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'restart resumes only its prepared primary thread' `
@@ -499,6 +509,21 @@ Assert-NoSourceMatch `
     -Pattern 'RecoveryIntent|ProcessValue|record_process_change|baseline|managed' `
     -Paths @('src/control/timer_resolution.rs')
 
+Assert-NoUnexpectedWriter `
+    -Mechanism 'Sleep Prevention requests' `
+    -ApiPattern 'PowerCreateRequest|PowerSetRequest|PowerClearRequest' `
+    -AllowedLocationPattern '^src\\platform\\windows\\sleep_prevention\.rs:'
+
+Assert-NoSourceMatch `
+    -Boundary 'Sleep Prevention controller owns lifecycle without raw Win32' `
+    -Pattern 'PowerCreateRequest|PowerSetRequest|PowerClearRequest|windows_sys|unsafe' `
+    -Paths @('src/control/sleep_prevention.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Sleep Prevention Windows adapter imports no policy layer' `
+    -Pattern 'crate::(?:control|features|foreground|rules|ui)' `
+    -Paths @('src/platform/windows/sleep_prevention.rs')
+
 Assert-SourceMatchCount `
     -Boundary 'single shared process-control mutation-acquisition OpenProcess adapter call' `
     -Pattern 'unsafe \{ OpenProcess\s*\(' `
@@ -529,7 +554,7 @@ Assert-NoUnexpectedWriter `
 Assert-NoUnexpectedWriter `
     -Mechanism 'process termination' `
     -ApiPattern 'TerminateProcess' `
-    -AllowedLocationPattern '^src\\platform\\windows\\process_termination\.rs:'
+    -AllowedLocationPattern '^src\\platform\\windows\\(?:process_termination|keep_running)\.rs:'
 
 Assert-SourceMatchCount `
     -Boundary 'single process termination production adapter call' `
@@ -851,6 +876,31 @@ Assert-NoSourceMatch `
     -Boundary 'feature and UI layers do not own crash-recovery protocol state' `
     -Pattern 'RecoveryEntry|RecoveryCommand|RecoveryIntent|record_(?:process|thread_priority|power_plan|suspended_job)_change' `
     -Paths @('src/features', 'src/ui')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Limits remains observational without process mutation or launch' `
+    -Pattern 'TerminateProcess|CreateProcessW|ResumeThread|SuspendThread|AdjustTokenPrivileges|SetProcessInformation|RecoveryIntent|record_process_change' `
+    -Paths @('src/platform/windows/instance_limits.rs', 'src/control/instance_limits.rs', 'src/features/advanced_controls/instance_limits.rs', 'src/backend/automation/instance_limits.rs', 'src/ui/instance_limits.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Limits Windows adapter imports no policy layer' `
+    -Pattern 'crate::(?:control|features|config|foreground|rules|ui)' `
+    -Paths @('src/platform/windows/instance_limits.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Limits incident policy contains no raw Windows calls' `
+    -Pattern 'windows_sys|unsafe|crate::platform' `
+    -Paths @('src/features/advanced_controls/instance_limits.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Balancing planning and qualification remain pure policy' `
+    -Pattern 'windows_sys|windows::|unsafe\s*\{|crate::platform|apply_policy_claim|record_process_change' `
+    -Paths @('src/features/cpu_control/instance_balancing.rs', 'src/features/cpu_control/instance_balancing/policy.rs')
+
+Assert-NoSourceMatch `
+    -Boundary 'Instance Balancing orchestrates only through shared allocation and observation controls' `
+    -Pattern 'windows_sys|windows::|unsafe\s*\{|crate::platform|AdjustTokenPrivileges|CreateProcessW|TerminateProcess|SetProcessDefaultCpuSets|SetProcessAffinityMask' `
+    -Paths @('src/backend/automation/instance_balancing.rs')
 
 Write-Host 'All architecture ownership gates passed.'
 

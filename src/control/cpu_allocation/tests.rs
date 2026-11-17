@@ -1,3 +1,7 @@
+use crate::{
+    action_log::{ActionLog, ActionLogFeature},
+    cpu_topology::{test_selection, test_topology},
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
@@ -8,6 +12,8 @@ use std::{
 };
 
 use super::*;
+
+mod instance_balancing;
 
 #[derive(Clone)]
 struct FakeProcessState {
@@ -30,6 +36,8 @@ struct FakeState {
     next_affinity_error: Option<ProcessControlError>,
     fail_next_cpu_sets_apply: bool,
     fail_inventory: bool,
+    cpu_set_entries: Option<Vec<CpuSetRecord>>,
+    reject_group_zero_affinity: bool,
     fail_next_commit: bool,
     fail_next_affinity_relinquish: bool,
     fail_next_cpu_sets_relinquish: bool,
@@ -118,6 +126,19 @@ impl CpuAllocationPlatform for FakePlatform {
         Ok((process.affinity, process.system_affinity))
     }
 
+    fn validate_group_zero_affinity(
+        &mut self,
+        _process: &Self::Process,
+    ) -> Result<(), ProcessControlError> {
+        if self.state.borrow().reject_group_zero_affinity {
+            Err(ProcessControlError::Failed(
+                "target processor group is unsupported".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     fn query_cpu_sets(&mut self, process: &Self::Process) -> Result<Vec<u32>, ProcessControlError> {
         let mut state = self.state.borrow_mut();
         if state.cpu_sets_query_failures.pop_front() == Some(true) {
@@ -132,7 +153,7 @@ impl CpuAllocationPlatform for FakePlatform {
             .ok_or(ProcessControlError::ProcessExited)
     }
 
-    fn cpu_set_inventory(&mut self) -> Result<Vec<(u8, u32)>, ProcessControlError> {
+    fn cpu_set_inventory(&mut self) -> Result<Vec<CpuSetRecord>, ProcessControlError> {
         self.state
             .borrow_mut()
             .events
@@ -142,7 +163,15 @@ impl CpuAllocationPlatform for FakePlatform {
                 "CPU Set discovery failed".into(),
             ));
         }
-        Ok((0..64u8).map(|bit| (bit, 100 + u32::from(bit))).collect())
+        if let Some(entries) = &self.state.borrow().cpu_set_entries {
+            return Ok(entries.clone());
+        }
+        Ok((0..64u8)
+            .map(|number| CpuSetRecord::Unallocated {
+                processor: ProcessorId { group: 0, number },
+                id: 100 + u32::from(number),
+            })
+            .collect())
     }
 
     fn begin_affinity_change(
@@ -301,6 +330,205 @@ fn coordinator() -> CpuAllocationCoordinator<FakePlatform> {
     CpuAllocationCoordinator::with_platform(platform)
 }
 
+fn multi_group_topology() -> CpuTopology {
+    use crate::cpu_topology::{LogicalProcessor, ProcessorGroup};
+
+    let original = test_topology();
+    let mut processors = original.processors().to_vec();
+    for number in [0, 63] {
+        let id = ProcessorId { group: 1, number };
+        processors.push(LogicalProcessor {
+            id,
+            core: id,
+            efficiency_class: 0,
+        });
+    }
+    let mut groups = original.groups().to_vec();
+    groups.push(ProcessorGroup {
+        number: 1,
+        active_mask: 1 | (1_u64 << 63),
+    });
+    CpuTopology::new(processors, groups, Vec::new(), Vec::new()).unwrap()
+}
+
+#[test]
+fn multi_group_soft_selection_hands_off_and_restores_exact_baselines() {
+    let topology = multi_group_topology();
+    let members = vec![
+        ProcessorId {
+            group: 0,
+            number: 0,
+        },
+        ProcessorId {
+            group: 1,
+            number: 0,
+        },
+        ProcessorId {
+            group: 1,
+            number: 63,
+        },
+    ];
+    let mut coordinator = coordinator();
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.processes.get_mut(&42).unwrap().cpu_sets = vec![88, 89];
+        state.cpu_set_entries = Some(vec![
+            CpuSetRecord::Unallocated {
+                processor: members[2],
+                id: 963,
+            },
+            CpuSetRecord::Unallocated {
+                processor: members[0],
+                id: 100,
+            },
+            CpuSetRecord::Unallocated {
+                processor: members[1],
+                id: 900,
+            },
+        ]);
+        state.reject_group_zero_affinity = true;
+    }
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&topology),
+            claim(
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: CpuSelection::bind(&topology, members).unwrap(),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![100, 900, 963]);
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                Ok(&topology),
+                claim(
+                    ControlOwner::ProcessorAffinityHard,
+                    CpuAllocationRequest::HardAffinity {
+                        selection: CpuSelection::from_group_zero_mask(&topology, 3).unwrap(),
+                    },
+                    7
+                ),
+                true,
+            )
+            .unwrap(),
+        CpuAllocationApplyOutcome::Shadowed
+    );
+
+    coordinator
+        .platform
+        .state
+        .borrow_mut()
+        .reject_group_zero_affinity = false;
+    let release = coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
+    assert!(release.failures.is_empty());
+    let handoff = coordinator.reconcile_pending(Ok(&topology), true, false);
+    assert!(handoff.failures.is_empty());
+    assert_eq!(handoff.applications.len(), 1);
+    assert_eq!(
+        handoff.applications[0].owner,
+        ControlOwner::ProcessorAffinityHard
+    );
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![88, 89]);
+    assert_eq!(process_state(&coordinator).affinity, 3);
+    coordinator.shutdown().unwrap();
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![88, 89]);
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+}
+
+#[test]
+fn missing_group_mapping_does_not_release_or_partially_apply_existing_allocation() {
+    let topology = multi_group_topology();
+    let mut coordinator = coordinator();
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&topology),
+            claim(
+                ControlOwner::ProcessorAffinityHard,
+                CpuAllocationRequest::HardAffinity {
+                    selection: CpuSelection::from_group_zero_mask(&topology, 3).unwrap(),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    coordinator.platform.state.borrow_mut().events.clear();
+    let members = vec![
+        ProcessorId {
+            group: 0,
+            number: 0,
+        },
+        ProcessorId {
+            group: 1,
+            number: 0,
+        },
+    ];
+    assert!(matches!(
+        coordinator.apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&topology),
+            claim(
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: CpuSelection::bind(&topology, members.clone()).unwrap(),
+                },
+                7
+            ),
+            true,
+        ),
+        Err(CpuAllocationApplyError::Discovery(_))
+    ));
+    assert_eq!(process_state(&coordinator).affinity, 3);
+    assert!(process_state(&coordinator).cpu_sets.is_empty());
+    assert_eq!(
+        coordinator.platform.state.borrow().events,
+        vec!["cpu-set-inventory"]
+    );
+
+    assert!(matches!(
+        coordinator.apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&topology),
+            claim(
+                ControlOwner::ProcessorAffinityHard,
+                CpuAllocationRequest::HardAffinity {
+                    selection: CpuSelection::bind(&topology, members.clone()).unwrap(),
+                },
+                7
+            ),
+            true,
+        ),
+        Err(CpuAllocationApplyError::Topology(_))
+    ));
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    coordinator.platform.state.borrow_mut().events.clear();
+    assert!(matches!(
+        coordinator.apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&topology),
+            claim(
+                ControlOwner::AdaptiveEngine,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: CpuSelection::bind(&topology, members).unwrap(),
+                },
+                7,
+            ),
+            true,
+        ),
+        Err(CpuAllocationApplyError::Topology(_))
+    ));
+    assert!(coordinator.platform.state.borrow().events.is_empty());
+}
+
 fn claim(
     owner: ControlOwner,
     request: CpuAllocationRequest,
@@ -319,6 +547,7 @@ fn claim_for(
         target: target(process_id, creation_time),
         owner,
         request,
+        balancing_generation: None,
     }
 }
 
@@ -339,12 +568,536 @@ fn allocation_target(id: u32, mask: u64, hard: bool) -> crate::cpu_allocation::C
         process_name: "worker.exe".into(),
         executable_path: r"C:\Apps\worker.exe".into(),
         creation_time: 7,
-        core_mask: mask,
+        selection: test_selection(mask),
         mode: if hard {
             crate::cpu_allocation::CpuAllocationMode::HardAffinity
         } else {
             crate::cpu_allocation::CpuAllocationMode::SoftCpuSets
         },
+    }
+}
+
+fn changed_topology() -> CpuTopology {
+    let original = test_topology();
+    let mut processors = original.processors().to_vec();
+    processors[0].efficiency_class = 1;
+    CpuTopology::new(
+        processors,
+        original.groups().to_vec(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn stale_selection_restores_its_allocation_without_suppressing_apps_or_releasing_valid_owners() {
+    use crate::cpu_allocation::CpuAllocationManager;
+    let mut coordinator = coordinator();
+    let changed = changed_topology();
+    let mut second = process_state(&coordinator);
+    second.identity = identity(43, 7);
+    coordinator
+        .platform
+        .state
+        .borrow_mut()
+        .processes
+        .insert(43, second);
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
+            claim(
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: test_selection(1),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&changed),
+            claim_for(
+                43,
+                ControlOwner::ProcessorAffinityHard,
+                CpuAllocationRequest::HardAffinity {
+                    selection: CpuSelection::from_group_zero_mask(&changed, 3).unwrap(),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    let mut manager = CpuAllocationManager::default();
+    let mut log = ActionLog::default();
+    for _ in 0..4 {
+        let result = manager.reconcile_targets(
+            &mut coordinator,
+            Ok(&changed),
+            ControlOwner::CpuSetsSoft,
+            vec![allocation_target(42, 1, false)],
+            None,
+            2,
+            String::new(),
+            true,
+            &mut log,
+        );
+        assert_eq!(result.snapshot.failed_processes, 0);
+        assert!(result.snapshot.last_error.is_some());
+        assert!(result.snapshot.auto_excluded_processes.is_empty());
+        assert!(process_state(&coordinator).cpu_sets.is_empty());
+        assert_eq!(
+            coordinator.platform.state.borrow().processes[&43].affinity,
+            3
+        );
+    }
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+        0
+    );
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::ProcessorAffinityHard),
+        1
+    );
+}
+
+#[test]
+fn unavailable_topology_cancels_a_handoff_and_retries_restoration_without_discovery() {
+    let mut coordinator = coordinator();
+    for (owner, request) in [
+        (
+            ControlOwner::ProcessorAffinityHard,
+            CpuAllocationRequest::HardAffinity {
+                selection: test_selection(3),
+            },
+        ),
+        (
+            ControlOwner::AdaptiveEngine,
+            CpuAllocationRequest::SoftCpuSets {
+                selection: test_selection(1),
+            },
+        ),
+    ] {
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
+                claim(owner, request, 7),
+                true,
+            )
+            .unwrap();
+    }
+    coordinator.release_all_policy(ControlOwner::ProcessorAffinityHard);
+    coordinator
+        .platform
+        .state
+        .borrow_mut()
+        .affinity_apply_failures_remaining = 1;
+    let failed = coordinator.reconcile_pending(Err("topology unavailable"), true, false);
+    assert!(failed.applications.is_empty());
+    assert!(!failed.failures.is_empty());
+    assert!(coordinator.has_pending_release_retry());
+    assert_eq!(process_state(&coordinator).affinity, 3);
+    assert!(coordinator.claims.values().all(BTreeMap::is_empty));
+
+    let retry = coordinator.reconcile_pending(Err("topology unavailable"), true, true);
+    assert!(retry.applications.is_empty());
+    assert!(retry.releases.failures.is_empty());
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert!(!coordinator.has_managed_state());
+    assert!(!coordinator.has_pending_reconciliation());
+}
+
+#[test]
+fn an_invalid_lower_claim_does_not_release_a_valid_higher_allocation() {
+    let mut coordinator = coordinator();
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
+            claim(
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: test_selection(1),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    let changed = changed_topology();
+    let result = coordinator.apply_policy_claim(
+        &mut CpuSetInventory::default(),
+        Ok(&test_topology()),
+        claim(
+            ControlOwner::AdaptiveEngine,
+            CpuAllocationRequest::HardAffinity {
+                selection: CpuSelection::from_group_zero_mask(&changed, 3).unwrap(),
+            },
+            7,
+        ),
+        true,
+    );
+    assert!(matches!(result, Err(CpuAllocationApplyError::Topology(_))));
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![100]);
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+        1
+    );
+}
+
+#[test]
+fn disabling_adaptive_allocation_preserves_an_explicit_cpu_owner() {
+    use crate::cpu_allocation::CpuAllocationManager;
+    let mut coordinator = coordinator();
+    for (owner, request) in [
+        (
+            ControlOwner::CpuSetsSoft,
+            CpuAllocationRequest::SoftCpuSets {
+                selection: test_selection(1),
+            },
+        ),
+        (
+            ControlOwner::AdaptiveEngine,
+            CpuAllocationRequest::HardAffinity {
+                selection: test_selection(3),
+            },
+        ),
+    ] {
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
+                claim(owner, request, 7),
+                true,
+            )
+            .unwrap();
+    }
+    let mut manager =
+        CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
+    let result = manager.clear_discovered_targets(
+        &mut coordinator,
+        ControlOwner::AdaptiveEngine,
+        "Adaptive Engine disabled.",
+        &mut ActionLog::default(),
+    );
+    assert_eq!(result.failed_processes, 0);
+    assert!(result.last_error.is_none());
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![100]);
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+        1
+    );
+    assert!(coordinator.claims[&ControlOwner::AdaptiveEngine].is_empty());
+    assert!(!coordinator.has_pending_reconciliation());
+}
+
+#[test]
+fn unsupported_hard_group_does_not_release_the_previous_soft_assignment() {
+    let mut coordinator = coordinator();
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
+            claim(
+                ControlOwner::AdaptiveEngine,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: test_selection(0b0010),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.events.clear();
+        state.reject_group_zero_affinity = true;
+    }
+    let result = coordinator.apply_policy_claim(
+        &mut CpuSetInventory::default(),
+        Ok(&test_topology()),
+        claim(
+            ControlOwner::ProcessorAffinityHard,
+            CpuAllocationRequest::HardAffinity {
+                selection: test_selection(0b0110),
+            },
+            7,
+        ),
+        true,
+    );
+    assert!(matches!(result, Err(CpuAllocationApplyError::Target(_))));
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![101]);
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(coordinator.managed_cpu_sets.len(), 1);
+    assert!(coordinator.platform.state.borrow().events.is_empty());
+}
+
+#[test]
+fn hard_group_acquisition_guard_does_not_block_release_or_shutdown() {
+    for shutdown in [false, true] {
+        let mut coordinator = coordinator();
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
+                claim(
+                    ControlOwner::ProcessorAffinityHard,
+                    CpuAllocationRequest::HardAffinity {
+                        selection: test_selection(0b0011),
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .reject_group_zero_affinity = true;
+        if shutdown {
+            coordinator.shutdown().unwrap();
+        } else {
+            let release = coordinator.release_all_policy(ControlOwner::ProcessorAffinityHard);
+            assert!(release.failures.is_empty());
+        }
+        assert_eq!(process_state(&coordinator).affinity, 0b1111);
+        assert!(!coordinator.has_managed_state());
+    }
+}
+
+#[test]
+fn missing_soft_processors_do_not_shrink_a_selection_or_release_hard_affinity() {
+    let mut coordinator = coordinator();
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
+            claim(
+                ControlOwner::AdaptiveEngine,
+                CpuAllocationRequest::HardAffinity {
+                    selection: test_selection(0b0011),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.events.clear();
+        state.cpu_set_entries = Some(vec![CpuSetRecord::Unallocated {
+            processor: ProcessorId {
+                group: 0,
+                number: 0,
+            },
+            id: 100,
+        }]);
+    }
+    let mut inventory = CpuSetInventory::default();
+    let mut soft = claim(
+        ControlOwner::CpuSetsSoft,
+        CpuAllocationRequest::SoftCpuSets {
+            selection: test_selection(0b0011),
+        },
+        7,
+    );
+    assert!(matches!(
+        coordinator.apply_policy_claim(&mut inventory, Ok(&test_topology()), soft.clone(), true),
+        Err(CpuAllocationApplyError::Discovery(_))
+    ));
+    assert!(!inventory.failed());
+    assert_eq!(process_state(&coordinator).affinity, 0b0011);
+    assert!(process_state(&coordinator).cpu_sets.is_empty());
+    assert_eq!(
+        coordinator.platform.state.borrow().events,
+        vec!["cpu-set-inventory"]
+    );
+
+    soft.request = CpuAllocationRequest::SoftCpuSets {
+        selection: test_selection(0b0001),
+    };
+    coordinator
+        .apply_policy_claim(&mut inventory, Ok(&test_topology()), soft, true)
+        .unwrap();
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![100]);
+    assert!(inventory
+        .ids(&mut coordinator.platform, &[])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn soft_inventory_retains_allocation_facts_without_changing_existing_claim_policy() {
+    let processors = [
+        ProcessorId {
+            group: 0,
+            number: 0,
+        },
+        ProcessorId {
+            group: 0,
+            number: 1,
+        },
+    ];
+    let entries = vec![
+        CpuSetRecord::Unallocated {
+            processor: processors[0],
+            id: 100,
+        },
+        CpuSetRecord::Allocated {
+            processor: processors[1],
+            id: 101,
+        },
+    ];
+    for owner in [ControlOwner::CpuSetsSoft, ControlOwner::AdaptiveEngine] {
+        let mut coordinator = coordinator();
+        coordinator.platform.state.borrow_mut().cpu_set_entries = Some(entries.clone());
+        let mut inventory = CpuSetInventory::default();
+        assert_eq!(
+            inventory
+                .ids(&mut coordinator.platform, &processors)
+                .unwrap(),
+            vec![100, 101]
+        );
+        coordinator.platform.state.borrow_mut().fail_inventory = true;
+        coordinator
+            .apply_policy_claim(
+                &mut inventory,
+                Ok(&test_topology()),
+                claim(
+                    owner,
+                    CpuAllocationRequest::SoftCpuSets {
+                        selection: test_selection(3),
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        assert_eq!(process_state(&coordinator).cpu_sets, vec![100, 101]);
+        assert_eq!(
+            inventory.result.as_ref().unwrap().as_ref().unwrap(),
+            &entries
+                .iter()
+                .map(|entry| (entry.processor(), *entry))
+                .collect::<BTreeMap<_, _>>()
+        );
+        assert_eq!(
+            coordinator
+                .platform
+                .state
+                .borrow()
+                .events
+                .iter()
+                .filter(|event| *event == "cpu-set-inventory")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn invalid_soft_inventory_is_cached_before_any_mode_switch() {
+    for entries in [
+        vec![
+            CpuSetRecord::Unallocated {
+                processor: ProcessorId {
+                    group: 0,
+                    number: 0,
+                },
+                id: 100,
+            },
+            CpuSetRecord::Allocated {
+                processor: ProcessorId {
+                    group: 0,
+                    number: 0,
+                },
+                id: 101,
+            },
+        ],
+        vec![
+            CpuSetRecord::Unallocated {
+                processor: ProcessorId {
+                    group: 0,
+                    number: 0,
+                },
+                id: 100,
+            },
+            CpuSetRecord::Allocated {
+                processor: ProcessorId {
+                    group: 1,
+                    number: 0,
+                },
+                id: 100,
+            },
+        ],
+        vec![CpuSetRecord::Allocated {
+            processor: ProcessorId {
+                group: 1,
+                number: 64,
+            },
+            id: 100,
+        }],
+    ] {
+        let mut coordinator = coordinator();
+        coordinator
+            .apply_policy_claim(
+                &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
+                claim(
+                    ControlOwner::AdaptiveEngine,
+                    CpuAllocationRequest::HardAffinity {
+                        selection: test_selection(0b0011),
+                    },
+                    7,
+                ),
+                true,
+            )
+            .unwrap();
+        {
+            let mut state = coordinator.platform.state.borrow_mut();
+            state.events.clear();
+            state.cpu_set_entries = Some(entries);
+        }
+        let mut inventory = CpuSetInventory::default();
+        assert!(matches!(
+            coordinator.apply_policy_claim(
+                &mut inventory,
+                Ok(&test_topology()),
+                claim(
+                    ControlOwner::CpuSetsSoft,
+                    CpuAllocationRequest::SoftCpuSets {
+                        selection: test_selection(1),
+                    },
+                    7,
+                ),
+                true,
+            ),
+            Err(CpuAllocationApplyError::Discovery(_))
+        ));
+        assert!(inventory.failed());
+        coordinator.platform.state.borrow_mut().cpu_set_entries = None;
+        assert!(inventory
+            .ids(
+                &mut coordinator.platform,
+                &[ProcessorId {
+                    group: 0,
+                    number: 0
+                }]
+            )
+            .is_err());
+        assert_eq!(process_state(&coordinator).affinity, 0b0011);
+        assert!(process_state(&coordinator).cpu_sets.is_empty());
+        assert_eq!(
+            coordinator.platform.state.borrow().events,
+            vec!["cpu-set-inventory"]
+        );
     }
 }
 
@@ -363,11 +1116,12 @@ fn pending_handoffs_keep_error_origin_after_shared_discovery_failure() {
         coordinator
             .apply_policy_claim(
                 &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
                 claim_for(
                     id,
                     ControlOwner::AdaptiveEngine,
                     CpuAllocationRequest::HardAffinity {
-                        logical_processor_mask: 3,
+                        selection: test_selection(3),
                     },
                     7,
                 ),
@@ -379,11 +1133,11 @@ fn pending_handoffs_keep_error_origin_after_shared_discovery_failure() {
             ControlOwner::AdaptiveEngine,
             if id == 42 {
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 3,
+                    selection: test_selection(3),
                 }
             } else {
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 12,
+                    selection: test_selection(12),
                 }
             },
             7,
@@ -403,7 +1157,7 @@ fn pending_handoffs_keep_error_origin_after_shared_discovery_failure() {
         .state
         .borrow_mut()
         .affinity_apply_failures_remaining = 1;
-    let outcome = coordinator.reconcile_pending(true, false);
+    let outcome = coordinator.reconcile_pending(Ok(&test_topology()), true, false);
     assert_eq!(outcome.failures.len(), 2);
     assert_eq!(
         coordinator.platform.state.borrow().processes[&42].affinity,
@@ -420,7 +1174,7 @@ fn pending_handoffs_keep_error_origin_after_shared_discovery_failure() {
     ));
     coordinator.platform.state.borrow_mut().fail_inventory = false;
     assert!(coordinator
-        .reconcile_pending(true, true)
+        .reconcile_pending(Ok(&test_topology()), true, true)
         .failures
         .is_empty());
     coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
@@ -434,19 +1188,19 @@ fn cached_discovery_failure_does_not_reclassify_later_target_errors() {
     let soft = claim(
         ControlOwner::AdaptiveEngine,
         CpuAllocationRequest::SoftCpuSets {
-            logical_processor_mask: 3,
+            selection: test_selection(3),
         },
         7,
     );
     let hard = claim(
         ControlOwner::AdaptiveEngine,
         CpuAllocationRequest::HardAffinity {
-            logical_processor_mask: 3,
+            selection: test_selection(3),
         },
         7,
     );
     assert!(matches!(
-        coordinator.apply_policy_claim(&mut inventory, soft.clone(), true),
+        coordinator.apply_policy_claim(&mut inventory, Ok(&test_topology()), soft.clone(), true),
         Err(CpuAllocationApplyError::Discovery(_))
     ));
     coordinator
@@ -455,21 +1209,21 @@ fn cached_discovery_failure_does_not_reclassify_later_target_errors() {
         .borrow_mut()
         .affinity_apply_failures_remaining = 1;
     assert!(matches!(
-        coordinator.apply_policy_claim(&mut inventory, hard.clone(), true),
+        coordinator.apply_policy_claim(&mut inventory, Ok(&test_topology()), hard.clone(), true),
         Err(CpuAllocationApplyError::Target(
             ProcessControlError::Failed(_)
         ))
     ));
     coordinator.platform.state.borrow_mut().deny_open = true;
     assert!(matches!(
-        coordinator.apply_policy_claim(&mut inventory, soft, true),
+        coordinator.apply_policy_claim(&mut inventory, Ok(&test_topology()), soft, true),
         Err(CpuAllocationApplyError::Target(
             ProcessControlError::AccessDenied(_)
         ))
     ));
     coordinator.platform.state.borrow_mut().deny_open = false;
     assert!(coordinator
-        .apply_policy_claim(&mut inventory, hard, true)
+        .apply_policy_claim(&mut inventory, Ok(&test_topology()), hard, true)
         .is_ok());
     assert_eq!(process_state(&coordinator).affinity, 3);
     coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
@@ -501,6 +1255,7 @@ fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
                      log: &mut ActionLog| {
         manager.reconcile_targets(
             coordinator,
+            Ok(&test_topology()),
             ControlOwner::CpuSetsSoft,
             targets(),
             None,
@@ -550,7 +1305,7 @@ fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
         .pending_reconciliations
         .insert(key, PendingReconciliation::Handoff);
     assert!(!coordinator
-        .reconcile_pending(true, false)
+        .reconcile_pending(Ok(&test_topology()), true, false)
         .failures
         .is_empty());
     assert!(!coordinator.has_pending_immediate_reconciliation());
@@ -561,17 +1316,17 @@ fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
         .values()
         .all(|pending| { matches!(pending, PendingReconciliation::HandoffRetry) }));
     coordinator.platform.state.borrow_mut().events.clear();
-    coordinator.reconcile_pending(true, false);
+    coordinator.reconcile_pending(Ok(&test_topology()), true, false);
     assert!(coordinator.platform.state.borrow().events.is_empty());
     coordinator.platform.state.borrow_mut().fail_inventory = false;
-    coordinator.reconcile_pending(true, true);
+    coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(!coordinator.has_pending_reconciliation());
     assert!(reconcile(&mut manager, &mut coordinator, &mut log)
         .snapshot
         .last_error
         .is_none());
     coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
-    coordinator.reconcile_pending(true, true);
+    coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(process_state(&coordinator).cpu_sets.is_empty());
 }
 
@@ -596,6 +1351,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
     let fallback = || vec![allocation_target(42, 3, true)];
     manager.reconcile_targets(
         &mut coordinator,
+        Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
         None,
@@ -613,6 +1369,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
     };
     let result = manager.reconcile_targets(
         &mut coordinator,
+        Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
         zones(),
@@ -637,6 +1394,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
     let writes = events.iter().filter(|e| *e != "cpu-set-inventory").count();
     manager.reconcile_targets(
         &mut coordinator,
+        Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
         zones(),
@@ -659,6 +1417,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
     );
     manager.reconcile_targets(
         &mut coordinator,
+        Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
         None,
@@ -673,6 +1432,7 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         .is_empty());
     manager.reconcile_targets(
         &mut coordinator,
+        Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         Vec::new(),
         None,
@@ -714,10 +1474,11 @@ fn failed_or_shadowed_background_never_narrows_foreground() {
                 coordinator
                     .apply_policy_claim(
                         &mut CpuSetInventory::default(),
+                        Ok(&test_topology()),
                         claim(
                             ControlOwner::CpuSetsSoft,
                             CpuAllocationRequest::SoftCpuSets {
-                                logical_processor_mask: 3,
+                                selection: test_selection(3),
                             },
                             7,
                         ),
@@ -738,6 +1499,7 @@ fn failed_or_shadowed_background_never_narrows_foreground() {
             CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
         let result = manager.reconcile_targets(
             &mut coordinator,
+            Ok(&test_topology()),
             ControlOwner::AdaptiveEngine,
             Vec::new(),
             Some((
@@ -790,6 +1552,7 @@ fn partial_foreground_failure_withdraws_successful_zone_roles() {
         CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
     let result = manager.reconcile_targets(
         &mut coordinator,
+        Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         vec![allocation_target(42, 3, true)],
         Some((
@@ -822,10 +1585,11 @@ fn pass_end_reconciliation_hands_off_precedence_without_resubmission() {
     assert_eq!(
         coordinator.apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -838,10 +1602,11 @@ fn pass_end_reconciliation_hands_off_precedence_without_resubmission() {
     assert_eq!(
         coordinator.apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -858,10 +1623,11 @@ fn pass_end_reconciliation_hands_off_precedence_without_resubmission() {
     assert_eq!(
         coordinator.apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0110,
+                    selection: test_selection(0b0110),
                 },
                 7,
             ),
@@ -876,7 +1642,7 @@ fn pass_end_reconciliation_hands_off_precedence_without_resubmission() {
     assert_eq!(state.cpu_sets, vec![101]);
     assert_eq!(state.affinity, 0b1111);
 
-    let reconciliation = coordinator.reconcile_pending(true, true);
+    let reconciliation = coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(reconciliation.failures.is_empty());
     assert_eq!(reconciliation.applications.len(), 1);
     assert_eq!(
@@ -890,7 +1656,7 @@ fn pass_end_reconciliation_hands_off_precedence_without_resubmission() {
 
     coordinator.release_all_policy(ControlOwner::ProcessorAffinityHard);
     assert_eq!(process_state(&coordinator).affinity, 0b0110);
-    let reconciliation = coordinator.reconcile_pending(true, true);
+    let reconciliation = coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(reconciliation.failures.is_empty());
     assert_eq!(reconciliation.applications.len(), 1);
     assert_eq!(
@@ -913,10 +1679,11 @@ fn immediate_handoff_skips_an_unrelated_release_retry() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -944,11 +1711,12 @@ fn immediate_handoff_skips_an_unrelated_release_retry() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim_for(
                 43,
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0001,
+                    selection: test_selection(0b0001),
                 },
                 8,
             ),
@@ -958,11 +1726,12 @@ fn immediate_handoff_skips_an_unrelated_release_retry() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim_for(
                 43,
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0110,
+                    selection: test_selection(0b0110),
                 },
                 8,
             ),
@@ -977,7 +1746,7 @@ fn immediate_handoff_skips_an_unrelated_release_retry() {
         .borrow_mut()
         .fail_next_cpu_sets_relinquish = true;
 
-    let handoff = coordinator.reconcile_pending(true, false);
+    let handoff = coordinator.reconcile_pending(Ok(&test_topology()), true, false);
     assert_eq!(handoff.applications.len(), 1);
     assert_eq!(handoff.applications[0].process_id, 43);
     assert!(
@@ -989,10 +1758,10 @@ fn immediate_handoff_skips_an_unrelated_release_retry() {
     );
     assert!(coordinator.has_pending_release_retry());
 
-    let failed_retry = coordinator.reconcile_pending(true, true);
+    let failed_retry = coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(failed_retry.releases.failures.is_empty());
     assert!(coordinator.has_pending_release_retry());
-    let completed_retry = coordinator.reconcile_pending(true, true);
+    let completed_retry = coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(completed_retry.releases.failures.is_empty());
     assert!(!coordinator.has_pending_release_retry());
     coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
@@ -1004,10 +1773,11 @@ fn changed_effective_claim_promotes_a_cleanup_retry_to_handoff() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0001,
+                    selection: test_selection(0b0001),
                 },
                 7,
             ),
@@ -1017,10 +1787,11 @@ fn changed_effective_claim_promotes_a_cleanup_retry_to_handoff() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1030,10 +1801,11 @@ fn changed_effective_claim_promotes_a_cleanup_retry_to_handoff() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0110,
+                    selection: test_selection(0b0110),
                 },
                 7,
             ),
@@ -1048,7 +1820,7 @@ fn changed_effective_claim_promotes_a_cleanup_retry_to_handoff() {
         state.fail_next_commit = true;
         state.fail_next_cpu_sets_relinquish = true;
     }
-    let failed_handoff = coordinator.reconcile_pending(false, false);
+    let failed_handoff = coordinator.reconcile_pending(Ok(&test_topology()), false, false);
     assert_eq!(failed_handoff.failures.len(), 1);
     assert_eq!(failed_handoff.releases.failures.len(), 1);
     assert!(coordinator.has_pending_release_retry());
@@ -1063,7 +1835,7 @@ fn changed_effective_claim_promotes_a_cleanup_retry_to_handoff() {
     assert!(coordinator.has_pending_immediate_reconciliation());
     assert!(!coordinator.has_pending_release_retry());
 
-    let handoff = coordinator.reconcile_pending(true, false);
+    let handoff = coordinator.reconcile_pending(Ok(&test_topology()), true, false);
     assert!(handoff.failures.is_empty());
     assert_eq!(handoff.applications.len(), 1);
     assert_eq!(handoff.applications[0].owner, ControlOwner::AdaptiveEngine);
@@ -1078,10 +1850,11 @@ fn final_lower_claim_removal_restores_the_actual_managed_owner() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1091,10 +1864,11 @@ fn final_lower_claim_removal_restores_the_actual_managed_owner() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1124,10 +1898,11 @@ fn releasing_a_shadowed_claim_does_not_reconcile_the_effective_owner() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1137,10 +1912,11 @@ fn releasing_a_shadowed_claim_does_not_reconcile_the_effective_owner() {
     assert_eq!(
         coordinator.apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1164,10 +1940,11 @@ fn failed_soft_mode_switch_restores_the_previous_hard_claim() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1182,10 +1959,11 @@ fn failed_soft_mode_switch_restores_the_previous_hard_claim() {
 
     let result = coordinator.apply_policy_claim(
         &mut CpuSetInventory::default(),
+        Ok(&test_topology()),
         claim(
             ControlOwner::CpuSetsSoft,
             CpuAllocationRequest::SoftCpuSets {
-                logical_processor_mask: 0b0100,
+                selection: test_selection(0b0100),
             },
             7,
         ),
@@ -1209,10 +1987,11 @@ fn failed_hard_mode_switch_restores_the_previous_soft_claim() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1227,10 +2006,11 @@ fn failed_hard_mode_switch_restores_the_previous_soft_claim() {
 
     let result = coordinator.apply_policy_claim(
         &mut CpuSetInventory::default(),
+        Ok(&test_topology()),
         claim(
             ControlOwner::ProcessorAffinityHard,
             CpuAllocationRequest::HardAffinity {
-                logical_processor_mask: 0b0110,
+                selection: test_selection(0b0110),
             },
             7,
         ),
@@ -1250,10 +2030,11 @@ fn uncertain_switch_reapply_keeps_restoration_state() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1291,10 +2072,11 @@ fn external_affinity_break_is_relinquished_without_overwrite() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1330,10 +2112,11 @@ fn external_cpu_sets_break_is_relinquished_without_overwrite() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1369,10 +2152,11 @@ fn failed_release_is_retried_without_reapplying_a_claim() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1396,13 +2180,13 @@ fn failed_release_is_retried_without_reapplying_a_claim() {
         .state
         .borrow_mut()
         .fail_next_cpu_sets_relinquish = true;
-    let failed_retry = coordinator.reconcile_pending(true, true);
+    let failed_retry = coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(failed_retry.applications.is_empty());
     assert!(failed_retry.failures.is_empty());
     assert!(failed_retry.releases.failures.is_empty());
     assert!(coordinator.has_pending_reconciliation());
 
-    let retry = coordinator.reconcile_pending(true, true);
+    let retry = coordinator.reconcile_pending(Ok(&test_topology()), true, true);
     assert!(retry.applications.is_empty());
     assert!(retry.failures.is_empty());
     assert!(retry.releases.failures.is_empty());
@@ -1422,10 +2206,11 @@ fn apply_policy_claim_forwards_cross_session_setting() {
 
     let result = coordinator.apply_policy_claim(
         &mut CpuSetInventory::default(),
+        Ok(&test_topology()),
         claim(
             ControlOwner::ProcessorAffinityHard,
             CpuAllocationRequest::HardAffinity {
-                logical_processor_mask: 0b0100,
+                selection: test_selection(0b0100),
             },
             7,
         ),
@@ -1451,10 +2236,11 @@ fn failed_pending_handoff_restores_outgoing_state_without_retry_spam() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::AdaptiveEngine,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1464,10 +2250,11 @@ fn failed_pending_handoff_restores_outgoing_state_without_retry_spam() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1481,7 +2268,7 @@ fn failed_pending_handoff_restores_outgoing_state_without_retry_spam() {
         .reject_disallowed_cross_session_open = true;
 
     coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
-    let reconciliation = coordinator.reconcile_pending(false, true);
+    let reconciliation = coordinator.reconcile_pending(Ok(&test_topology()), false, true);
     assert_eq!(reconciliation.failures.len(), 1);
     assert_eq!(
         reconciliation.failures[0].owner,
@@ -1507,7 +2294,7 @@ fn failed_pending_handoff_restores_outgoing_state_without_retry_spam() {
         &[false, true]
     );
 
-    let empty = coordinator.reconcile_pending(false, true);
+    let empty = coordinator.reconcile_pending(Ok(&test_topology()), false, true);
     assert!(empty.applications.is_empty());
     assert!(empty.failures.is_empty());
     assert_eq!(
@@ -1527,10 +2314,11 @@ fn pid_reuse_relinquishes_the_old_identity_before_applying_the_new_process() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1550,10 +2338,11 @@ fn pid_reuse_relinquishes_the_old_identity_before_applying_the_new_process() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0100,
+                    selection: test_selection(0b0100),
                 },
                 8,
             ),
@@ -1586,10 +2375,11 @@ fn commit_failure_retains_the_verified_affinity_and_original_baseline() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1600,10 +2390,11 @@ fn commit_failure_retains_the_verified_affinity_and_original_baseline() {
     coordinator.platform.state.borrow_mut().fail_next_commit = true;
     let result = coordinator.apply_policy_claim(
         &mut CpuSetInventory::default(),
+        Ok(&test_topology()),
         claim(
             ControlOwner::ProcessorAffinityHard,
             CpuAllocationRequest::HardAffinity {
-                logical_processor_mask: 0b0101,
+                selection: test_selection(0b0101),
             },
             7,
         ),
@@ -1647,10 +2438,11 @@ fn commit_failure_retains_the_verified_cpu_sets_and_original_baseline() {
         }
         let result = coordinator.apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: mask,
+                    selection: test_selection(mask),
                 },
                 7,
             ),
@@ -1696,17 +2488,18 @@ fn uncertain_compensation_keeps_the_intent_pending_and_the_first_baseline() {
         let request = |mask| {
             if soft {
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: mask,
+                    selection: test_selection(mask),
                 }
             } else {
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: mask,
+                    selection: test_selection(mask),
                 }
             }
         };
         coordinator
             .apply_policy_claim(
                 &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
                 claim(owner, request(3), 7),
                 true,
             )
@@ -1725,6 +2518,7 @@ fn uncertain_compensation_keeps_the_intent_pending_and_the_first_baseline() {
         assert!(coordinator
             .apply_policy_claim(
                 &mut CpuSetInventory::default(),
+                Ok(&test_topology()),
                 claim(owner, request(5), 7),
                 true
             )
@@ -1767,10 +2561,11 @@ fn invalid_affinity_restore_keeps_ownership_until_a_successful_retry() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1813,10 +2608,11 @@ fn shutdown_keeps_confirmed_exit_when_reopening_is_denied() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1834,10 +2630,11 @@ fn release_commit_failure_keeps_the_cpu_sets_baseline_and_relinquishes() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 7,
             ),
@@ -1875,10 +2672,11 @@ fn shutdown_restores_properties_in_reverse_apply_order() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim(
                 ControlOwner::ProcessorAffinityHard,
                 CpuAllocationRequest::HardAffinity {
-                    logical_processor_mask: 0b0011,
+                    selection: test_selection(0b0011),
                 },
                 7,
             ),
@@ -1888,11 +2686,12 @@ fn shutdown_restores_properties_in_reverse_apply_order() {
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
+            Ok(&test_topology()),
             claim_for(
                 43,
                 ControlOwner::CpuSetsSoft,
                 CpuAllocationRequest::SoftCpuSets {
-                    logical_processor_mask: 0b0010,
+                    selection: test_selection(0b0010),
                 },
                 9,
             ),
@@ -1920,7 +2719,7 @@ fn shutdown_restores_properties_in_reverse_apply_order() {
 
 #[test]
 fn target_affinity_mask_preserves_group_zero() {
-    assert_eq!(target_affinity_mask(0b1110, 0b0110), Some(0b0110));
+    assert_eq!(target_affinity_mask(0b1110, 0b0110), None);
     assert_eq!(target_affinity_mask(0b1000, 0b0111), None);
     assert!(Path::new(r"C:\Apps\worker.exe").is_absolute());
 }
@@ -1963,6 +2762,8 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
     };
     let target = ProcessControlTarget::from_action_target(&action_target);
     let mut coordinator = CpuAllocationCoordinator::default();
+    let topology =
+        windows_cpu_allocation::topology::query().map_err(|error| format!("{error:?}"))?;
 
     let (_, process) = coordinator
         .platform
@@ -1973,16 +2774,25 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .query_affinity(&process)
         .map_err(|error| error.to_string())?;
     let available_affinity = baseline_affinity & system_affinity;
-    if available_affinity.count_ones() > 1 {
+    if topology.groups().len() == 1
+        && topology.groups()[0].number == 0
+        && available_affinity.count_ones() > 1
+    {
         let expected_affinity = available_affinity & available_affinity.wrapping_neg();
         coordinator
             .apply_policy_claim(
                 &mut CpuSetInventory::default(),
+                Ok(&topology),
                 CpuAllocationClaim {
                     target: target.clone(),
                     owner: ControlOwner::ProcessorAffinityHard,
+                    balancing_generation: None,
                     request: CpuAllocationRequest::HardAffinity {
-                        logical_processor_mask: expected_affinity as u64,
+                        selection: CpuSelection::from_group_zero_mask(
+                            &topology,
+                            expected_affinity as u64,
+                        )
+                        .map_err(|error| error.to_string())?,
                     },
                 },
                 true,
@@ -2027,51 +2837,171 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .query_cpu_sets(&process)
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut baseline_cpu_sets);
-    let soft_target = (0..64).find_map(|bit| {
-        let mut ids = CpuSetInventory::default()
-            .ids(&mut coordinator.platform, 1_u64 << bit)
-            .ok()?;
-        normalize_cpu_set_ids(&mut ids);
-        (!ids.is_empty() && ids != baseline_cpu_sets).then_some((1_u64 << bit, ids))
-    });
-    if let Some((logical_processor_mask, expected_cpu_sets)) = soft_target {
+    let mut per_group = BTreeMap::new();
+    for record in coordinator
+        .platform
+        .cpu_set_inventory()
+        .map_err(|error| error.to_string())?
+    {
+        let processor = record.processor();
+        per_group.entry(processor.group).or_insert(processor);
+    }
+    if per_group.is_empty() {
+        return Err("CPU Set inventory is empty.".to_owned());
+    }
+    let selection = CpuSelection::bind(&topology, per_group.into_values().collect())
+        .map_err(|error| error.to_string())?;
+    let mut expected_cpu_sets = CpuSetInventory::default()
+        .ids(&mut coordinator.platform, selection.processors())
+        .map_err(|error| error.to_string())?;
+    normalize_cpu_set_ids(&mut expected_cpu_sets);
+    coordinator
+        .apply_policy_claim(
+            &mut CpuSetInventory::default(),
+            Ok(&topology),
+            CpuAllocationClaim {
+                target: target.clone(),
+                owner: ControlOwner::CpuSetsSoft,
+                balancing_generation: None,
+                request: CpuAllocationRequest::SoftCpuSets { selection },
+            },
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+    let (_, process) = coordinator
+        .platform
+        .open(&target, true)
+        .map_err(|error| error.to_string())?;
+    let mut observed = coordinator
+        .platform
+        .query_cpu_sets(&process)
+        .map_err(|error| error.to_string())?;
+    normalize_cpu_set_ids(&mut observed);
+    assert_eq!(observed, expected_cpu_sets);
+    let summary = coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
+    if let Some(failure) = summary.failures.first() {
+        return Err(failure.error.to_string());
+    }
+    let (_, process) = coordinator
+        .platform
+        .open(&target, true)
+        .map_err(|error| error.to_string())?;
+    let mut observed = coordinator
+        .platform
+        .query_cpu_sets(&process)
+        .map_err(|error| error.to_string())?;
+    normalize_cpu_set_ids(&mut observed);
+    assert_eq!(observed, baseline_cpu_sets);
+    Ok(())
+}
+
+#[test]
+fn resubmission_after_external_drift_restores_the_new_external_baseline() {
+    for soft in [false, true] {
+        let mut coordinator = coordinator();
+        let owner = if soft {
+            ControlOwner::CpuSetsSoft
+        } else {
+            ControlOwner::ProcessorAffinityHard
+        };
+        let request = if soft {
+            CpuAllocationRequest::SoftCpuSets {
+                selection: test_selection(0b0011),
+            }
+        } else {
+            CpuAllocationRequest::HardAffinity {
+                selection: test_selection(0b0011),
+            }
+        };
+        let claim = claim(owner, request, 7);
         coordinator
             .apply_policy_claim(
                 &mut CpuSetInventory::default(),
-                CpuAllocationClaim {
-                    target: target.clone(),
-                    owner: ControlOwner::CpuSetsSoft,
-                    request: CpuAllocationRequest::SoftCpuSets {
-                        logical_processor_mask,
-                    },
-                },
+                Ok(&test_topology()),
+                claim.clone(),
                 true,
             )
-            .map_err(|error| error.to_string())?;
-        let (_, process) = coordinator
-            .platform
-            .open(&target, true)
-            .map_err(|error| error.to_string())?;
-        let mut observed = coordinator
-            .platform
-            .query_cpu_sets(&process)
-            .map_err(|error| error.to_string())?;
-        normalize_cpu_set_ids(&mut observed);
-        assert_eq!(observed, expected_cpu_sets);
-        let summary = coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
-        if let Some(failure) = summary.failures.first() {
-            return Err(failure.error.to_string());
+            .unwrap();
+        {
+            let mut state = coordinator.platform.state.borrow_mut();
+            let process = state.processes.get_mut(&42).unwrap();
+            if soft {
+                process.cpu_sets = vec![103];
+            } else {
+                process.affinity = 0b0101;
+            }
         }
-        let (_, process) = coordinator
-            .platform
-            .open(&target, true)
-            .map_err(|error| error.to_string())?;
-        let mut observed = coordinator
-            .platform
-            .query_cpu_sets(&process)
-            .map_err(|error| error.to_string())?;
-        normalize_cpu_set_ids(&mut observed);
-        assert_eq!(observed, baseline_cpu_sets);
+
+        assert_eq!(
+            coordinator
+                .apply_policy_claim(
+                    &mut CpuSetInventory::default(),
+                    Ok(&test_topology()),
+                    claim,
+                    true,
+                )
+                .unwrap(),
+            CpuAllocationApplyOutcome::Applied
+        );
+        let summary = coordinator.release_all_policy(owner);
+        assert!(summary.failures.is_empty());
+        assert_eq!(summary.restored_owners, vec![owner]);
+        let process = process_state(&coordinator);
+        if soft {
+            assert_eq!(process.cpu_sets, vec![103]);
+            assert_eq!(process.affinity, 0b1111);
+        } else {
+            assert_eq!(process.affinity, 0b0101);
+            assert!(process.cpu_sets.is_empty());
+        }
+        assert!(!coordinator.has_managed_state());
     }
-    Ok(())
+}
+
+#[test]
+fn cpu_set_readback_normalization_and_read_failure_preserve_the_first_baseline() {
+    let mut coordinator = coordinator();
+    let mut inventory = CpuSetInventory::default();
+    let claim = claim(
+        ControlOwner::CpuSetsSoft,
+        CpuAllocationRequest::SoftCpuSets {
+            selection: test_selection(0b0011),
+        },
+        7,
+    );
+    coordinator
+        .apply_policy_claim(&mut inventory, Ok(&test_topology()), claim.clone(), true)
+        .unwrap();
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.processes.get_mut(&42).unwrap().cpu_sets = vec![101, 100, 101];
+        state.events.clear();
+    }
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&test_topology()), claim.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Unchanged
+    );
+    assert!(coordinator.platform.state.borrow().events.is_empty());
+    coordinator
+        .platform
+        .state
+        .borrow_mut()
+        .cpu_sets_query_failures
+        .push_back(true);
+    assert!(matches!(
+        coordinator.apply_policy_claim(&mut inventory, Ok(&test_topology()), claim, true),
+        Err(CpuAllocationApplyError::Target(
+            ProcessControlError::Failed(_)
+        ))
+    ));
+    let managed = coordinator.managed_cpu_sets.get(&identity(42, 7)).unwrap();
+    assert!(managed.baseline.is_empty());
+    assert_eq!(managed.expected, vec![100, 101]);
+    assert!(coordinator.platform.state.borrow().events.is_empty());
+    let summary = coordinator.release_all_policy(ControlOwner::CpuSetsSoft);
+    assert!(summary.failures.is_empty());
+    assert!(process_state(&coordinator).cpu_sets.is_empty());
+    assert!(!coordinator.has_managed_state());
 }
