@@ -21,9 +21,20 @@ pub(crate) enum PowerPlanOwner {
     AdaptiveEngine,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ManualPowerPlanError {
+    #[error("The active power plan is managed by Adaptive Engine.")]
+    ManagedByAdaptive,
+    #[error("The managed Adaptive plan cannot be selected manually.")]
+    ManagedTarget,
+    #[error("{0}")]
+    SwitchFailed(String),
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PowerPlanStatus {
     pub(crate) apply_failed: bool,
+    pub(crate) restoring_previous: bool,
     pub(crate) rule_index: Option<usize>,
     pub(crate) owner: Option<PowerPlanOwner>,
     pub(crate) current_guid: Option<String>,
@@ -160,6 +171,7 @@ pub(crate) struct PowerPlanController<P: PowerPlanPlatform = WindowsPowerPlanPla
     adaptive_plan: Option<ActiveAdaptivePowerPlan>,
     setup_cleanup_due: Option<Instant>,
     last_decision: Option<DecisionOutcome>,
+    restoring_previous: bool,
     next_active_plan_refresh: Option<Instant>,
     last_switch_attempt: Option<(String, Instant)>,
     switch_failures: ExecutionFailureTracker,
@@ -207,6 +219,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             adaptive_plan: None,
             setup_cleanup_due: None,
             last_decision: None,
+            restoring_previous: false,
             next_active_plan_refresh: None,
             last_switch_attempt: None,
             switch_failures: ExecutionFailureTracker::default(),
@@ -217,14 +230,20 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.adaptive_plan.as_ref().is_some_and(|plan| plan.active)
     }
 
+    fn is_managed_adaptive_plan(&self, guid: &str) -> bool {
+        self.adaptive_plan
+            .as_ref()
+            .is_some_and(|plan| same_guid(&plan.plan_guid, guid))
+    }
+
     pub(crate) fn has_focus_plan(&self) -> bool {
         self.temporary_plan
             .as_ref()
             .is_some_and(|plan| matches!(plan.owner, TemporaryOwner::Focus(_)))
             || self.uncertain_switch.as_ref().is_some_and(|pending| {
                 matches!(
-                    pending.temporary_effect,
-                    TemporaryEffect::Acquire(TemporaryOwner::Focus(_))
+                    pending.effect,
+                    SwitchEffect::Automatic(TemporaryEffect::Acquire(TemporaryOwner::Focus(_)))
                 )
             })
     }
@@ -233,17 +252,21 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.temporary_plan.is_some()
             || self.uncertain_switch.as_ref().is_some_and(|pending| {
                 matches!(
-                    pending.temporary_effect,
-                    TemporaryEffect::Acquire(_) | TemporaryEffect::Release
+                    pending.effect,
+                    SwitchEffect::Automatic(TemporaryEffect::Acquire(_) | TemporaryEffect::Release)
                 )
             })
     }
 
     pub(crate) fn cancel_temporary_restoration(&mut self) {
         self.temporary_plan = None;
-        if let Some(pending) = &mut self.uncertain_switch {
+        if let Some(UncertainSwitch {
+            effect: SwitchEffect::Automatic(effect),
+            ..
+        }) = &mut self.uncertain_switch
+        {
             // Cancel the optional return without discarding the recovery acknowledgement.
-            pending.temporary_effect = TemporaryEffect::Release;
+            *effect = TemporaryEffect::Release;
         }
     }
 
@@ -287,12 +310,17 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.switch_failures.clear();
     }
 
+    pub(crate) fn clear_ordinary_decision(&mut self) {
+        self.last_decision = None;
+        self.restoring_previous = false;
+    }
+
     pub(crate) fn status(&self) -> PowerPlanStatus {
         let adaptive_target = self
-            .adaptive_plan
+            .current_guid
             .as_ref()
-            .filter(|plan| plan.active)
-            .map(|plan| plan.plan_guid.clone());
+            .filter(|guid| self.is_managed_adaptive_plan(guid))
+            .cloned();
         let decision_target = self
             .last_decision
             .as_ref()
@@ -310,6 +338,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 self.switch_failures
                     .has_key_failure(&switch_failure_key(guid))
             }),
+            restoring_previous: self.restoring_previous,
             rule_index: self
                 .last_decision
                 .as_ref()
@@ -358,7 +387,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     "Resolving the pending power-plan change failed: {error}"
                 ));
             }
-            if same_guid(actual_guid, &transition.target_guid) {
+            if at_target {
+                let temporary_effect = match uncertain.effect {
+                    SwitchEffect::Manual => return self.finish_manual_switch(actual_guid),
+                    SwitchEffect::Automatic(effect) => effect,
+                };
                 let adaptive_transition = self.adaptive_plan.as_mut().is_some_and(|plan| {
                     if same_guid(&plan.plan_guid, actual_guid) {
                         plan.active = true;
@@ -371,7 +404,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     }
                 });
                 if !adaptive_transition {
-                    self.record_ordinary_switch(transition, uncertain.temporary_effect);
+                    self.record_ordinary_switch(transition, temporary_effect);
                 }
                 self.last_verified_application = Some(actual_guid.to_owned());
             }
@@ -404,6 +437,47 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         Ok(())
     }
 
+    pub(crate) fn switch_manual(
+        &mut self,
+        target_guid: &str,
+        now: Instant,
+    ) -> Result<bool, ManualPowerPlanError> {
+        if self.is_managed_adaptive_plan(target_guid) {
+            return Err(ManualPowerPlanError::ManagedTarget);
+        }
+
+        let previous_guid = self
+            .platform
+            .active_guid()
+            .map_err(ManualPowerPlanError::SwitchFailed)?;
+        self.observe_active_plan(&previous_guid)
+            .map_err(ManualPowerPlanError::SwitchFailed)?;
+        if self.is_managed_adaptive_plan(&previous_guid) {
+            return Err(ManualPowerPlanError::ManagedByAdaptive);
+        }
+        if same_guid(&previous_guid, target_guid) {
+            return Ok(false);
+        }
+
+        let transition = self
+            .switch_from_current(previous_guid, target_guid, SwitchEffect::Manual)
+            .map_err(ManualPowerPlanError::SwitchFailed)?;
+        self.finish_manual_switch(&transition.target_guid)
+            .map_err(ManualPowerPlanError::SwitchFailed)?;
+        self.clear_ordinary_decision();
+        self.next_active_plan_refresh = Some(now);
+        Ok(true)
+    }
+
+    fn finish_manual_switch(&mut self, target_guid: &str) -> Result<(), String> {
+        self.current_guid = Some(target_guid.to_owned());
+        self.relinquish_ownership().map_err(|error| {
+            format!("Confirming the manual power-plan selection failed: {error}")
+        })?;
+        self.clear_switch_failure(target_guid);
+        Ok(())
+    }
+
     fn switch_active_verified(
         &mut self,
         target_guid: &str,
@@ -418,14 +492,18 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         {
             plan.original_guid = previous_guid.clone();
         }
-        self.switch_from_current(previous_guid, target_guid, temporary_effect)
+        self.switch_from_current(
+            previous_guid,
+            target_guid,
+            SwitchEffect::Automatic(temporary_effect),
+        )
     }
 
     fn switch_from_current(
         &mut self,
         previous_guid: String,
         target_guid: &str,
-        temporary_effect: TemporaryEffect,
+        effect: SwitchEffect,
     ) -> Result<SwitchTransition, String> {
         match switch_from_verified(&mut self.platform, previous_guid.clone(), target_guid) {
             Ok(transition) => Ok(transition),
@@ -456,7 +534,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                             },
                             recovery,
                             allow_previous,
-                            temporary_effect,
+                            effect,
                         });
                     }
                 }
@@ -477,7 +555,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.current_guid = Some(actual_guid);
             return Ok(false);
         }
-        let transition = self.switch_from_current(actual_guid, original_guid, temporary_effect)?;
+        let transition = self.switch_from_current(
+            actual_guid,
+            original_guid,
+            SwitchEffect::Automatic(temporary_effect),
+        )?;
         if !matches!(temporary_effect, TemporaryEffect::Preserve) {
             self.record_ordinary_switch(&transition, temporary_effect);
         }
@@ -527,6 +609,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.cancel_temporary_restoration();
         }
         self.last_decision = Some(decision);
+        self.restoring_previous = false;
         if self.adaptive_active()
             && !self.ownership_release_pending
             && self.uncertain_switch.is_none()
@@ -625,6 +708,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             plan.owner.label()
         );
         decision.restore_previous_plan = false;
+        self.restoring_previous = true;
         if !same_guid(&plan.expected_guid, &plan.original_guid)
             && self.last_switch_attempt.as_ref().is_some_and(|(guid, at)| {
                 same_guid(guid, &plan.original_guid)
@@ -644,6 +728,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 let applied = restored && !same_guid(&plan.expected_guid, &plan.original_guid);
                 if !applied {
                     self.last_decision = Some(previous_decision);
+                    self.restoring_previous = false;
                 }
                 Ok(applied)
             }
@@ -1008,11 +1093,16 @@ enum TemporaryEffect {
     Release,
 }
 
+enum SwitchEffect {
+    Automatic(TemporaryEffect),
+    Manual,
+}
+
 struct UncertainSwitch<D> {
     transition: SwitchTransition,
     recovery: D,
     allow_previous: bool,
-    temporary_effect: TemporaryEffect,
+    effect: SwitchEffect,
 }
 
 #[derive(Debug)]
@@ -1496,6 +1586,15 @@ mod tests {
         assert!(!controller.adaptive_active());
         assert_eq!(controller.platform.active, "original");
         assert!(controller.platform.processor_values.is_none());
+        assert!(controller.switch_manual("ADAPTIVE-1", now).is_err());
+        assert!(!controller.switch_manual("original", now).unwrap());
+        controller.platform.active = "ADAPTIVE-1".to_owned();
+        assert!(controller.switch_manual("manual", now).is_err());
+        assert_eq!(
+            controller.status().owner,
+            Some(PowerPlanOwner::AdaptiveEngine)
+        );
+        controller.platform.active = "original".to_owned();
         assert!(!controller
             .platform
             .events
@@ -1790,6 +1889,7 @@ mod tests {
             )
             .unwrap());
         assert_eq!(controller.platform.active, "next window");
+        assert!(!controller.status().restoring_previous);
         assert_eq!(
             controller.temporary_plan.as_ref().unwrap().original_guid,
             "original"
@@ -1798,6 +1898,7 @@ mod tests {
             .reconcile_ordinary(restoration_observation(), now)
             .unwrap());
         assert_eq!(controller.platform.active, "original");
+        assert!(controller.status().restoring_previous);
         assert_eq!(
             controller.status().decision_state,
             Some(DecisionState::ByTime)
@@ -2862,6 +2963,152 @@ mod tests {
         assert_eq!(controller.platform.active, "original");
         assert!(controller.adaptive_plan.is_none());
         assert!(!controller.platform.plans.contains("adaptive-1"));
+    }
+
+    #[test]
+    fn manual_switch_rebases_restoration_after_a_same_plan_no_op() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let automatic = || temporary_decision("automatic", DecisionState::ByTime);
+        controller.reconcile_ordinary(automatic(), now).unwrap();
+
+        controller.platform.events.borrow_mut().clear();
+        assert!(!controller.switch_manual("AUTOMATIC", now).unwrap());
+        assert!(controller.has_temporary_plan());
+        assert_eq!(controller.platform.events.borrow().as_slice(), ["query"]);
+
+        controller.platform.events.borrow_mut().clear();
+        assert!(controller.switch_manual("manual", now).unwrap());
+        assert!(!controller.has_temporary_plan());
+        assert_eq!(controller.status().current_guid.as_deref(), Some("manual"));
+        assert_eq!(controller.status().owner, None);
+        assert_eq!(
+            controller.platform.events.borrow().as_slice(),
+            [
+                "query",
+                "begin:automatic->manual",
+                "apply:manual",
+                "query",
+                "commit",
+                "forget"
+            ]
+        );
+        assert!(controller.platform.journal.borrow().is_empty());
+
+        assert!(controller.reconcile_ordinary(automatic(), now).unwrap());
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "manual");
+    }
+
+    #[test]
+    fn failed_manual_switch_keeps_automatic_restoration() {
+        for fail_readback in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(temporary_decision("automatic", DecisionState::ByTime), now)
+                .unwrap();
+            if fail_readback {
+                controller
+                    .platform
+                    .query_failures
+                    .insert(controller.platform.query_count + 2);
+            } else {
+                controller.platform.failure = Some(FailurePoint::Apply);
+            }
+
+            assert!(controller.switch_manual("manual", now).is_err());
+            assert_eq!(
+                controller.status().current_guid.as_deref(),
+                Some("automatic")
+            );
+            assert!(controller.has_temporary_plan());
+            assert_eq!(controller.platform.journal.borrow().len(), 1);
+            controller.shutdown(now).unwrap();
+            assert_eq!(controller.platform.active, "original");
+        }
+    }
+
+    #[test]
+    fn manual_switch_yields_to_adaptive_until_the_active_plan_changes() {
+        for release_adaptive in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_adaptive(adaptive_request(), now)
+                .unwrap();
+            assert!(matches!(
+                controller.switch_manual("ADAPTIVE-1", now),
+                Err(ManualPowerPlanError::ManagedTarget)
+            ));
+            controller.platform.events.borrow_mut().clear();
+            assert!(matches!(
+                controller.switch_manual("manual", now),
+                Err(ManualPowerPlanError::ManagedByAdaptive)
+            ));
+            assert_eq!(controller.platform.events.borrow().as_slice(), ["query"]);
+            assert!(controller.adaptive_active());
+            if release_adaptive {
+                controller.release_adaptive(now).unwrap();
+            } else {
+                controller.platform.active = "external".to_owned();
+            }
+
+            assert!(controller.switch_manual("manual", now).unwrap());
+            assert_eq!(controller.status().owner, None);
+            controller.shutdown(now).unwrap();
+            assert_eq!(controller.platform.active, "manual");
+            assert!(!controller.platform.plans.contains("adaptive-1"));
+        }
+    }
+
+    #[test]
+    fn manual_switch_keeps_the_verified_plan_after_a_deferred_commit() {
+        for retry in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(temporary_decision("automatic", DecisionState::ByTime), now)
+                .unwrap();
+            controller.platform.failure = Some(FailurePoint::Commit);
+
+            assert!(matches!(
+                controller.switch_manual("manual", now),
+                Err(ManualPowerPlanError::SwitchFailed(_))
+            ));
+            assert_eq!(controller.platform.active, "manual");
+            assert_eq!(controller.platform.pending.borrow().len(), 1);
+
+            controller.platform.failure = None;
+            if retry {
+                controller.cancel_temporary_restoration();
+                assert!(!controller.switch_manual("manual", now).unwrap());
+                assert!(controller.ordinary_original_guid.is_none());
+            }
+            controller.shutdown(now).unwrap();
+            assert_eq!(controller.platform.active, "manual");
+            assert!(controller.platform.journal.borrow().is_empty());
+            assert!(controller.platform.pending.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn manual_switch_requires_acknowledged_recovery_release() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.platform.failure = Some(FailurePoint::Forget);
+
+        assert!(controller.switch_manual("manual", now).is_err());
+        assert!(controller.ownership_release_pending);
+        assert_eq!(controller.status().current_guid.as_deref(), Some("manual"));
+        assert_eq!(controller.platform.journal.borrow().len(), 1);
+        assert!(controller.switch_manual("other", now).is_err());
+        assert_eq!(controller.platform.active, "manual");
+
+        controller.platform.failure = None;
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "manual");
+        assert!(controller.platform.journal.borrow().is_empty());
     }
 
     #[test]

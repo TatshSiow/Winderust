@@ -240,6 +240,7 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
     let automation = RuntimeHandle::start(&runtime_settings(Settings::default()));
     let status = PowerPlanStatus {
         apply_failed: false,
+        restoring_previous: false,
         rule_index: None,
         owner: Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation),
         current_guid: Some("current".to_owned()),

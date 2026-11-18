@@ -23,6 +23,7 @@ mod navigation;
 mod navigation_flyout;
 mod pickers;
 mod popover;
+mod power_plan_control;
 mod power_rules;
 mod priority_control;
 mod process_list;

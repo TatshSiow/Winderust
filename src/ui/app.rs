@@ -1,9 +1,9 @@
 use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
     by_activity, cpu_allocation, cpu_limiter, design, home, instance_balancing, instance_limits,
-    keep_running, memory_trim, navigation, power_rules, priority_control, process_list,
-    process_power_plans, settings_pages, sleep_prevention, status_rail, tasks, timer_resolution,
-    watchdog, widgets, win32_priority_separation, window_frame,
+    keep_running, memory_trim, navigation, power_plan_control, power_rules, priority_control,
+    process_list, process_power_plans, settings_pages, sleep_prevention, status_rail, tasks,
+    timer_resolution, watchdog, widgets, win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -19,8 +19,9 @@ use iced::{Element, Fill, Subscription, Task, Theme};
 use rust_i18n::t;
 
 use crate::application::SettingsEditor;
-use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
+use crate::automation::{RuntimeCommandError, RuntimeHandle, RuntimeStatusSnapshot};
 use crate::config::PowerSourceProfile;
+use crate::control::power_plan::ManualPowerPlanError;
 use crate::ui::Page;
 use crate::SingleInstanceRestoreEvent;
 use crate::{
@@ -311,6 +312,7 @@ pub(crate) fn run(
                 power_plans_loading: false,
                 power_plans_loaded: false,
                 power_plans_reload_pending: false,
+                power_plan_control: power_plan_control::Editor::default(),
                 focus_plans: process_power_plans::Editor::default(),
                 running_app_plans: process_power_plans::Editor::default(),
                 activity_inputs: by_activity::Inputs::default(),
@@ -376,6 +378,7 @@ pub(crate) fn run(
                 .unwrap_or_else(Subscription::none),
             iced::window::close_requests().map(Message::WindowCloseRequested),
             iced::event::listen_raw(|event, _, _| match event {
+                iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
                 iced::Event::Window(iced::window::Event::Unfocused)
                 | iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
@@ -608,6 +611,7 @@ struct WinderustApp {
     power_plans_loading: bool,
     power_plans_loaded: bool,
     power_plans_reload_pending: bool,
+    power_plan_control: power_plan_control::Editor,
     focus_plans: process_power_plans::Editor,
     running_app_plans: process_power_plans::Editor,
     activity_inputs: by_activity::Inputs,
@@ -665,6 +669,7 @@ enum Message {
     Tick,
     Window(iced::window::Id),
     WindowAction(window_frame::Event),
+    WindowFocused,
     WindowResized(iced::window::Id, iced::Size),
     WindowMoved(iced::window::Id, iced::Point),
     NativeWindow(iced::window::Id, Option<usize>),
@@ -685,6 +690,8 @@ enum Message {
     PowerSource(PowerSourceProfile),
     ByActivity(by_activity::Message),
     ProcessPowerPlans(process_power_plans::Kind, process_power_plans::Message),
+    PowerPlanControl(power_plan_control::Message),
+    PowerPlanSwitchFinished(Result<(), RuntimeCommandError>),
     PowerPlans(Result<Vec<crate::power::PowerPlan>, String>),
 }
 
@@ -1336,7 +1343,7 @@ impl WinderustApp {
                 return self.browse(Page::KeepRunning);
             }
             Message::KeepRunning(keep_running::Message::Resume(path)) => {
-                if self.pending_changes() {
+                if self.pending_settings_changes() {
                     self.error_message = t!("keep_running.save_before_resume").to_string();
                 } else if let Err(error) = self.runtime.request_keep_running_resume(path) {
                     self.error_message = error.to_string();
@@ -1570,6 +1577,49 @@ impl WinderustApp {
                 self.activity_inputs.edit(&message);
                 by_activity::update(&mut self.settings, message);
             }
+            Message::PowerPlanControl(power_plan_control::Message::Select(guid)) => {
+                let status = &self.status.power_plan_status;
+                if self.power_plans_loaded
+                    && self.power_plan_control.pending.is_none()
+                    && !power_plan_control::managed_by_adaptive(status, &self.power_plans)
+                    && power_plan_control::is_selectable(&self.power_plans, &guid)
+                {
+                    let current = power_plan_control::current_plan_guid(status, &self.power_plans);
+                    self.power_plan_control.selected_guid = (!current
+                        .is_some_and(|current| current.eq_ignore_ascii_case(&guid)))
+                    .then_some(guid);
+                }
+            }
+            Message::PowerPlanControl(power_plan_control::Message::ProcessorPower) => {
+                let profile = if crate::backend::power_source::is_plugged_in() == Some(false) {
+                    PowerSourceProfile::OnBattery
+                } else {
+                    PowerSourceProfile::PluggedIn
+                };
+                if profile != self.power_source && !self.select_power_source(profile) {
+                    return Task::none();
+                }
+                self.adaptive.show_processor_power();
+                return self.update(Message::Page(Page::AdaptiveEngine));
+            }
+            Message::PowerPlanSwitchFinished(result) => {
+                let after_save = self.power_plan_control.pending.take();
+                match result {
+                    Ok(()) => {
+                        self.power_plan_control.selected_guid = None;
+                        if matches!(after_save, Some(power_plan_control::AfterSave::Exit))
+                            && self.closing
+                        {
+                            return self.shutdown();
+                        }
+                    }
+                    Err(error) => {
+                        self.error_message = power_plan_switch_error(error);
+                    }
+                }
+                self.power_plans_reload_pending |= self.power_plans_loading;
+                return self.load_power_plans();
+            }
             Message::PowerPlans(result) => {
                 self.power_plans_loading = false;
                 match accept_power_plan_catalog(
@@ -1580,11 +1630,26 @@ impl WinderustApp {
                     Ok(false) => return self.load_power_plans(),
                     Ok(true) => {
                         self.power_plans_loaded = true;
+                        if self
+                            .power_plan_control
+                            .discard_unavailable_plan(&self.power_plans)
+                            && self.error_message.is_empty()
+                        {
+                            self.error_message = t!("common.selected_plan_unavailable").to_string();
+                        }
                         if self.page == Page::AdvancedPowerPlanTuning {
                             self.power_tuning.ensure_plan(&self.power_plans);
                         }
                     }
-                    Err(error) => self.error_message = error,
+                    Err(error) => {
+                        crate::backend::diagnostics::error(&format!(
+                            "Loading power plans failed: {error}"
+                        ));
+                        if self.error_message.is_empty() {
+                            self.error_message =
+                                t!("power_plan_control.catalog_unavailable").to_string();
+                        }
+                    }
                 }
             }
             Message::CpuLimiter(cpu_limiter::Message::Browse) => {
@@ -1593,16 +1658,16 @@ impl WinderustApp {
             Message::CpuLimiter(message) => self
                 .cpu_limiter
                 .update(&mut self.settings.cpu_limiter, message),
-            Message::PowerSource(_) if self.pending_editor() || self.invalid_inputs() => {
-                self.error_message = t!("unsaved.message").to_string();
-            }
             Message::PowerSource(source) => {
-                self.power_source = source;
-                self.settings.select_power_source(source);
-                self.reset_editors();
+                self.select_power_source(source);
             }
             Message::WindowAction(window_frame::Event::Close) => {
                 return self.update(Message::WindowClose);
+            }
+            Message::WindowFocused => {
+                if self.page == Page::PowerPlanControl && !self.hidden {
+                    return self.load_power_plans();
+                }
             }
             Message::WindowAction(action) => {
                 if let Some(window) = self.window {
@@ -1852,7 +1917,14 @@ impl WinderustApp {
                         self.status.power_plan_status.current_guid.as_deref(),
                         status.power_plan_status.current_guid.as_deref(),
                     ) {
-                        self.power_plans_reload_pending |= self.power_plans_loading;
+                        if self.power_plans_loading {
+                            self.power_plans_reload_pending = true;
+                        } else if self.page == Page::PowerPlanControl
+                            && !self.hidden
+                            && !self.power_plans.iter().any(|plan| plan.active)
+                        {
+                            work.push(self.load_power_plans());
+                        }
                     }
                     if status.appearance_change_generation
                         != self.status.appearance_change_generation
@@ -1956,6 +2028,13 @@ impl WinderustApp {
                 self.closing = true;
                 return self.show_window();
             }
+            Message::Save | Message::Cancel if self.power_plan_control.pending.is_some() => {}
+            Message::Save
+                if self.power_plan_control.selected_guid.is_some()
+                    && !self.pending_settings_changes() =>
+            {
+                return self.finish_save();
+            }
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
@@ -2002,13 +2081,12 @@ impl WinderustApp {
                         return Task::none();
                     }
                     self.reset_editors();
-                    if self.closing {
-                        return self.shutdown();
-                    }
+                    return self.finish_save();
                 }
                 Err(error) => self.error_message = error.to_string(),
             },
             Message::Cancel => {
+                self.power_plan_control.selected_guid = None;
                 self.settings.cancel();
                 if self.power_tuning.dirty {
                     self.power_tuning.refresh();
@@ -2031,9 +2109,13 @@ impl WinderustApp {
                 return self.finish_exit();
             }
             Message::Stay => {
+                if let Some(after_save) = &mut self.power_plan_control.pending {
+                    *after_save = power_plan_control::AfterSave::Stay;
+                }
                 self.closing = false;
                 self.error_message.clear();
             }
+            Message::DiscardAndClose if self.power_plan_control.pending.is_some() => {}
             Message::DiscardAndClose => {
                 self.settings.cancel();
                 if self.power_tuning.dirty {
@@ -2081,10 +2163,48 @@ impl WinderustApp {
     }
 
     fn pending_changes(&self) -> bool {
+        self.power_plan_control.selected_guid.is_some() || self.pending_settings_changes()
+    }
+
+    fn pending_settings_changes(&self) -> bool {
         self.settings.has_unsaved_changes()
             || self.power_tuning.dirty
             || self.pending_editor()
             || self.invalid_inputs()
+    }
+
+    fn finish_save(&mut self) -> Task<Message> {
+        let Some(guid) = self.power_plan_control.selected_guid.clone() else {
+            return if self.closing {
+                self.shutdown()
+            } else {
+                Task::none()
+            };
+        };
+        let receiver = match self.runtime.request_power_plan_switch(guid) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                self.error_message = power_plan_switch_error(error);
+                return Task::none();
+            }
+        };
+        self.power_plan_control.pending = Some(if self.closing {
+            power_plan_control::AfterSave::Exit
+        } else {
+            power_plan_control::AfterSave::Stay
+        });
+        tasks::run(move || {
+            receiver
+                .recv()
+                .unwrap_or(Err(RuntimeCommandError::WorkerExited))
+        })
+        .map(|result| {
+            Message::PowerPlanSwitchFinished(
+                result
+                    .map_err(RuntimeCommandError::CommandFailed)
+                    .and_then(|result| result),
+            )
+        })
     }
     fn invalid_inputs(&self) -> bool {
         self.settings.validate_watchdog().is_err()
@@ -2156,6 +2276,16 @@ impl WinderustApp {
             || self.instance_balancing.has_pending_editor()
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
+    }
+    fn select_power_source(&mut self, source: PowerSourceProfile) -> bool {
+        if self.pending_editor() || self.invalid_inputs() {
+            self.error_message = t!("unsaved.message").to_string();
+            return false;
+        }
+        self.power_source = source;
+        self.settings.select_power_source(source);
+        self.reset_editors();
+        true
     }
     fn reset_editors(&mut self) {
         self.preferences.reset_drafts();
@@ -2379,12 +2509,22 @@ impl WinderustApp {
                         .push(
                             action_button(t!("exit_prompt.save_and_exit").to_string())
                                 .style(widgets::primary_button)
-                                .on_press(Message::Save),
+                                .on_press_maybe(
+                                    self.power_plan_control
+                                        .pending
+                                        .is_none()
+                                        .then_some(Message::Save),
+                                ),
                         )
                         .push(
                             action_button(t!("exit_prompt.without_saving").to_string())
                                 .style(widgets::danger_button)
-                                .on_press(Message::DiscardAndClose),
+                                .on_press_maybe(
+                                    self.power_plan_control
+                                        .pending
+                                        .is_none()
+                                        .then_some(Message::DiscardAndClose),
+                                ),
                         );
                 } else {
                     actions = actions.push(
@@ -2926,32 +3066,13 @@ impl WinderustApp {
             ]
             .into();
         }
+        let settings_are_pending = self.pending_settings_changes();
         iced::widget::stack![
             layout,
             shield(
                 container(super::motion::wrap(
-                    widgets::settings_card(
-                        column![
-                            widgets::heading(
-                                t!("unsaved.title").to_string(),
-                                design::typography::BODY
-                            ),
-                            text(t!("unsaved.message").to_string()),
-                            row![
-                                iced::widget::Space::new().width(Fill),
-                                action_button(t!("common.discard").to_string())
-                                    .style(crate::ui::widgets::tertiary_button)
-                                    .on_press(Message::Cancel),
-                                action_button(t!("common.save").to_string())
-                                    .style(crate::ui::widgets::primary_button)
-                                    .on_press(Message::Save)
-                            ]
-                            .spacing(design::space::SMALL)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                    )
-                    .width(360),
-                    self.pending_changes(),
+                    widgets::settings_card(self.save_notice(settings_are_pending)).width(360),
+                    settings_are_pending || self.power_plan_control.selected_guid.is_some(),
                     super::motion::Effect::Visible
                 ))
                 .padding(iced::Padding {
@@ -2971,6 +3092,43 @@ impl WinderustApp {
             )
         ]
         .into()
+    }
+
+    fn save_notice(&self, settings: bool) -> iced::widget::Column<'static, Message> {
+        let plan = self.power_plan_control.selected_guid.as_deref();
+        let title = if plan.is_some() && !settings {
+            "power_plan_control.save_title"
+        } else {
+            "unsaved.title"
+        };
+        let mut notice = column![widgets::heading(
+            t!(title).to_string(),
+            design::typography::BODY
+        )];
+        if settings || plan.is_none() {
+            notice = notice.push(text(t!("unsaved.message").to_string()));
+        }
+        if let Some(guid) = plan {
+            let plan = power_plan_control::plan_name(&self.power_plans, guid);
+            notice = notice.push(text(
+                t!("power_plan_control.save_message", plan = plan).to_string(),
+            ));
+        }
+        let ready = self.power_plan_control.pending.is_none();
+        notice
+            .push(
+                row![
+                    iced::widget::Space::new().width(Fill),
+                    action_button(t!("common.discard").to_string())
+                        .style(widgets::tertiary_button)
+                        .on_press_maybe(ready.then_some(Message::Cancel)),
+                    action_button(t!("common.save").to_string())
+                        .style(widgets::primary_button)
+                        .on_press_maybe(ready.then_some(Message::Save)),
+                ]
+                .spacing(design::space::SMALL),
+            )
+            .spacing(design::space::MEDIUM)
     }
 
     fn page_view(&self) -> Element<'_, Message> {
@@ -3193,6 +3351,14 @@ impl WinderustApp {
                 .view(self.page, self.settings.global())
                 .map(Message::Preferences),
             Page::PowerPlanControl => column![
+                power_plan_control::view(
+                    &self.status.power_plan_status,
+                    &self.power_plans,
+                    self.power_plans_loaded,
+                    self.power_plans_loading,
+                    &self.power_plan_control,
+                )
+                .map(Message::PowerPlanControl),
                 toggle(
                     "power_plan_control.pause_plugged",
                     general.pause_power_plan_switching_while_plugged_in,
@@ -3319,6 +3485,29 @@ fn tray_retry_due(
 fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
     (page == Page::ProcessList && process_rulesets_open)
         || page.section_landing_page() == Page::PowerPlanControl
+}
+
+fn power_plan_switch_error(error: RuntimeCommandError) -> String {
+    let key = match error {
+        RuntimeCommandError::PowerPlanUnavailable => "common.selected_plan_unavailable",
+        RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedByAdaptive) => {
+            "power_plan_control.switch_managed_active"
+        }
+        RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedTarget) => {
+            "power_plan_control.switch_managed_target"
+        }
+        RuntimeCommandError::RuntimeStopped | RuntimeCommandError::WorkerExited => {
+            "power_plan_control.switch_runtime_unavailable"
+        }
+        RuntimeCommandError::QueueFull => "power_plan_control.switch_busy",
+        RuntimeCommandError::InvalidRequest(detail)
+        | RuntimeCommandError::CommandFailed(detail)
+        | RuntimeCommandError::PowerPlan(ManualPowerPlanError::SwitchFailed(detail)) => {
+            crate::backend::diagnostics::error(&format!("Power plan switch failed: {detail}"));
+            "power_plan_control.switch_failed"
+        }
+    };
+    t!(key).to_string()
 }
 
 fn sync_active_power_plan(
@@ -3979,11 +4168,13 @@ mod tests {
                 guid: "balanced".into(),
                 name: "Balanced".into(),
                 active: true,
+                managed_adaptive: false,
             },
             crate::power::PowerPlan {
                 guid: "ultimate".into(),
                 name: "Ultimate".into(),
                 active: false,
+                managed_adaptive: false,
             },
         ];
         assert!(!sync_active_power_plan(&mut plans, None, None));
@@ -4016,6 +4207,7 @@ mod tests {
             guid: "balanced".into(),
             name: "Balanced".into(),
             active: true,
+            managed_adaptive: false,
         };
         let mut plans = vec![balanced.clone()];
         let mut reload_pending =

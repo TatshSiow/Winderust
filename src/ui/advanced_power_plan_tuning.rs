@@ -983,6 +983,7 @@ mod tests {
             guid: "invalid-replacement-guid".into(),
             name: "Replacement".into(),
             active: true,
+            managed_adaptive: false,
         };
         for automatic in [true, false] {
             let mut editor = Editor {

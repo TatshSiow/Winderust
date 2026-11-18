@@ -69,8 +69,8 @@ Winderust switches Windows power plans through the native Win32 power management
 Implementation paths:
 
 - `src/rules/decision_engine.rs`: unchanged ordinary power-plan precedence and page/rule selections.
-- `src/backend/automation/runner.rs`: the single visible/hidden automatic decision route.
-- `src/control/power_plan.rs`: automatic baseline, expected state, recovery transaction, verification, compensation, retry suppression, external-state rebase, and Adaptive-plan lifecycle.
+- `src/backend/automation/runner.rs`: automatic decisions and validation of manual selections against installed schemes.
+- `src/control/power_plan.rs`: automatic baseline, expected state, recovery transaction, verification, compensation, retry suppression, external and manual rebase, and Adaptive-plan lifecycle.
 - `src/power/powercfg.rs`: typed plan enumeration/tuning semantics and exact managed-plan recognition.
 - `src/platform/windows/power_plan.rs`: GUID conversion, native power-scheme enumeration/mutation,
   processor-setting reads/writes, and effective-power-mode callback registration.
@@ -80,6 +80,9 @@ User-facing behavior:
 - Winderust enumerates available Windows power schemes.
 - It reads each scheme's friendly display name.
 - It reads the currently active scheme GUID.
+- The Power Plan Control selector verifies manual changes with the same native
+  switch and readback. It checks the managed plan name and description before
+  allowing a scheme to be selected.
 - By Activity maps its visible `Idle plan` and `Active plan` settings to Windows power scheme GUIDs.
 - By Focus, By Running App, By CPU Load, and By Time store a selected GUID on each rule; missing selections do not fall back to a global plan.
 - By Focus resolves the app with input focus through `src/foreground/active_window.rs`
@@ -118,6 +121,7 @@ User-facing behavior:
 | --- | --- | --- |
 | `PowerEnumerate` | Enumerates available power schemes using `ACCESS_SCHEME`. | https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerenumerate |
 | `PowerReadFriendlyName` | Reads the display name for a power scheme GUID. | https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreadfriendlyname |
+| `PowerReadDescription` | Reads the description of schemes named `Winderust Adaptive` to identify the temporary managed plan. | https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreaddescription |
 | `PowerGetActiveScheme` | Reads the currently active power scheme GUID. | https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powergetactivescheme |
 | `PowerSetActiveScheme` | Sets the selected Windows power scheme as active. | https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powersetactivescheme |
 | PowrProf API header | Lists power management functions exposed by `powrprof.h` / `PowrProf.dll`. | https://learn.microsoft.com/en-us/windows/win32/api/powrprof/ |

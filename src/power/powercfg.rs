@@ -6,7 +6,7 @@ use super::{
     ProcessorPowerValues, ProcessorSchedulingPolicy,
 };
 
-const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
+pub(crate) const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
 const ADAPTIVE_PLAN_DESCRIPTION_PREFIX: &str = "Winderust managed adaptive plan; restore=";
 
 #[derive(Debug)]
@@ -22,11 +22,20 @@ pub fn list_plans() -> Result<Vec<PowerPlan>, String> {
             let active = active_guid
                 .as_deref()
                 .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(&scheme.guid));
+            // The reserved name is selectable only when its description rules out ownership.
+            let managed_adaptive = scheme.name == ADAPTIVE_PLAN_NAME
+                && windows_power::read_scheme_description(&scheme.guid).map_or(
+                    true,
+                    |description| {
+                        managed_adaptive_restore_guid(&scheme.name, &description).is_some()
+                    },
+                );
 
             PowerPlan {
                 guid: scheme.guid,
                 name: scheme.name,
                 active,
+                managed_adaptive,
             }
         })
         .collect::<Vec<_>>();
@@ -43,6 +52,7 @@ pub fn active_plan() -> Result<PowerPlan, String> {
         guid: windows_power::active_scheme_guid()?,
         name: "Active power plan".to_owned(),
         active: true,
+        managed_adaptive: false,
     })
 }
 
@@ -498,11 +508,13 @@ mod tests {
                 guid: RECOVERY_ORIGINAL.to_owned(),
                 name: "Original".to_owned(),
                 active: !snapshot_active,
+                managed_adaptive: false,
             },
             PowerPlan {
                 guid: RECOVERY_MANAGED.to_owned(),
                 name: ADAPTIVE_PLAN_NAME.to_owned(),
                 active: snapshot_active,
+                managed_adaptive: true,
             },
         ]
     }

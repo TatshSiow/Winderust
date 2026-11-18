@@ -93,6 +93,10 @@ pub(super) enum Message {
     ExclusionEnabled(usize, bool),
 }
 impl Editor {
+    pub(super) fn show_processor_power(&mut self) {
+        self.tuning_tabs[0] = TuningTab::ProcessorPower;
+    }
+
     pub(super) fn update(&mut self, s: &mut Settings, m: Message) {
         if matches!(
             m,

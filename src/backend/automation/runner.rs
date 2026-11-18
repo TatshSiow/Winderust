@@ -1296,6 +1296,9 @@ impl RuntimeCore {
                 ProcessControlCommand::KeepRunningResume { executable_path } => {
                     self.keep_running.resume(&executable_path);
                 }
+                ProcessControlCommand::SwitchPowerPlan { guid, result } => {
+                    let _ = result.try_send(self.switch_power_plan(&guid));
+                }
             }
         }
         statuses
@@ -1692,6 +1695,27 @@ impl RuntimeCore {
         }
     }
 
+    fn switch_power_plan(&mut self, guid: &str) -> Result<(), RuntimeCommandError> {
+        let plans = crate::power::list_plans().map_err(RuntimeCommandError::CommandFailed)?;
+        let Some(plan) = plans
+            .into_iter()
+            .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+        else {
+            return Err(RuntimeCommandError::PowerPlanUnavailable);
+        };
+        if plan.managed_adaptive {
+            return Err(ManualPowerPlanError::ManagedTarget.into());
+        }
+        let switched = self
+            .power_plan_controller
+            .switch_manual(&plan.guid, Instant::now())?;
+        if switched {
+            self.by_cpu_load_scheduler
+                .observe_active_plan(Some(&plan.guid));
+        }
+        Ok(())
+    }
+
     pub(super) fn refresh_active_plan(&mut self) -> Result<(), String> {
         self.power_plan_controller
             .refresh_active_plan(Instant::now())
@@ -1709,6 +1733,10 @@ impl RuntimeCore {
 
     pub(super) fn power_plan_status(&self) -> PowerPlanStatus {
         self.power_plan_controller.status()
+    }
+
+    pub(super) fn clear_ordinary_power_plan_decision(&mut self) {
+        self.power_plan_controller.clear_ordinary_decision();
     }
 }
 

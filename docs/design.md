@@ -167,6 +167,11 @@ hover/press; background shading supplies feedback.
 - By Focus, By Running App, By CPU Load, By Activity, and By Time also use the right rail;
   every power-plan rail uses Status, Current power plan, Successful actions, and Failed actions.
   Power-plan actions are recorded only after the controller verifies the Windows plan transition.
+- The Power Plan Control landing page shows the active Windows plan in a compact
+  selector with an automation summary. A different selection opens the shared
+  Save and Discard notice. Keep the active plan visible while a different plan
+  is staged. When Adaptive Engine owns the active plan, show the disabled
+  selector and Processor Power settings shortcut on one row.
 - Power Plan Control exposes one Restore previous plan when no rule selects a
   plan switch beside the global A/C pause. It defaults off and applies to both
   power profiles. Help explains that every selected rule, including explicit

@@ -36,7 +36,9 @@ use crate::{
         io_priority::IoPriorityController,
         memory_priority::MemoryPriorityController,
         memory_trim::MemoryTrimController,
-        power_plan::{AdaptivePowerPlanRequest, PowerPlanController, PowerPlanStatus},
+        power_plan::{
+            AdaptivePowerPlanRequest, ManualPowerPlanError, PowerPlanController, PowerPlanStatus,
+        },
         priority_efficiency::PriorityEfficiencyController,
         process::ControlOwner,
         process_termination::{ProcessTerminationBatchResult, ProcessTerminationController},
@@ -159,8 +161,12 @@ pub(crate) enum RuntimeCommandError {
     RuntimeStopped,
     #[error("The automation worker exited before processing the request.")]
     WorkerExited,
-    #[error("Too many process control requests are already waiting. Try again shortly.")]
+    #[error("Too many control requests are already waiting. Try again shortly.")]
     QueueFull,
+    #[error("The selected power plan is no longer available.")]
+    PowerPlanUnavailable,
+    #[error(transparent)]
+    PowerPlan(#[from] ManualPowerPlanError),
     #[error("{0}")]
     InvalidRequest(String),
     #[error("{0}")]
@@ -256,6 +262,10 @@ enum ProcessControlCommand {
     KeepRunningResume {
         executable_path: String,
     },
+    SwitchPowerPlan {
+        guid: String,
+        result: SyncSender<Result<(), RuntimeCommandError>>,
+    },
 }
 
 impl ProcessControlCommand {
@@ -281,6 +291,9 @@ impl ProcessControlCommand {
                 let _ = result.try_send(Err(error));
             }
             Self::KeepRunningResume { .. } => {}
+            Self::SwitchPowerPlan { result, .. } => {
+                let _ = result.try_send(Err(error));
+            }
         }
     }
 
@@ -813,6 +826,18 @@ impl RuntimeHandle {
         };
         self.sync_worker(&settings, true);
         Ok(())
+    }
+
+    pub(crate) fn request_power_plan_switch(
+        &self,
+        guid: String,
+    ) -> Result<Receiver<Result<(), RuntimeCommandError>>, RuntimeCommandError> {
+        let (result, receiver) = sync_channel(1);
+        self.enqueue_process_control_command(ProcessControlCommand::SwitchPowerPlan {
+            guid,
+            result,
+        })?;
+        Ok(receiver)
     }
 
     pub(crate) fn request_memory_trim_now(
@@ -1706,6 +1731,7 @@ fn run_background_automation(
                     .map_or(delay, |retry| Some(min_worker_wait(delay, retry)))
             })
         } else {
+            runner.clear_ordinary_power_plan_decision();
             scheduler.schedule_now(RefreshDomain::PowerPlanCheck, wait_now);
             None
         };

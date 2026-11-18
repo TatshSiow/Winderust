@@ -252,11 +252,18 @@ Read the relevant section before changing feature policy, ownership, restoration
   including a zero-duration rule, can select a plan.
 - The global pause for power-plan switching on A/C and shared restoration policy
   belong on the Power Plan Control landing page.
+- The landing-page selector verifies the chosen installed plan through the
+  runtime power-plan controller after Save. Manual switching is unavailable
+  while Windows is using the plan owned by Adaptive Engine. A successful manual
+  change ends the current restoration episode and becomes the baseline for later
+  automatic changes.
+  Enabled rules can switch plans again. The temporary Winderust Adaptive plan
+  is reserved for Adaptive Engine.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
   Startup cleanup rechecks the live active GUID after matching metadata and
   verifies restoration before deleting an active managed plan. It preserves
   externally selected plans that differ from the managed GUID.
-- `PowerPlanController` owns all automatic active-plan and temporary Adaptive-plan lifecycle state.
+- `PowerPlanController` owns active-plan switching and the temporary Adaptive-plan lifecycle.
   `src/power/powercfg.rs` owns typed plan/domain semantics, while raw GUID, power-scheme,
   processor-setting, and effective-power-mode APIs live only in
   `src/platform/windows/power_plan.rs`. Persistent Advanced Power Plan Tuning remains a separate

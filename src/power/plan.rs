@@ -29,6 +29,7 @@ pub struct PowerPlan {
     pub guid: String,
     pub name: String,
     pub active: bool,
+    pub managed_adaptive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

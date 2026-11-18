@@ -13,5 +13,5 @@ pub(crate) use powercfg::{
     active_plan, apply_processor_power_values, apply_processor_power_values_staged, delete_plan,
     duplicate_adaptive_plan, initialize_adaptive_plan, list_plans, read_plan_personality,
     read_processor_power_values, restore_stale_adaptive_plans, set_active,
-    EffectivePowerModeMonitor, ProcessorPowerApplyError,
+    EffectivePowerModeMonitor, ProcessorPowerApplyError, ADAPTIVE_PLAN_NAME,
 };
