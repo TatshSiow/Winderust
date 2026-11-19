@@ -52,13 +52,17 @@ Winderust to one live trace across app instances. Capture data stays in memory.
 | `StartTraceW` | Creates the system logger with QPC timestamps and bounded ETW buffers. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew |
 | `OpenTraceW`, `ProcessTrace`, `CloseTrace` | Consumes real-time `EVENT_RECORD` callbacks with raw timestamps and closes the consumer handle. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-opentracew, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-processtrace, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-closetrace |
 | `ControlTraceW` | Queries the exact name, verifies the returned name and logger GUID, then stops the capture by name and reads loss counters. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew |
+| `RegCreateKeyExW`, `RegOpenKeyExW` and `GetSecurityInfo` | Create and reopen a volatile key in the 64-bit `HKLM\SOFTWARE` view. Check the owner and protected access list before trusting a reopened key's capture ID. | https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regcreatekeyexw, https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regopenkeyexw, https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo |
+| `CreateMutexW`, `WaitForSingleObject`, `ReleaseMutex` | Serialize capture and cleanup across Winderust instances and Windows sessions. A zero-timeout wait skips a live owner and an abandoned mutex can be acquired. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw, https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject, https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-releasemutex |
 | Classic `PerfInfo` and `Image_Load` events | Computes inclusive routine duration from QPC timestamps and resolves routine addresses against timestamped kernel image lifetimes. | https://learn.microsoft.com/en-us/windows/win32/etw/dpc, https://learn.microsoft.com/en-us/windows/win32/etw/isr, https://learn.microsoft.com/en-us/windows/win32/etw/image-load |
 
-The app attempts cleanup after waiting for the exact failed helper to exit.
-Names are generated for one capture, so cleanup cannot select a later Winderust
-capture or a recycled numeric trace handle. The query and stop calls are
-separate operations. Windows does not provide a documented atomic identity
-check for stopping a session.
+`src/platform/windows/interrupt_timing/lease.rs` owns the temporary registry
+value and the machine-wide mutex. Startup and the next capture can recover a
+trace after both processes terminate. The surviving app's reaper waits for the
+exact failed helper and only recovers its recorded capture. Cleanup clears the
+value once ETW confirms the trace stopped or was absent and keeps the value on
+failure. Each generated capture name is used once. Query and stop are separate
+operations because ETW provides no documented atomic identity check for stop.
 
 The decoder accepts the x64 `PerfInfo` v2 and `Image_Load` v2/v3 layouts observed
 in live traces. It counts unsupported or invalid records separately. ISR opcode

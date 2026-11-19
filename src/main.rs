@@ -79,6 +79,9 @@ fn main() {
         return;
     }
     backend::diagnostics::initialize("winderust-diagnostics");
+    if let Err(error) = backend::interrupt_timing::recover_at_startup() {
+        backend::diagnostics::error(&format!("Interrupt Timing startup cleanup failed: {error}"));
+    }
     let restore_event = SingleInstanceRestoreEvent::create();
 
     let (mut settings, outcome) = SettingsEditor::load();

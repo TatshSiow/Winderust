@@ -464,10 +464,12 @@ Read the relevant section before changing feature policy, ownership, restoration
   in-memory trace even when Adaptive Engine is off. It changes no settings or
   scheduling rules. The result shows up to five driver and interrupt-type rows
   ranked by inclusive time, plus any loss or attribution warnings.
-- Cancel and app exit close the capture helper's lifetime pipe. If the helper
-  exits unexpectedly, the surviving app checks the exact capture name and
-  logger GUID before stopping any remaining trace. A conflicting session is
-  reported and left alone. Killing both processes can leave the trace active.
+- Cancel and app exit close the capture helper's lifetime pipe. The helper
+  records the capture ID in an administrator-only, volatile Windows registry
+  value before starting ETW. The surviving app can clean up after a failed
+  helper. If both processes terminate, Winderust tries cleanup at its next
+  startup and before another capture. Cleanup skips a live helper and verifies
+  the exact capture name and logger GUID before stopping a remaining trace.
 
 ## Priority and efficiency
 

@@ -11,8 +11,8 @@ use windows_sys::{
     core::GUID,
     Win32::{
         Foundation::{
-            ERROR_ACCESS_DENIED, ERROR_ACTIVE_CONNECTIONS, ERROR_ALREADY_EXISTS, ERROR_MORE_DATA,
-            ERROR_PRIVILEGE_NOT_HELD, ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
+            ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_MORE_DATA, ERROR_PRIVILEGE_NOT_HELD,
+            ERROR_SUCCESS, ERROR_WMI_INSTANCE_NOT_FOUND,
         },
         System::{
             Diagnostics::Etw::{
@@ -173,7 +173,7 @@ pub(super) fn stop_owned(
     // The exact capture name is not reused, even if Windows recycles a logger handle.
     match statistics.control(&name, EVENT_TRACE_CONTROL_STOP) {
         ERROR_SUCCESS => Ok(Some(statistics.trace)),
-        ERROR_MORE_DATA | ERROR_WMI_INSTANCE_NOT_FOUND | ERROR_ACTIVE_CONNECTIONS => Ok(None),
+        ERROR_MORE_DATA | ERROR_WMI_INSTANCE_NOT_FOUND => Ok(None),
         code => Err(capture_error(format!(
             "ControlTraceW stop failed with Windows error {code}."
         ))),

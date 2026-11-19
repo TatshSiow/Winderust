@@ -18,9 +18,11 @@ use windows::Win32::System::Com::CoCreateGuid;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 mod decode;
+mod lease;
 mod worker;
 
 pub(crate) use decode::{InterruptKind, InterruptTimingReport};
+use lease::LeaseGuard;
 
 const WORKER_ARGUMENT: &str = "--winderust-interrupt-timing-worker";
 const SESSION_PREFIX: &str = "Winderust Interrupt Timing";
@@ -117,7 +119,7 @@ impl InterruptTimingCapture {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct CaptureIdentity(NonZeroU128);
 
 impl CaptureIdentity {
@@ -171,6 +173,30 @@ pub(crate) fn is_worker_process(pid: u32) -> bool {
     pid != 0 && pid != STARTING && pid == WORKER_PROCESS_ID.load(Relaxed)
 }
 
+pub(crate) fn recover_at_startup() -> Result<(), InterruptTimingError> {
+    recover_if_idle(None)
+}
+
+fn recover_if_idle(expected: Option<CaptureIdentity>) -> Result<(), InterruptTimingError> {
+    if let Some(lease) = LeaseGuard::try_acquire()? {
+        recover(&lease, expected)?;
+    }
+    Ok(())
+}
+
+fn recover(
+    lease: &LeaseGuard,
+    expected: Option<CaptureIdentity>,
+) -> Result<(), InterruptTimingError> {
+    if let Some(identity) = lease.read()? {
+        if expected.is_none_or(|expected| expected == identity) {
+            worker::stop_owned(&identity.name())?;
+            lease.clear()?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run_worker_if_requested() -> bool {
     if !std::env::args_os()
         .nth(1)
@@ -179,7 +205,7 @@ pub(crate) fn run_worker_if_requested() -> bool {
         return false;
     }
     let outcome = run_worker();
-    // The pipe can close if the parent exited. The worker has already stopped its session.
+    // The pipe can close if the parent exited. Unfinished cleanup stays recorded in the lease.
     let mut output = io::stdout().lock();
     if serde_json::to_writer(&mut output, &outcome).is_ok() {
         let _ = output.flush();
@@ -198,7 +224,22 @@ fn run_worker() -> Outcome {
             let _ = sender.send(());
         })
         .map_err(worker_error)?;
-    worker::capture(&identity.name(), &cancelled)
+    let lease = LeaseGuard::try_acquire()?.ok_or(InterruptTimingError::InUse)?;
+    recover(&lease, None)?;
+    lease.publish(identity)?;
+    let outcome = worker::capture(&identity.name(), &cancelled);
+    match &outcome {
+        // These outcomes occur only before ETW starts or after the session stops.
+        Ok(_)
+        | Err(
+            InterruptTimingError::AccessDenied
+            | InterruptTimingError::InUse
+            | InterruptTimingError::Cancelled,
+        ) => lease.clear()?,
+        Err(error) => recover(&lease, Some(identity))
+            .map_err(|cleanup| worker_error(format!("{error} ETW cleanup failed: {cleanup}")))?,
+    }
+    outcome
 }
 
 fn receive_worker_outcome(mut child: Child, identity: CaptureIdentity) -> Outcome {
@@ -225,7 +266,7 @@ fn receive_worker_outcome(mut child: Child, identity: CaptureIdentity) -> Outcom
     });
     match outcome {
         Err(error @ (InterruptTimingError::Worker(_) | InterruptTimingError::Capture(_))) => {
-            worker::stop_owned(&identity.name()).map_err(|cleanup| {
+            recover_if_idle(Some(identity)).map_err(|cleanup| {
                 worker_error(format!("{error} ETW cleanup failed: {cleanup}"))
             })?;
             Err(error)
