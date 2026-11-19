@@ -179,7 +179,7 @@ fn nested_battery_profiles_fail_load_import_and_export_without_rewriting() {
 }
 
 #[test]
-fn watchdog_validation_rejects_invalid_memory_thresholds_during_decode() {
+fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
     let mut settings = Settings::default();
     let mut rule = crate::config::WatchdogRule::new(r"C:\Apps\test.exe".into());
     rule.memory.enabled = true;
@@ -196,6 +196,25 @@ fn watchdog_validation_rejects_invalid_memory_thresholds_during_decode() {
         parse_toml_settings(Path::new("test.toml"), &raw).unwrap(),
         settings
     );
+
+    let path = std::env::temp_dir().join(format!("winderust-watchdog-{}.toml", std::process::id()));
+    for duration in [Some(1), Some(3600), None] {
+        settings.watchdog.rules[0].sustained_seconds = duration;
+        settings.sync_shared_settings_to_battery();
+        write_toml_settings(&path, &settings).unwrap();
+        assert_eq!(load_from_path(&path).unwrap(), settings);
+    }
+    for seconds in [0, 3601] {
+        settings.watchdog.rules[0].sustained_seconds = Some(seconds);
+        let raw = toml::to_string(&settings).unwrap();
+        assert!(parse_toml_settings(&path, &raw).is_err());
+        assert!(write_toml_settings(&path, &settings).is_err());
+    }
+    assert_eq!(
+        load_from_path(&path).unwrap().watchdog.rules[0].sustained_seconds,
+        None
+    );
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

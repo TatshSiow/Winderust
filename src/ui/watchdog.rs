@@ -1,7 +1,7 @@
 use super::{app_picker, design, widgets};
 use crate::config::{
     WatchdogAction, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource, WatchdogRule,
-    WatchdogSettings,
+    WatchdogSettings, WATCHDOG_DURATION_RANGE,
 };
 use iced::{
     widget::{column, row, text},
@@ -47,6 +47,7 @@ pub(super) struct Editor {
 struct Draft {
     index: Option<usize>,
     rule: WatchdogRule,
+    duration: String,
     tab: WatchdogResource,
     monitors: [ThresholdInputs; 2],
 }
@@ -60,6 +61,9 @@ impl Draft {
     fn new(index: Option<usize>, rule: WatchdogRule) -> Self {
         Self {
             index,
+            duration: rule
+                .sustained_seconds
+                .map_or_else(String::new, |seconds| seconds.to_string()),
             tab: if rule.cpu.enabled {
                 WatchdogResource::Cpu
             } else {
@@ -76,8 +80,17 @@ impl Draft {
         }
     }
 
+    fn parsed_duration(&self) -> Option<Option<u64>> {
+        if self.duration.is_empty() {
+            Some(None)
+        } else {
+            parse_duration(&self.duration).map(Some)
+        }
+    }
+
     fn validated_rule(&self) -> Option<WatchdogRule> {
         let mut rule = self.rule.clone();
+        rule.sustained_seconds = self.parsed_duration()?;
         for (resource, raw) in WatchdogResource::ALL.into_iter().zip(&self.monitors) {
             let monitor = rule.monitor_mut(resource);
             if monitor.enabled {
@@ -105,6 +118,7 @@ pub(super) enum Message {
     MonitorEnabled(WatchdogResource, bool),
     MemoryUnit(WatchdogMemoryUnit),
     Duration(String),
+    RuleDuration(String),
     Threshold(WatchdogResource, bool, String),
     Notify(bool),
     Action(WatchdogResource, bool, WatchdogAction),
@@ -213,6 +227,11 @@ impl Editor {
                     settings.sustained_seconds = seconds;
                 }
                 self.duration = Some(value);
+            }
+            Message::RuleDuration(value) => {
+                if let Some(draft) = &mut self.draft {
+                    draft.duration = value;
+                }
             }
             Message::Threshold(resource, critical, value) => {
                 if let Some(draft) = &mut self.draft {
@@ -347,7 +366,22 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let draft = self.draft.as_ref()?;
         let rule = &draft.rule;
-        let valid = draft.validated_rule().is_some();
+        let duration_valid = draft.parsed_duration().is_some();
+        let valid = duration_valid && draft.validated_rule().is_some();
+        let mut duration = column![widgets::setting_row_with_unit(
+            "watchdog.rule_duration",
+            "s",
+            widgets::text_input(&t!("common.default"), &draft.duration)
+                .on_input(Message::RuleDuration)
+                .on_submit(Message::SaveRule)
+                .width(design::STANDALONE_NUMERIC_WIDTH),
+        )]
+        .spacing(design::space::SMALL)
+        .width(280);
+        if !duration_valid {
+            duration = duration
+                .push(text(t!("watchdog.invalid_duration").to_string()).style(text::danger));
+        }
         let resource = draft.tab;
         let monitor = rule.monitor(resource);
         let mut details = column![widgets::toggle_card(
@@ -428,7 +462,7 @@ impl Editor {
                     ])));
             }
         }
-        if !valid {
+        if duration_valid && !valid {
             details = details.push(text(t!("watchdog.invalid").to_string()).style(text::danger));
         }
         Some(widgets::modal_frame(
@@ -447,11 +481,17 @@ impl Editor {
             ]
             .align_y(iced::Center),
             column![
-                column![
-                    app_picker::app_name(&rule.executable_path, candidates),
-                    text(rule.executable_path.clone()).style(text::secondary),
+                row![
+                    column![
+                        app_picker::app_name(&rule.executable_path, candidates),
+                        text(rule.executable_path.clone()).style(text::secondary),
+                    ]
+                    .spacing(design::space::SMALL)
+                    .width(Fill),
+                    duration,
                 ]
-                .spacing(design::space::SMALL),
+                .spacing(design::space::MEDIUM)
+                .align_y(iced::Center),
                 iced::widget::container(row![
                     widgets::panel_tab(
                         t!("watchdog.cpu_tab").to_string(),
@@ -494,7 +534,7 @@ fn parse_duration(value: &str) -> Option<u64> {
     value
         .parse()
         .ok()
-        .filter(|value| (1..=3600).contains(value))
+        .filter(|value| WATCHDOG_DURATION_RANGE.contains(value))
 }
 
 fn response(
@@ -535,6 +575,40 @@ mod tests {
         editor = Editor::default();
         assert!(editor.duration.is_none());
         assert!(!editor.has_invalid_inputs());
+    }
+
+    #[test]
+    fn rule_duration_stays_in_the_draft_until_saved_and_can_inherit_again() {
+        let mut editor = Editor::default();
+        let mut settings = WatchdogSettings {
+            rules: vec![WatchdogRule::new(r"C:\Apps\test.exe".into())],
+            ..Default::default()
+        };
+        editor.update(&mut settings, Message::Edit(0));
+        for value in ["0", "3601", "invalid", "18446744073709551616"] {
+            editor.update(&mut settings, Message::RuleDuration(value.into()));
+            editor.update(&mut settings, Message::SaveRule);
+            assert_eq!(editor.draft.as_ref().unwrap().duration, value);
+            assert_eq!(settings.rules[0].sustained_seconds, None);
+        }
+        editor.update(&mut settings, Message::RuleDuration("10".into()));
+        editor.update(&mut settings, Message::Tab(WatchdogResource::Memory));
+        assert_eq!(settings.rules[0].sustained_seconds, None);
+        editor.update(&mut settings, Message::SaveRule);
+        assert_eq!(settings.rules[0].sustained_seconds, Some(10));
+        assert_eq!(settings.sustained_seconds, 5);
+        assert!(!editor.has_pending_editor());
+
+        editor.update(&mut settings, Message::Edit(0));
+        assert_eq!(editor.draft.as_ref().unwrap().duration, "10");
+        editor.update(&mut settings, Message::RuleDuration(String::new()));
+        editor.update(&mut settings, Message::CancelRule);
+        assert_eq!(settings.rules[0].sustained_seconds, Some(10));
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, Message::RuleDuration(String::new()));
+        editor.update(&mut settings, Message::SaveRule);
+        assert_eq!(settings.rules[0].sustained_seconds, None);
+        assert!(!editor.has_pending_editor());
     }
 
     #[test]

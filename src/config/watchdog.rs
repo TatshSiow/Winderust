@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub(crate) const WATCHDOG_DURATION_RANGE: std::ops::RangeInclusive<u64> = 1..=3600;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchdogSettings {
     pub enabled: bool,
@@ -111,6 +113,8 @@ impl WatchdogMonitor {
 pub struct WatchdogRule {
     pub enabled: bool,
     pub executable_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sustained_seconds: Option<u64>,
     pub cpu: WatchdogMonitor,
     pub memory: WatchdogMonitor,
     pub memory_unit: WatchdogMemoryUnit,
@@ -121,6 +125,7 @@ impl WatchdogRule {
         Self {
             enabled: true,
             executable_path,
+            sustained_seconds: None,
             cpu: WatchdogMonitor::new(true),
             memory: WatchdogMonitor::new(false),
             memory_unit: WatchdogMemoryUnit::Percent,
@@ -149,6 +154,12 @@ impl WatchdogRule {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .sustained_seconds
+            .is_some_and(|seconds| !WATCHDOG_DURATION_RANGE.contains(&seconds))
+        {
+            return Err("Watchdog rule sustained usage must be between 1 and 3600 seconds.".into());
+        }
         if !std::path::Path::new(&self.executable_path).is_absolute()
             || (!self.cpu.enabled && !self.memory.enabled)
             || (self.cpu.enabled && !self.cpu.validate(WatchdogMetric::CpuPercent))
@@ -162,7 +173,7 @@ impl WatchdogRule {
 
 impl WatchdogSettings {
     pub fn validate(&self) -> Result<(), String> {
-        if !(1..=3600).contains(&self.sustained_seconds) {
+        if !WATCHDOG_DURATION_RANGE.contains(&self.sustained_seconds) {
             return Err("Watchdog sustained usage must be between 1 and 3600 seconds.".into());
         }
         for rule in &self.rules {

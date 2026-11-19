@@ -193,6 +193,8 @@ impl WatchdogManager {
                 state = AppState::default();
             }
             snapshot.monitored_processes += matched.len();
+            let delay =
+                Duration::from_secs(rule.sustained_seconds.unwrap_or(settings.sustained_seconds));
             let mut alerting = false;
             let mut skipped = false;
             for (resource, thresholds) in
@@ -219,7 +221,6 @@ impl WatchdogManager {
                     } else {
                         value
                     };
-                    let delay = Duration::from_secs(settings.sustained_seconds);
                     let critical = (settings.notify
                         || monitor.critical.action != crate::config::WatchdogAction::None)
                         && thresholds.critical.observe(
@@ -600,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_duration_and_notifications_apply_to_all_rules_and_restart_observation() {
+    fn rule_duration_overrides_the_default_and_settings_changes_restart_observation() {
         let mut settings = settings();
         settings.rules[0].memory.critical.action = WatchdogAction::Terminate;
         let mut other = process();
@@ -635,12 +636,21 @@ mod tests {
         assert!(events.iter().all(|event| event.notify && event.critical));
         settings.sustained_seconds = 3;
         assert!(observe(&settings, 3).is_empty());
+        assert!(observe(&settings, 4).is_empty());
+        settings.rules[0].sustained_seconds = Some(1);
         assert!(observe(&settings, 5).is_empty());
-        assert_eq!(observe(&settings, 6).len(), 2);
-        settings.notify = false;
+        let events = observe(&settings, 6);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].targets[0].id, processes[0].id);
         assert!(observe(&settings, 7).is_empty());
+        let events = observe(&settings, 8);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].targets[0].id, processes[1].id);
+        settings.notify = false;
+        settings.rules[0].sustained_seconds = None;
         assert!(observe(&settings, 9).is_empty());
-        let events = observe(&settings, 10);
+        assert!(observe(&settings, 11).is_empty());
+        let events = observe(&settings, 12);
         assert_eq!(events.len(), 2);
         assert!(events
             .iter()
