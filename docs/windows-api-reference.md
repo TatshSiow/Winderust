@@ -51,6 +51,8 @@ Winderust to one live trace across app instances. Capture data stays in memory.
 | `CoCreateGuid` | Generates the capture identity appended to the descriptive logger name. | https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cocreateguid |
 | `StartTraceW` | Creates the system logger with QPC timestamps and bounded ETW buffers. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew |
 | `OpenTraceW`, `ProcessTrace`, `CloseTrace` | Consumes real-time `EVENT_RECORD` callbacks with raw timestamps and closes the consumer handle. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-opentracew, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-processtrace, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-closetrace |
+| `EVENT_RECORD.BufferContext` | Reads the 16-bit processor index or 8-bit processor number according to the event header flag. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-etw_buffer_context, https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/fa4f7836-06ee-4ab6-8688-386a5a85f8c5 |
+| `GetLogicalProcessorInformationEx` | Reuses the Windows CPU topology query to confirm the same single processor group with contiguous active CPU numbers at both ends of the capture. | https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getlogicalprocessorinformationex |
 | `ControlTraceW` | Queries the exact name, verifies the returned name and logger GUID, then stops the capture by name and reads loss counters. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew |
 | `RegCreateKeyExW`, `RegOpenKeyExW` and `GetSecurityInfo` | Create and reopen a volatile key in the 64-bit `HKLM\SOFTWARE` view. Check the owner and protected access list before trusting a reopened key's capture ID. | https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regcreatekeyexw, https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regopenkeyexw, https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo |
 | `CreateMutexW`, `WaitForSingleObject`, `ReleaseMutex` | Serialize capture and cleanup across Winderust instances and Windows sessions. A zero-timeout wait skips a live owner and an abandoned mutex can be acquired. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw, https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject, https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-releasemutex |
@@ -67,8 +69,11 @@ operations because ETW provides no documented atomic identity check for stop.
 The decoder accepts the x64 `PerfInfo` v2 and `Image_Load` v2/v3 layouts observed
 in live traces. It counts unsupported or invalid records separately. ISR opcode
 50 follows the [TraceEvent parser](https://github.com/microsoft/perfview/blob/main/src/TraceEvent/Parsers/KernelTraceEventParser.cs).
-Ambiguous image evidence leaves the routine unattributed. The diagnostic reports
-sampled timing, loss, and attribution quality and changes no driver settings.
+Ambiguous image evidence leaves the routine unattributed. Per-CPU sums accepted,
+positive-duration regular and timer DPCs and ISRs, including events whose driver
+could not be resolved. Threaded DPC appears in driver totals as its own event
+type. An unverified CPU number or topology omits the CPU breakdown while
+preserving driver totals. The diagnostic changes no driver settings.
 
 ## Update Checks
 

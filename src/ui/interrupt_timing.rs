@@ -2,7 +2,7 @@ use super::{design, widgets};
 use crate::backend::interrupt_timing::{
     InterruptKind, InterruptTimingCapture, InterruptTimingError, InterruptTimingReport,
 };
-use iced::widget::{column, row, text, Column, Row};
+use iced::widget::{column, row, text, Column, Row, Text};
 use iced::{Element, Fill, Subscription};
 use rust_i18n::t;
 use std::time::Duration;
@@ -11,6 +11,7 @@ use std::time::Duration;
 pub(super) enum Message {
     Run,
     Cancel,
+    TogglePerCpu,
 }
 
 #[derive(Default)]
@@ -21,7 +22,10 @@ pub(super) enum State {
         capture: InterruptTimingCapture,
         cancelling: bool,
     },
-    Finished(InterruptTimingReport),
+    Finished {
+        report: InterruptTimingReport,
+        per_cpu_expanded: bool,
+    },
     Failed(InterruptTimingError),
 }
 
@@ -39,6 +43,14 @@ impl State {
             }
             Message::Run => {}
             Message::Cancel => self.cancel(),
+            Message::TogglePerCpu => {
+                if let Self::Finished {
+                    per_cpu_expanded, ..
+                } = self
+                {
+                    *per_cpu_expanded = !*per_cpu_expanded;
+                }
+            }
         }
     }
 
@@ -76,7 +88,10 @@ impl State {
         if let Self::Capturing { capture, .. } = self {
             if let Some(result) = capture.poll() {
                 *self = match result {
-                    Ok(report) => Self::Finished(report),
+                    Ok(report) => Self::Finished {
+                        report,
+                        per_cpu_expanded: false,
+                    },
                     Err(error) => Self::failed(error),
                 };
             }
@@ -108,10 +123,13 @@ impl State {
             } else {
                 "interrupt_timing.capturing"
             }),
-            Self::Finished(report) => {
+            Self::Finished {
+                report,
+                per_cpu_expanded,
+            } => {
                 body = body
                     .push(widgets::settings_divider())
-                    .push(report_view(report));
+                    .push(report_view(report, *per_cpu_expanded));
                 None
             }
             Self::Failed(error) => Some(match error {
@@ -130,7 +148,7 @@ impl State {
     }
 }
 
-fn report_view(report: &InterruptTimingReport) -> Column<'_, Message> {
+fn report_view(report: &InterruptTimingReport, per_cpu_expanded: bool) -> Column<'_, Message> {
     let mut body = column![].spacing(design::space::TIGHT);
     if report.modules.is_empty() {
         body = body.push(text(t!("interrupt_timing.no_samples")).style(text::secondary));
@@ -201,19 +219,61 @@ fn report_view(report: &InterruptTimingReport) -> Column<'_, Message> {
     if !issues.is_empty() {
         body = body.push(text(issues.join(" · ")).style(text::secondary));
     }
+    if let Some(rows) = report.per_cpu.as_deref().filter(|rows| {
+        rows.iter()
+            .any(|row| row.dpc_count != 0 || row.isr_count != 0)
+    }) {
+        let chevron = if per_cpu_expanded {
+            "icons/chevron-down.svg"
+        } else {
+            "icons/chevron-right.svg"
+        };
+        body = body.push(widgets::settings_divider()).push(
+            widgets::button(
+                row![
+                    widgets::heading(
+                        t!("interrupt_timing.per_cpu").into_owned(),
+                        design::typography::BODY,
+                    )
+                    .width(Fill),
+                    super::navigation::glyph(chevron),
+                ]
+                .height(Fill)
+                .align_y(iced::Center),
+            )
+            .width(Fill)
+            .height(design::BUTTON_HEIGHT)
+            .padding(0)
+            .style(widgets::quiet)
+            .on_press(Message::TogglePerCpu),
+        );
+        if per_cpu_expanded {
+            body = body.push(per_cpu_row(
+                [
+                    t!("interrupt_timing.logical_cpu").into_owned(),
+                    t!("interrupt_timing.dpc_ms").into_owned(),
+                    t!("interrupt_timing.isr_ms").into_owned(),
+                ],
+                true,
+            ));
+            for row in rows {
+                body = body.push(per_cpu_row(
+                    [
+                        row.cpu.to_string(),
+                        format!("{:.3}", row.dpc_ms),
+                        format!("{:.3}", row.isr_ms),
+                    ],
+                    false,
+                ));
+            }
+        }
+    }
     body
 }
 
 fn result_row<'a>(cells: [String; 5], header: bool) -> Row<'a, Message> {
     let [driver, kind, count, longest, total] = cells;
-    let cell = |label| {
-        let cell = text(label).size(design::typography::CAPTION);
-        if header {
-            cell.style(text::secondary)
-        } else {
-            cell
-        }
-    };
+    let cell = |label| result_cell(label, header);
     row![
         cell(driver).width(Fill),
         cell(kind).width(86),
@@ -223,4 +283,25 @@ fn result_row<'a>(cells: [String; 5], header: bool) -> Row<'a, Message> {
     ]
     .spacing(design::space::SMALL)
     .align_y(iced::Center)
+}
+
+fn per_cpu_row<'a>(cells: [String; 3], header: bool) -> Row<'a, Message> {
+    let [cpu, dpc, isr] = cells;
+    let cell = |label| result_cell(label, header);
+    row![
+        cell(cpu).width(Fill),
+        cell(dpc).width(82).align_x(iced::Right),
+        cell(isr).width(82).align_x(iced::Right),
+    ]
+    .spacing(design::space::SMALL)
+    .align_y(iced::Center)
+}
+
+fn result_cell<'a>(label: String, header: bool) -> Text<'a> {
+    let cell = text(label).size(design::typography::CAPTION);
+    if header {
+        cell.style(text::secondary)
+    } else {
+        cell
+    }
 }

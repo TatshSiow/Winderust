@@ -28,6 +28,8 @@ use windows_sys::{
     },
 };
 
+use crate::platform::windows::cpu_allocation::topology;
+
 use super::{decode::decode_live, InterruptTimingError, Outcome};
 
 const SESSION_GUID: GUID = GUID::from_u128(0xacd9dac4_48da_4f73_a66d_87e51252a93c);
@@ -40,6 +42,7 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
     if stopping(cancelled) {
         return Err(InterruptTimingError::Cancelled);
     }
+    let cpu_count = single_group_cpu_count();
     let (mut session, start_tick) = Session::start(name)?;
     let started = Instant::now();
     let (ready_sender, ready) = mpsc::channel();
@@ -48,7 +51,12 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
     let consumer = thread::Builder::new()
         .name("interrupt-timing-consumer".into())
         .spawn(move || {
-            let _ = done_sender.send(decode_live(&consumer_name, ready_sender, start_tick));
+            let _ = done_sender.send(decode_live(
+                &consumer_name,
+                ready_sender,
+                start_tick,
+                cpu_count,
+            ));
         });
     if let Err(error) = consumer {
         session.stop()?;
@@ -89,6 +97,9 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
         return Err(InterruptTimingError::Cancelled);
     }
     let mut report = decoded.map_err(capture_error)?;
+    if cpu_count.is_some() && cpu_count != single_group_cpu_count() {
+        report.per_cpu = None;
+    }
     report.events_lost = report.events_lost.max(statistics.EventsLost);
     report.buffers_lost = report.buffers_lost.max(
         statistics
@@ -96,6 +107,16 @@ pub(super) fn capture(name: &str, cancelled: &Receiver<()>) -> Outcome {
             .saturating_add(statistics.RealTimeBuffersLost),
     );
     Ok(report)
+}
+
+fn single_group_cpu_count() -> Option<u16> {
+    let topology = topology::query().ok()?;
+    let [group] = topology.groups() else {
+        return None;
+    };
+    let count = group.active_mask.count_ones();
+    let dense_mask = u64::MAX.checked_shr(64 - count)?;
+    (group.number == 0 && group.active_mask == dense_mask).then_some(count as u16)
 }
 
 fn stopping(cancelled: &Receiver<()>) -> bool {

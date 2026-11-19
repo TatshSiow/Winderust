@@ -8,8 +8,8 @@ use windows_sys::{
         System::{
             Diagnostics::Etw::{
                 CloseTrace, ImageLoadGuid, OpenTraceW, PerfInfoGuid, ProcessTrace,
-                EVENT_HEADER_FLAG_64_BIT_HEADER, EVENT_RECORD, EVENT_TRACE_LOGFILEW,
-                PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD,
+                EVENT_HEADER_FLAG_64_BIT_HEADER, EVENT_HEADER_FLAG_PROCESSOR_INDEX, EVENT_RECORD,
+                EVENT_TRACE_LOGFILEW, PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD,
                 PROCESS_TRACE_MODE_RAW_TIMESTAMP, PROCESS_TRACE_MODE_REAL_TIME,
             },
             Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
@@ -44,6 +44,15 @@ pub(crate) struct InterruptTimingRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct InterruptTimingCpuRow {
+    pub(crate) cpu: u16,
+    pub(crate) dpc_count: usize,
+    pub(crate) isr_count: usize,
+    pub(crate) dpc_ms: f64,
+    pub(crate) isr_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct InterruptTimingReport {
     pub(crate) events_lost: u32,
     pub(crate) buffers_lost: u32,
@@ -52,6 +61,7 @@ pub(crate) struct InterruptTimingReport {
     pub(crate) invalid_image_records: usize,
     pub(crate) unresolved_attribution: usize,
     pub(crate) modules: Vec<InterruptTimingRow>,
+    pub(crate) per_cpu: Option<Vec<InterruptTimingCpuRow>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +82,7 @@ pub(super) fn decode_live(
     session_name: &str,
     ready: Sender<()>,
     capture_start: i64,
+    cpu_count: Option<u16>,
 ) -> Result<InterruptTimingReport, DecodeError> {
     let mut frequency = 0;
     // SAFETY: The pointer refers to writable i64 storage and the logger uses QPC timestamps.
@@ -108,7 +119,7 @@ pub(super) fn decode_live(
         return Err(DecodeError::Clock);
     }
     drop(handle);
-    events.report(capture_start, drain_end, frequency)
+    events.report(capture_start, drain_end, frequency, cpu_count)
 }
 
 struct TraceHandle(PROCESSTRACE_HANDLE);
@@ -122,6 +133,7 @@ impl Drop for TraceHandle {
 
 struct Interrupt {
     kind: InterruptKind,
+    cpu: u16,
     entry: i64,
     end: i64,
     routine: u64,
@@ -282,6 +294,7 @@ impl Events {
         start: i64,
         end: i64,
         frequency: i64,
+        cpu_count: Option<u16>,
     ) -> Result<InterruptTimingReport, DecodeError> {
         if self.capacity_exceeded {
             return Err(DecodeError::Capacity);
@@ -299,6 +312,11 @@ impl Events {
             .max()
             .unwrap_or(0);
         let mut modules = BTreeMap::<(InterruptKind, Option<&str>), Totals>::new();
+        let mut cpu_totals = cpu_count.map(|count| {
+            (0..count)
+                .map(|_| (Totals::default(), Totals::default()))
+                .collect::<Vec<_>>()
+        });
         let mut invalid_intervals = self.invalid_intervals;
         let mut incomplete_intervals = 0;
         let mut unresolved_attribution = 0;
@@ -313,10 +331,16 @@ impl Events {
             }
             let module = module_name(&images, max_image_size, &event);
             unresolved_attribution += usize::from(module.is_none());
-            modules
-                .entry((event.kind, module))
-                .or_default()
-                .add(event.end - event.entry);
+            let ticks = event.end - event.entry;
+            modules.entry((event.kind, module)).or_default().add(ticks);
+            if let Some(cpus) = cpu_totals.as_mut().filter(|_| ticks > 0) {
+                match (event.kind, cpus.get_mut(usize::from(event.cpu))) {
+                    (InterruptKind::ThreadedDpc, _) => {}
+                    (InterruptKind::Dpc, Some((dpc, _))) => dpc.add(ticks),
+                    (InterruptKind::Isr, Some((_, isr))) => isr.add(ticks),
+                    (_, None) => cpu_totals = None,
+                }
+            }
         }
         let millis_per_tick = 1_000.0 / frequency as f64;
         let mut modules: Vec<_> = modules
@@ -330,6 +354,18 @@ impl Events {
                 .then_with(|| right.max_inclusive_ms.total_cmp(&left.max_inclusive_ms))
         });
         modules.truncate(MAX_MODULE_ROWS);
+        let per_cpu = cpu_totals.map(|totals| {
+            (0..)
+                .zip(totals)
+                .map(|(cpu, (dpc, isr))| InterruptTimingCpuRow {
+                    cpu,
+                    dpc_count: dpc.count,
+                    isr_count: isr.count,
+                    dpc_ms: dpc.total_ticks as f64 * millis_per_tick,
+                    isr_ms: isr.total_ticks as f64 * millis_per_tick,
+                })
+                .collect()
+        });
         Ok(InterruptTimingReport {
             events_lost: 0,
             buffers_lost: 0,
@@ -338,6 +374,7 @@ impl Events {
             invalid_image_records: self.invalid_image_records,
             unresolved_attribution,
             modules,
+            per_cpu,
         })
     }
 }
@@ -416,7 +453,7 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
     match kind {
         RecordKind::Interrupt(kind) => {
             let interrupt = (is_64_bit && descriptor.Version == 2)
-                .then(|| interrupt(kind, header.TimeStamp, payload))
+                .then(|| interrupt(kind, logical_cpu(record), header.TimeStamp, payload))
                 .flatten();
             if let Some(interrupt) = interrupt {
                 if events.interrupts.len() == MAX_INTERRUPTS {
@@ -446,11 +483,24 @@ fn guid_matches(left: GUID, right: GUID) -> bool {
         && left.data4 == right.data4
 }
 
-fn interrupt(kind: InterruptKind, end: i64, payload: &[u8]) -> Option<Interrupt> {
+fn logical_cpu(record: &EVENT_RECORD) -> u16 {
+    let context = record.BufferContext.Anonymous;
+    if u32::from(record.EventHeader.Flags) & EVENT_HEADER_FLAG_PROCESSOR_INDEX != 0 {
+        // SAFETY: ETW selects the 16-bit union member with this flag.
+        unsafe { context.ProcessorIndex }
+    } else {
+        // SAFETY: the classic union member stores the CPU number and a separate alignment byte.
+        let number = unsafe { context.Anonymous.ProcessorNumber };
+        u16::from(number)
+    }
+}
+
+fn interrupt(kind: InterruptKind, cpu: u16, end: i64, payload: &[u8]) -> Option<Interrupt> {
     // The x64 classic PerfInfo events start with the entry QPC and routine pointer.
     let entry = i64::try_from(read_u64(payload, 0)?).ok()?;
     (entry > 0 && end >= entry).then_some(Interrupt {
         kind,
+        cpu,
         entry,
         end,
         routine: read_u64(payload, 8)?,
@@ -489,10 +539,14 @@ fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::System::Diagnostics::Etw::{
+        ETW_BUFFER_CONTEXT_0, ETW_BUFFER_CONTEXT_0_0,
+    };
 
     fn sample(routine: u64, entry: i64, end: i64) -> Interrupt {
         Interrupt {
             kind: InterruptKind::Dpc,
+            cpu: 0,
             entry,
             end,
             routine,
@@ -509,16 +563,85 @@ mod tests {
 
     #[test]
     fn rejects_zero_entry_timestamps_and_excludes_out_of_window_samples() {
-        assert!(interrupt(InterruptKind::Dpc, 864_358_955_482, &[0; 16]).is_none());
+        assert!(interrupt(InterruptKind::Dpc, 0, 864_358_955_482, &[0; 16]).is_none());
         let events = Events {
             interrupts: vec![sample(0, 99, 105), sample(0, 110, 112), sample(0, 115, 121)],
             ..Events::default()
         };
-        let report = events.report(100, 120, 1_000).unwrap();
+        let report = events.report(100, 120, 1_000, Some(1)).unwrap();
         assert_eq!(report.invalid_intervals, 1);
         assert_eq!(report.incomplete_intervals, 1);
         assert_eq!(report.modules[0].count, 1);
         assert_eq!(report.modules[0].total_inclusive_ms, 2.0);
+        assert_eq!(report.per_cpu.unwrap()[0].dpc_ms, 2.0);
+    }
+
+    #[test]
+    fn reads_cpu_label_from_the_field_selected_by_the_etw_header() {
+        let mut record = EVENT_RECORD::default();
+        record.BufferContext.Anonymous = ETW_BUFFER_CONTEXT_0 {
+            Anonymous: ETW_BUFFER_CONTEXT_0_0 {
+                ProcessorNumber: 7,
+                Alignment: 8,
+            },
+        };
+        assert_eq!(logical_cpu(&record), 7);
+
+        record.EventHeader.Flags = EVENT_HEADER_FLAG_PROCESSOR_INDEX as u16;
+        record.BufferContext.Anonymous = ETW_BUFFER_CONTEXT_0 {
+            ProcessorIndex: 300,
+        };
+        assert_eq!(logical_cpu(&record), 300);
+    }
+
+    #[test]
+    fn per_cpu_rows_include_idle_cpus_and_omit_threaded_and_zero_duration_samples() {
+        let events = Events {
+            interrupts: vec![
+                sample(0, 101, 104),
+                sample(0, 104, 104),
+                Interrupt {
+                    kind: InterruptKind::Isr,
+                    cpu: 1,
+                    ..sample(0, 110, 117)
+                },
+                Interrupt {
+                    kind: InterruptKind::ThreadedDpc,
+                    cpu: 1,
+                    ..sample(0, 130, 132)
+                },
+            ],
+            ..Events::default()
+        };
+        let report = events.report(100, 140, 1_000, Some(3)).unwrap();
+        assert_eq!(report.modules.iter().map(|row| row.count).sum::<usize>(), 4);
+        let rows = report.per_cpu.unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.cpu).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!((rows[0].dpc_count, rows[0].dpc_ms), (1, 3.0));
+        assert_eq!((rows[1].isr_count, rows[1].isr_ms), (1, 7.0));
+        assert_eq!(rows[1].dpc_count, 0);
+        assert_eq!(rows[2].dpc_ms + rows[2].isr_ms, 0.0);
+    }
+
+    #[test]
+    fn unverified_cpu_label_suppresses_only_the_per_cpu_breakdown() {
+        let events = Events {
+            interrupts: vec![
+                sample(0, 101, 104),
+                Interrupt {
+                    cpu: 1,
+                    ..sample(0, 108, 110)
+                },
+            ],
+            ..Events::default()
+        };
+        let report = events.report(100, 120, 1_000, Some(1)).unwrap();
+        assert!(report.per_cpu.is_none());
+        assert_eq!(report.modules[0].count, 2);
+        assert_eq!(report.modules[0].total_inclusive_ms, 5.0);
     }
 
     #[test]
@@ -539,7 +662,7 @@ mod tests {
         events.add_image(ImageKind::Unload, 200, &old).unwrap();
         events.add_image(ImageKind::Initial, 350, &old).unwrap();
 
-        let report = events.report(100, 400, 1_000).unwrap();
+        let report = events.report(100, 400, 1_000, None).unwrap();
         let count = |name: &str| {
             report
                 .modules
@@ -574,7 +697,7 @@ mod tests {
         events.add_image(ImageKind::Load, 300, &old).unwrap();
         events.add_image(ImageKind::Unload, 400, &old).unwrap();
 
-        let report = events.report(100, 500, 1_000).unwrap();
+        let report = events.report(100, 500, 1_000, None).unwrap();
         assert_eq!(report.unresolved_attribution, 2);
         let row = report
             .modules

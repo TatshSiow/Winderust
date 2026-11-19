@@ -463,7 +463,9 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Run diagnostic in Adaptive Engine's CPU Behaviour tab starts a five-second,
   in-memory trace even when Adaptive Engine is off. It changes no settings or
   scheduling rules. The result shows up to five driver and interrupt-type rows
-  ranked by inclusive time, plus any loss or attribution warnings.
+  ranked by inclusive time, plus any loss or attribution warnings. Per-CPU is
+  collapsed for each new result and shows inclusive DPC and ISR times in
+  milliseconds on verified single-group systems.
 - Cancel and app exit close the capture helper's lifetime pipe. The helper
   records the capture ID in an administrator-only, volatile Windows registry
   value before starting ETW. The surviving app can clean up after a failed
