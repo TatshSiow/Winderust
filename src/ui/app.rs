@@ -1,9 +1,10 @@
 use super::{
     action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
     by_activity, cpu_allocation, cpu_limiter, design, home, instance_balancing, instance_limits,
-    keep_running, memory_trim, navigation, power_plan_control, power_rules, priority_control,
-    process_list, process_power_plans, settings_pages, sleep_prevention, status_rail, tasks,
-    timer_resolution, watchdog, widgets, win32_priority_separation, window_frame,
+    interrupt_timing, keep_running, memory_trim, navigation, power_plan_control, power_rules,
+    priority_control, process_list, process_power_plans, settings_pages, sleep_prevention,
+    status_rail, tasks, timer_resolution, watchdog, widgets, win32_priority_separation,
+    window_frame,
 };
 use crate::ui::scrolling::scrollable;
 use std::{
@@ -275,6 +276,7 @@ pub(crate) fn run(
                 soft_allocation: cpu_allocation::Editor::default(),
                 hard_allocation: cpu_allocation::Editor::default(),
                 adaptive: adaptive_engine::Editor::default(),
+                interrupt_timing: interrupt_timing::State::default(),
                 candidates: Vec::new(),
                 unavailable_candidates: Vec::new(),
                 catalog_loading: false,
@@ -367,6 +369,9 @@ pub(crate) fn run(
             )
             .map(|interval| iced::time::every(interval).map(|_| Message::Tick))
             .unwrap_or_else(Subscription::none),
+            app.interrupt_timing
+                .subscription()
+                .map(|()| Message::PollInterruptTiming),
             app.navigation
                 .timer()
                 .filter(|_| !app.hidden)
@@ -582,6 +587,7 @@ struct WinderustApp {
     soft_allocation: cpu_allocation::Editor,
     hard_allocation: cpu_allocation::Editor,
     adaptive: adaptive_engine::Editor,
+    interrupt_timing: interrupt_timing::State,
     candidates: Vec<super::app_picker::Candidate>,
     unavailable_candidates: Vec<String>,
     catalog_loading: bool,
@@ -663,6 +669,7 @@ enum Message {
     Efficiency(background_efficiency::Message),
     Allocation(cpu_allocation::Kind, cpu_allocation::Message),
     Adaptive(adaptive_engine::Message),
+    PollInterruptTiming,
     Catalog(Result<Vec<super::app_picker::Candidate>, String>),
     ExecutableChosen(Page, PowerSourceProfile, Option<PathBuf>),
     Page(Page),
@@ -1430,6 +1437,10 @@ impl WinderustApp {
             Message::Adaptive(adaptive_engine::Message::Browse) => {
                 return self.browse(Page::AdaptiveEngine);
             }
+            Message::Adaptive(adaptive_engine::Message::InterruptTiming(message)) => {
+                self.interrupt_timing.update(message);
+            }
+            Message::PollInterruptTiming => self.interrupt_timing.poll(),
             Message::Adaptive(message) => {
                 if matches!(
                     message,
@@ -2434,6 +2445,7 @@ impl WinderustApp {
         self.exiting = true;
         self.closing = true;
         self.error_message.clear();
+        let interrupt_timing = self.interrupt_timing.cancel_for_exit();
         let runtime = self.runtime.clone();
         let recovery_client = Arc::clone(&self.recovery_client);
         tasks::run(move || {
@@ -2446,6 +2458,13 @@ impl WinderustApp {
                 .finish()
             {
                 crate::backend::diagnostics::error(&error);
+            }
+            if let Some(capture) = interrupt_timing {
+                if let Err(error) = capture.finish() {
+                    crate::backend::diagnostics::error(&format!(
+                        "Interrupt Timing cleanup failed with {error}"
+                    ));
+                }
             }
         })
         .map(Message::ShutdownFinished)
@@ -3237,7 +3256,7 @@ impl WinderustApp {
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             Page::AdaptiveEngine => self
                 .adaptive
-                .view(&self.settings, &self.candidates)
+                .view(&self.settings, &self.candidates, &self.interrupt_timing)
                 .map(Message::Adaptive),
             Page::ProcessPriority => self
                 .priority

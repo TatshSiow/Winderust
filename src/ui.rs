@@ -15,6 +15,7 @@ mod home;
 mod hotkeys;
 mod instance_balancing;
 mod instance_limits;
+mod interrupt_timing;
 mod keep_running;
 mod memory_trim;
 mod modal;

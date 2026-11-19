@@ -547,7 +547,7 @@ fn match_rules(
         for process in processes {
             if process.id == 0
                 || process.id == own_pid
-                || crate::crash_recovery::is_watchdog_process(process.id)
+                || crate::backend::is_helper_process(process.id)
                 || contains_process_name(EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS, &process.name)
                 || !same_process_name(&process.name, name)
                 || process.is_critical == Some(true)

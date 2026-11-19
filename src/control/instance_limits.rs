@@ -23,7 +23,7 @@ pub(crate) fn collect(paths: &[String]) -> Vec<CountObservation> {
 /// Captures read-only exact members; callers must acquire fresh mutation authority separately.
 pub(crate) fn collect_members(paths: &[String]) -> Vec<MembershipObservation> {
     native::collect(paths, |id, path, creation_time, process| {
-        if id == current_process_id() || crate::crash_recovery::is_watchdog_process(id) {
+        if id == current_process_id() || crate::backend::is_helper_process(id) {
             return Err("Winderust and its recovery helper cannot be monitored.".into());
         }
         let path = PathBuf::from(path);

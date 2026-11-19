@@ -41,6 +41,9 @@ use ui::app;
 rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() {
+    if backend::interrupt_timing::run_worker_if_requested() {
+        return;
+    }
     #[cfg(feature = "recovery-smoke")]
     if crash_recovery::smoke::run_if_requested() {
         return;

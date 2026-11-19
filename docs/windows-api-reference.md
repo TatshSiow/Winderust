@@ -26,6 +26,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Administrator relaunch and single-instance handoff | `src/backend/privilege.rs` and `src/main.rs` | Synchronous UAC process creation plus an explicit mutex handoff from the closing standard instance to its elevated replacement |
 | Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, retained App Suspension and CPU Limiter freeze jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/adaptive_engine_process.rs`, `adaptive_engine_process/policy.rs`, `adaptive_engine_process/process_control.rs`, and `src/control/priority_efficiency.rs` | CPU scheduling decisions and read-only process sampling plus typed Process Priority and Power Throttling claims; affinity masks, CPU Sets, Memory Priority, and Dynamic Priority Boost route through their feature or typed-controller owners |
+| Interrupt Timing | `src/platform/windows/interrupt_timing.rs` and `src/platform/windows/interrupt_timing/` | On-demand real-time ETW session, DPC and ISR timing, and kernel image attribution |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` and `src/control/priority_efficiency.rs` | Policy-only target selection plus shared compound Process Priority and process Power Throttling ownership |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs`, `src/control/memory_trim.rs`, and `src/platform/windows/memory_trim.rs` | Memory-pressure policy, typed exact-process command, and raw working-set adapter |
 | Stop Process / Stop Process Tree | `src/foreground/process_list.rs`, `src/control/process_termination.rs`, and `src/platform/windows/process_termination.rs` | Read-side tree capture, typed batch command, and raw termination adapter |
@@ -37,6 +38,33 @@ window rendering and infrastructure calls are not duplicated here.
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs`, `src/control/timer_resolution.rs`, and `src/platform/windows/timer_resolution.rs` | Foreground-rule policy, process-lifetime ownership, and the sole raw WinMM adapter |
 | Win32 Priority Separation | `src/application/win32_priority_separation.rs`, `src/backend/win_registry.rs`, and `src/ui/win32_priority_separation.rs` | Typed persistent backup/apply/restore service, narrow registry adapter, and UI presentation for the `Win32PrioritySeparation` value |
 | Update checks | `src/backend/update_checker.rs`, `src/ui/app.rs` | Synchronous HTTPS WinHTTP requests on a background task, bounded response parsing, and typed diagnostic errors |
+
+## Interrupt Timing
+
+The diagnostic starts one bounded real-time system logger with DPC, interrupt,
+and image events. The app generates a capture-specific name and sends it through
+the inherited pipe before the helper starts ETW. The fixed logger GUID limits
+Winderust to one live trace across app instances. Capture data stays in memory.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `CoCreateGuid` | Generates the capture identity appended to the descriptive logger name. | https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cocreateguid |
+| `StartTraceW` | Creates the system logger with QPC timestamps and bounded ETW buffers. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew |
+| `OpenTraceW`, `ProcessTrace`, `CloseTrace` | Consumes real-time `EVENT_RECORD` callbacks with raw timestamps and closes the consumer handle. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-opentracew, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-processtrace, https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-closetrace |
+| `ControlTraceW` | Queries the exact name, verifies the returned name and logger GUID, then stops the capture by name and reads loss counters. | https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew |
+| Classic `PerfInfo` and `Image_Load` events | Computes inclusive routine duration from QPC timestamps and resolves routine addresses against timestamped kernel image lifetimes. | https://learn.microsoft.com/en-us/windows/win32/etw/dpc, https://learn.microsoft.com/en-us/windows/win32/etw/isr, https://learn.microsoft.com/en-us/windows/win32/etw/image-load |
+
+The app attempts cleanup after waiting for the exact failed helper to exit.
+Names are generated for one capture, so cleanup cannot select a later Winderust
+capture or a recycled numeric trace handle. The query and stop calls are
+separate operations. Windows does not provide a documented atomic identity
+check for stopping a session.
+
+The decoder accepts the x64 `PerfInfo` v2 and `Image_Load` v2/v3 layouts observed
+in live traces. It counts unsupported or invalid records separately. ISR opcode
+50 follows the [TraceEvent parser](https://github.com/microsoft/perfview/blob/main/src/TraceEvent/Parsers/KernelTraceEventParser.cs).
+Ambiguous image evidence leaves the routine unattributed. The diagnostic reports
+sampled timing, loss, and attribution quality and changes no driver settings.
 
 ## Update Checks
 

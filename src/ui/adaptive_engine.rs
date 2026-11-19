@@ -61,6 +61,7 @@ pub(super) struct Editor {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Toggle(fn(&mut Settings, bool), bool),
+    InterruptTiming(super::interrupt_timing::Message),
     TuningTab(TuningTab),
     Collapse(usize),
     TogglePriority(usize),
@@ -386,8 +387,9 @@ impl Editor {
         &'a self,
         live: &'a Settings,
         candidates: &'a [super::app_picker::Candidate],
+        interrupt_timing: &'a super::interrupt_timing::State,
     ) -> Element<'a, Message> {
-        self.tuning_view(live, false, candidates)
+        self.tuning_view(live, candidates, Some(interrupt_timing))
     }
 
     pub(super) fn preset_modal<'a>(
@@ -464,7 +466,7 @@ impl Editor {
                 design::typography::BODY
             ),
             name,
-            self.tuning_view(live, true, candidates)
+            self.tuning_view(live, candidates, None)
         ]
         .spacing(design::space::MEDIUM)
         .height(Fill);
@@ -477,9 +479,10 @@ impl Editor {
     fn tuning_view<'a>(
         &'a self,
         live: &'a Settings,
-        preset: bool,
         candidates: &'a [super::app_picker::Candidate],
+        interrupt_timing: Option<&'a super::interrupt_timing::State>,
     ) -> Element<'a, Message> {
+        let preset = interrupt_timing.is_none();
         let s = if preset {
             self.draft.as_ref().unwrap_or(live)
         } else {
@@ -548,6 +551,9 @@ impl Editor {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         match tab {
             TuningTab::CpuBehaviour => {
+                if let Some(interrupt_timing) = interrupt_timing {
+                    body = body.push(interrupt_timing.view().map(Message::InterruptTiming));
+                }
                 let custom_selection = editable
                     && (s.adaptive_engine_process.background_processor_selection
                         == BackgroundProcessorSelection::Custom
@@ -2377,6 +2383,7 @@ mod tests {
         let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let mut editor = Editor::default();
         let mut settings = Settings::default();
+        let interrupt_timing = super::super::interrupt_timing::State::default();
         let bounds = iced::Rectangle::with_size(iced::Size::new(1040.0, 700.0));
         for tab in TuningTab::ALL {
             editor.update(&mut settings, Message::TuningTab(tab));
@@ -2385,7 +2392,7 @@ mod tests {
             for frame in 0..6 {
                 editor.priority_expanded[0][0] = (frame / 2) % 2 == 0;
                 settings.adaptive_engine_process.process_priority_enabled = frame % 2 == 0;
-                let mut view = editor.view(&settings, &[]);
+                let mut view = editor.view(&settings, &[], &interrupt_timing);
                 tree.diff(view.as_widget());
                 let node = view.as_widget_mut().layout(
                     &mut tree,
@@ -2429,6 +2436,7 @@ mod tests {
     fn priority_tab_scroll_damage_stays_bounded() {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
+        let interrupt_timing = super::super::interrupt_timing::State::default();
         editor.update(
             &mut settings,
             Message::TuningTab(TuningTab::PriorityControl),
@@ -2437,7 +2445,7 @@ mod tests {
             editor.priority_expanded[0].fill(expanded);
             for width in [430.0, 1040.0] {
                 super::super::scrolling::check_scroll_damage(
-                    editor.view(&settings, &[]),
+                    editor.view(&settings, &[], &interrupt_timing),
                     iced::Rectangle::with_size(iced::Size::new(width, 700.0)),
                 );
             }

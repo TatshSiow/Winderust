@@ -458,6 +458,17 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency controls own separate foreground and visible-window detection and Efficiency Mode values instead of borrowing the Background Efficiency page's settings.
 - Adaptive Engine uses the shared right-rail Status / Presets pattern. Built-in presets are read-only; custom presets capture only Adaptive Engine and Adaptive Engine tuning. Applying a preset never changes master enable switches, custom rules, exclusions, or the separate Background Efficiency feature.
 
+## Interrupt Timing
+
+- Run diagnostic in Adaptive Engine's CPU Behaviour tab starts a five-second,
+  in-memory trace even when Adaptive Engine is off. It changes no settings or
+  scheduling rules. The result shows up to five driver and interrupt-type rows
+  ranked by inclusive time, plus any loss or attribution warnings.
+- Cancel and app exit close the capture helper's lifetime pipe. If the helper
+  exits unexpectedly, the surviving app checks the exact capture name and
+  logger GUID before stopping any remaining trace. A conflicting session is
+  reported and left alone. Killing both processes can leave the trace active.
+
 ## Priority and efficiency
 
 - Background Efficiency uses the same explicit Foreground Detection and Visible Window Detection

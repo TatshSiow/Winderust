@@ -1,0 +1,587 @@
+use std::{collections::BTreeMap, ptr::null, sync::mpsc::Sender};
+
+use serde::{Deserialize, Serialize};
+use windows_sys::{
+    core::GUID,
+    Win32::{
+        Foundation::ERROR_SUCCESS,
+        System::{
+            Diagnostics::Etw::{
+                CloseTrace, ImageLoadGuid, OpenTraceW, PerfInfoGuid, ProcessTrace,
+                EVENT_HEADER_FLAG_64_BIT_HEADER, EVENT_RECORD, EVENT_TRACE_LOGFILEW,
+                PROCESSTRACE_HANDLE, PROCESS_TRACE_MODE_EVENT_RECORD,
+                PROCESS_TRACE_MODE_RAW_TIMESTAMP, PROCESS_TRACE_MODE_REAL_TIME,
+            },
+            Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
+        },
+    },
+};
+
+use crate::win_util::{last_error, wide_null};
+
+const MAX_INTERRUPTS: usize = 262_144;
+const MAX_IMAGE_RECORDS: usize = 4_096;
+const MAX_MODULE_ROWS: usize = 5;
+const KERNEL_ADDRESS: u64 = 0xffff_0000_0000_0000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) enum InterruptKind {
+    #[serde(rename = "DPC")]
+    Dpc,
+    #[serde(rename = "ISR")]
+    Isr,
+    #[serde(rename = "Threaded DPC")]
+    ThreadedDpc,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct InterruptTimingRow {
+    pub(crate) kind: InterruptKind,
+    pub(crate) module: Option<String>,
+    pub(crate) count: usize,
+    pub(crate) total_inclusive_ms: f64,
+    pub(crate) max_inclusive_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct InterruptTimingReport {
+    pub(crate) events_lost: u32,
+    pub(crate) buffers_lost: u32,
+    pub(crate) invalid_intervals: usize,
+    pub(crate) incomplete_intervals: usize,
+    pub(crate) invalid_image_records: usize,
+    pub(crate) unresolved_attribution: usize,
+    pub(crate) modules: Vec<InterruptTimingRow>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DecodeError {
+    #[error("OpenTraceW failed with Win32 error {0}.")]
+    Open(u32),
+    #[error("ProcessTrace failed with Win32 error {0}.")]
+    Read(u32),
+    #[error("The Windows performance counter failed.")]
+    Clock,
+    #[error("The capture controller closed before tracing started.")]
+    ControllerStopped,
+    #[error("The capture reached the interrupt or image record limit.")]
+    Capacity,
+}
+
+pub(super) fn decode_live(
+    session_name: &str,
+    ready: Sender<()>,
+    capture_start: i64,
+) -> Result<InterruptTimingReport, DecodeError> {
+    let mut frequency = 0;
+    // SAFETY: The pointer refers to writable i64 storage and the logger uses QPC timestamps.
+    if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0 || frequency <= 0 {
+        return Err(DecodeError::Clock);
+    }
+    let mut name = wide_null(session_name);
+    let mut events = Events::default();
+    let mut logfile = EVENT_TRACE_LOGFILEW {
+        LoggerName: name.as_mut_ptr(),
+        Context: (&raw mut events).cast(),
+        ..EVENT_TRACE_LOGFILEW::default()
+    };
+    logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_EVENT_RECORD
+        | PROCESS_TRACE_MODE_RAW_TIMESTAMP
+        | PROCESS_TRACE_MODE_REAL_TIME;
+    logfile.Anonymous2.EventRecordCallback = Some(on_event);
+
+    // SAFETY: The logfile contains a valid callback, context and NUL-terminated session name.
+    let handle = unsafe { OpenTraceW(&mut logfile) };
+    if handle.Value == u64::MAX {
+        return Err(DecodeError::Open(last_error()));
+    }
+    let handle = TraceHandle(handle);
+    ready.send(()).map_err(|_| DecodeError::ControllerStopped)?;
+    // SAFETY: The handle, callback context and name remain live during synchronous processing.
+    let status = unsafe { ProcessTrace(&handle.0, 1, null(), null()) };
+    if status != ERROR_SUCCESS {
+        return Err(DecodeError::Read(status));
+    }
+    let mut drain_end = 0;
+    // SAFETY: The output points to writable i64 storage.
+    if unsafe { QueryPerformanceCounter(&mut drain_end) } == 0 || drain_end < capture_start {
+        return Err(DecodeError::Clock);
+    }
+    drop(handle);
+    events.report(capture_start, drain_end, frequency)
+}
+
+struct TraceHandle(PROCESSTRACE_HANDLE);
+
+impl Drop for TraceHandle {
+    fn drop(&mut self) {
+        // SAFETY: This owner closes its successful OpenTraceW handle once.
+        unsafe { CloseTrace(self.0) };
+    }
+}
+
+struct Interrupt {
+    kind: InterruptKind,
+    entry: i64,
+    end: i64,
+    routine: u64,
+}
+
+enum RecordKind {
+    Interrupt(InterruptKind),
+    Image(ImageKind),
+}
+
+enum ImageKind {
+    Initial,
+    Load,
+    Unload,
+}
+
+#[derive(PartialEq, Eq)]
+struct Mapping {
+    end: u64,
+    name: Option<String>,
+}
+
+fn merge_mapping(current: &mut Option<Mapping>, evidence: Mapping) {
+    match current {
+        Some(existing) if *existing != evidence => {
+            existing.end = existing.end.max(evidence.end);
+            existing.name = None;
+        }
+        Some(_) => {}
+        None => *current = Some(evidence),
+    }
+}
+
+#[derive(Default)]
+struct ImageHistory {
+    initial: Option<Mapping>,
+    changes: Vec<(i64, Option<Mapping>)>,
+}
+
+struct Lifetime {
+    from: i64,
+    until: Option<i64>,
+    mapping: Mapping,
+}
+
+impl ImageHistory {
+    fn lifetimes(mut self) -> Vec<Lifetime> {
+        self.changes.sort_unstable_by_key(|(time, _)| *time);
+        let mut changes = self.changes.into_iter().peekable();
+        let mut lifetimes = Vec::new();
+        let mut current = self.initial;
+        let mut from = i64::MIN;
+        while let Some((at, change)) = changes.next() {
+            let previous_end = current.as_ref().map_or(0, |mapping| mapping.end);
+            if let Some(mapping) = current.take() {
+                lifetimes.push(Lifetime {
+                    from,
+                    until: Some(at),
+                    mapping,
+                });
+            }
+            let mut unload = change.is_none();
+            current = change;
+            while let Some((_, change)) = changes.next_if(|(time, _)| *time == at) {
+                match change {
+                    Some(load) => merge_mapping(&mut current, load),
+                    None => unload = true,
+                }
+            }
+            // An unload and a load with the same timestamp have no reliable ordering.
+            if let Some(mapping) = current.as_mut().filter(|_| unload) {
+                mapping.end = mapping.end.max(previous_end);
+                mapping.name = None;
+            }
+            from = at;
+        }
+        if let Some(mapping) = current {
+            lifetimes.push(Lifetime {
+                from,
+                until: None,
+                mapping,
+            });
+        }
+        lifetimes
+    }
+}
+
+#[derive(Default)]
+struct Events {
+    interrupts: Vec<Interrupt>,
+    images: BTreeMap<u64, ImageHistory>,
+    image_records: usize,
+    invalid_intervals: usize,
+    invalid_image_records: usize,
+    capacity_exceeded: bool,
+}
+
+#[derive(Default)]
+struct Totals {
+    count: usize,
+    total_ticks: i128,
+    max_ticks: i64,
+}
+
+impl Totals {
+    fn add(&mut self, ticks: i64) {
+        self.count += 1;
+        self.total_ticks += i128::from(ticks);
+        self.max_ticks = self.max_ticks.max(ticks);
+    }
+
+    fn row(
+        self,
+        kind: InterruptKind,
+        module: Option<&str>,
+        millis_per_tick: f64,
+    ) -> InterruptTimingRow {
+        InterruptTimingRow {
+            kind,
+            module: module.map(str::to_owned),
+            count: self.count,
+            total_inclusive_ms: self.total_ticks as f64 * millis_per_tick,
+            max_inclusive_ms: self.max_ticks as f64 * millis_per_tick,
+        }
+    }
+}
+
+impl Events {
+    fn add_image(&mut self, kind: ImageKind, at: i64, payload: &[u8]) -> Option<()> {
+        let base = read_u64(payload, 0)?;
+        if base < KERNEL_ADDRESS {
+            return Some(());
+        }
+        if self.image_records == MAX_IMAGE_RECORDS {
+            self.capacity_exceeded = true;
+            return Some(());
+        }
+        self.image_records += 1;
+        let history = self.images.entry(base).or_default();
+        match kind {
+            ImageKind::Initial => {
+                // DCStart describes the beginning of the trace even when the callback arrives later.
+                merge_mapping(&mut history.initial, image_mapping(base, payload)?);
+            }
+            ImageKind::Load if at > 0 => {
+                history
+                    .changes
+                    .push((at, Some(image_mapping(base, payload)?)));
+            }
+            ImageKind::Unload if at > 0 => history.changes.push((at, None)),
+            _ => return None,
+        }
+        Some(())
+    }
+
+    fn report(
+        self,
+        start: i64,
+        end: i64,
+        frequency: i64,
+    ) -> Result<InterruptTimingReport, DecodeError> {
+        if self.capacity_exceeded {
+            return Err(DecodeError::Capacity);
+        }
+        let images: BTreeMap<_, _> = self
+            .images
+            .into_iter()
+            .map(|(base, history)| (base, history.lifetimes()))
+            .collect();
+        let max_image_size = images
+            .iter()
+            .flat_map(|(&base, lifetimes)| {
+                lifetimes.iter().map(move |life| life.mapping.end - base)
+            })
+            .max()
+            .unwrap_or(0);
+        let mut modules = BTreeMap::<(InterruptKind, Option<&str>), Totals>::new();
+        let mut invalid_intervals = self.invalid_intervals;
+        let mut incomplete_intervals = 0;
+        let mut unresolved_attribution = 0;
+        for event in self.interrupts {
+            if event.entry < start {
+                incomplete_intervals += 1;
+                continue;
+            }
+            if event.end > end {
+                invalid_intervals += 1;
+                continue;
+            }
+            let module = module_name(&images, max_image_size, &event);
+            unresolved_attribution += usize::from(module.is_none());
+            modules
+                .entry((event.kind, module))
+                .or_default()
+                .add(event.end - event.entry);
+        }
+        let millis_per_tick = 1_000.0 / frequency as f64;
+        let mut modules: Vec<_> = modules
+            .into_iter()
+            .map(|((kind, module), totals)| totals.row(kind, module, millis_per_tick))
+            .collect();
+        modules.sort_by(|left, right| {
+            right
+                .total_inclusive_ms
+                .total_cmp(&left.total_inclusive_ms)
+                .then_with(|| right.max_inclusive_ms.total_cmp(&left.max_inclusive_ms))
+        });
+        modules.truncate(MAX_MODULE_ROWS);
+        Ok(InterruptTimingReport {
+            events_lost: 0,
+            buffers_lost: 0,
+            invalid_intervals,
+            incomplete_intervals,
+            invalid_image_records: self.invalid_image_records,
+            unresolved_attribution,
+            modules,
+        })
+    }
+}
+
+fn module_name<'a>(
+    images: &'a BTreeMap<u64, Vec<Lifetime>>,
+    max_image_size: u64,
+    event: &Interrupt,
+) -> Option<&'a str> {
+    let mut name = None;
+    for (_, lifetimes) in images.range(event.routine.saturating_sub(max_image_size)..=event.routine)
+    {
+        let first =
+            lifetimes.partition_point(|life| life.until.is_some_and(|until| until <= event.entry));
+        for life in lifetimes[first..]
+            .iter()
+            .take_while(|life| life.from <= event.end)
+        {
+            if event.routine >= life.mapping.end {
+                continue;
+            }
+            if name.is_some()
+                || event.entry < life.from
+                || life.until.is_some_and(|until| event.end >= until)
+            {
+                return None;
+            }
+            name = Some(life.mapping.name.as_deref()?);
+        }
+    }
+    name
+}
+
+unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
+    // SAFETY: ProcessTrace supplies a valid record for the duration of the callback.
+    let Some(record) = (unsafe { record.as_ref() }) else {
+        return;
+    };
+    // SAFETY: This ProcessTrace call invokes the callback serially with the exclusive Events context.
+    let Some(events) = (unsafe { record.UserContext.cast::<Events>().as_mut() }) else {
+        return;
+    };
+    if events.capacity_exceeded {
+        return;
+    }
+    let header = &record.EventHeader;
+    let descriptor = header.EventDescriptor;
+    let kind = if guid_matches(header.ProviderId, PerfInfoGuid) {
+        RecordKind::Interrupt(match descriptor.Opcode {
+            66 => InterruptKind::ThreadedDpc,
+            // TraceEvent also recognizes opcode 50 as an ISR.
+            50 | 67 => InterruptKind::Isr,
+            68 | 69 => InterruptKind::Dpc,
+            _ => return,
+        })
+    } else if guid_matches(header.ProviderId, ImageLoadGuid) {
+        RecordKind::Image(match descriptor.Opcode {
+            2 => ImageKind::Unload,
+            3 => ImageKind::Initial,
+            10 => ImageKind::Load,
+            // DCEnd confirms residency at trace end and cannot date a load.
+            _ => return,
+        })
+    } else {
+        return;
+    };
+    let payload = if record.UserData.is_null() || record.UserDataLength == 0 {
+        &[]
+    } else {
+        // SAFETY: ETW supplies at least UserDataLength bytes for this nonempty callback payload.
+        unsafe {
+            std::slice::from_raw_parts(record.UserData.cast(), usize::from(record.UserDataLength))
+        }
+    };
+    let is_64_bit = u32::from(header.Flags) & EVENT_HEADER_FLAG_64_BIT_HEADER != 0;
+    match kind {
+        RecordKind::Interrupt(kind) => {
+            let interrupt = (is_64_bit && descriptor.Version == 2)
+                .then(|| interrupt(kind, header.TimeStamp, payload))
+                .flatten();
+            if let Some(interrupt) = interrupt {
+                if events.interrupts.len() == MAX_INTERRUPTS {
+                    events.capacity_exceeded = true;
+                } else {
+                    events.interrupts.push(interrupt);
+                }
+            } else {
+                events.invalid_intervals += 1;
+            }
+        }
+        RecordKind::Image(kind) => {
+            if !is_64_bit
+                || !matches!(descriptor.Version, 2 | 3)
+                || events.add_image(kind, header.TimeStamp, payload).is_none()
+            {
+                events.invalid_image_records += 1;
+            }
+        }
+    }
+}
+
+fn guid_matches(left: GUID, right: GUID) -> bool {
+    left.data1 == right.data1
+        && left.data2 == right.data2
+        && left.data3 == right.data3
+        && left.data4 == right.data4
+}
+
+fn interrupt(kind: InterruptKind, end: i64, payload: &[u8]) -> Option<Interrupt> {
+    // The x64 classic PerfInfo events start with the entry QPC and routine pointer.
+    let entry = i64::try_from(read_u64(payload, 0)?).ok()?;
+    (entry > 0 && end >= entry).then_some(Interrupt {
+        kind,
+        entry,
+        end,
+        routine: read_u64(payload, 8)?,
+    })
+}
+
+fn image_mapping(base: u64, payload: &[u8]) -> Option<Mapping> {
+    let size = read_u64(payload, 8).filter(|&size| size != 0)?;
+    let end = base.checked_add(size)?;
+    // The x64 Image_Load filename starts at byte 56. Retain only its basename.
+    let mut path = payload.get(56..)?.as_chunks::<2>().0.iter();
+    let mut basename = Vec::new();
+    loop {
+        match u16::from_le_bytes(*path.next()?) {
+            0 => break,
+            0x2f | 0x5c => basename.clear(),
+            unit => basename.push(unit),
+        }
+    }
+    if basename.is_empty() || basename.len() > 255 {
+        return None;
+    }
+    let name = String::from_utf16(&basename).ok()?.to_lowercase();
+    Some(Mapping {
+        end,
+        name: Some(name),
+    })
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset + 8)?.try_into().ok()?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(routine: u64, entry: i64, end: i64) -> Interrupt {
+        Interrupt {
+            kind: InterruptKind::Dpc,
+            entry,
+            end,
+            routine,
+        }
+    }
+
+    fn image(base: u64, size: u64, name: &str) -> Vec<u8> {
+        let mut payload = vec![0; 56];
+        payload[..8].copy_from_slice(&base.to_le_bytes());
+        payload[8..16].copy_from_slice(&size.to_le_bytes());
+        payload.extend(name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+        payload
+    }
+
+    #[test]
+    fn rejects_zero_entry_timestamps_and_excludes_out_of_window_samples() {
+        assert!(interrupt(InterruptKind::Dpc, 864_358_955_482, &[0; 16]).is_none());
+        let events = Events {
+            interrupts: vec![sample(0, 99, 105), sample(0, 110, 112), sample(0, 115, 121)],
+            ..Events::default()
+        };
+        let report = events.report(100, 120, 1_000).unwrap();
+        assert_eq!(report.invalid_intervals, 1);
+        assert_eq!(report.incomplete_intervals, 1);
+        assert_eq!(report.modules[0].count, 1);
+        assert_eq!(report.modules[0].total_inclusive_ms, 2.0);
+    }
+
+    #[test]
+    fn resolves_address_reuse_after_out_of_order_rundown_and_changes() {
+        let base = KERNEL_ADDRESS;
+        let old = image(base, 128, r"\SystemRoot\OLD.SYS");
+        let new = image(base, 128, "new.sys");
+        let mut events = Events {
+            interrupts: vec![
+                sample(base, 150, 199),
+                sample(base, 199, 200),
+                sample(base, 200, 299),
+                sample(base, 300, 309),
+            ],
+            ..Events::default()
+        };
+        events.add_image(ImageKind::Load, 300, &new).unwrap();
+        events.add_image(ImageKind::Unload, 200, &old).unwrap();
+        events.add_image(ImageKind::Initial, 350, &old).unwrap();
+
+        let report = events.report(100, 400, 1_000).unwrap();
+        let count = |name: &str| {
+            report
+                .modules
+                .iter()
+                .find(|row| row.module.as_deref() == Some(name))
+                .unwrap()
+                .count
+        };
+        assert_eq!(count("old.sys"), 1);
+        assert_eq!(count("new.sys"), 1);
+        assert_eq!(report.unresolved_attribution, 2);
+    }
+
+    #[test]
+    fn overlapping_and_simultaneously_changed_mappings_remain_unresolved() {
+        let base = KERNEL_ADDRESS;
+        let old = image(base, 128, "old.sys");
+        let overlapping = image(base + 64, 128, "new.sys");
+        let mut events = Events {
+            interrupts: vec![
+                sample(base + 64, 200, 220),
+                sample(base + 64, 300, 310),
+                sample(base + 64, 400, 410),
+            ],
+            ..Events::default()
+        };
+        events.add_image(ImageKind::Initial, 105, &old).unwrap();
+        events
+            .add_image(ImageKind::Load, 200, &overlapping)
+            .unwrap();
+        events.add_image(ImageKind::Unload, 300, &old).unwrap();
+        events.add_image(ImageKind::Load, 300, &old).unwrap();
+        events.add_image(ImageKind::Unload, 400, &old).unwrap();
+
+        let report = events.report(100, 500, 1_000).unwrap();
+        assert_eq!(report.unresolved_attribution, 2);
+        let row = report
+            .modules
+            .iter()
+            .find(|row| row.module.is_some())
+            .unwrap();
+        assert_eq!(row.module.as_deref(), Some("new.sys"));
+        assert_eq!(row.count, 1);
+    }
+}
