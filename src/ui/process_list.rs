@@ -2604,6 +2604,7 @@ mod tests {
                 },
                 creation_time: 1,
                 working_set_bytes: None,
+                private_commit_bytes: None,
                 efficiency_mode: Some(true),
             },
         );

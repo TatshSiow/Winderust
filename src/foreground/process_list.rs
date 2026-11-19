@@ -29,7 +29,7 @@ use windows_sys::Win32::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
         },
-        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX},
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::GetSystemWindowsDirectoryW,
         Threading::{
@@ -128,6 +128,7 @@ pub struct ProcessResourceSample {
     pub cpu: ProcessCpuSample,
     pub creation_time: u64,
     pub working_set_bytes: Option<u64>,
+    pub private_commit_bytes: Option<u64>,
     pub efficiency_mode: Option<bool>,
 }
 
@@ -191,19 +192,19 @@ fn sample_process_resource(
         return None;
     }
 
-    let mut memory = PROCESS_MEMORY_COUNTERS {
-        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+    let memory_size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    let mut memory = PROCESS_MEMORY_COUNTERS_EX {
+        cb: memory_size,
         ..Default::default()
     };
-    // SAFETY: handle is live and memory is writable for the supplied structure size.
-    let working_set_bytes = (unsafe {
+    // SAFETY: handle is live and the API accepts a writable extended counter buffer of this size.
+    let memory_available = unsafe {
         K32GetProcessMemoryInfo(
             handle.raw(),
-            &mut memory,
-            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            std::ptr::from_mut(&mut memory).cast(),
+            memory_size,
         )
-    } != 0)
-        .then_some(memory.WorkingSetSize as u64);
+    } != 0;
 
     let efficiency_mode = sampling.efficiency_mode(
         || {
@@ -238,7 +239,8 @@ fn sample_process_resource(
             sampled_at: Instant::now(),
         },
         creation_time: filetime_to_u64(creation),
-        working_set_bytes,
+        working_set_bytes: memory_available.then_some(memory.WorkingSetSize as u64),
+        private_commit_bytes: memory_available.then_some(memory.PrivateUsage as u64),
         efficiency_mode,
     })
 }

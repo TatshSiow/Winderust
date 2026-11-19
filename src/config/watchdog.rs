@@ -27,13 +27,30 @@ pub enum WatchdogMetric {
     CpuPercent,
     MemoryPercent,
     MemoryMb,
+    PrivateCommitMb,
 }
 
 impl WatchdogMetric {
     pub fn maximum(self) -> u64 {
         match self {
             Self::CpuPercent | Self::MemoryPercent => 100,
-            Self::MemoryMb => 1_000_000,
+            Self::MemoryMb | Self::PrivateCommitMb => 1_000_000,
+        }
+    }
+
+    pub(crate) fn label_key(self) -> &'static str {
+        match self {
+            Self::CpuPercent => "watchdog.cpu",
+            Self::MemoryPercent => "watchdog.memory_percent",
+            Self::MemoryMb => "watchdog.memory_mb",
+            Self::PrivateCommitMb => "watchdog.private_commit_mb",
+        }
+    }
+
+    pub(crate) fn unit(self) -> &'static str {
+        match self {
+            Self::CpuPercent | Self::MemoryPercent => "%",
+            Self::MemoryMb | Self::PrivateCommitMb => "MB",
         }
     }
 }
@@ -67,15 +84,17 @@ impl WatchdogResource {
 pub enum WatchdogMemoryUnit {
     Percent,
     Megabytes,
+    PrivateCommitMb,
 }
 
 impl WatchdogMemoryUnit {
-    pub const ALL: [Self; 2] = [Self::Percent, Self::Megabytes];
+    pub const ALL: [Self; 3] = [Self::Percent, Self::Megabytes, Self::PrivateCommitMb];
 
     pub fn metric(self) -> WatchdogMetric {
         match self {
             Self::Percent => WatchdogMetric::MemoryPercent,
             Self::Megabytes => WatchdogMetric::MemoryMb,
+            Self::PrivateCommitMb => WatchdogMetric::PrivateCommitMb,
         }
     }
 }

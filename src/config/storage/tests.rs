@@ -198,6 +198,7 @@ fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
     );
 
     let path = std::env::temp_dir().join(format!("winderust-watchdog-{}.toml", std::process::id()));
+    settings.watchdog.rules[0].memory_unit = crate::config::WatchdogMemoryUnit::PrivateCommitMb;
     for duration in [Some(1), Some(3600), None] {
         settings.watchdog.rules[0].sustained_seconds = duration;
         settings.sync_shared_settings_to_battery();

@@ -11,19 +11,12 @@ use rust_i18n::t;
 
 impl std::fmt::Display for WatchdogMetric {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&t!(match self {
-            Self::CpuPercent => "watchdog.cpu",
-            Self::MemoryPercent => "watchdog.memory_percent",
-            Self::MemoryMb => "watchdog.memory_mb",
-        }))
+        f.write_str(&t!(self.label_key()))
     }
 }
 impl std::fmt::Display for WatchdogMemoryUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&t!(match self {
-            Self::Percent => "watchdog.memory_percent",
-            Self::Megabytes => "watchdog.memory_mb",
-        }))
+        std::fmt::Display::fmt(&self.metric(), f)
     }
 }
 
@@ -210,10 +203,11 @@ impl Editor {
                 if let Some(draft) = &mut self.draft {
                     if draft.rule.memory_unit != unit {
                         draft.rule.memory_unit = unit;
-                        let (warning, critical) = if unit == WatchdogMemoryUnit::Megabytes {
-                            (1000, 2000)
-                        } else {
-                            (70, 90)
+                        let (warning, critical) = match unit {
+                            WatchdogMemoryUnit::Percent => (70, 90),
+                            WatchdogMemoryUnit::Megabytes | WatchdogMemoryUnit::PrivateCommitMb => {
+                                (1000, 2000)
+                            }
                         };
                         draft.monitors[WatchdogResource::Memory as usize] = ThresholdInputs {
                             warning: warning.to_string(),
@@ -276,19 +270,15 @@ impl Editor {
                                 .into_iter()
                                 .map(|resource| {
                                     let monitor = rule.monitor(resource);
-                                    let unit = if rule.metric(resource) == WatchdogMetric::MemoryMb
-                                    {
-                                        " MB"
-                                    } else {
-                                        "%"
-                                    };
-                                    text(if monitor.enabled {
-                                        format!(
-                                            "{}{unit} / {}{unit}",
-                                            monitor.warning.threshold, monitor.critical.threshold
-                                        )
-                                    } else {
+                                    let warning = monitor.warning.threshold;
+                                    let critical = monitor.critical.threshold;
+                                    text(if !monitor.enabled {
                                         t!("common.off").to_string()
+                                    } else if resource == WatchdogResource::Memory {
+                                        let metric = rule.metric(resource);
+                                        format!("{metric}\n{warning} / {critical}")
+                                    } else {
+                                        format!("{warning}% / {critical}%")
                                     })
                                     .size(design::typography::SECONDARY)
                                     .into()
@@ -400,7 +390,7 @@ impl Editor {
                     design::typography::BODY,
                 ))
                 .push(widgets::settings_card(widgets::setting_row(
-                    "watchdog.memory_unit",
+                    "watchdog.memory_metric",
                     widgets::pick_list(
                         WatchdogMemoryUnit::ALL.to_vec(),
                         Some(rule.memory_unit),
@@ -432,11 +422,7 @@ impl Editor {
                     .push(widgets::settings_card(widgets::settings_rows([
                         widgets::setting_row_with_unit(
                             "watchdog.threshold",
-                            if metric == WatchdogMetric::MemoryMb {
-                                "MB"
-                            } else {
-                                "%"
-                            },
+                            metric.unit(),
                             widgets::text_input("", threshold)
                                 .on_input(move |value| {
                                     Message::Threshold(resource, critical, value)
@@ -619,6 +605,7 @@ mod tests {
 
         let mut rule = WatchdogRule::new(r"C:\Apps\test.exe".into());
         rule.memory.enabled = true;
+        rule.memory_unit = WatchdogMemoryUnit::PrivateCommitMb;
         let mut settings = WatchdogSettings {
             rules: vec![rule],
             ..Default::default()
@@ -763,7 +750,7 @@ mod tests {
         editor.update(&mut settings, Message::Tab(WatchdogResource::Memory));
         editor.update(
             &mut settings,
-            Message::MemoryUnit(WatchdogMemoryUnit::Megabytes),
+            Message::MemoryUnit(WatchdogMemoryUnit::PrivateCommitMb),
         );
         editor.update(
             &mut settings,
@@ -777,6 +764,10 @@ mod tests {
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
         assert!(settings.rules[0].cpu.enabled && settings.rules[0].memory.enabled);
+        assert_eq!(
+            settings.rules[0].memory_unit,
+            WatchdogMemoryUnit::PrivateCommitMb
+        );
         assert_eq!(settings.rules[0].cpu.warning.threshold, 65);
         assert_eq!(settings.rules[0].memory.warning.threshold, 1000);
         assert_eq!(settings.rules[0].memory.critical.threshold, 2000);

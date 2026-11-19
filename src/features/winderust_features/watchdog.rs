@@ -302,6 +302,9 @@ fn metric_value(
         WatchdogMetric::MemoryMb => current
             .working_set_bytes
             .map(|bytes| bytes as f64 / 1_000_000.0),
+        WatchdogMetric::PrivateCommitMb => current
+            .private_commit_bytes
+            .map(|bytes| bytes as f64 / 1_000_000.0),
     }
 }
 
@@ -351,6 +354,7 @@ mod tests {
                 },
                 creation_time: process.creation_time.unwrap(),
                 working_set_bytes: memory,
+                private_commit_bytes: None,
                 efficiency_mode: None,
             },
         )])
@@ -546,6 +550,15 @@ mod tests {
             Some(512.0)
         );
         assert_eq!(
+            metric_value(WatchdogMetric::PrivateCommitMb, None, &sample, None),
+            None
+        );
+        sample.private_commit_bytes = Some(384_500_000);
+        assert_eq!(
+            metric_value(WatchdogMetric::PrivateCommitMb, None, &sample, None),
+            Some(384.5)
+        );
+        assert_eq!(
             metric_value(
                 WatchdogMetric::MemoryPercent,
                 None,
@@ -674,10 +687,15 @@ mod tests {
             let start = Instant::now();
             let mut observe = |second, memory: u64| {
                 let now = start + Duration::from_secs(second);
-                let samples = processes
+                let mut samples: BTreeMap<_, _> = processes
                     .iter()
                     .flat_map(|p| sample(p, now, Some(memory * 1_000_000)))
                     .collect();
+                if unit == crate::config::WatchdogMemoryUnit::PrivateCommitMb {
+                    for sample in samples.values_mut() {
+                        sample.private_commit_bytes = sample.working_set_bytes.take();
+                    }
+                }
                 manager.evaluate(&settings, &processes, &samples, Some(100 * 1_000_000), now)
             };
             assert!(observe(0, 40).1.is_empty());

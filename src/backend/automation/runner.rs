@@ -183,7 +183,7 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> WatchdogSnapshot {
-        use crate::config::{WatchdogAction, WatchdogMetric};
+        use crate::config::WatchdogAction;
         use rust_i18n::t;
         let (mut snapshot, mut events) = self.watchdog_manager.update(
             &settings.watchdog,
@@ -199,11 +199,7 @@ impl RuntimeCore {
             } else {
                 "watchdog.warning"
             });
-            let metric = t!(match event.metric {
-                WatchdogMetric::CpuPercent => "watchdog.cpu",
-                WatchdogMetric::MemoryPercent => "watchdog.memory_percent",
-                WatchdogMetric::MemoryMb => "watchdog.memory_mb",
-            });
+            let metric = t!(event.metric.label_key());
             let detail = t!(
                 "watchdog.trigger_detail",
                 level = level,

@@ -233,15 +233,17 @@ hover/press; background shading supplies feedback.
 
 - Keep Watchdog under Winderust Features, global across power sources, with the shared
   app picker, rule table, and Info / Status tabs. CPU and Memory columns show warning
-  and critical thresholds. Pencil dialogs show app identity and an optional
-  sustained duration shared by the CPU / Memory tabs. A blank duration inherits
-  the page default. Drafts apply only on OK; Cancel, Close, and Escape discard.
+  and critical thresholds, and the Memory column identifies the selected metric.
+  Pencil dialogs show app identity and an optional sustained duration shared by
+  the CPU / Memory tabs. A blank duration inherits the page default. Drafts apply
+  only on OK. Cancel, Close, and Escape discard.
 - Each tab starts with its Enable CPU Watchdog or Enable Memory Watchdog toggle and
   reveals thresholds and optional termination/restart only when enabled. Default to
   notification only and show the data-loss consequence inline. The main page owns
   the default sustained duration and one notification switch.
 - Explain that each rule aggregates eligible instances of its executable, excluding
-  different child executables; summed working sets may double-count shared memory.
+  different child executables. Working Set measures resident memory and may double-count
+  shared pages. Private Commit (MB) measures committed private memory.
   Restart preserves the original user and privileges, supports non-service apps in
   the current session, and launches without previous arguments.
 - Notifications lead with the actual action result, then trigger details. Keep the
