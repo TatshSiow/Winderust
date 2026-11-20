@@ -3006,10 +3006,14 @@ impl WinderustApp {
             )
             .height(design::BUTTON_HEIGHT)
             .padding([0, design::space::MEDIUM as u16])
-            .style(if self.side_panel_open {
-                widgets::selected
-            } else {
-                widgets::secondary_button
+            .style(move |theme, status| {
+                let mut style = if self.side_panel_open {
+                    widgets::selected(theme, status)
+                } else {
+                    widgets::secondary_button(theme, status)
+                };
+                style.text_color = widgets::quiet(theme, status).text_color;
+                style
             })
             .on_press(Message::ToggleSidePanel)
             .into()
