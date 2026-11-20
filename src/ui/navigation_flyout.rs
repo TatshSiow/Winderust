@@ -184,7 +184,13 @@ impl Widget<Message, Theme, Renderer> for Anchor<'_> {
                 });
             }
         }
-        if let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+        if let Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            repeat,
+            ..
+        }) = event
+        {
             if state.focused
                 && (modifiers.is_empty()
                     || (*key == keyboard::Key::Named(keyboard::key::Named::Tab)
@@ -199,6 +205,10 @@ impl Widget<Message, Theme, Renderer> for Anchor<'_> {
                         .page
                         .filter(|page| navigation::has_children(*page))
                         .map(Message::OpenKeyboard),
+                    Key::Named(Named::Enter | Named::Space) if *repeat => {
+                        shell.capture_event();
+                        return;
+                    }
                     Key::Named(Named::Enter | Named::Space) => Some(match self.page {
                         Some(page) => Message::Select(page),
                         None => Message::Search,
@@ -324,7 +334,13 @@ impl iced::advanced::Overlay<Message, Theme, Renderer> for Panel<'_, '_> {
         if !self.keyboard && matches!(event, Event::Keyboard(_)) {
             return;
         }
-        if let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+        if let Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            repeat,
+            ..
+        }) = event
+        {
             if matches!(
                 key,
                 Key::Named(
@@ -339,7 +355,9 @@ impl iced::advanced::Overlay<Message, Theme, Renderer> for Panel<'_, '_> {
                         | Named::End
                 )
             ) {
-                shell.publish(Message::Key(key.clone(), modifiers.shift()));
+                if !*repeat || !matches!(key, Key::Named(Named::Enter | Named::Space)) {
+                    shell.publish(Message::Key(key.clone(), modifiers.shift()));
+                }
                 shell.capture_event();
                 return;
             }
@@ -431,7 +449,7 @@ mod tests {
     use super::*;
     use iced::advanced::Overlay;
 
-    fn key(key: keyboard::key::Named) -> Event {
+    fn key(key: keyboard::key::Named, repeat: bool) -> Event {
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(key),
             modified_key: keyboard::Key::Named(key),
@@ -441,7 +459,7 @@ mod tests {
             location: keyboard::Location::Standard,
             modifiers: keyboard::Modifiers::empty(),
             text: None,
-            repeat: false,
+            repeat,
         })
     }
 
@@ -528,10 +546,12 @@ mod tests {
         assert!(tree.state.downcast_ref::<State>().focused);
         let mut messages = Vec::new();
         for event in [
-            key(keyboard::key::Named::ArrowDown),
-            key(keyboard::key::Named::Tab),
-            key(keyboard::key::Named::ArrowRight),
-            key(keyboard::key::Named::Enter),
+            key(keyboard::key::Named::ArrowDown, true),
+            key(keyboard::key::Named::Tab, false),
+            key(keyboard::key::Named::ArrowRight, false),
+            key(keyboard::key::Named::Enter, false),
+            key(keyboard::key::Named::Enter, true),
+            key(keyboard::key::Named::Space, true),
         ] {
             let mut shell = Shell::new(&mut messages);
             element.as_widget_mut().update(
@@ -907,17 +927,19 @@ mod tests {
         use keyboard::key::Named;
         for keyboard in [false, true] {
             panel.keyboard = keyboard;
-            for named in [
-                Named::Space,
-                Named::Enter,
-                Named::ArrowDown,
-                Named::Tab,
-                Named::Escape,
+            for (named, repeat) in [
+                (Named::Space, false),
+                (Named::Enter, false),
+                (Named::ArrowDown, true),
+                (Named::Tab, false),
+                (Named::Escape, false),
+                (Named::Space, true),
+                (Named::Enter, true),
             ] {
                 messages.clear();
                 let mut shell = Shell::new(&mut messages);
                 panel.update(
-                    &key(named),
+                    &key(named, repeat),
                     Layout::new(&node),
                     mouse::Cursor::Unavailable,
                     &renderer,
@@ -925,7 +947,7 @@ mod tests {
                     &mut shell,
                 );
                 assert_eq!(shell.is_event_captured(), keyboard);
-                if keyboard {
+                if keyboard && !(repeat && matches!(named, Named::Enter | Named::Space)) {
                     assert!(
                         matches!(messages.as_slice(), [Message::Key(keyboard::Key::Named(key), false)] if *key == named)
                     );
