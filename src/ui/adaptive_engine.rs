@@ -6,7 +6,7 @@ use super::priority_control::{
 };
 use super::widgets::{action_button, button, checkbox, icon_button, pick_list, text_input};
 use crate::config::*;
-use crate::power::ProcessorBoostMode;
+use crate::power::{ProcessorBoostMode, ProcessorPowerValues};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
@@ -20,6 +20,10 @@ mod presets;
 #[cfg(feature = "render-smoke")]
 pub(super) use presets::BuiltInAdaptiveEnginePreset;
 use presets::*;
+
+const PROCESSOR_MIN_FIELD: &str = stringify!(adaptive_engine.base_processor_policy.performance_min);
+const PROCESSOR_MAX_FIELD: &str = stringify!(adaptive_engine.base_processor_policy.performance_max);
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum TuningTab {
     #[default]
@@ -76,6 +80,27 @@ impl NumberInputs {
         self.invalid()
             .map(|(min, max, label)| format!("{}: {min}..{max}", t!(label)))
     }
+
+    fn revalidate_processor_max(&mut self, policy: &mut ProcessorPowerValues) {
+        let Some(draft) = self.drafts.get_mut(PROCESSOR_MAX_FIELD) else {
+            return;
+        };
+        let Some((_, max, label)) = draft.invalid else {
+            return;
+        };
+        let min = u64::from(policy.performance_min);
+        let value = parse_number(&draft.text, min, max);
+        if let Some(value) = value {
+            policy.performance_max = value as u32;
+        }
+        draft.invalid = value.is_none().then_some((min, max, label));
+    }
+}
+
+fn parse_number(text: &str, min: u64, max: u64) -> Option<u64> {
+    text.parse()
+        .ok()
+        .filter(|value| (min..=max).contains(value))
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -297,7 +322,13 @@ impl Editor {
                 match edit {
                     Message::Toggle(f, v) => f(target, v),
                     Message::Number(f, v, min, max, key, label) => {
-                        let value = v.parse::<u64>().ok().filter(|n| (min..=max).contains(n));
+                        let before = target.adaptive_engine.base_processor_policy;
+                        let min = if key == PROCESSOR_MAX_FIELD {
+                            u64::from(before.performance_min.min(100))
+                        } else {
+                            min
+                        };
+                        let value = parse_number(&v, min, max);
                         numbers.drafts.insert(
                             key,
                             NumberDraft {
@@ -306,26 +337,31 @@ impl Editor {
                             },
                         );
                         if let Some(n) = value {
-                            let before = target.adaptive_engine.base_processor_policy;
                             f(target, n);
-                            target.adaptive_engine.base_processor_policy =
-                                target.adaptive_engine.base_processor_policy.normalized();
-                            let after = target.adaptive_engine.base_processor_policy;
-                            for (field, changed) in [
+                            let policy = &mut target.adaptive_engine.base_processor_policy;
+                            *policy = policy.normalized();
+                            if before.performance_min != policy.performance_min {
+                                numbers.revalidate_processor_max(policy);
+                            }
+                            for (field, prior, current) in [
                                 (
-                                    stringify!(
-                                        adaptive_engine.base_processor_policy.performance_min
-                                    ),
-                                    before.performance_min != after.performance_min,
+                                    PROCESSOR_MIN_FIELD,
+                                    before.performance_min,
+                                    policy.performance_min,
                                 ),
                                 (
-                                    stringify!(
-                                        adaptive_engine.base_processor_policy.performance_max
-                                    ),
-                                    before.performance_max != after.performance_max,
+                                    PROCESSOR_MAX_FIELD,
+                                    before.performance_max,
+                                    policy.performance_max,
                                 ),
                             ] {
-                                if field != key && changed {
+                                if field != key
+                                    && prior != current
+                                    && numbers.drafts.get(field).is_some_and(|draft| {
+                                        draft.invalid.is_none()
+                                            && draft.text.parse::<u32>().ok() != Some(current)
+                                    })
+                                {
                                     numbers.drafts.remove(field);
                                 }
                             }
@@ -520,6 +556,7 @@ impl Editor {
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         macro_rules! number {($key:expr,$min:expr,$max:expr,$($field:ident).+) => {{
             let key=stringify!($($field).+);
+            let min = $min;
             let formatted;
             let value = if let Some(draft) = numbers.drafts.get(key) {
                 &draft.text
@@ -529,8 +566,8 @@ impl Editor {
             };
             let unit=if key.ends_with("_ms") {"ms"} else if key.ends_with("_seconds") {"s"} else if key.ends_with("_percent") || $max==100 {"%"} else {""};
             row![setting_label_with_unit($key, unit).width(Fill),
-                super::widgets::stepper(value, $min..=$max, 1,
-                    editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,$min,$max,key,$key)))
+                super::widgets::stepper(value, min..=$max, 1,
+                    editable.then_some(move|v|Message::Number(|s,n|s.$($field).+ = n as _,v,min,$max,key,$key)))
             ].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)
         }};}
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+ $(, $color:expr)?) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0)))$(.option_color($color))?.width(Fill).into()}else{text($label(selected)).into()};control}};}
@@ -860,7 +897,12 @@ impl Editor {
                         .into(),
                         number!(
                             "processor_power.processor_max",
-                            0,
+                            u64::from(
+                                s.adaptive_engine
+                                    .base_processor_policy
+                                    .performance_min
+                                    .min(100)
+                            ),
                             100,
                             adaptive_engine.base_processor_policy.performance_max
                         )
@@ -2578,6 +2620,74 @@ mod tests {
         editor.update(&mut settings, Message::RemoveExclusion(0));
         assert!(settings.adaptive_engine_process.custom_rules.is_empty());
     }
+    #[test]
+    fn processor_max_draft_is_rechecked_when_minimum_changes() {
+        let mut settings = Settings::default();
+        settings
+            .adaptive_engine
+            .base_processor_policy
+            .performance_min = 25;
+        settings
+            .adaptive_engine
+            .base_processor_policy
+            .performance_max = 100;
+        let mut editor = Editor::default();
+        let set_min = |text: &str| {
+            Message::Number(
+                |settings, value| {
+                    settings
+                        .adaptive_engine
+                        .base_processor_policy
+                        .performance_min = value as u32
+                },
+                text.into(),
+                0,
+                100,
+                PROCESSOR_MIN_FIELD,
+                "processor_power.processor_min",
+            )
+        };
+        let set_max = |text: &str| {
+            Message::Number(
+                |settings, value| {
+                    settings
+                        .adaptive_engine
+                        .base_processor_policy
+                        .performance_max = value as u32
+                },
+                text.into(),
+                0,
+                100,
+                PROCESSOR_MAX_FIELD,
+                "processor_power.processor_max",
+            )
+        };
+        let policy = |settings: &Settings| settings.adaptive_engine.base_processor_policy;
+
+        editor.update(&mut settings, set_max("10"));
+        assert_eq!(policy(&settings).performance_max, 100);
+        assert_eq!(
+            editor.live_numbers.invalid(),
+            Some((25, 100, "processor_power.processor_max"))
+        );
+        editor.update(&mut settings, set_min("5"));
+        assert_eq!(policy(&settings).performance_max, 10);
+        assert_eq!(editor.live_numbers.drafts[PROCESSOR_MAX_FIELD].text, "10");
+        assert!(editor.live_numbers.invalid().is_none());
+
+        editor.update(&mut settings, set_min("15"));
+        assert_eq!(policy(&settings).performance_max, 15);
+        assert!(!editor.live_numbers.drafts.contains_key(PROCESSOR_MAX_FIELD));
+        editor.update(&mut settings, set_max(""));
+        editor.update(&mut settings, set_min("20"));
+        assert_eq!(policy(&settings).performance_max, 20);
+        assert_eq!(editor.live_numbers.drafts[PROCESSOR_MAX_FIELD].text, "");
+        assert_eq!(
+            editor.live_numbers.invalid(),
+            Some((20, 100, "processor_power.processor_max"))
+        );
+    }
+
     #[test]
     fn preset_numbers_are_independent_of_unfinished_live_edits() {
         let mut settings = Settings::default();

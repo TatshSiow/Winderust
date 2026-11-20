@@ -697,7 +697,7 @@ adaptive_engine:
   base_processor_policy_help: "設定閒置時的實際數值，以及較高需求設定檔會保留的最低百分比；提升模式僅用於閒置設定檔。"
   core_parking_min_help: "Windows 保持不進入停駐狀態的邏輯處理器最低百分比；作用中的設定檔可自動提高此數值。"
   processor_min_help: "處理器效能的最低百分比；提高可改善即時反應，但會增加耗電。"
-  processor_max_help: "閒置時的效能上限，也是作用中設定檔的最低上限；作用中設定檔可自動提高以保留效能空間。"
+  processor_max_help: "設定閒置效能上限及作用中設定檔的起始上限。此值不得低於處理器最小值。"
   base_boost_policy_help: "0 到 100 的基礎提升偏好；作用中設定檔可提高此數值，而提升模式仍決定 Windows 如何提升效能。"
   base_boost_mode_help: "僅供閒置設定檔使用的 Windows 提升策略；回應、背景壓力、焦點與啟動設定檔會使用各自的模式。"
   background_pressure_profile: "背景壓力設定檔"

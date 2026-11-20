@@ -695,7 +695,7 @@ adaptive_engine:
   base_processor_policy_help: "Sets the exact Idle values and the minimum percentages kept by higher-demand profiles. Boost mode is Idle-only."
   core_parking_min_help: "Minimum percentage of logical processors Windows keeps unparked. The active profiles can raise this value."
   processor_min_help: "Minimum processor performance percentage. Higher values improve immediate response but use more power."
-  processor_max_help: "Idle performance ceiling and the minimum ceiling for active profiles. Active profiles can raise it for more headroom."
+  processor_max_help: "Sets the idle performance ceiling and the starting ceiling for active profiles. Keep this at or above Processor min."
   base_boost_policy_help: "Base boost preference from 0 to 100. Active profiles can raise this value; their boost mode still decides how Windows boosts."
   base_boost_mode_help: "Windows boost strategy used only by the Idle profile. Responsive, Background Pressure, and Focus and Launch use their own modes."
   background_pressure_profile: "Background Pressure Profile"
