@@ -6,7 +6,7 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::column;
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::path::Path;
+use std::{path::Path, rc::Rc};
 
 #[derive(Default)]
 pub(super) struct Editor {
@@ -521,7 +521,9 @@ impl Editor {
     ) -> Element<'a, Message> {
         let key = kind.key();
         let enabled = kind.enabled(settings);
-        let choices = kind.choices(settings.advanced.expose_all_priority_values);
+        let choices: Rc<[_]> = kind
+            .choices(settings.advanced.expose_all_priority_values)
+            .into();
         let mut body = column![].spacing(super::widgets::CARD_GAP);
         for tier in [Tier::Background, Tier::Focus, Tier::VisibleWindow] {
             let detection = kind.detection(settings, tier);
@@ -541,7 +543,7 @@ impl Editor {
             };
             let control: Element<'_, Message> = {
                 pick_list(
-                    choices.clone(),
+                    Rc::clone(&choices),
                     Some(kind.value(settings, tier)),
                     move |value| Message::Default(tier, value),
                 )
@@ -586,7 +588,7 @@ impl Editor {
             for tier in Tier::ALL {
                 let control: Element<'_, Message> = {
                     pick_list(
-                        choices.clone(),
+                        Rc::clone(&choices),
                         Some(kind.rule_value(rule, tier)),
                         move |value| Message::RuleValue(index, tier, value),
                     )
