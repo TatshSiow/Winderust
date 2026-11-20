@@ -133,10 +133,17 @@ impl Draft {
         let mut rule = self.rule.clone();
         rule.sustained_seconds = self.parsed_duration()?;
         for (resource, raw) in WatchdogResource::ALL.into_iter().zip(&self.monitors) {
+            let metric = rule.metric(resource);
             let monitor = rule.monitor_mut(resource);
-            if monitor.enabled {
-                monitor.warning.threshold = raw.warning.parse().ok()?;
-                monitor.critical.threshold = raw.critical.parse().ok()?;
+            if let (Ok(warning), Ok(critical)) = (raw.warning.parse(), raw.critical.parse()) {
+                let mut edited = monitor.clone();
+                edited.warning.threshold = warning;
+                edited.critical.threshold = critical;
+                if monitor.enabled || edited.thresholds_valid(metric) {
+                    *monitor = edited;
+                }
+            } else if monitor.enabled {
+                return None;
             }
         }
         rule.validate().ok()?;
@@ -1027,6 +1034,23 @@ mod tests {
         assert_eq!(rule.memory.comparison, WatchdogComparison::AtOrBelow);
         assert_eq!(rule.memory.warning.threshold, 2000);
         assert_eq!(rule.memory.critical.threshold, 1000);
+    }
+
+    #[test]
+    fn disabled_monitor_keeps_valid_thresholds_and_ignores_incomplete_pairs() {
+        let mut rule = WatchdogRule::new(r"C:\Apps\worker.exe".into());
+        rule.cpu.enabled = false;
+        rule.memory.enabled = true;
+        let mut draft = Draft::new(None, rule);
+        for (warning, expected) in [("65", 65), ("", 70), ("90", 70)] {
+            draft.monitors[WatchdogResource::Cpu as usize].warning = warning.into();
+            let saved = draft
+                .validated_rule()
+                .expect("memory monitor remains valid");
+            assert!(!saved.cpu.enabled);
+            assert_eq!(saved.cpu.warning.threshold, expected);
+            assert_eq!(saved.cpu.critical.threshold, 90);
+        }
     }
 
     #[test]

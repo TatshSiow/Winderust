@@ -150,7 +150,7 @@ impl WatchdogMonitor {
         }
     }
 
-    fn validate(&self, metric: WatchdogMetric) -> bool {
+    pub(crate) fn thresholds_valid(&self, metric: WatchdogMetric) -> bool {
         let warning = self.warning.threshold;
         let critical = self.critical.threshold;
         match self.comparison {
@@ -268,8 +268,8 @@ impl WatchdogRule {
             return Err("Watchdog rule sustained usage must be between 1 and 3600 seconds.".into());
         }
         if (!self.cpu.enabled && !self.memory.enabled)
-            || (self.cpu.enabled && !self.cpu.validate(WatchdogMetric::CpuPercent))
-            || (self.memory.enabled && !self.memory.validate(self.memory_unit.metric()))
+            || (self.cpu.enabled && !self.cpu.thresholds_valid(WatchdogMetric::CpuPercent))
+            || (self.memory.enabled && !self.memory.thresholds_valid(self.memory_unit.metric()))
         {
             return Err("Watchdog requires an enabled monitor and valid thresholds. At or above requires 0 < warning < critical up to the metric maximum. At or below requires critical < warning below the maximum.".into());
         }
