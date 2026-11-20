@@ -1,6 +1,6 @@
 use crate::{
     activity::ActivityState,
-    config::{ExecutableSelector, Settings},
+    config::{ByFocusRule, ByFocusSettings, ExecutableSelector, Settings},
     features::power_plan_control::{ByCpuLoadDecision, ByCpuLoadMatch, ByTimeDecision},
     foreground::same_executable_path,
 };
@@ -110,6 +110,28 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     outcome
 }
 
+pub(crate) fn matching_by_focus_rule<'a>(
+    settings: &'a ByFocusSettings,
+    executable_path: &Path,
+) -> Option<(usize, &'a ByFocusRule, &'a str)> {
+    settings.rules.iter().enumerate().find_map(|(index, rule)| {
+        let plan = rule.configured_plan()?;
+        let matches = match &rule.selector {
+            ExecutableSelector::ExactPath {
+                executable_path: target,
+            } => same_executable_path(Path::new(target), executable_path),
+            ExecutableSelector::ExactName { executable_name } => {
+                executable_path.is_absolute()
+                    && executable_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.eq_ignore_ascii_case(executable_name))
+            }
+        };
+        matches.then_some((index, rule, plan))
+    })
+}
+
 fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     if !settings.general.enabled {
         return DecisionOutcome::without_power_plan(
@@ -128,46 +150,20 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     }
 
     let mut winner = None;
-    let foreground_executable_path = input.foreground_executable_path.as_deref();
-
-    if let Some(foreground_executable_path) =
-        foreground_executable_path.filter(|_| settings.by_focus.enabled)
-    {
-        for (rule_index, rule) in settings.by_focus.rules.iter().enumerate() {
-            let Some(power_plan_guid) = rule.configured_plan() else {
-                continue;
-            };
-            let matches = match &rule.selector {
-                ExecutableSelector::ExactPath { executable_path } => {
-                    same_executable_path(Path::new(executable_path), foreground_executable_path)
-                }
-                ExecutableSelector::ExactName { executable_name } => {
-                    foreground_executable_path.is_absolute()
-                        && foreground_executable_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.eq_ignore_ascii_case(executable_name))
-                }
-            };
-            if !matches {
-                continue;
-            }
-            consider_plan(
-                &mut winner,
-                DecisionState::ByFocus,
-                Some(rule_index),
-                power_plan_guid.to_owned(),
-                None,
-                || {
-                    format!(
-                        "{} matched By Focus rule '{}'.",
-                        foreground_executable_path.display(),
-                        rule.name
-                    )
-                },
-            );
-            break;
-        }
+    let focus_match = input
+        .foreground_executable_path
+        .as_deref()
+        .filter(|_| settings.by_focus.enabled)
+        .and_then(|path| matching_by_focus_rule(&settings.by_focus, path).map(|rule| (path, rule)));
+    if let Some((path, (rule_index, rule, power_plan_guid))) = focus_match {
+        consider_plan(
+            &mut winner,
+            DecisionState::ByFocus,
+            Some(rule_index),
+            power_plan_guid.to_owned(),
+            None,
+            || format!("{} matched By Focus rule '{}'.", path.display(), rule.name),
+        );
     }
 
     if let Some(by_running_app) = input.by_running_app {
@@ -334,11 +330,7 @@ impl DecisionOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        activity::ActivityState,
-        config::{ByFocusRule, ByFocusSettings, PowerPlanSettings, Settings},
-        features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
-    };
+    use crate::config::PowerPlanSettings;
 
     fn test_settings() -> Settings {
         let mut settings = Settings::default();
@@ -589,7 +581,15 @@ mod tests {
         assert_eq!(decision.power_plan_guid.as_deref(), Some("name-plan"));
 
         settings.by_focus.rules[0].enabled = false;
-        assert_eq!(decide(&settings, input).rule_index, Some(1));
+        assert_eq!(decide(&settings, input.clone()).rule_index, Some(1));
+
+        settings.by_focus.enabled = false;
+        let (rule_index, rule, plan) =
+            matching_by_focus_rule(&settings.by_focus, Path::new(path)).unwrap();
+        assert_eq!(rule_index, 1);
+        assert_eq!(rule.name, "Path rule");
+        assert_eq!(plan, "path-plan");
+        assert_ne!(decide(&settings, input).state, DecisionState::ByFocus);
     }
 
     #[test]

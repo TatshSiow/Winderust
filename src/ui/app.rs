@@ -815,13 +815,15 @@ impl WinderustApp {
             _ if review_open => Some(Message::PowerTuning(
                 advanced_power_plan_tuning::Message::CancelApply,
             )),
-            Page::ByRunningApp if self.running_app_plans.preview_open() => {
-                Some(Message::ProcessPowerPlans(
-                    process_power_plans::Kind::RunningApp,
-                    process_power_plans::Message::Preview(
-                        process_power_plans::PreviewMessage::Close,
-                    ),
-                ))
+            Page::ByFocus | Page::ByRunningApp => {
+                self.process_power_plan_preview().map(|(kind, _)| {
+                    Message::ProcessPowerPlans(
+                        kind,
+                        process_power_plans::Message::Preview(
+                            process_power_plans::PreviewMessage::Close,
+                        ),
+                    )
+                })
             }
             Page::Watchdog if self.watchdog.has_pending_editor() => {
                 Some(Message::Watchdog(watchdog::Message::CancelRule))
@@ -846,8 +848,15 @@ impl WinderustApp {
             _ => None,
         };
         if let Some(cancel_dialog) = cancel_dialog {
+            let close_focus_preview = matches!(
+                cancel_dialog,
+                Message::ProcessPowerPlans(process_power_plans::Kind::Focus, _)
+            );
             return match key {
-                Key::Named(Named::Escape) if !repeat && status == iced::event::Status::Ignored => {
+                Key::Named(Named::Escape)
+                    if !repeat
+                        && (close_focus_preview || status == iced::event::Status::Ignored) =>
+                {
                     self.update(cancel_dialog)
                 }
                 Key::Named(Named::Tab) if status == iced::event::Status::Ignored => {
@@ -1621,10 +1630,17 @@ impl WinderustApp {
                 });
             }
             Message::ProcessPowerPlans(kind, process_power_plans::Message::Preview(message)) => {
-                if kind == process_power_plans::Kind::RunningApp && self.page == Page::ByRunningApp
-                {
-                    return self
-                        .running_app_plans
+                let editor = match (kind, self.page) {
+                    (process_power_plans::Kind::Focus, Page::ByFocus) => {
+                        Some(&mut self.focus_plans)
+                    }
+                    (process_power_plans::Kind::RunningApp, Page::ByRunningApp) => {
+                        Some(&mut self.running_app_plans)
+                    }
+                    _ => None,
+                };
+                if let Some(editor) = editor {
+                    return editor
                         .update_preview(&self.settings, message)
                         .map(move |message| Message::ProcessPowerPlans(kind, message));
                 }
@@ -1821,6 +1837,7 @@ impl WinderustApp {
             Message::Page(page) => {
                 self.preferences.dismiss_picker();
                 self.time_rules.dismiss_picker();
+                self.focus_plans.close_preview();
                 self.running_app_plans.close_preview();
                 self.preferences.hotkey_capture = None;
                 self.navigation_history.visit(page);
@@ -2364,6 +2381,21 @@ impl WinderustApp {
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
     }
+
+    fn process_power_plan_preview(
+        &self,
+    ) -> Option<(process_power_plans::Kind, &process_power_plans::Editor)> {
+        let (kind, editor) = match self.page {
+            Page::ByFocus => (process_power_plans::Kind::Focus, &self.focus_plans),
+            Page::ByRunningApp => (
+                process_power_plans::Kind::RunningApp,
+                &self.running_app_plans,
+            ),
+            _ => return None,
+        };
+        editor.preview_open().then_some((kind, editor))
+    }
+
     fn select_power_source(&mut self, source: PowerSourceProfile) -> bool {
         if self.pending_editor() || self.invalid_inputs() {
             self.error_message = t!("unsaved.message").to_string();
@@ -2673,13 +2705,13 @@ impl WinderustApp {
             ]
             .into();
         }
-        if let Some(preview) = self.running_app_plans.preview_modal(&self.power_plans) {
-            return centered_modal(
-                content,
-                preview.map(|message| {
-                    Message::ProcessPowerPlans(process_power_plans::Kind::RunningApp, message)
-                }),
-            );
+        if let Some((kind, editor)) = self.process_power_plan_preview() {
+            if let Some(preview) = editor.preview_modal(&self.power_plans) {
+                return centered_modal(
+                    content,
+                    preview.map(move |message| Message::ProcessPowerPlans(kind, message)),
+                );
+            }
         }
         if self.page == Page::ProcessList && self.processes.context_open() {
             iced::widget::stack![

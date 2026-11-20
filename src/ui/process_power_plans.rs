@@ -48,9 +48,7 @@ impl Editor {
         settings: &Settings,
         message: PreviewMessage,
     ) -> iced::Task<Message> {
-        self.preview
-            .update(&settings.by_running_app, message)
-            .map(Message::Preview)
+        self.preview.update(settings, message).map(Message::Preview)
     }
 
     pub(super) fn preview_open(&self) -> bool {
@@ -272,20 +270,18 @@ impl Editor {
                     80,
                     true,
                 ));
-                let heading: Element<'a, Message> = if kind == Kind::RunningApp {
-                    widgets::setting_row(
-                        "common.rules",
-                        widgets::action_button(t!("by_running_app.preview").to_string())
-                            .style(widgets::secondary_button)
-                            .on_press_maybe(
-                                (!feature.rules.is_empty())
-                                    .then_some(Message::Preview(PreviewMessage::Load)),
-                            ),
-                    )
-                    .into()
-                } else {
-                    widgets::setting_title("common.rules")
+                let preview = match kind {
+                    Kind::Focus => PreviewMessage::OpenFocus,
+                    Kind::RunningApp => PreviewMessage::Load,
                 };
+                let heading = widgets::setting_row(
+                    "common.rules",
+                    widgets::action_button(t!("power_plan_control.preview").to_string())
+                        .style(widgets::secondary_button)
+                        .on_press_maybe(
+                            (!feature.rules.is_empty()).then_some(Message::Preview(preview)),
+                        ),
+                );
                 body = body.push(heading).push(rules_body);
                 scrollable(body).height(Fill).into()
             }};

@@ -546,6 +546,9 @@ by_focus:
   intro_1: "依完整執行檔路徑或不限定資料夾的執行檔名稱，比對目前取得焦點的應用程式。"
   intro_2: "依規則順序採用第一個已啟用、符合條件且已選取電源計畫的規則，優先於執行中應用程式、CPU 負載、操作狀態與時間規則。"
   enable: "啟用焦點電源計畫"
+  preview_scope: "輸入完整執行檔路徑，查看應用程式取得焦點時會符合哪一條目前編輯的規則。即使焦點電源計畫已關閉，仍可預覽。"
+  preview_check: "檢查"
+  preview_failed: "無法檢查焦點電源計畫的規則。%{error}"
 
 by_time:
   hour: "時（0–23）"
@@ -1041,11 +1044,8 @@ by_running_app:
   intro_3: "作用中的執行中應用程式電源計畫程序會排除於背景優先順序降低之外。"
   rules_help: "依執行檔路徑或名稱，選擇它執行時使用的電源計畫。"
   power_plan: "電源計畫"
-  preview: "預覽符合項目"
   preview_loading: "正在檢查執行中的程序…"
   preview_failed: "無法檢查執行中的程序。%{error}"
-  preview_no_winner: "未確認有任何已啟用且已選取電源計畫的規則符合條件。"
-  preview_winner: "第一個符合的規則為 %{rule}（%{plan}）。"
   preview_scope: "即使自動化已關閉，預覽仍會使用目前編輯的規則。實際使用的電源計畫由電源計畫控制決定。"
   preview_matches: "符合的程序"
   preview_same_name: "同名但路徑不同"
@@ -1098,6 +1098,9 @@ update_channel:
   stable: "穩定版"
   pre_release: "預覽版"
 power_plan_control:
+  preview: "預覽符合項目"
+  preview_no_winner: "未確認有任何已啟用且已選取電源計畫的規則符合條件。"
+  preview_winner: "第一個符合的規則為 %{rule}（%{plan}）。"
   automation: "自動化"
   other_matches: "其他符合條件的模式"
   requested_plan: "要求使用 %{plan}"

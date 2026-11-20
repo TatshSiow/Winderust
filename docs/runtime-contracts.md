@@ -274,6 +274,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   path. The first enabled rule with a matching target and selected plan wins within
   each mode. By Focus checks the protected state of the focused process. By Running
   App retains its current-session and protected-process checks.
+- By Focus Preview matches uses the same rule order and selector matching as
+  automation. It evaluates the entered path against the draft, even when By Focus
+  is disabled. The check is read-only.
 - By Running App Preview matches uses the same eligibility checks to report matches
   and the winning rule for the current draft.
 - By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
