@@ -259,6 +259,7 @@ home:
   master_switch_enabled: "主要開關已啟用"
   master_switch_disabled: "主要開關已停用"
   no_enabled_features: "尚未啟用任何功能。"
+  power_source_unavailable: "目前無法取得電源來源。"
   by_cpu_load: "CPU 使用率"
   cpu_load: "使用率"
   cpu_frequency: "頻率"

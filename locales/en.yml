@@ -259,6 +259,7 @@ home:
   master_switch_enabled: "Master switch enabled"
   master_switch_disabled: "Master switch disabled"
   no_enabled_features: "No features are enabled."
+  power_source_unavailable: "Current power source unavailable."
   by_cpu_load: "CPU Usage"
   cpu_load: "Usage"
   cpu_frequency: "Frequency"

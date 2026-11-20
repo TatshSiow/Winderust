@@ -2374,8 +2374,7 @@ mod tests {
             let home_page = frame < 8 && frame % 2 == 0;
             let log_page = frame >= 8 && frame % 2 == 0;
             let content = if home_page {
-                home.view(&settings, PowerSourceProfile::PluggedIn, &status)
-                    .map(|_| Message::Refresh)
+                home.view(&settings, &status).map(|_| Message::Refresh)
             } else if log_page {
                 log.view(&status.action_log_entries, &[])
                     .map(|_| Message::Refresh)

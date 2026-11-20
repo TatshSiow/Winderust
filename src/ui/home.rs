@@ -6,6 +6,7 @@ use crate::backend::dashboard_metrics::{
     sample_memory_usage, DiskUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
     NetworkUsageMonitor, NetworkUsageSnapshot,
 };
+use crate::backend::power_source::is_plugged_in;
 use crate::config::{PowerSourceProfile, Settings};
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::ui::scrolling::scrollable;
@@ -91,6 +92,15 @@ impl Default for Sampler {
                 while requests.recv().is_ok() {
                     let sample = Sample {
                         captured_at: Some(std::time::SystemTime::now()),
+                        power_source: match is_plugged_in() {
+                            Some(true) => {
+                                PowerSourceReading::Available(PowerSourceProfile::PluggedIn)
+                            }
+                            Some(false) => {
+                                PowerSourceReading::Available(PowerSourceProfile::OnBattery)
+                            }
+                            None => PowerSourceReading::Unavailable,
+                        },
                         cpu: cpu.sample(),
                         memory: sample_memory_usage(),
                         io: io.sample(),
@@ -109,8 +119,17 @@ impl Default for Sampler {
     }
 }
 #[derive(Debug, Clone, Copy, Default)]
+pub(super) enum PowerSourceReading {
+    #[default]
+    Collecting,
+    Unavailable,
+    Available(PowerSourceProfile),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Sample {
     captured_at: Option<std::time::SystemTime>,
+    power_source: PowerSourceReading,
     cpu: CpuUsageSnapshot,
     memory: MemoryUsageSnapshot,
     io: IoUsageSnapshot,
@@ -147,6 +166,7 @@ impl Model {
                     std::time::UNIX_EPOCH
                         + std::time::Duration::from_secs(1_770_000_000 + index as u64),
                 ),
+                power_source: PowerSourceReading::Available(PowerSourceProfile::PluggedIn),
                 cpu: CpuUsageSnapshot {
                     percent: Some((24.0 + 12.0 * wave) as f32),
                     frequency_mhz: Some((3600.0 + 600.0 * wave) as u32),
@@ -195,13 +215,16 @@ impl Model {
         self.latest = sample;
         push_bounded(&mut self.history, sample);
     }
+    pub(super) fn set_power_source(&mut self, reading: PowerSourceReading) {
+        self.latest.power_source = reading;
+    }
+
     pub(super) fn hover_chart(&mut self, kind: ChartKind, slot: Option<usize>) {
         self.hovered[kind as usize] = slot;
     }
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a Settings,
-        source: PowerSourceProfile,
         status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         responsive(move |size| {
@@ -225,25 +248,40 @@ impl Model {
                 }
                 body = body.push(charts);
             }
-            let activity = if settings.general.enabled {
-                status.by_activity_state(source, &settings.by_activity, Instant::now())
-            } else {
-                ActivityState::Unknown
+            let entries = match self.latest.power_source {
+                PowerSourceReading::Available(source) => {
+                    let profile = match source {
+                        PowerSourceProfile::PluggedIn => settings,
+                        PowerSourceProfile::OnBattery => settings.battery_profile(),
+                    };
+                    let activity = if settings.general.enabled {
+                        status.by_activity_state(source, &profile.by_activity, Instant::now())
+                    } else {
+                        ActivityState::Unknown
+                    };
+                    Some(enabled_features(
+                        profile,
+                        &status.feature_status,
+                        &self.latest,
+                        activity,
+                    ))
+                }
+                _ => None,
             };
-            let entries =
-                enabled_features(settings, &status.feature_status, &self.latest, activity);
-            let count = entries.len();
-            let title = row![
-                super::widgets::heading(
-                    t!("home.enabled_features").to_string(),
-                    design::typography::SECTION
-                ),
-                container(text(count.to_string()).size(design::typography::CAPTION))
-                    .padding([2, 8])
-                    .style(move |theme| super::widgets::indicator_chip(theme, count > 0)),
-            ]
+            let count = entries.as_ref().map(Vec::len);
+            let mut title = row![super::widgets::heading(
+                t!("home.enabled_features").to_string(),
+                design::typography::SECTION
+            )]
             .spacing(design::space::SMALL)
             .align_y(iced::Center);
+            if let Some(count) = count {
+                title = title.push(
+                    container(text(count.to_string()).size(design::typography::CAPTION))
+                        .padding([2, 8])
+                        .style(move |theme| super::widgets::indicator_chip(theme, count > 0)),
+                );
+            }
             let master = button(
                 text(
                     if settings.general.enabled {
@@ -266,7 +304,7 @@ impl Model {
                 column![title, master].spacing(design::space::TIGHT).into()
             };
             let mut features = column![];
-            for (page, detail) in entries {
+            for (page, detail) in entries.into_iter().flatten() {
                 features = features.push(
                     button(
                         row![
@@ -295,9 +333,19 @@ impl Model {
                 );
                 features = features.push(iced::widget::rule::horizontal(1));
             }
-            let feature_content: Element<'_, Message> = if count == 0 {
+            let feature_content: Element<'_, Message> = if count.is_some_and(|count| count > 0) {
+                scrollable(features)
+                    .id("home-enabled-features")
+                    .height(Fill)
+                    .into()
+            } else {
+                let empty_message = match self.latest.power_source {
+                    PowerSourceReading::Collecting => "home.collecting",
+                    PowerSourceReading::Unavailable => "home.power_source_unavailable",
+                    PowerSourceReading::Available(_) => "home.no_enabled_features",
+                };
                 container(
-                    text(t!("home.no_enabled_features").to_string())
+                    text(t!(empty_message).to_string())
                         .align_x(iced::Center)
                         .style(text::secondary),
                 )
@@ -305,11 +353,6 @@ impl Model {
                 .center_x(Fill)
                 .center_y(Fill)
                 .into()
-            } else {
-                scrollable(features)
-                    .id("home-enabled-features")
-                    .height(Fill)
-                    .into()
             };
             let enabled = container(
                 column![header, iced::widget::rule::horizontal(1), feature_content,]
@@ -1659,6 +1702,7 @@ mod tests {
                     download_bytes_per_second: Some(99_275_000.0),
                     upload_bytes_per_second: Some(600_000.0),
                 },
+                ..Default::default()
             });
         }
         fn plot_bounds(node: &layout::Node, offset: Point, height: f32) -> Option<Rectangle> {

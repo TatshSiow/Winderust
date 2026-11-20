@@ -1091,6 +1091,8 @@ so duplicate launches also work before the first window opens or after one is de
 
 src/backend/tray.rs wakes the Iced daemon on tray actions, visibility changes, TaskbarCreated, and WM_POWERBROADCAST/PBT_APMPOWERSTATUSCHANGE. The power-status event refreshes the tray's AC/battery feature profile through GetSystemPowerStatus; idle windowless operation needs no UI polling. Reference: https://learn.microsoft.com/en-us/windows/win32/power/pbt-apmpowerstatuschange . No undocumented contract.
 
+The visible Home sampler in `src/ui/home.rs` uses `src/backend/power_source.rs` to read the current power source at its existing sample interval. Enabled Features shows an unavailable state if Windows cannot determine the source. [GetSystemPowerStatus](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getsystempowerstatus).
+
 ## Accent color picker
 
 - Accent color selection uses the shared in-app editor in `src/ui/pickers.rs`,

@@ -1163,7 +1163,11 @@ impl WinderustApp {
                 self.sampling = false;
                 match result {
                     Ok(sample) => self.home.record(sample),
-                    Err(error) => self.error_message = error,
+                    Err(error) => {
+                        self.home
+                            .set_power_source(home::PowerSourceReading::Unavailable);
+                        self.error_message = error;
+                    }
                 }
             }
             Message::Preferences(settings_pages::Message::Export) => {
@@ -1840,6 +1844,10 @@ impl WinderustApp {
                 self.side_panel_tab = SidePanelTab::for_page(page)[0];
                 let path = navigation::breadcrumb_path(page);
                 self.breadcrumb = path;
+                if page == Page::Home && self.page != Page::Home {
+                    self.home
+                        .set_power_source(home::PowerSourceReading::Collecting);
+                }
                 self.page = page;
                 self.navigation_search_open = false;
                 self.navigation_search.clear();
@@ -2347,6 +2355,10 @@ impl WinderustApp {
             || !self.cpu_rules.valid()
     }
     fn show_window(&mut self) -> Task<Message> {
+        if self.hidden && self.page == Page::Home {
+            self.home
+                .set_power_source(home::PowerSourceReading::Collecting);
+        }
         self.hidden = false;
         tray::set_hidden_to_tray(false);
         if let Some(hwnd) = self.hwnd {
@@ -3506,7 +3518,7 @@ impl WinderustApp {
                 .map(Message::Processes),
             Page::Home => self
                 .home
-                .view(&self.settings, self.power_source, &self.status)
+                .view(self.settings.global(), &self.status)
                 .map(Message::Home),
             Page::WinderustBehaviour
             | Page::LanguageAndAppearance

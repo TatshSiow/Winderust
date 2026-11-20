@@ -387,6 +387,7 @@ hover/press; background shading supplies feedback.
 - Enabled Features and Recent Logs preserve card height and fixed headers in both empty and populated states. Enabled Features has no View All footer; Recent Logs retains its Details footer. Center empty messages in the remaining content area; populated lists use inset scrolling with space for the scrollbar and links to their full pages. Recent Logs shows compact INFO (Applied/Restored), WARN (Skipped), and ERROR (Failed) levels derived from actual Action Log entries, preserving the outcome in the description. The Log table keeps Level and Result separate; its level filters, capture thresholds, and CSV level field share the same mapping and short labels in both languages. Never fabricate log events. Keep unavailable telemetry and empty logs honest.
 - Keep category shortcuts in navigation and global search; omit the old dashboard shortcut grid.
 - Dashboard sampling runs only while Home is selected and the window is not hidden to tray. Do not add manual Pause/Resume metrics controls; background automation retains its independent monitoring.
+- Enabled Features follows the sampled Windows power source. The feature editors retain their selected profile. Show the feature count only when the power source is known.
 
 
 ## Verification
