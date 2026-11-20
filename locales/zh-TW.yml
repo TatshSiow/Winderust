@@ -582,6 +582,7 @@ by_cpu_load:
   release_below: "低於此值時釋放"
   release_above: "高於此值時釋放"
   minimum_hold: "最短維持時間"
+  within_release_thresholds: "尚未超出釋放門檻"
   invalid_stability: "釋放門檻必須涵蓋進入條件（0–100%），最短維持時間必須是有效的非負持續時間。"
   comparison_at_or_above: ">= 大於或等於"
   comparison_at_or_below: "<= 小於或等於"

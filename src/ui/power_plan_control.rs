@@ -5,6 +5,7 @@ use rust_i18n::t;
 use super::{design, widgets};
 use crate::{
     control::power_plan::{PowerPlanOwner, PowerPlanStatus},
+    features::power_plan_control::ByCpuLoadMatch,
     power::{PowerPlan, ADAPTIVE_PLAN_NAME},
     rules::DecisionState,
 };
@@ -86,11 +87,7 @@ pub(super) fn status_view<M: 'static>(
         || t!("common.unknown").to_string(),
         |guid| plan_name(plans, guid),
     );
-    let (automation, failed) = if status.owner == Some(PowerPlanOwner::AdaptiveEngine) {
-        (t!("nav.adaptive_engine").to_string(), false)
-    } else {
-        automation_detail(status, plans, current)
-    };
+    let (automation, failed) = status_automation_detail(status, plans, current);
     let mut body = column![widgets::settings_card(
         column![
             widgets::setting_title("common.current_power_plan"),
@@ -112,15 +109,20 @@ pub(super) fn status_view<M: 'static>(
             };
             let label = indexed_mode_label(mode, candidate.rule_index);
             let plan = plan_name(plans, &candidate.target_guid);
-            let plan = if candidate.cpu_load_else {
-                format!("{} · {plan}", t!("by_cpu_load.else_plan"))
+            let plan = if let Some(reason) = cpu_load_match_label(candidate.cpu_load_match) {
+                format!("{reason} · {plan}")
             } else {
                 plan
             };
             matches = matches.push(
-                column![text(label), text(plan).style(text::secondary)]
-                    .spacing(design::space::TIGHT)
-                    .width(Fill),
+                column![
+                    text(label).wrapping(text::Wrapping::WordOrGlyph),
+                    text(plan)
+                        .style(text::secondary)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                ]
+                .spacing(design::space::TIGHT)
+                .width(Fill),
             );
         }
         body = body.push(widgets::settings_card(matches));
@@ -178,6 +180,31 @@ fn automation_detail(
         detail.push_str(&format!(" · {}", t!(key, plan = plan)));
     }
     (detail, failed)
+}
+
+fn status_automation_detail(
+    status: &PowerPlanStatus,
+    plans: &[PowerPlan],
+    current: Option<&str>,
+) -> (String, bool) {
+    if status.owner == Some(PowerPlanOwner::AdaptiveEngine) {
+        return (t!("nav.adaptive_engine").to_string(), false);
+    }
+    let (mut detail, failed) = automation_detail(status, plans, current);
+    if let Some(reason) = cpu_load_match_label(status.cpu_load_match) {
+        detail.push_str(&format!(" · {reason}"));
+    }
+    (detail, failed)
+}
+
+fn cpu_load_match_label(cpu_load_match: Option<ByCpuLoadMatch>) -> Option<String> {
+    let key = match cpu_load_match? {
+        ByCpuLoadMatch::Condition => return None,
+        ByCpuLoadMatch::MinimumHold => "by_cpu_load.minimum_hold",
+        ByCpuLoadMatch::ReleaseThreshold => "by_cpu_load.within_release_thresholds",
+        ByCpuLoadMatch::Else => "by_cpu_load.else_plan",
+    };
+    Some(t!(key).to_string())
 }
 
 fn rule_description(status: &PowerPlanStatus, current_known: bool) -> String {
@@ -340,6 +367,41 @@ fn manual_switch(
 mod tests {
     use super::*;
     use iced::advanced::{layout, widget::Tree};
+
+    #[test]
+    fn status_explains_cpu_load_selection_beyond_the_main_card_summary() {
+        let mut status = PowerPlanStatus {
+            owner: Some(PowerPlanOwner::OrdinaryAutomation),
+            decision_state: Some(DecisionState::ByCpuLoad),
+            rule_index: Some(0),
+            ..PowerPlanStatus::default()
+        };
+        let (summary, _) = automation_detail(&status, &[], None);
+        for (selection, key) in [
+            (ByCpuLoadMatch::Condition, None),
+            (
+                ByCpuLoadMatch::MinimumHold,
+                Some("by_cpu_load.minimum_hold"),
+            ),
+            (
+                ByCpuLoadMatch::ReleaseThreshold,
+                Some("by_cpu_load.within_release_thresholds"),
+            ),
+            (ByCpuLoadMatch::Else, Some("by_cpu_load.else_plan")),
+        ] {
+            status.cpu_load_match = Some(selection);
+            assert_eq!(
+                automation_detail(&status, &[], None),
+                (summary.clone(), false)
+            );
+            let expected =
+                key.map_or_else(|| summary.clone(), |key| format!("{summary} · {}", t!(key)));
+            assert_eq!(
+                status_automation_detail(&status, &[], None),
+                (expected, false)
+            );
+        }
+    }
 
     #[test]
     fn current_plan_and_automation_fit_in_a_compact_card() {

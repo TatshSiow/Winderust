@@ -580,6 +580,7 @@ by_cpu_load:
   release_below: "Release below"
   release_above: "Release above"
   minimum_hold: "Minimum hold"
+  within_release_thresholds: "Within release thresholds"
   invalid_stability: "Release thresholds must include the entry condition (0–100%), and minimum hold must be a valid nonnegative duration."
   comparison_at_or_above: ">= greater than or equal to"
   comparison_at_or_below: "<= less than or equal to"

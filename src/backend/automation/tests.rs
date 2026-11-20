@@ -241,12 +241,13 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
     let status = PowerPlanStatus {
         apply_failed: false,
         restoring_previous: false,
-        rule_index: None,
+        rule_index: Some(0),
         owner: Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation),
         current_guid: Some("current".to_owned()),
         target_guid: Some("target".to_owned()),
-        decision_state: Some(crate::rules::DecisionState::ByTime),
+        decision_state: Some(crate::rules::DecisionState::ByCpuLoad),
         reason: Some("test".to_owned()),
+        cpu_load_match: Some(crate::features::power_plan_control::ByCpuLoadMatch::Condition),
         competing_modes: Vec::new(),
     };
 

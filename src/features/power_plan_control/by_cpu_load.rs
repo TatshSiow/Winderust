@@ -1,6 +1,14 @@
 use std::time::Instant;
 
-use crate::config::{ByCpuLoadRule, ByCpuLoadSettings, CpuUsageComparison};
+use crate::config::{ByCpuLoadRule, ByCpuLoadSettings, ByCpuLoadStability, CpuUsageComparison};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByCpuLoadMatch {
+    Condition,
+    MinimumHold,
+    ReleaseThreshold,
+    Else,
+}
 
 #[derive(Debug, Clone)]
 pub struct ByCpuLoadDecision {
@@ -8,7 +16,13 @@ pub struct ByCpuLoadDecision {
     pub rule_name: String,
     pub power_plan_guid: String,
     pub usage_percent: f32,
-    pub is_else: bool,
+    pub selection: ByCpuLoadMatch,
+}
+
+impl ByCpuLoadDecision {
+    pub(crate) fn is_else(&self) -> bool {
+        self.selection == ByCpuLoadMatch::Else
+    }
 }
 
 #[derive(Debug)]
@@ -101,17 +115,23 @@ impl ByCpuLoadScheduler {
             self.last_rules.clone_from(&settings.rules);
         }
         self.matched_since.resize(settings.rules.len(), None);
-        if self.active_rule.as_ref().is_some_and(|active| {
+        let retained_match = self.active_rule.as_ref().and_then(|active| {
             let rule = &settings.rules[active.index];
-            !rule.stability.as_ref().is_some_and(|stability| {
-                now.saturating_duration_since(active.since).as_secs()
-                    < stability.minimum_hold_seconds
-                    || matches_exit_condition(rule, usage_percent)
-            })
-        }) {
+            let stability = rule.stability.as_ref()?;
+            let selection = if matches_exit_condition(rule.comparison, stability, usage_percent) {
+                ByCpuLoadMatch::ReleaseThreshold
+            } else if now.saturating_duration_since(active.since).as_secs()
+                < stability.minimum_hold_seconds
+            {
+                ByCpuLoadMatch::MinimumHold
+            } else {
+                return None;
+            };
+            Some((active.index, selection))
+        });
+        if retained_match.is_none() {
             self.clear_active_rule();
         }
-        let active_index = self.active_rule.as_ref().map(|active| active.index);
         let mut else_decision = None;
         let mut matching_decision = None;
 
@@ -138,14 +158,23 @@ impl ByCpuLoadScheduler {
                 false
             };
 
-            if (qualified || active_index == Some(index)) && matching_decision.is_none() {
-                if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
+            if matching_decision.is_none() {
+                let selection = if qualified {
+                    Some(ByCpuLoadMatch::Condition)
+                } else {
+                    retained_match
+                        .filter(|&(active_index, _)| index == active_index)
+                        .map(|(_, selection)| selection)
+                };
+                if let Some((selection, power_plan_guid)) =
+                    selection.zip(rule.power_plan_guid.as_ref())
+                {
                     matching_decision = Some(ByCpuLoadDecision {
                         rule_index: index,
                         rule_name: rule.name.clone(),
-                        power_plan_guid,
+                        power_plan_guid: power_plan_guid.clone(),
                         usage_percent,
-                        is_else: false,
+                        selection,
                     });
                 }
             }
@@ -158,19 +187,20 @@ impl ByCpuLoadScheduler {
                     rule_name,
                     power_plan_guid,
                     usage_percent,
-                    is_else: true,
+                    selection: ByCpuLoadMatch::Else,
                 },
             )
         })
     }
 }
 
-fn matches_exit_condition(rule: &ByCpuLoadRule, usage_percent: f32) -> bool {
-    let Some(stability) = rule.stability.as_ref() else {
-        return false;
-    };
+fn matches_exit_condition(
+    comparison: CpuUsageComparison,
+    stability: &ByCpuLoadStability,
+    usage_percent: f32,
+) -> bool {
     let lower = f32::from(stability.exit_threshold_percent.get());
-    match rule.comparison {
+    match comparison {
         CpuUsageComparison::AtOrAbove => usage_percent >= lower,
         CpuUsageComparison::AtOrBelow => usage_percent <= lower,
         CpuUsageComparison::Between => stability

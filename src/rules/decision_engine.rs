@@ -1,7 +1,7 @@
 use crate::{
     activity::ActivityState,
     config::Settings,
-    features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
+    features::power_plan_control::{ByCpuLoadDecision, ByCpuLoadMatch, ByTimeDecision},
     foreground::same_executable_path,
 };
 use std::path::Path;
@@ -51,6 +51,7 @@ pub struct DecisionOutcome {
     pub running_app_known: bool,
     pub cpu_load_known: bool,
     pub activity_known: bool,
+    pub cpu_load_match: Option<ByCpuLoadMatch>,
     pub competing_modes: Vec<QualifiedPowerPlan>,
 }
 
@@ -59,7 +60,7 @@ pub struct QualifiedPowerPlan {
     pub state: DecisionState,
     pub rule_index: Option<usize>,
     pub target_guid: String,
-    pub cpu_load_else: bool,
+    pub cpu_load_match: Option<ByCpuLoadMatch>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -145,7 +146,7 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                         DecisionState::ByFocus,
                         Some(rule_index),
                         power_plan_guid,
-                        false,
+                        None,
                         || {
                             format!(
                                 "{foreground_executable_path} matched By Focus rule '{}'.",
@@ -165,7 +166,7 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
             DecisionState::ByRunningApp,
             Some(by_running_app.rule_index),
             by_running_app.power_plan_guid,
-            false,
+            None,
             || {
                 format!(
                     "{} is running and matched By Running App rule '{}'.",
@@ -181,7 +182,7 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
             DecisionState::ByCpuLoad,
             Some(by_cpu_load_decision.rule_index),
             by_cpu_load_decision.power_plan_guid,
-            by_cpu_load_decision.is_else,
+            Some(by_cpu_load_decision.selection),
             || {
                 format!(
                     "CPU load is {:.1}% and selected By CPU Load rule '{}'.",
@@ -224,7 +225,7 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
             ),
         };
         if let Some(target_guid) = outcome.power_plan_guid {
-            consider_plan(&mut winner, outcome.state, None, target_guid, false, || {
+            consider_plan(&mut winner, outcome.state, None, target_guid, None, || {
                 outcome.reason
             });
             None
@@ -241,7 +242,7 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
             DecisionState::ByTime,
             Some(by_time_decision.rule_index),
             by_time_decision.power_plan_guid,
-            false,
+            None,
             || format!("By Time rule '{}' is active.", by_time_decision.rule_name),
         );
     }
@@ -259,7 +260,7 @@ fn consider_plan(
     state: DecisionState,
     rule_index: Option<usize>,
     target_guid: String,
-    cpu_load_else: bool,
+    cpu_load_match: Option<ByCpuLoadMatch>,
     reason: impl FnOnce() -> String,
 ) {
     if let Some(winner) = winner {
@@ -267,11 +268,12 @@ fn consider_plan(
             state,
             rule_index,
             target_guid,
-            cpu_load_else,
+            cpu_load_match,
         });
     } else {
         let mut outcome = DecisionOutcome::with_power_plan(Some(target_guid), state, reason());
         outcome.rule_index = rule_index;
+        outcome.cpu_load_match = cpu_load_match;
         *winner = Some(outcome);
     }
 }
@@ -297,6 +299,7 @@ impl DecisionOutcome {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            cpu_load_match: None,
             competing_modes: Vec::new(),
         }
     }
@@ -312,6 +315,7 @@ impl DecisionOutcome {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            cpu_load_match: None,
             competing_modes: Vec::new(),
         }
     }
@@ -357,14 +361,22 @@ mod tests {
     #[test]
     fn global_restoration_policy_applies_to_every_selected_plan() {
         for restore in [false, true] {
-            for (state, is_else, expected_plan) in [
-                (DecisionState::ByFocus, false, "focused-plan"),
-                (DecisionState::ByRunningApp, false, "app-plan"),
-                (DecisionState::ByTime, false, "time-plan"),
-                (DecisionState::ByCpuLoad, false, "cpu-plan"),
-                (DecisionState::ByCpuLoad, true, "else-plan"),
-                (DecisionState::ByActivityIdle, false, "idle-guid"),
-                (DecisionState::ByActivityActive, false, "active-guid"),
+            for (state, cpu_load_match, expected_plan) in [
+                (DecisionState::ByFocus, None, "focused-plan"),
+                (DecisionState::ByRunningApp, None, "app-plan"),
+                (DecisionState::ByTime, None, "time-plan"),
+                (
+                    DecisionState::ByCpuLoad,
+                    Some(ByCpuLoadMatch::MinimumHold),
+                    "cpu-plan",
+                ),
+                (
+                    DecisionState::ByCpuLoad,
+                    Some(ByCpuLoadMatch::Else),
+                    "else-plan",
+                ),
+                (DecisionState::ByActivityIdle, None, "idle-guid"),
+                (DecisionState::ByActivityActive, None, "active-guid"),
             ] {
                 let mut settings = test_settings();
                 settings.general.restore_previous_power_plan = restore;
@@ -404,7 +416,7 @@ mod tests {
                             rule_name: "Load".into(),
                             power_plan_guid: expected_plan.into(),
                             usage_percent: 80.0,
-                            is_else,
+                            selection: cpu_load_match.unwrap(),
                         });
                     }
                     DecisionState::ByActivityIdle => input.activity_state = ActivityState::Idle,
@@ -415,6 +427,7 @@ mod tests {
                 assert_eq!(outcome.state, state);
                 assert_eq!(outcome.power_plan_guid.as_deref(), Some(expected_plan));
                 assert_eq!(outcome.restore_previous_plan, restore);
+                assert_eq!(outcome.cpu_load_match, cpu_load_match);
             }
         }
     }
@@ -539,7 +552,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "Low CPU".to_owned(),
                     power_plan_guid: "cpu-low-guid".to_owned(),
@@ -788,7 +801,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-custom".to_owned(),
@@ -872,7 +885,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -907,7 +920,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -943,7 +956,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -986,7 +999,7 @@ mod tests {
                 power_plan_guid: "schedule-guid".into(),
             }),
             by_cpu_load: Some(ByCpuLoadDecision {
-                is_else: true,
+                selection: ByCpuLoadMatch::Else,
                 rule_index: 2,
                 rule_name: "CPU load".into(),
                 power_plan_guid: "cpu-else-guid".into(),
@@ -1012,17 +1025,22 @@ mod tests {
                     plan.state,
                     plan.rule_index,
                     plan.target_guid.as_str(),
-                    plan.cpu_load_else,
+                    plan.cpu_load_match,
                 )
             })
             .collect();
         assert_eq!(
             competing_modes,
             [
-                (DecisionState::ByRunningApp, Some(3), "running-guid", false),
-                (DecisionState::ByCpuLoad, Some(2), "cpu-else-guid", true),
-                (DecisionState::ByActivityIdle, None, "idle-guid", false),
-                (DecisionState::ByTime, Some(1), "schedule-guid", false),
+                (DecisionState::ByRunningApp, Some(3), "running-guid", None),
+                (
+                    DecisionState::ByCpuLoad,
+                    Some(2),
+                    "cpu-else-guid",
+                    Some(ByCpuLoadMatch::Else),
+                ),
+                (DecisionState::ByActivityIdle, None, "idle-guid", None),
+                (DecisionState::ByTime, Some(1), "schedule-guid", None),
             ]
         );
 

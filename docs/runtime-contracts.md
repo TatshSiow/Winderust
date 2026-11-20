@@ -220,8 +220,8 @@ Read the relevant section before changing feature policy, ownership, restoration
 - Power Plan Control Status shows up to one qualified alternative per
   lower-priority mode from the same ordinary decision pass. It does not make
   additional Windows queries or evaluate ordinary alternatives while paused
-  or while Adaptive Processor Power owns the plan. CPU Load Else selections
-  are labeled separately from primary targets.
+  or while Adaptive Processor Power owns the plan. By CPU Load selections
+  identify Else plans and show when a release threshold or minimum hold retained a match.
 - Restore previous plan when no rule selects a plan is one global setting on the
   Power Plan Control landing page. It defaults off, applies to both power
   profiles, and is stored as `general.restore_previous_power_plan`. Target,

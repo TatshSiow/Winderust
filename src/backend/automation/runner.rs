@@ -1636,7 +1636,7 @@ impl RuntimeCore {
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
         let primary_cpu_load_rule_index = by_cpu_load_decision
             .as_ref()
-            .filter(|decision| !decision.is_else)
+            .filter(|decision| !decision.is_else())
             .map(|decision| decision.rule_index);
         let by_running_app = self.by_running_app_manager.active_decision().map(
             |(rule_index, rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
@@ -1925,13 +1925,11 @@ mod settings_tests {
             let mut runner = RuntimeCore::default();
             runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
             let start = Instant::now();
-            assert!(
-                runner
-                    .by_cpu_load_scheduler
-                    .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
-                    .unwrap()
-                    .is_else
-            );
+            assert!(runner
+                .by_cpu_load_scheduler
+                .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
+                .unwrap()
+                .is_else());
             let decision = runner
                 .by_cpu_load_scheduler
                 .current_decision_at(
@@ -1940,7 +1938,7 @@ mod settings_tests {
                     start + Duration::from_secs(2),
                 )
                 .unwrap();
-            assert!(!decision.is_else);
+            assert!(!decision.is_else());
             runner.by_cpu_load_scheduler.confirm_applied_rule(
                 Some(decision.rule_index),
                 Some("target"),
@@ -1951,40 +1949,34 @@ mod settings_tests {
             events.insert_windows_event(WindowsAutomationEvent::PowerChanged);
             assert!(!runner.note_settings(&settings, events, Some(true)));
             let usage = if stability.is_some() { 70.0 } else { 80.0 };
-            assert!(
-                !runner
+            assert!(!runner
+                .by_cpu_load_scheduler
+                .current_decision_at(
+                    &settings.by_cpu_load,
+                    Some(usage),
+                    start + Duration::from_secs(3),
+                )
+                .unwrap()
+                .is_else());
+            if stability.is_some() {
+                assert!(!runner
                     .by_cpu_load_scheduler
                     .current_decision_at(
                         &settings.by_cpu_load,
-                        Some(usage),
-                        start + Duration::from_secs(3),
+                        Some(20.0),
+                        start + Duration::from_secs(4),
                     )
                     .unwrap()
-                    .is_else
-            );
-            if stability.is_some() {
-                assert!(
-                    !runner
-                        .by_cpu_load_scheduler
-                        .current_decision_at(
-                            &settings.by_cpu_load,
-                            Some(20.0),
-                            start + Duration::from_secs(4),
-                        )
-                        .unwrap()
-                        .is_else
-                );
-                assert!(
-                    runner
-                        .by_cpu_load_scheduler
-                        .current_decision_at(
-                            &settings.by_cpu_load,
-                            Some(20.0),
-                            start + Duration::from_secs(32),
-                        )
-                        .unwrap()
-                        .is_else
-                );
+                    .is_else());
+                assert!(runner
+                    .by_cpu_load_scheduler
+                    .current_decision_at(
+                        &settings.by_cpu_load,
+                        Some(20.0),
+                        start + Duration::from_secs(32),
+                    )
+                    .unwrap()
+                    .is_else());
             }
         }
     }
