@@ -501,11 +501,24 @@ impl Editor {
         &'a self,
         kind: Kind,
         s: &'a Settings,
+        runtime_settings: Option<&Settings>,
         status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
         let (enabled, label) = match kind {
             Kind::Time => (s.by_time.enabled, "by_time.enable"),
             Kind::CpuLoad => (s.by_cpu_load.enabled, "by_cpu_load.enable"),
+        };
+        let selected_index = match kind {
+            Kind::Time => runtime_rule_index_in_draft(
+                runtime_settings.map(|settings| settings.by_time.rules.as_slice()),
+                &s.by_time.rules,
+                status.rule_index,
+            ),
+            Kind::CpuLoad => runtime_rule_index_in_draft(
+                runtime_settings.map(|settings| settings.by_cpu_load.rules.as_slice()),
+                &s.by_cpu_load.rules,
+                status.rule_index,
+            ),
         };
         let mut body = column![super::widgets::toggle_card(
             label,
@@ -570,7 +583,7 @@ impl Editor {
                         let key = rule_status(
                             rule,
                             s.general.enabled && enabled,
-                            status.rule_index == Some(index),
+                            selected_index == Some(index),
                             status,
                         );
                         keyed(
@@ -1098,6 +1111,34 @@ fn rule_status(
         plans,
         status,
     )
+}
+
+pub(super) fn runtime_rule_index_in_draft<T: Eq>(
+    runtime_rules: Option<&[T]>,
+    draft_rules: &[T],
+    runtime_index: Option<usize>,
+) -> Option<usize> {
+    let runtime_rules = runtime_rules?;
+    let index = runtime_index?;
+    let selected_rule = runtime_rules.get(index)?;
+    if runtime_rules == draft_rules {
+        return Some(index);
+    }
+    // An edited list cannot identify which identical saved rule moved.
+    if runtime_rules
+        .iter()
+        .filter(|rule| *rule == selected_rule)
+        .nth(1)
+        .is_some()
+    {
+        return None;
+    }
+    let mut matching = draft_rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| *rule == selected_rule);
+    let (index, _) = matching.next()?;
+    matching.next().is_none().then_some(index)
 }
 
 pub(super) fn power_rule_status(

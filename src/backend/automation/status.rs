@@ -400,12 +400,19 @@ pub(super) fn update_worker_error(shared: &SharedAutomationState, error: Option<
     }
 }
 
-pub(super) fn update_power_plan_status(shared: &SharedAutomationState, status: PowerPlanStatus) {
+pub(super) fn update_power_plan_status(
+    shared: &SharedAutomationState,
+    status: PowerPlanStatus,
+    rule_context: Option<&PowerPlanRuleContext>,
+) {
     let mut state = lock_unpoisoned(&shared.state);
-    if state.status.power_plan_status.as_ref() == &status {
+    if state.status.power_plan_status.as_ref() == &status
+        && state.status.power_plan_rule_context.as_ref() == rule_context
+    {
         return;
     }
     state.status.power_plan_status = Arc::new(status);
+    state.status.power_plan_rule_context = rule_context.cloned();
     bump_status_generation(shared, &mut state);
 }
 

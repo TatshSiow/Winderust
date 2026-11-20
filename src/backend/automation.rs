@@ -25,8 +25,9 @@ use crate::{
     bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
     config::{
         AccentColorSource, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
-        ProcessGpuPriority, ProcessIoPriority, ProcessMemoryPriority, ProcessPrioritySetting,
-        ProcessThreadPrioritySetting, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        PowerSourceProfile, ProcessGpuPriority, ProcessIoPriority, ProcessMemoryPriority,
+        ProcessPrioritySetting, ProcessThreadPrioritySetting, Settings, CHECK_INTERVAL_MAX_MS,
+        CHECK_INTERVAL_MIN_MS,
     },
     control::{
         cpu_allocation::CpuAllocationCoordinator,
@@ -335,12 +336,27 @@ pub struct RuntimeFeatureStatus {
     pub(crate) instance_limits: InstanceLimitsSnapshot,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PowerPlanRuleContext {
+    pub(crate) settings: Arc<Settings>,
+    pub(crate) source: PowerSourceProfile,
+}
+
+impl PartialEq for PowerPlanRuleContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source && Arc::ptr_eq(&self.settings, &other.settings)
+    }
+}
+
+impl Eq for PowerPlanRuleContext {}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeStatusSnapshot {
     pub generation: u64,
     pub worker_error: Option<String>,
     pub feature_status: Arc<RuntimeFeatureStatus>,
     pub(crate) power_plan_status: Arc<PowerPlanStatus>,
+    pub(crate) power_plan_rule_context: Option<PowerPlanRuleContext>,
     pub action_log_entries: Arc<Vec<ActionLogEntry>>,
     pub action_log_summaries: Arc<ActionLogSummaries>,
     pub appearance_change_generation: u64,
@@ -1724,7 +1740,9 @@ fn run_background_automation(
         }
         let mut wait_for = if power_plan_checks_required {
             run_scheduled_power_plan_check(&mut scheduler, wait_now, || {
-                if let Err(error) = runner.run_check(settings, &mut observations) {
+                if let Err(error) =
+                    runner.run_check(&configured_settings, plugged_in, &mut observations)
+                {
                     update_worker_error(&shared, Some(error));
                 }
                 let delay = power_plan_check_delay(
@@ -1742,7 +1760,8 @@ fn run_background_automation(
             None
         };
         runner.publish_action_log_if_changed(&shared);
-        update_power_plan_status(&shared, runner.power_plan_status());
+        let (power_plan_status, rule_context) = runner.power_plan_status();
+        update_power_plan_status(&shared, power_plan_status, rule_context);
 
         wait_for = scheduler.minimum_wait(
             wait_for,
@@ -1951,11 +1970,18 @@ fn reserve_keep_running_commit(
     manager.try_reserve_commit(now, ticket, observation, current_intents_clear)
 }
 
-fn active_power_source_settings(settings: &Settings, plugged_in: Option<bool>) -> &Settings {
+fn active_power_source(plugged_in: Option<bool>) -> PowerSourceProfile {
     if plugged_in == Some(false) {
-        settings.battery_profile()
+        PowerSourceProfile::OnBattery
     } else {
-        settings
+        PowerSourceProfile::PluggedIn
+    }
+}
+
+fn active_power_source_settings(settings: &Settings, plugged_in: Option<bool>) -> &Settings {
+    match active_power_source(plugged_in) {
+        PowerSourceProfile::OnBattery => settings.battery_profile(),
+        PowerSourceProfile::PluggedIn => settings,
     }
 }
 

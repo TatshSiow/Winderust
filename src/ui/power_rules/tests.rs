@@ -193,7 +193,7 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
                 settings.by_time.rules.truncate(count);
                 settings.by_cpu_load.rules.truncate(count);
                 let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-                let mut view = editor.view(kind, &settings, &status);
+                let mut view = editor.view(kind, &settings, None, &status);
                 let mut tree = Tree::new(&view);
                 let bounds = Rectangle::with_size(Size::new(width as f32, 400.0));
                 let node = view.as_widget_mut().layout(
@@ -289,6 +289,26 @@ fn rule_tables_align_columns_and_keep_controls_working_at_both_widths() {
         }
     }
 }
+#[test]
+fn runtime_status_follows_only_an_unambiguous_unchanged_draft_rule() {
+    let rules = [1, 2, 3];
+    for (published, draft, index, expected) in [
+        (Some(rules.as_slice()), &[2, 3][..], 1, Some(0)),
+        (Some(rules.as_slice()), &[1, 4, 3][..], 1, None),
+        (Some(rules.as_slice()), &[1, 3][..], 1, None),
+        (Some(rules.as_slice()), &[2, 2, 3][..], 1, None),
+        (Some(&[2, 2, 3][..]), &[2, 3][..], 1, None),
+        (Some(&[2, 2, 3][..]), &[2, 2, 3][..], 1, Some(1)),
+        (Some(rules.as_slice()), rules.as_slice(), 3, None),
+        (None, rules.as_slice(), 1, None),
+    ] {
+        assert_eq!(
+            runtime_rule_index_in_draft(published, draft, Some(index)),
+            expected
+        );
+    }
+}
+
 #[test]
 fn cpu_rule_status_tracks_selected_else_plan_and_failed_switches() {
     use crate::control::power_plan::{PowerPlanOwner, PowerPlanStatus};

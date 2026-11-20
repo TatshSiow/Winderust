@@ -63,6 +63,7 @@ pub(super) struct RuntimeCore {
     last_settings: Option<Settings>,
     last_power_source: Option<Option<bool>>,
     power_plan_controller: PowerPlanController,
+    power_plan_rule_context: Option<PowerPlanRuleContext>,
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
@@ -509,6 +510,13 @@ impl RuntimeCore {
             settings.advanced.execution_failure_suppression_threshold(),
         );
 
+        if self
+            .power_plan_rule_context
+            .as_ref()
+            .is_some_and(|context| context.source != active_power_source(plugged_in))
+        {
+            self.power_plan_rule_context = None;
+        }
         let source_changed = self
             .last_power_source
             .replace(plugged_in)
@@ -1606,10 +1614,13 @@ impl RuntimeCore {
 
     pub(super) fn run_check(
         &mut self,
-        settings: &Settings,
+        configured_settings: &Arc<Settings>,
+        plugged_in: Option<bool>,
         observations: &mut CycleObservations,
     ) -> Result<(), String> {
+        let settings = active_power_source_settings(configured_settings, plugged_in);
         if self.power_plan_controller.adaptive_active() {
+            self.power_plan_rule_context = None;
             self.by_cpu_load_scheduler.reset();
             return Ok(());
         }
@@ -1696,6 +1707,10 @@ impl RuntimeCore {
         ) {
             self.by_cpu_load_scheduler.reset();
         }
+        self.power_plan_rule_context = decision.rule_index.map(|_| PowerPlanRuleContext {
+            settings: Arc::clone(configured_settings),
+            source: active_power_source(plugged_in),
+        });
         let result = self
             .power_plan_controller
             .reconcile_ordinary(decision, Instant::now());
@@ -1776,8 +1791,14 @@ impl RuntimeCore {
         }
     }
 
-    pub(super) fn power_plan_status(&self) -> PowerPlanStatus {
-        self.power_plan_controller.status()
+    pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
+        let status = self.power_plan_controller.status();
+        if status.rule_index.is_none()
+            || status.owner != Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
+        {
+            self.power_plan_rule_context = None;
+        }
+        (status, self.power_plan_rule_context.as_ref())
     }
 
     pub(super) fn clear_ordinary_power_plan_decision(&mut self) {
@@ -1856,13 +1877,45 @@ mod settings_tests {
         assert!(!runner.has_temporary_power_plan());
         settings.general.restore_previous_power_plan = true;
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        let settings = Arc::new(settings);
+        runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+            settings: Arc::clone(&settings),
+            source: PowerSourceProfile::PluggedIn,
+        });
         assert!(runner
-            .run_check(&settings, &mut CycleObservations::default())
+            .run_check(&settings, Some(true), &mut CycleObservations::default())
             .is_ok());
+        assert!(runner.power_plan_rule_context.is_none());
         assert!(!runner.has_temporary_power_plan());
         assert!(runner.power_plan_controller.adaptive_active());
         assert!(runner.next_cpu_usage_refresh.is_none());
         runner.power_plan_controller = PowerPlanController::default();
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)] // Keep this context-only fixture free of native shutdown.
+    fn power_plan_rule_context_tracks_logical_source_and_decision_release() {
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        let settings = Arc::new(Settings::default());
+        for plugged_in in [None, Some(false)] {
+            runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+                settings: Arc::clone(&settings),
+                source: PowerSourceProfile::PluggedIn,
+            });
+            runner.note_settings(&settings, AutomationWakeEvents::default(), plugged_in);
+            assert_eq!(
+                runner.power_plan_rule_context.is_some(),
+                plugged_in.is_none()
+            );
+        }
+        runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+            settings,
+            source: PowerSourceProfile::OnBattery,
+        });
+        let (_, context) = runner.power_plan_status();
+        assert!(context.is_none());
+        assert!(runner.power_plan_rule_context.is_none());
     }
 
     #[test]

@@ -3294,6 +3294,13 @@ impl WinderustApp {
         let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
             widgets::toggle_card(label, value, Some(action))
         };
+        let runtime_power_rules = || {
+            let context = self.status.power_plan_rule_context.as_ref()?;
+            (context.source == self.power_source).then(|| match context.source {
+                PowerSourceProfile::PluggedIn => context.settings.as_ref(),
+                PowerSourceProfile::OnBattery => context.settings.battery_profile(),
+            })
+        };
         match self.page {
             Page::SleepPrevention => self
                 .sleep_prevention
@@ -3370,6 +3377,7 @@ impl WinderustApp {
                 .view(
                     power_rules::Kind::Time,
                     &self.settings,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::Time, m)),
@@ -3378,6 +3386,7 @@ impl WinderustApp {
                 .view(
                     power_rules::Kind::CpuLoad,
                     &self.settings,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m)),
@@ -3449,6 +3458,7 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|message| {
@@ -3461,6 +3471,7 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|message| {

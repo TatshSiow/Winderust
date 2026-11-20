@@ -251,12 +251,44 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
         competing_modes: Vec::new(),
     };
 
-    update_power_plan_status(&automation.shared, status.clone());
+    let configured = Arc::new(Settings::default());
+    let context = PowerPlanRuleContext {
+        settings: Arc::clone(&configured),
+        source: PowerSourceProfile::PluggedIn,
+    };
+    update_power_plan_status(&automation.shared, status.clone(), Some(&context));
 
     let snapshot = automation
         .status_snapshot_since(1)
         .expect("power-plan status advances the status generation");
     assert_eq!(snapshot.power_plan_status.as_ref(), &status);
+    assert_eq!(snapshot.power_plan_rule_context, Some(context.clone()));
+    update_power_plan_status(&automation.shared, status.clone(), Some(&context));
+    assert!(automation
+        .status_snapshot_since(snapshot.generation)
+        .is_none());
+
+    let mut generation = snapshot.generation;
+    let replacement = Arc::new((*configured).clone());
+    for context in [
+        Some(PowerPlanRuleContext {
+            settings: Arc::clone(&replacement),
+            source: PowerSourceProfile::PluggedIn,
+        }),
+        Some(PowerPlanRuleContext {
+            settings: replacement,
+            source: PowerSourceProfile::OnBattery,
+        }),
+        None,
+    ] {
+        update_power_plan_status(&automation.shared, status.clone(), context.as_ref());
+        let snapshot = automation
+            .status_snapshot_since(generation)
+            .expect("context-only changes advance the status generation");
+        assert_eq!(snapshot.power_plan_status.as_ref(), &status);
+        assert_eq!(snapshot.power_plan_rule_context, context);
+        generation = snapshot.generation;
+    }
 }
 
 #[test]

@@ -166,6 +166,7 @@ impl Editor {
         settings: &'a Settings,
         plans: &[PowerPlan],
         candidates: &'a [super::app_picker::Candidate],
+        runtime_settings: Option<&Settings>,
         status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
         let master_enabled = settings.general.enabled;
@@ -176,6 +177,11 @@ impl Editor {
         macro_rules! render_rules {
             ($field:ident, $can_add_path:ident, $can_add_name:ident, $enable:literal) => {{
                 let feature = &settings.$field;
+                let selected_index = super::power_rules::runtime_rule_index_in_draft(
+                    runtime_settings.map(|settings| settings.$field.rules.as_slice()),
+                    &feature.rules,
+                    status.rule_index,
+                );
                 let mut body = column![super::widgets::toggle_card(
                     $enable,
                     feature.enabled,
@@ -220,7 +226,7 @@ impl Editor {
                     let key = super::power_rules::power_rule_status(
                         master_enabled && feature.enabled && rule.enabled,
                         !target.trim().is_empty(),
-                        status.rule_index == Some(index),
+                        selected_index == Some(index),
                         state,
                         [rule.power_plan_guid.as_deref(), None],
                         status,
