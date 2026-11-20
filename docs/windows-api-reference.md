@@ -210,7 +210,7 @@ The watcher distinguishes ordinary [power-setting notifications](https://learn.m
 | `GetMessageW` | Runs the hook thread's message loop required for callback delivery. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmessagew |
 | `PostThreadMessageW` | Posts `WM_QUIT` to stop the hook thread during runtime shutdown. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postthreadmessagew |
 
-By Activity uses per-source physical keyboard/mouse timestamps from `src/activity/input_tracker.rs` and controller polling in `src/backend/automation/runner.rs`. Classification and idle deadlines use only selected sources. Observation starts with a full idle grace period; unavailable selected sources remain Unknown. [GetLastInputInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo) supplies an aggregate session timestamp and remains dashboard-only.
+By Activity uses per-source physical keyboard/mouse timestamps from `src/activity/input_tracker.rs` and controller polling in `src/backend/automation/runner.rs`. Classification and idle deadlines use only selected sources. Observation starts with a full idle grace period and unavailable selected sources remain Unknown. Home uses the runtime observation for the matching power source, enabled input devices, and idle timeout.
 
 ## System Tray Lifecycle
 

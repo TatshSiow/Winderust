@@ -404,15 +404,21 @@ pub(super) fn update_power_plan_status(
     shared: &SharedAutomationState,
     status: PowerPlanStatus,
     rule_context: Option<&PowerPlanRuleContext>,
+    by_activity: Option<ByActivityObservation>,
 ) {
     let mut state = lock_unpoisoned(&shared.state);
-    if state.status.power_plan_status.as_ref() == &status
-        && state.status.power_plan_rule_context.as_ref() == rule_context
-    {
+    let plan_changed = state.status.power_plan_status.as_ref() != &status;
+    let context_changed = state.status.power_plan_rule_context.as_ref() != rule_context;
+    if !plan_changed && !context_changed && state.status.by_activity == by_activity {
         return;
     }
-    state.status.power_plan_status = Arc::new(status);
-    state.status.power_plan_rule_context = rule_context.cloned();
+    if plan_changed {
+        state.status.power_plan_status = Arc::new(status);
+    }
+    if context_changed {
+        state.status.power_plan_rule_context = rule_context.cloned();
+    }
+    state.status.by_activity = by_activity;
     bump_status_generation(shared, &mut state);
 }
 

@@ -13,8 +13,9 @@ use std::{
 use crate::{
     action_log::{ActionLog, ActionLogEntry, ActionLogSummaries},
     activity::{
-        activity_snapshot, input_tracker::InputActivityTracker, ControllerActivityDetector,
-        InputHook, InputHookConfig, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
+        activity_snapshot, input_tracker::InputActivityTracker, ActivityState,
+        ControllerActivityDetector, InputHook, InputHookConfig, InputHookEvents,
+        CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
     adaptive_engine_process::{
         AdaptiveEngineProcessManager, AdaptiveEngineProcessSnapshot, AdaptiveEngineProcessUpdate,
@@ -24,10 +25,10 @@ use crate::{
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     bottleneck_classifier::{BottleneckClassifier, BottleneckSnapshot},
     config::{
-        AccentColorSource, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
-        PowerSourceProfile, ProcessGpuPriority, ProcessIoPriority, ProcessMemoryPriority,
-        ProcessPrioritySetting, ProcessThreadPrioritySetting, Settings, CHECK_INTERVAL_MAX_MS,
-        CHECK_INTERVAL_MIN_MS,
+        AccentColorSource, AppThemeMode, ByActivitySettings, CpuAllocationSettings,
+        InputDetectionSettings, PowerPlanSettings, PowerSourceProfile, ProcessGpuPriority,
+        ProcessIoPriority, ProcessMemoryPriority, ProcessPrioritySetting,
+        ProcessThreadPrioritySetting, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
     control::{
         cpu_allocation::CpuAllocationCoordinator,
@@ -350,6 +351,14 @@ impl PartialEq for PowerPlanRuleContext {
 
 impl Eq for PowerPlanRuleContext {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ByActivityObservation {
+    source: PowerSourceProfile,
+    input_detection: InputDetectionSettings,
+    idle_timeout_seconds: u64,
+    last_activity: Instant,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeStatusSnapshot {
     pub generation: u64,
@@ -357,9 +366,31 @@ pub struct RuntimeStatusSnapshot {
     pub feature_status: Arc<RuntimeFeatureStatus>,
     pub(crate) power_plan_status: Arc<PowerPlanStatus>,
     pub(crate) power_plan_rule_context: Option<PowerPlanRuleContext>,
+    pub(crate) by_activity: Option<ByActivityObservation>,
     pub action_log_entries: Arc<Vec<ActionLogEntry>>,
     pub action_log_summaries: Arc<ActionLogSummaries>,
     pub appearance_change_generation: u64,
+}
+
+impl RuntimeStatusSnapshot {
+    pub(crate) fn by_activity_state(
+        &self,
+        source: PowerSourceProfile,
+        settings: &ByActivitySettings,
+        now: Instant,
+    ) -> ActivityState {
+        let idle_for = self
+            .by_activity
+            .as_ref()
+            .filter(|observation| {
+                settings.enabled
+                    && observation.source == source
+                    && observation.input_detection == settings.input_detection
+                    && observation.idle_timeout_seconds == settings.idle_timeout_seconds
+            })
+            .map(|observation| now.saturating_duration_since(observation.last_activity));
+        activity_snapshot(idle_for, Duration::from_secs(settings.idle_timeout_seconds)).state
+    }
 }
 
 struct SharedAutomationState {
@@ -1047,6 +1078,9 @@ impl Drop for AutomationWorkerExitGuard<'_> {
         let mut state = lock_unpoisoned(&self.shared.state);
         let exited_while_accepting_work = state.worker_accepting_work;
         state.worker_accepting_work = false;
+        if state.status.by_activity.take().is_some() {
+            bump_status_generation(self.shared, &mut state);
+        }
         if exited_while_accepting_work {
             for command in state.process_control_commands.drain(..) {
                 command.reject(RuntimeCommandError::WorkerExited);
@@ -1760,8 +1794,10 @@ fn run_background_automation(
             None
         };
         runner.publish_action_log_if_changed(&shared);
+        let by_activity =
+            runner.by_activity_observation(settings, active_power_source(plugged_in), wait_now);
         let (power_plan_status, rule_context) = runner.power_plan_status();
-        update_power_plan_status(&shared, power_plan_status, rule_context);
+        update_power_plan_status(&shared, power_plan_status, rule_context, by_activity);
 
         wait_for = scheduler.minimum_wait(
             wait_for,

@@ -601,6 +601,24 @@ impl RuntimeCore {
         activity_snapshot(idle_for, idle_timeout)
     }
 
+    pub(super) fn by_activity_observation(
+        &self,
+        settings: &Settings,
+        source: PowerSourceProfile,
+        now: Instant,
+    ) -> Option<ByActivityObservation> {
+        if !settings.general.enabled || !activity_power_plan_required(settings) {
+            return None;
+        }
+        let idle_for = self.activity_snapshot(settings, now).idle_for?;
+        Some(ByActivityObservation {
+            source,
+            input_detection: settings.by_activity.input_detection.clone(),
+            idle_timeout_seconds: settings.by_activity.idle_timeout_seconds,
+            last_activity: now.checked_sub(idle_for)?,
+        })
+    }
+
     pub(super) fn run_background_efficiency_update(
         &mut self,
         settings: &Settings,

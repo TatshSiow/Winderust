@@ -2347,7 +2347,6 @@ mod tests {
         };
         list.rebuild();
         let settings = Settings::default();
-        let status = RuntimeStatusSnapshot::default();
         let mut home = super::super::home::Model::default();
         home.populate_smoke_history();
         let log = super::super::action_log::Editor::default();
@@ -2363,6 +2362,10 @@ mod tests {
                 reason: "Process Priority applied".into(),
             })
             .collect();
+        let status = RuntimeStatusSnapshot {
+            action_log_entries: Arc::new(entries),
+            ..Default::default()
+        };
         let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(1400.0, 900.0));
         let mut tree = Tree::empty();
@@ -2371,10 +2374,11 @@ mod tests {
             let home_page = frame < 8 && frame % 2 == 0;
             let log_page = frame >= 8 && frame % 2 == 0;
             let content = if home_page {
-                home.view(&settings, &status.feature_status, &entries)
+                home.view(&settings, PowerSourceProfile::PluggedIn, &status)
                     .map(|_| Message::Refresh)
             } else if log_page {
-                log.view(&entries, &[]).map(|_| Message::Refresh)
+                log.view(&status.action_log_entries, &[])
+                    .map(|_| Message::Refresh)
             } else {
                 list.view(&settings, &status, PlanCatalog::Loaded(&[]))
             };

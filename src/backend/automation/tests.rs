@@ -256,14 +256,14 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
         settings: Arc::clone(&configured),
         source: PowerSourceProfile::PluggedIn,
     };
-    update_power_plan_status(&automation.shared, status.clone(), Some(&context));
+    update_power_plan_status(&automation.shared, status.clone(), Some(&context), None);
 
     let snapshot = automation
         .status_snapshot_since(1)
         .expect("power-plan status advances the status generation");
     assert_eq!(snapshot.power_plan_status.as_ref(), &status);
     assert_eq!(snapshot.power_plan_rule_context, Some(context.clone()));
-    update_power_plan_status(&automation.shared, status.clone(), Some(&context));
+    update_power_plan_status(&automation.shared, status.clone(), Some(&context), None);
     assert!(automation
         .status_snapshot_since(snapshot.generation)
         .is_none());
@@ -281,7 +281,7 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
         }),
         None,
     ] {
-        update_power_plan_status(&automation.shared, status.clone(), context.as_ref());
+        update_power_plan_status(&automation.shared, status.clone(), context.as_ref(), None);
         let snapshot = automation
             .status_snapshot_since(generation)
             .expect("context-only changes advance the status generation");
@@ -289,6 +289,52 @@ fn power_plan_status_is_published_as_an_independent_runtime_segment() {
         assert_eq!(snapshot.power_plan_rule_context, context);
         generation = snapshot.generation;
     }
+
+    let mut settings = (*configured).clone();
+    settings.general.enabled = true;
+    settings.by_activity.enabled = true;
+    settings.by_activity.switch_to_performance_on_resume = true;
+    settings.by_activity.power_plans.performance_guid = Some("active".into());
+    settings.by_activity.input_detection.mouse = false;
+    settings.by_activity.input_detection.controller = false;
+    settings.by_activity.idle_timeout_seconds = 30;
+    let now = Instant::now();
+    let mut runner = RuntimeCore::default();
+    runner.input_activity.configure(
+        InputHookConfig {
+            keyboard: true,
+            mouse: false,
+        },
+        now,
+    );
+    let source = PowerSourceProfile::PluggedIn;
+    let observation = runner.by_activity_observation(&settings, source, now);
+    update_power_plan_status(&automation.shared, status, None, observation);
+    let aged = automation
+        .status_snapshot_since(generation)
+        .expect("the activity observation advances the status generation");
+    assert!(Arc::ptr_eq(
+        &aged.power_plan_status,
+        &snapshot.power_plan_status
+    ));
+    let policy = &mut settings.by_activity;
+    assert_eq!(
+        aged.by_activity_state(source, policy, now),
+        ActivityState::Active
+    );
+    assert_eq!(
+        aged.by_activity_state(source, policy, now + Duration::from_secs(30)),
+        ActivityState::Idle
+    );
+    assert_eq!(
+        aged.by_activity_state(PowerSourceProfile::OnBattery, policy, now),
+        ActivityState::Unknown
+    );
+    policy.idle_timeout_seconds = 60;
+    assert_eq!(
+        aged.by_activity_state(source, policy, now),
+        ActivityState::Unknown
+    );
 }
 
 #[test]

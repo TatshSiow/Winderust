@@ -3506,11 +3506,7 @@ impl WinderustApp {
                 .map(Message::Processes),
             Page::Home => self
                 .home
-                .view(
-                    &self.settings,
-                    &self.status.feature_status,
-                    &self.status.action_log_entries,
-                )
+                .view(&self.settings, self.power_source, &self.status)
                 .map(Message::Home),
             Page::WinderustBehaviour
             | Page::LanguageAndAppearance

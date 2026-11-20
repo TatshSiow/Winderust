@@ -1,18 +1,19 @@
 use super::design;
 use super::widgets::button;
-use crate::automation::RuntimeFeatureStatus;
+use crate::activity::ActivityState;
+use crate::automation::{RuntimeFeatureStatus, RuntimeStatusSnapshot};
 use crate::backend::dashboard_metrics::{
     sample_memory_usage, DiskUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
     NetworkUsageMonitor, NetworkUsageSnapshot,
 };
-use crate::config::Settings;
+use crate::config::{PowerSourceProfile, Settings};
 use crate::cpu::{CpuUsageMonitor, CpuUsageSnapshot};
 use crate::ui::scrolling::scrollable;
 use crate::ui::Page;
 use iced::widget::{canvas, column, container, responsive, row, text};
 use iced::{mouse, Element, Fill, Point, Rectangle, Renderer, Theme};
 use rust_i18n::t;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 const HISTORY_LEN: usize = 61;
 const HISTORY_WINDOW: std::time::Duration =
@@ -87,18 +88,13 @@ impl Default for Sampler {
                 let mut cpu = CpuUsageMonitor::default();
                 let mut io = DiskUsageMonitor::default();
                 let mut network = NetworkUsageMonitor::default();
-                let mut controller = crate::activity::ControllerActivityDetector::default();
                 while requests.recv().is_ok() {
-                    let now = std::time::Instant::now();
-                    controller.poll(now);
                     let sample = Sample {
                         captured_at: Some(std::time::SystemTime::now()),
                         cpu: cpu.sample(),
                         memory: sample_memory_usage(),
                         io: io.sample(),
                         network: network.sample(),
-                        input_idle: crate::activity::input_tracker::last_input_elapsed(),
-                        controller_idle: controller.idle_for(now),
                     };
                     if samples.send(sample).is_err() {
                         break;
@@ -119,8 +115,6 @@ pub(super) struct Sample {
     memory: MemoryUsageSnapshot,
     io: IoUsageSnapshot,
     network: NetworkUsageSnapshot,
-    input_idle: Option<std::time::Duration>,
-    controller_idle: Option<std::time::Duration>,
 }
 impl Sampler {
     // Call from an application task once per second while Home sampling is enabled.
@@ -173,7 +167,6 @@ impl Model {
                     download_bytes_per_second: Some(1_250_000.0 + wave * 250_000.0),
                     upload_bytes_per_second: Some(300_000.0 + wave * 50_000.0),
                 },
-                ..Default::default()
             });
         }
     }
@@ -208,8 +201,8 @@ impl Model {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a Settings,
-        status: &'a RuntimeFeatureStatus,
-        logs: &'a [crate::action_log::ActionLogEntry],
+        source: PowerSourceProfile,
+        status: &'a RuntimeStatusSnapshot,
     ) -> Element<'a, Message> {
         responsive(move |size| {
             let layout = DashboardLayout::for_size(iced::Size::new(
@@ -232,7 +225,13 @@ impl Model {
                 }
                 body = body.push(charts);
             }
-            let entries = enabled_features(settings, status, &self.latest);
+            let activity = if settings.general.enabled {
+                status.by_activity_state(source, &settings.by_activity, Instant::now())
+            } else {
+                ActivityState::Unknown
+            };
+            let entries =
+                enabled_features(settings, &status.feature_status, &self.latest, activity);
             let count = entries.len();
             let title = row![
                 super::widgets::heading(
@@ -320,7 +319,7 @@ impl Model {
             .height(layout.summary_height)
             .width(Fill)
             .style(super::widgets::surface);
-            let recent = recent_logs(logs, layout.summary_height);
+            let recent = recent_logs(&status.action_log_entries, layout.summary_height);
             if layout.columns > 1 {
                 body = body.push(row![enabled, recent].spacing(super::widgets::CARD_GAP));
             } else {
@@ -1231,6 +1230,7 @@ fn enabled_features(
     settings: &Settings,
     status: &RuntimeFeatureStatus,
     sample: &Sample,
+    activity: ActivityState,
 ) -> Vec<(Page, String)> {
     let mut entries = Vec::new();
     macro_rules! feature {
@@ -1261,7 +1261,16 @@ fn enabled_features(
             })
     );
     feature!(ByCpuLoad, by_cpu_load, cpu_usage_label(sample.cpu.percent));
-    feature!(ByActivity, by_activity, activity_label(settings, sample));
+    feature!(
+        ByActivity,
+        by_activity,
+        t!(match activity {
+            ActivityState::Active => "home.activity_active",
+            ActivityState::Idle => "home.activity_idle",
+            ActivityState::Unknown => "home.activity_unknown",
+        })
+        .to_string()
+    );
     feature!(
         ByTime,
         by_time,
@@ -1454,28 +1463,6 @@ fn enabled_features(
     );
     entries
 }
-fn activity_label(settings: &Settings, sample: &Sample) -> String {
-    let idle = match (
-        sample.input_idle,
-        sample
-            .controller_idle
-            .filter(|_| settings.by_activity.input_detection.controller),
-    ) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
-    match idle {
-        Some(idle)
-            if idle
-                >= std::time::Duration::from_secs(settings.by_activity.idle_timeout_seconds) =>
-        {
-            t!("home.activity_idle")
-        }
-        Some(_) => t!("home.activity_active"),
-        None => t!("home.activity_unknown"),
-    }
-    .to_string()
-}
 
 #[cfg(test)]
 mod tests {
@@ -1528,10 +1515,11 @@ mod tests {
                 percent: Some(42.5),
                 ..Default::default()
             },
-            input_idle: Some(std::time::Duration::ZERO),
             ..Default::default()
         };
-        let visible = |settings: &Settings| enabled_features(settings, &status, &sample);
+        let visible = |settings: &Settings| {
+            enabled_features(settings, &status, &sample, ActivityState::Active)
+        };
         let expected = visible(&settings);
         assert_eq!(
             expected.iter().map(|(page, _)| *page).collect::<Vec<_>>(),
@@ -1540,6 +1528,7 @@ mod tests {
         for entry in [
             (Page::ByRunningApp, "example.exe".into()),
             (Page::ByCpuLoad, "42.5%".into()),
+            (Page::ByActivity, t!("home.activity_active").to_string()),
             (
                 Page::CpuSetsSoft,
                 t!("home.adjusted_count", count = 7).to_string(),
@@ -1670,7 +1659,6 @@ mod tests {
                     download_bytes_per_second: Some(99_275_000.0),
                     upload_bytes_per_second: Some(600_000.0),
                 },
-                ..Default::default()
             });
         }
         fn plot_bounds(node: &layout::Node, offset: Point, height: f32) -> Option<Rectangle> {
