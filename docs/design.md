@@ -237,6 +237,9 @@ hover/press; background shading supplies feedback.
   Pencil dialogs show app identity and an optional sustained duration shared by
   the CPU / Memory tabs. A blank duration inherits the page default. Drafts apply
   only on OK. Cancel, Close, and Escape discard.
+- Match Preview reads a fresh process snapshot when opened or refreshed. It lists
+  exact-path matches by PID and full path, same-named executables at other paths,
+  and instances Watchdog cannot verify or use.
 - Each tab starts with its Enable CPU Watchdog or Enable Memory Watchdog toggle and
   reveals thresholds and optional termination/restart only when enabled. Default to
   notification only and show the restart rate limit and data-loss consequence inline.

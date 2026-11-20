@@ -1,13 +1,17 @@
+use std::sync::Arc;
+
 use super::{app_picker, design, widgets};
 use crate::config::{
     WatchdogAction, WatchdogMemoryUnit, WatchdogMetric, WatchdogResource, WatchdogRule,
     WatchdogSettings, WATCHDOG_DURATION_RANGE,
 };
 use iced::{
-    widget::{column, row, text},
+    widget::{column, row, text, Column},
     Element, Fill,
 };
 use rust_i18n::t;
+
+mod preview;
 
 impl std::fmt::Display for WatchdogMetric {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,8 +45,30 @@ struct Draft {
     index: Option<usize>,
     rule: WatchdogRule,
     duration: String,
-    tab: WatchdogResource,
+    tab: DraftTab,
     monitors: [ThresholdInputs; 2],
+    match_preview: MatchPreview,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DraftTab {
+    Monitor(WatchdogResource),
+    MatchPreview,
+}
+
+impl DraftTab {
+    fn content_key(self) -> u64 {
+        match self {
+            Self::Monitor(resource) => resource as u64,
+            Self::MatchPreview => 2,
+        }
+    }
+}
+
+enum MatchPreview {
+    Unrequested,
+    Loading(Arc<()>),
+    Loaded(Result<Vec<preview::MatchRow>, String>),
 }
 
 struct ThresholdInputs {
@@ -57,11 +83,11 @@ impl Draft {
             duration: rule
                 .sustained_seconds
                 .map_or_else(String::new, |seconds| seconds.to_string()),
-            tab: if rule.cpu.enabled {
+            tab: DraftTab::Monitor(if rule.cpu.enabled {
                 WatchdogResource::Cpu
             } else {
                 WatchdogResource::Memory
-            },
+            }),
             monitors: WatchdogResource::ALL.map(|resource| {
                 let monitor = rule.monitor(resource);
                 ThresholdInputs {
@@ -70,6 +96,7 @@ impl Draft {
                 }
             }),
             rule,
+            match_preview: MatchPreview::Unrequested,
         }
     }
 
@@ -108,6 +135,8 @@ pub(super) enum Message {
     CancelRule,
     RuleEnabled(usize, bool),
     Tab(WatchdogResource),
+    PreviewMatches,
+    MatchPreviewLoaded(Arc<()>, Result<Vec<preview::MatchRow>, String>),
     MonitorEnabled(WatchdogResource, bool),
     MemoryUnit(WatchdogMemoryUnit),
     Duration(String),
@@ -145,7 +174,37 @@ impl Editor {
 
     pub(super) fn select_tab(&mut self, resource: WatchdogResource) {
         if let Some(draft) = &mut self.draft {
-            draft.tab = resource;
+            draft.tab = DraftTab::Monitor(resource);
+        }
+    }
+
+    pub(super) fn preview_matches(&mut self) -> iced::Task<Message> {
+        let Some(draft) = &mut self.draft else {
+            return iced::Task::none();
+        };
+        draft.tab = DraftTab::MatchPreview;
+        if matches!(draft.match_preview, MatchPreview::Loading(_)) {
+            return iced::Task::none();
+        }
+        let request = Arc::new(());
+        draft.match_preview = MatchPreview::Loading(request.clone());
+        let executable_path = draft.rule.executable_path.clone();
+        super::tasks::run(move || preview::load(&executable_path)).map(move |result| {
+            Message::MatchPreviewLoaded(request.clone(), result.and_then(|result| result))
+        })
+    }
+
+    pub(super) fn complete_match_preview(
+        &mut self,
+        request: Arc<()>,
+        result: Result<Vec<preview::MatchRow>, String>,
+    ) {
+        let Some(draft) = &mut self.draft else {
+            return;
+        };
+        if matches!(&draft.match_preview, MatchPreview::Loading(active) if Arc::ptr_eq(active, &request))
+        {
+            draft.match_preview = MatchPreview::Loaded(result);
         }
     }
 
@@ -242,7 +301,11 @@ impl Editor {
                     response(draft.rule.monitor_mut(resource), critical).action = value;
                 }
             }
-            Message::Add | Message::Remove(_) | Message::Browse => {}
+            Message::Add
+            | Message::Remove(_)
+            | Message::Browse
+            | Message::PreviewMatches
+            | Message::MatchPreviewLoaded(..) => {}
         }
     }
 
@@ -350,29 +413,8 @@ impl Editor {
         .into()
     }
 
-    pub(super) fn modal<'a>(
-        &'a self,
-        candidates: &[app_picker::Candidate],
-    ) -> Option<Element<'a, Message>> {
-        let draft = self.draft.as_ref()?;
+    fn monitor_details(draft: &Draft, resource: WatchdogResource) -> Column<'_, Message> {
         let rule = &draft.rule;
-        let duration_valid = draft.parsed_duration().is_some();
-        let valid = duration_valid && draft.validated_rule().is_some();
-        let mut duration = column![widgets::setting_row_with_unit(
-            "watchdog.rule_duration",
-            "s",
-            widgets::text_input(&t!("common.default"), &draft.duration)
-                .on_input(Message::RuleDuration)
-                .on_submit(Message::SaveRule)
-                .width(design::STANDALONE_NUMERIC_WIDTH),
-        )]
-        .spacing(design::space::SMALL)
-        .width(280);
-        if !duration_valid {
-            duration = duration
-                .push(text(t!("watchdog.invalid_duration").to_string()).style(text::danger));
-        }
-        let resource = draft.tab;
         let monitor = rule.monitor(resource);
         let mut details = column![widgets::toggle_card(
             match resource {
@@ -448,9 +490,113 @@ impl Editor {
                     ])));
             }
         }
-        if duration_valid && !valid {
-            details = details.push(text(t!("watchdog.invalid").to_string()).style(text::danger));
+        details
+    }
+
+    fn match_preview_details(draft: &Draft) -> Column<'_, Message> {
+        use preview::MatchKind;
+
+        let mut details = column![widgets::action_button(t!("settings.refresh").to_string())
+            .style(widgets::secondary_button)
+            .on_press_maybe(
+                (!matches!(draft.match_preview, MatchPreview::Loading(_)))
+                    .then_some(Message::PreviewMatches),
+            )]
+        .spacing(widgets::CARD_GAP);
+        let matches = match &draft.match_preview {
+            MatchPreview::Unrequested => return details,
+            MatchPreview::Loading(_) => {
+                return details.push(text(t!("watchdog.preview_loading").to_string()));
+            }
+            MatchPreview::Loaded(Err(error)) => {
+                return details.push(
+                    text(t!("watchdog.preview_failed", error = error).to_string())
+                        .style(text::danger)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                );
+            }
+            MatchPreview::Loaded(Ok(matches)) => matches,
+        };
+
+        for (kind, heading) in [
+            (MatchKind::ExactPath, "watchdog.preview_matches"),
+            (MatchKind::SameName, "watchdog.preview_same_name"),
+            (MatchKind::Unavailable, "watchdog.preview_unavailable"),
+        ] {
+            let rows: Vec<Element<'_, Message>> = matches
+                .iter()
+                .filter(|entry| entry.kind == kind)
+                .map(|entry| {
+                    let path = entry.path.as_ref().map_or_else(
+                        || t!("watchdog.preview_path_unavailable").to_string(),
+                        |path| path.display().to_string(),
+                    );
+                    row![
+                        text(t!("watchdog.preview_pid", pid = entry.pid).to_string()).width(112),
+                        text(path)
+                            .width(Fill)
+                            .style(text::secondary)
+                            .wrapping(text::Wrapping::WordOrGlyph),
+                    ]
+                    .spacing(design::space::MEDIUM)
+                    .width(Fill)
+                    .into()
+                })
+                .collect();
+            if rows.is_empty() {
+                if kind == MatchKind::ExactPath {
+                    details = details.push(
+                        text(t!("watchdog.preview_no_matches").to_string()).style(text::secondary),
+                    );
+                }
+                continue;
+            }
+            details = details.push(widgets::settings_card(
+                column![
+                    widgets::heading(t!(heading).to_string(), design::typography::BODY),
+                    Column::with_children(rows).spacing(design::space::SMALL),
+                ]
+                .spacing(design::space::MEDIUM),
+            ));
         }
+        details
+    }
+
+    pub(super) fn modal<'a>(
+        &'a self,
+        candidates: &[app_picker::Candidate],
+    ) -> Option<Element<'a, Message>> {
+        let draft = self.draft.as_ref()?;
+        let rule = &draft.rule;
+        let duration_valid = draft.parsed_duration().is_some();
+        let valid = duration_valid && draft.validated_rule().is_some();
+        let mut duration = column![widgets::setting_row_with_unit(
+            "watchdog.rule_duration",
+            "s",
+            widgets::text_input(&t!("common.default"), &draft.duration)
+                .on_input(Message::RuleDuration)
+                .on_submit(Message::SaveRule)
+                .width(design::STANDALONE_NUMERIC_WIDTH),
+        )]
+        .spacing(design::space::SMALL)
+        .width(280);
+        if !duration_valid {
+            duration = duration
+                .push(text(t!("watchdog.invalid_duration").to_string()).style(text::danger));
+        }
+        let (details, scroll_id) = match draft.tab {
+            DraftTab::Monitor(resource) => {
+                let mut details = Self::monitor_details(draft, resource);
+                if duration_valid && !valid {
+                    details =
+                        details.push(text(t!("watchdog.invalid").to_string()).style(text::danger));
+                }
+                (details, "watchdog-rule-details")
+            }
+            DraftTab::MatchPreview => {
+                (Self::match_preview_details(draft), "watchdog-match-preview")
+            }
+        };
         Some(widgets::modal_frame(
             row![
                 widgets::heading(
@@ -470,7 +616,9 @@ impl Editor {
                 row![
                     column![
                         app_picker::app_name(&rule.executable_path, candidates),
-                        text(rule.executable_path.clone()).style(text::secondary),
+                        text(rule.executable_path.clone())
+                            .style(text::secondary)
+                            .wrapping(text::Wrapping::WordOrGlyph),
                     ]
                     .spacing(design::space::SMALL)
                     .width(Fill),
@@ -481,22 +629,27 @@ impl Editor {
                 iced::widget::container(row![
                     widgets::panel_tab(
                         t!("watchdog.cpu_tab").to_string(),
-                        resource == WatchdogResource::Cpu,
+                        draft.tab == DraftTab::Monitor(WatchdogResource::Cpu),
                         Message::Tab(WatchdogResource::Cpu)
                     ),
                     widgets::panel_tab(
                         t!("watchdog.memory_tab").to_string(),
-                        resource == WatchdogResource::Memory,
+                        draft.tab == DraftTab::Monitor(WatchdogResource::Memory),
                         Message::Tab(WatchdogResource::Memory)
+                    ),
+                    widgets::panel_tab(
+                        t!("watchdog.match_preview").to_string(),
+                        draft.tab == DraftTab::MatchPreview,
+                        Message::PreviewMatches
                     ),
                 ])
                 .style(widgets::tab_bar),
                 super::motion::wrap(
                     super::scrolling::scrollable_pane(details)
-                        .id("watchdog-rule-details")
+                        .id(scroll_id)
                         .height(Fill),
                     true,
-                    super::motion::Effect::Content(resource as u64),
+                    super::motion::Effect::Content(draft.tab.content_key()),
                 ),
             ]
             .spacing(widgets::CARD_GAP)
@@ -537,6 +690,36 @@ fn response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_and_reopening_a_rule_discards_its_pending_match_preview() {
+        let mut editor = Editor::default();
+        let mut settings = WatchdogSettings {
+            rules: vec![WatchdogRule::new(r"C:\Apps\test.exe".into())],
+            ..Default::default()
+        };
+        let saved = settings.clone();
+        let previous = Arc::new(());
+        editor.update(&mut settings, Message::Edit(0));
+        editor.draft.as_mut().unwrap().match_preview = MatchPreview::Loading(previous.clone());
+
+        editor.update(&mut settings, Message::CancelRule);
+        editor.update(&mut settings, Message::Edit(0));
+        let current = Arc::new(());
+        editor.draft.as_mut().unwrap().match_preview = MatchPreview::Loading(current.clone());
+        editor.complete_match_preview(previous, Err("obsolete".into()));
+        assert!(matches!(
+            &editor.draft.as_ref().unwrap().match_preview,
+            MatchPreview::Loading(request) if Arc::ptr_eq(request, &current)
+        ));
+
+        editor.complete_match_preview(current, Ok(Vec::new()));
+        assert!(matches!(
+            &editor.draft.as_ref().unwrap().match_preview,
+            MatchPreview::Loaded(Ok(rows)) if rows.is_empty()
+        ));
+        assert_eq!(settings, saved);
+    }
 
     #[test]
     fn duration_keeps_temporary_text_and_only_updates_settings_when_valid() {

@@ -1365,6 +1365,12 @@ impl WinderustApp {
             Message::Watchdog(watchdog::Message::Tab(resource)) => {
                 self.watchdog.select_tab(resource);
             }
+            Message::Watchdog(watchdog::Message::PreviewMatches) => {
+                return self.watchdog.preview_matches().map(Message::Watchdog);
+            }
+            Message::Watchdog(watchdog::Message::MatchPreviewLoaded(request, result)) => {
+                self.watchdog.complete_match_preview(request, result);
+            }
             Message::Watchdog(message) => {
                 self.settings
                     .edit_global(|settings| self.watchdog.update(&mut settings.watchdog, message));
