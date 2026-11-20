@@ -1672,7 +1672,7 @@ impl WinderustApp {
                 } else {
                     PowerSourceProfile::PluggedIn
                 };
-                if profile != self.power_source && !self.select_power_source(profile) {
+                if !self.select_power_source(profile) {
                     return Task::none();
                 }
                 self.adaptive.show_processor_power();
@@ -2426,6 +2426,9 @@ impl WinderustApp {
     }
 
     fn select_power_source(&mut self, source: PowerSourceProfile) -> bool {
+        if source == self.power_source {
+            return true;
+        }
         if self.pending_editor() || self.invalid_inputs() {
             self.error_message = t!("unsaved.message").to_string();
             return false;
