@@ -1,6 +1,7 @@
 use super::*;
 use crate::action_log::{ActionLogFeature, ActionLogResult};
 use crate::runtime::observations::CycleObservations;
+use std::path::PathBuf;
 
 fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
     AppSuspensionSnapshot {
@@ -109,6 +110,7 @@ pub(super) struct RuntimeCore {
     memory_trim_manager: MemoryTrimManager,
     memory_trim_controller: MemoryTrimController,
     watchdog_manager: WatchdogManager,
+    watchdog_restart_cooldowns: Vec<(PathBuf, Instant)>,
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
@@ -126,10 +128,18 @@ pub(super) struct ProcessControlCommandStatuses {
     pub(super) app_suspension: Option<AppSuspensionSnapshot>,
 }
 
+const WATCHDOG_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchdogRestartOutcome {
+    Applied,
+    CoolingDown,
+}
+
 #[derive(Default)]
 struct WatchdogActionCycle {
     stopped: BTreeSet<(u32, u64)>,
-    restarts: std::collections::BTreeMap<Vec<(u32, u64)>, Result<(), String>>,
+    restarts: std::collections::BTreeMap<Vec<(u32, u64)>, Result<WatchdogRestartOutcome, String>>,
 }
 
 impl WatchdogActionCycle {
@@ -149,18 +159,19 @@ impl WatchdogActionCycle {
             .map(|target| (target.id, target.creation_time))
             .collect();
         key.sort_unstable();
-        Some(if self.restarts.get(&key).is_some_and(Result::is_ok) {
-            "watchdog.already_restarted"
-        } else {
-            "watchdog.already_stopped"
+        Some(match self.restarts.get(&key) {
+            Some(Ok(WatchdogRestartOutcome::Applied)) => "watchdog.already_restarted",
+            _ => "watchdog.already_stopped",
         })
     }
 
     fn restart_once(
         &mut self,
         targets: &[crate::foreground::ProcessActionTarget],
+        cooldowns: &mut Vec<(PathBuf, Instant)>,
+        now: Instant,
         restart: impl FnOnce() -> crate::control::process_restart::RestartResult,
-    ) -> Result<(), String> {
+    ) -> Result<WatchdogRestartOutcome, String> {
         let mut key: Vec<_> = targets
             .iter()
             .map(|target| (target.id, target.creation_time))
@@ -169,9 +180,19 @@ impl WatchdogActionCycle {
         self.restarts
             .entry(key)
             .or_insert_with(|| {
+                cooldowns.retain(|(_, deadline)| now < *deadline);
+                if let Some(path) = targets.first().map(|target| &target.executable_path) {
+                    if cooldowns
+                        .iter()
+                        .any(|(active_path, _)| same_executable_path(active_path, path))
+                    {
+                        return Ok(WatchdogRestartOutcome::CoolingDown);
+                    }
+                    cooldowns.push((path.clone(), now + WATCHDOG_RESTART_COOLDOWN));
+                }
                 let outcome = restart();
                 self.stopped.extend(outcome.stopped);
-                outcome.result
+                outcome.result.map(|()| WatchdogRestartOutcome::Applied)
             })
             .clone()
     }
@@ -217,30 +238,42 @@ impl RuntimeCore {
             };
             let mut action_detail = t!("watchdog.no_action").to_string();
             if event.response.action != WatchdogAction::None {
-                self.keep_running
-                    .pause_targets(&event.targets, PauseReason::Watchdog);
-                let targets: Vec<_> = event
-                    .targets
-                    .iter()
-                    .filter(|target| !actions.stopped.contains(&(target.id, target.creation_time)))
-                    .cloned()
-                    .collect();
                 let restarting = event.response.action == WatchdogAction::Restart;
-                let skipped = if restarting {
-                    None
-                } else {
-                    actions.skipped_termination_reason(&event.targets)
-                };
                 let result = if restarting {
-                    actions.restart_once(&event.targets, || {
-                        crate::control::process_restart::restart_app(
-                            event.targets.clone(),
-                            settings.general.allow_cross_session_process_control,
+                    actions
+                        .restart_once(
+                            &event.targets,
+                            &mut self.watchdog_restart_cooldowns,
+                            Instant::now(),
+                            || {
+                                self.keep_running
+                                    .pause_targets(&event.targets, PauseReason::Watchdog);
+                                crate::control::process_restart::restart_app(
+                                    event.targets.clone(),
+                                    settings.general.allow_cross_session_process_control,
+                                )
+                            },
                         )
-                    })
-                } else if targets.is_empty() {
-                    Ok(())
+                        .map(|outcome| match outcome {
+                            WatchdogRestartOutcome::Applied => None,
+                            WatchdogRestartOutcome::CoolingDown => Some(t!(
+                                "watchdog.restart_cooldown",
+                                seconds = WATCHDOG_RESTART_COOLDOWN.as_secs()
+                            )),
+                        })
+                } else if let Some(reason) = actions.skipped_termination_reason(&event.targets) {
+                    Ok(Some(t!(reason)))
                 } else {
+                    self.keep_running
+                        .pause_targets(&event.targets, PauseReason::Watchdog);
+                    let targets = event
+                        .targets
+                        .iter()
+                        .filter(|target| {
+                            !actions.stopped.contains(&(target.id, target.creation_time))
+                        })
+                        .cloned()
+                        .collect();
                     let batch = self.process_termination_controller.terminate_batch(
                         targets,
                         settings.general.allow_cross_session_process_control,
@@ -250,14 +283,14 @@ impl RuntimeCore {
                             actions.stopped.insert((result.target.id, result.target.creation_time));
                         }
                     }
-                    batch.into_process_list_result()
+                    batch.into_process_list_result().map(|()| None)
                 };
-                let outcome = match (result, skipped) {
-                    (Ok(()), Some(reason)) => {
-                        action_detail = t!(reason).to_string();
+                let outcome = match result {
+                    Ok(Some(reason)) => {
+                        action_detail = reason.into_owned();
                         ActionLogResult::Skipped
                     }
-                    (Ok(()), None) => {
+                    Ok(None) => {
                         action_detail = t!(
                             if restarting {
                                 "watchdog.restarted"
@@ -269,7 +302,7 @@ impl RuntimeCore {
                         .to_string();
                         ActionLogResult::Applied
                     }
-                    (Err(error), _) => {
+                    Err(error) => {
                         snapshot.last_error = Some(error.clone());
                         action_detail = t!(
                             if restarting {
@@ -2272,6 +2305,7 @@ mod watchdog_action_tests {
             is_service_account: Some(false),
         };
         let targets = [target(1), target(2)];
+        let now = Instant::now();
         for result in [Ok(()), Err("Replacement could not start.".to_owned())] {
             let mut cycle = WatchdogActionCycle::default();
             assert_eq!(cycle.skipped_termination_reason(&targets), None);
@@ -2280,7 +2314,7 @@ mod watchdog_action_tests {
             } else {
                 "watchdog.already_stopped"
             };
-            let _ = cycle.restart_once(&targets, || RestartResult {
+            let _ = cycle.restart_once(&targets, &mut Vec::new(), now, || RestartResult {
                 stopped: vec![(1, 1), (2, 2)],
                 result,
             });
@@ -2294,7 +2328,7 @@ mod watchdog_action_tests {
             assert_eq!(cycle.skipped_termination_reason(&[replacement]), None);
         }
         let mut cycle = WatchdogActionCycle::default();
-        let _ = cycle.restart_once(&[target(3)], || RestartResult {
+        let _ = cycle.restart_once(&[target(3)], &mut Vec::new(), now, || RestartResult {
             stopped: vec![(3, 3)],
             result: Ok(()),
         });
@@ -2309,7 +2343,7 @@ mod watchdog_action_tests {
     }
 
     #[test]
-    fn simultaneous_cpu_memory_restarts_run_once_even_on_partial_failure() {
+    fn restarts_share_an_attempt_across_monitors_and_cool_down_across_replacements() {
         for result in [
             Ok(()),
             Err("Stopped one process; another was denied.".to_owned()),
@@ -2324,33 +2358,64 @@ mod watchdog_action_tests {
                 is_service_account: Some(false),
             };
             let targets = [target(1), target(2)];
+            let start = Instant::now();
+            let mut cooldowns = Vec::new();
             let mut launches = 0;
             for batch in [targets.to_vec(), targets.into_iter().rev().collect()] {
                 assert_eq!(
-                    cycle.restart_once(&batch, || {
+                    cycle.restart_once(&batch, &mut cooldowns, start, || {
                         launches += 1;
                         RestartResult {
                             stopped: vec![(1, 1)],
                             result: result.clone(),
                         }
                     }),
-                    result
+                    result.clone().map(|()| WatchdogRestartOutcome::Applied)
                 );
             }
             assert_eq!(launches, 1);
             assert_eq!(cycle.stopped, BTreeSet::from([(1, 1)]));
-            let mut replacement = target(1);
-            replacement.creation_time += 1;
-            assert!(cycle
-                .restart_once(&[replacement], || {
-                    launches += 1;
+            let mut replacement = target(3);
+            replacement.executable_path = "c:/apps/APP.exe".into();
+            let mut next_cycle = WatchdogActionCycle::default();
+            let just_before_expiry = start + WATCHDOG_RESTART_COOLDOWN - Duration::from_millis(1);
+            assert_eq!(
+                next_cycle.restart_once(
+                    std::slice::from_ref(&replacement),
+                    &mut cooldowns,
+                    just_before_expiry,
+                    || panic!("Cooldown must not attempt a restart"),
+                ),
+                Ok(WatchdogRestartOutcome::CoolingDown)
+            );
+            assert_eq!(
+                next_cycle.skipped_termination_reason(std::slice::from_ref(&replacement)),
+                None
+            );
+
+            let mut independent = target(4);
+            independent.executable_path = r"C:\Other\app.exe".into();
+            assert_eq!(
+                next_cycle.restart_once(&[independent], &mut cooldowns, just_before_expiry, || {
                     RestartResult {
-                        stopped: vec![(1, 2)],
+                        stopped: Vec::new(),
                         result: Ok(()),
                     }
-                })
-                .is_ok());
-            assert_eq!(launches, 2);
+                },),
+                Ok(WatchdogRestartOutcome::Applied)
+            );
+            assert_eq!(
+                WatchdogActionCycle::default().restart_once(
+                    &[replacement],
+                    &mut cooldowns,
+                    start + WATCHDOG_RESTART_COOLDOWN,
+                    || RestartResult {
+                        stopped: vec![(3, 3)],
+                        result: Ok(())
+                    },
+                ),
+                Ok(WatchdogRestartOutcome::Applied)
+            );
         }
     }
 }

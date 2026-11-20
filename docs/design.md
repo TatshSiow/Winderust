@@ -239,17 +239,17 @@ hover/press; background shading supplies feedback.
   only on OK. Cancel, Close, and Escape discard.
 - Each tab starts with its Enable CPU Watchdog or Enable Memory Watchdog toggle and
   reveals thresholds and optional termination/restart only when enabled. Default to
-  notification only and show the data-loss consequence inline. The main page owns
-  the default sustained duration and one notification switch.
+  notification only and show the restart rate limit and data-loss consequence inline.
+  The main page owns the default sustained duration and one notification switch.
 - Explain that each rule aggregates eligible instances of its executable, excluding
   different child executables. Working Set measures resident memory and may double-count
   shared pages. Private Commit (MB) measures committed private memory.
   Restart preserves the original user and privileges, supports non-service apps in
   the current session, and launches without previous arguments.
-- Notifications lead with the actual action result, then trigger details. Keep the
-  registered tray icon for enabled notifications independently of hide-on-close;
-  respect Windows notification suppression. Runtime sequencing belongs in the
-  [Watchdog contract](runtime-contracts.md#watchdog).
+- Notifications lead with the action result, including cooldown skips, then trigger
+  details. Keep the registered tray icon for enabled notifications independently of
+  hide-on-close and respect Windows notification suppression. Runtime sequencing
+  belongs in the [Watchdog contract](runtime-contracts.md#watchdog).
 
 ### Appearance, About, and Adaptive priority details
 
