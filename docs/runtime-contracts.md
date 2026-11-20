@@ -267,12 +267,13 @@ Read the relevant section before changing feature policy, ownership, restoration
   still take over. Pending restoration keeps the worker alive and retries
   independently of feature enablement. Failed or no-op returns never log a
   successful switch.
-- By Running App rules choose one executable path or exact executable filename.
-  A name rule confirms the filename against the observed absolute image path.
-  Both modes retain the current-session and protected-process checks and first
-  eligible rule order. Preview matches evaluates the current draft using the
-  same checks. Only enabled rules with a selected plan can win. Preview does
-  not change settings, switch plans, or evaluate other Power Plan Control modes.
+- By Focus and By Running App rules choose one executable path or exact executable
+  filename. A name rule confirms the filename against the observed absolute image
+  path. The first enabled rule with a matching target and selected plan wins within
+  each mode. By Focus checks the protected state of the focused process. By Running
+  App retains its current-session and protected-process checks.
+- By Running App Preview matches uses the same eligibility checks to report matches
+  and the winning rule for the current draft.
 - By Time rule clocks use parsed minute-precision local times and serialize as `HH:MM`.
   Invalid clock values fail settings load or import; raw incomplete edits stay in the UI editor.
   Repeated local clock boundaries retain both occurrences. A maximum 60-second

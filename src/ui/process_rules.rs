@@ -86,10 +86,14 @@ pub(crate) fn can_add_by_focus_process(settings: &ByFocusSettings, process: &str
             settings
                 .rules
                 .iter()
-                .any(|rule| process_setting_matches(&rule.executable_path, process))
+                .any(|rule| selector_path_matches(&rule.selector, process))
         },
         |_| false,
     )
+}
+
+pub(super) fn can_add_by_focus_name(settings: &ByFocusSettings, name: &str) -> bool {
+    can_add_executable_name(settings.rules.iter().map(|rule| &rule.selector), name)
 }
 
 pub(crate) fn new_by_focus_rule(process: &str, power_plan_guid: Option<String>) -> ByFocusRule {
@@ -101,7 +105,7 @@ pub(crate) fn new_by_focus_rule(process: &str, power_plan_guid: Option<String>) 
             .and_then(|name| name.to_str())
             .unwrap_or(process)
             .to_owned(),
-        executable_path,
+        selector: ExecutableSelector::ExactPath { executable_path },
         power_plan_guid,
     }
 }
@@ -116,23 +120,30 @@ pub(crate) fn can_add_by_running_app_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| by_running_app_path_matches(rule, process))
+                .any(|rule| selector_path_matches(&rule.selector, process))
         },
         crate::features::power_plan_control::by_running_app::is_builtin_excluded,
     )
 }
 
-pub(crate) fn by_running_app_path_matches(rule: &ByRunningAppRule, path: &str) -> bool {
-    rule.selector
+pub(super) fn selector_path_matches(selector: &ExecutableSelector, path: &str) -> bool {
+    selector
         .exact_path()
         .is_some_and(|target| process_setting_matches(target, path))
 }
 
 pub(super) fn can_add_by_running_app_name(settings: &ByRunningAppSettings, name: &str) -> bool {
+    !crate::features::power_plan_control::by_running_app::is_builtin_excluded(name)
+        && can_add_executable_name(settings.rules.iter().map(|rule| &rule.selector), name)
+}
+
+fn can_add_executable_name<'a>(
+    mut selectors: impl Iterator<Item = &'a ExecutableSelector>,
+    name: &str,
+) -> bool {
     is_valid_executable_name(name)
-        && !crate::features::power_plan_control::by_running_app::is_builtin_excluded(name)
-        && !settings.rules.iter().any(|rule| {
-            matches!(&rule.selector, ExecutableSelector::ExactName { executable_name }
+        && !selectors.any(|selector| {
+            matches!(selector, ExecutableSelector::ExactName { executable_name }
                 if same_process_name(executable_name, name))
         })
 }

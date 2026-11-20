@@ -8,7 +8,7 @@ use super::PlanCatalog;
 use crate::config::*;
 use crate::foreground::executable_path_key;
 use crate::ui::process_rules::{
-    by_running_app_path_matches, new_cpu_limiter_rule, process_setting_matches,
+    new_cpu_limiter_rule, process_setting_matches, selector_path_matches,
 };
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
@@ -119,7 +119,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                 if let Some(guid) = guid {
                     if let Some(r) = rules
                         .iter_mut()
-                        .find(|r| process_setting_matches(&r.executable_path, &path))
+                        .find(|r| selector_path_matches(&r.selector, &path))
                     {
                         r.enabled = true;
                         r.power_plan_guid = Some(guid);
@@ -130,14 +130,14 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                         ));
                     }
                 } else {
-                    rules.retain(|r| !process_setting_matches(&r.executable_path, &path));
+                    rules.retain(|r| !selector_path_matches(&r.selector, &path));
                 }
             } else {
                 let rules = &mut s.by_running_app.rules;
                 if let Some(guid) = guid {
                     if let Some(r) = rules
                         .iter_mut()
-                        .find(|r| by_running_app_path_matches(r, &path))
+                        .find(|r| selector_path_matches(&r.selector, &path))
                     {
                         r.enabled = true;
                         r.power_plan_guid = Some(guid);
@@ -148,7 +148,7 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
                         ));
                     }
                 } else {
-                    rules.retain(|r| !by_running_app_path_matches(r, &path));
+                    rules.retain(|r| !selector_path_matches(&r.selector, &path));
                 }
             }
         }
@@ -331,13 +331,13 @@ pub(super) fn view<'a>(
                 s.by_focus
                     .rules
                     .iter()
-                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+                    .find(|r| r.enabled && selector_path_matches(&r.selector, path))
                     .and_then(|r| r.power_plan_guid.clone())
             } else {
                 s.by_running_app
                     .rules
                     .iter()
-                    .find(|r| r.enabled && by_running_app_path_matches(r, path))
+                    .find(|r| r.enabled && selector_path_matches(&r.selector, path))
                     .and_then(|r| r.power_plan_guid.clone())
             };
             let mut options = vec![Plan(None, t!("common.default").to_string())];
@@ -542,6 +542,38 @@ pub(super) fn view<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn details_focus_plan_only_edits_the_exact_path() {
+        let mut settings = Settings::default();
+        let path = r"C:\Apps\worker.exe";
+        settings.by_focus.rules.push(ByFocusRule {
+            enabled: true,
+            name: "worker.exe".into(),
+            selector: ExecutableSelector::ExactName {
+                executable_name: "worker.exe".into(),
+            },
+            power_plan_guid: Some("name-plan".into()),
+        });
+        let _ = update(
+            &mut settings,
+            path,
+            Message::Power(true, Some("path-plan".into())),
+        );
+        assert_eq!(settings.by_focus.rules.len(), 2);
+        assert!(selector_path_matches(
+            &settings.by_focus.rules[1].selector,
+            path
+        ));
+
+        let _ = update(&mut settings, path, Message::Power(true, None));
+        assert_eq!(settings.by_focus.rules.len(), 1);
+        assert_eq!(
+            settings.by_focus.rules[0].power_plan_guid.as_deref(),
+            Some("name-plan")
+        );
+    }
+
     #[test]
     fn details_priority_edits_do_not_enable_master_or_other_tiers() {
         let mut s = Settings::default();

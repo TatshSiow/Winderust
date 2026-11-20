@@ -541,8 +541,8 @@ by_activity:
   check_interval: "Check Interval"
 
 by_focus:
-  intro_1: "By Focus switches power plans when a specific app is focused."
-  intro_2: "A matching rule with a selected plan takes priority over By Running App, By CPU Load, By Activity, and By Time."
+  intro_1: "Match the focused app by its exact executable path or by its executable name in any folder."
+  intro_2: "The first enabled match with a selected plan takes priority over By Running App, By CPU Load, By Activity, and By Time."
   enable: "Enable By Focus"
 
 by_time:

@@ -897,7 +897,9 @@ fn foreground_lookup_runs_only_for_configured_by_focus() {
     settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "editor.exe".to_owned(),
-        executable_path: String::new(),
+        selector: ExecutableSelector::ExactPath {
+            executable_path: String::new(),
+        },
         power_plan_guid: None,
     });
     assert!(!foreground_lookup_required(&settings));
@@ -905,7 +907,19 @@ fn foreground_lookup_runs_only_for_configured_by_focus() {
     settings.by_focus.rules[0].power_plan_guid = Some("active-guid".to_owned());
     assert!(!foreground_lookup_required(&settings));
 
-    settings.by_focus.rules[0].executable_path = r"C:\Apps\editor.exe".to_owned();
+    settings.by_focus.rules[0].selector = ExecutableSelector::ExactPath {
+        executable_path: "editor.exe".to_owned(),
+    };
+    assert!(!foreground_lookup_required(&settings));
+
+    settings.by_focus.rules[0].selector = ExecutableSelector::ExactPath {
+        executable_path: r"C:\Apps\editor.exe".to_owned(),
+    };
+    assert!(foreground_lookup_required(&settings));
+
+    settings.by_focus.rules[0].selector = ExecutableSelector::ExactName {
+        executable_name: "editor.exe".to_owned(),
+    };
     assert!(foreground_lookup_required(&settings));
 
     settings.by_focus.rules[0].enabled = false;
@@ -961,7 +975,9 @@ fn enabled_empty_rule_features_do_not_poll() {
     settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "Empty".to_owned(),
-        executable_path: " ".to_owned(),
+        selector: ExecutableSelector::ExactPath {
+            executable_path: " ".to_owned(),
+        },
         power_plan_guid: Some("active-guid".to_owned()),
     });
 
@@ -1022,7 +1038,9 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "Chat".to_owned(),
-        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        selector: ExecutableSelector::ExactPath {
+            executable_path: r"C:\Apps\chat.exe".to_owned(),
+        },
         power_plan_guid: Some("active-guid".to_owned()),
     });
 
@@ -2083,7 +2101,9 @@ fn event_driven_power_checks_drop_idle_polling_for_focus_only_rules() {
     settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "chat.exe".to_owned(),
-        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        selector: ExecutableSelector::ExactName {
+            executable_name: "chat.exe".to_owned(),
+        },
         power_plan_guid: Some("active-guid".to_owned()),
     });
 
@@ -2565,9 +2585,11 @@ fn callbacks_deliver_events_for_either_profile_without_polling() {
         profile.by_focus.enabled = true;
         profile.by_focus.rules.push(ByFocusRule {
             enabled: true,
-            executable_path: r"C:\Apps\test.exe".into(),
+            name: String::new(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\test.exe".into(),
+            },
             power_plan_guid: Some("test-plan".into()),
-            ..Default::default()
         });
         assert!(windows_event_watcher_required(&settings));
         lock_unpoisoned(&shared.state).settings = Arc::new(settings.clone());
@@ -2674,7 +2696,9 @@ fn idle_battery_worker_survives_source_changes_without_settings_updates() {
     settings.by_focus.rules.push(ByFocusRule {
         enabled: true,
         name: "nonexistent audit target".into(),
-        executable_path: r"C:\WinderustAuditNonexistent	arget.exe".into(),
+        selector: ExecutableSelector::ExactPath {
+            executable_path: r"C:\WinderustAuditNonexistent	arget.exe".into(),
+        },
         power_plan_guid: Some("invalid-audit-plan".into()),
     });
     assert!(automation_worker_required(&settings));

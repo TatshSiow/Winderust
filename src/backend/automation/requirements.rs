@@ -535,10 +535,11 @@ pub(super) fn controller_activity_poll_required(settings: &Settings) -> bool {
 
 pub(super) fn by_focus_required(settings: &Settings) -> bool {
     settings.by_focus.enabled
-        && (settings.by_focus.rules.iter().any(|rule| {
-            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && rule.power_plan_guid.is_some()
-        }))
+        && settings
+            .by_focus
+            .rules
+            .iter()
+            .any(|rule| rule.configured_plan().is_some())
 }
 
 pub(super) fn foreground_lookup_required(settings: &Settings) -> bool {

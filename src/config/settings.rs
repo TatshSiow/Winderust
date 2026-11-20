@@ -359,16 +359,32 @@ pub struct ByFocusSettings {
     pub rules: Vec<ByFocusRule>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByFocusRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub executable_path: String,
+    #[serde(flatten)]
+    pub selector: ExecutableSelector,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
+}
+
+impl ByFocusRule {
+    pub(crate) fn configured_plan(&self) -> Option<&str> {
+        self.power_plan_guid.as_deref().filter(|_| {
+            self.enabled
+                && match &self.selector {
+                    ExecutableSelector::ExactPath { executable_path } => {
+                        Path::new(executable_path.trim()).is_absolute()
+                    }
+                    ExecutableSelector::ExactName { executable_name } => {
+                        !executable_name.is_empty()
+                    }
+                }
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

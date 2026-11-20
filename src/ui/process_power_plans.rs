@@ -5,7 +5,7 @@ pub(super) use preview::PreviewMessage;
 use super::widgets::{self, checkbox};
 use crate::ui::scrolling::scrollable;
 use crate::{
-    config::{ByRunningAppRule, ByRunningAppSettings, ExecutableSelector, Settings},
+    config::{ByFocusRule, ByRunningAppRule, ExecutableSelector, Settings},
     power::PowerPlan,
     ui::process_rules::*,
 };
@@ -83,7 +83,7 @@ impl Editor {
         };
         // Both pages have the same rule editor, but keep their distinct typed settings and policies.
         macro_rules! update_rules {
-            ($field:ident, $can_add:ident, $new_rule:ident) => {{
+            ($field:ident, $can_add_path:ident, $can_add_name:ident, $new_rule:ident, $rule:ident) => {{
                 let feature = &mut settings.$field;
                 match message {
                     Message::Enabled(value) => feature.enabled = value,
@@ -93,16 +93,14 @@ impl Editor {
                     Message::Browse => {}
                     Message::Preview(_) => unreachable!("preview messages do not edit rules"),
                     Message::Add => {
-                        if $can_add(feature, &self.path) {
+                        if $can_add_path(feature, &self.path) {
                             feature.rules.push($new_rule(&self.path, active_plan()));
                             self.path.clear();
                         }
                     }
                     Message::AddName => {
-                        if kind == Kind::RunningApp
-                            && can_add_by_running_app_name(&settings.by_running_app, &self.name)
-                        {
-                            settings.by_running_app.rules.push(ByRunningAppRule {
+                        if $can_add_name(feature, &self.name) {
+                            feature.rules.push($rule {
                                 enabled: true,
                                 name: self.name.clone(),
                                 selector: ExecutableSelector::ExactName {
@@ -131,17 +129,25 @@ impl Editor {
             }};
         }
         match kind {
-            Kind::Focus => update_rules!(by_focus, can_add_by_focus_process, new_by_focus_rule),
+            Kind::Focus => update_rules!(
+                by_focus,
+                can_add_by_focus_process,
+                can_add_by_focus_name,
+                new_by_focus_rule,
+                ByFocusRule
+            ),
             Kind::RunningApp => update_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
-                new_by_running_app_rule
+                can_add_by_running_app_name,
+                new_by_running_app_rule,
+                ByRunningAppRule
             ),
         }
     }
 
-    fn name_input(&self, settings: &ByRunningAppSettings) -> Element<'static, Message> {
-        let add = can_add_by_running_app_name(settings, &self.name).then_some(Message::AddName);
+    fn name_input(&self, can_add: bool) -> Element<'static, Message> {
+        let add = can_add.then_some(Message::AddName);
         row![
             widgets::text_input("app.exe", &self.name)
                 .on_input(Message::Name)
@@ -170,7 +176,7 @@ impl Editor {
             Kind::RunningApp => crate::rules::DecisionState::ByRunningApp,
         };
         macro_rules! render_rules {
-            ($field:ident, $can_add:ident, $enable:literal, |$rule:ident| $target:expr) => {{
+            ($field:ident, $can_add_path:ident, $can_add_name:ident, $enable:literal) => {{
                 let feature = &settings.$field;
                 let mut body = column![super::widgets::toggle_card(
                     $enable,
@@ -178,9 +184,8 @@ impl Editor {
                     Some(Message::Enabled)
                 ),]
                 .spacing(super::widgets::CARD_GAP);
-                let input = if kind == Kind::RunningApp && self.match_by == MatchBy::ExecutableName
-                {
-                    self.name_input(&settings.by_running_app)
+                let input = if self.match_by == MatchBy::ExecutableName {
+                    self.name_input($can_add_name(feature, &self.name))
                 } else {
                     super::app_picker::view(
                         &self.path,
@@ -188,42 +193,38 @@ impl Editor {
                         true,
                         Message::Path,
                         Message::Browse,
-                        ($can_add(feature, &self.path)).then_some(Message::Add),
-                        |path| $can_add(feature, path).then_some(true),
+                        ($can_add_path(feature, &self.path)).then_some(Message::Add),
+                        |path| $can_add_path(feature, path).then_some(true),
                     )
                 };
-                let input = if kind == Kind::RunningApp {
-                    widgets::settings_card(widgets::settings_rows([
-                        widgets::setting_row(
-                            "common.match_by",
-                            widgets::pick_list(
-                                vec![MatchBy::ExecutablePath, MatchBy::ExecutableName],
-                                Some(self.match_by),
-                                Message::MatchBy,
-                            )
-                            .width(super::design::SELECT_WIDTH),
+                let input = widgets::settings_card(widgets::settings_rows([
+                    widgets::setting_row(
+                        "common.match_by",
+                        widgets::pick_list(
+                            vec![MatchBy::ExecutablePath, MatchBy::ExecutableName],
+                            Some(self.match_by),
+                            Message::MatchBy,
                         )
-                        .into(),
-                        input,
-                    ]))
-                    .into()
-                } else {
-                    input
-                };
+                        .width(super::design::SELECT_WIDTH),
+                    )
+                    .into(),
+                    input,
+                ]));
                 let mut rules_body = column![input].spacing(widgets::CARD_GAP);
                 let mut cards = Vec::new();
-                for (index, $rule) in feature.rules.iter().enumerate() {
-                    let (target, is_path) = $target;
+                for (index, rule) in feature.rules.iter().enumerate() {
+                    let target = rule.selector.value();
+                    let is_path = rule.selector.exact_path().is_some();
                     let selector =
-                        widgets::plan($rule.power_plan_guid.as_deref(), plans, move |guid| {
+                        widgets::plan(rule.power_plan_guid.as_deref(), plans, move |guid| {
                             Message::Plan(index, guid)
                         });
                     let key = super::power_rules::power_rule_status(
-                        master_enabled && feature.enabled && $rule.enabled,
+                        master_enabled && feature.enabled && rule.enabled,
                         !target.trim().is_empty(),
                         status.rule_index == Some(index),
                         state,
-                        [$rule.power_plan_guid.as_deref(), None],
+                        [rule.power_plan_guid.as_deref(), None],
                         status,
                     );
                     let chip = iced::widget::container(iced::widget::text(t!(key).to_string()))
@@ -246,7 +247,7 @@ impl Editor {
                             widgets::process_rule_header_with_target(
                                 app,
                                 location,
-                                checkbox($rule.enabled)
+                                checkbox(rule.enabled)
                                     .on_toggle_maybe(Some(move |value| {
                                         Message::RuleEnabled(index, value)
                                     }))
@@ -293,14 +294,14 @@ impl Editor {
             Kind::Focus => render_rules!(
                 by_focus,
                 can_add_by_focus_process,
-                "by_focus.enable",
-                |rule| (rule.executable_path.as_str(), true)
+                can_add_by_focus_name,
+                "by_focus.enable"
             ),
             Kind::RunningApp => render_rules!(
                 by_running_app,
                 can_add_by_running_app_process,
-                "by_running_app.enable",
-                |rule| (rule.selector.value(), rule.selector.exact_path().is_some())
+                can_add_by_running_app_name,
+                "by_running_app.enable"
             ),
         }
     }
@@ -311,28 +312,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn running_app_name_rules_allow_overlapping_paths_and_reject_duplicate_names() {
-        let mut settings = Settings::default();
-        let mut editor = Editor::default();
+    fn name_rules_allow_overlapping_paths_and_reject_duplicate_names() {
         let path = r"C:\Apps\worker.exe";
-        for message in [
-            Message::Path(path.into()),
-            Message::Add,
-            Message::MatchBy(MatchBy::ExecutableName),
-            Message::Name(path.into()),
-            Message::AddName,
-            Message::Name("worker.exe".into()),
-            Message::AddName,
-            Message::Name("WORKER.EXE".into()),
-            Message::AddName,
-        ] {
-            editor.update(Kind::RunningApp, &mut settings, &[], message);
+        for kind in [Kind::Focus, Kind::RunningApp] {
+            let mut settings = Settings::default();
+            let mut editor = Editor::default();
+            for message in [
+                Message::Path(path.into()),
+                Message::Add,
+                Message::MatchBy(MatchBy::ExecutableName),
+                Message::Name(path.into()),
+                Message::AddName,
+                Message::Name("worker.exe".into()),
+                Message::AddName,
+                Message::Name("WORKER.EXE".into()),
+                Message::AddName,
+            ] {
+                editor.update(kind, &mut settings, &[], message);
+            }
+            let selectors: Vec<_> = match kind {
+                Kind::Focus => {
+                    assert!(settings.by_running_app.rules.is_empty());
+                    settings
+                        .by_focus
+                        .rules
+                        .iter()
+                        .map(|rule| &rule.selector)
+                        .collect()
+                }
+                Kind::RunningApp => {
+                    assert!(settings.by_focus.rules.is_empty());
+                    settings
+                        .by_running_app
+                        .rules
+                        .iter()
+                        .map(|rule| &rule.selector)
+                        .collect()
+                }
+            };
+            assert_eq!(selectors.len(), 2);
+            assert!(selector_path_matches(selectors[0], path));
+            assert_eq!(selectors[1].exact_path(), None);
+            assert_eq!(selectors[1].value(), "worker.exe");
         }
-        let rules = &settings.by_running_app.rules;
-        assert_eq!(rules.len(), 2);
-        assert!(by_running_app_path_matches(&rules[0], path));
-        assert!(!by_running_app_path_matches(&rules[1], path));
-        assert_eq!(rules[1].selector.value(), "worker.exe");
     }
 
     #[test]

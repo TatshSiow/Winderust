@@ -1649,7 +1649,7 @@ impl RuntimeCore {
             .then(|| observations.foreground_process())
             .flatten()
             .filter(|process| process_is_critical(process.id) == Some(false))
-            .map(|process| process.executable_path.to_string_lossy().into_owned());
+            .map(|process| process.executable_path);
         let by_time_decision = current_by_time_decision(&settings.by_time);
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler

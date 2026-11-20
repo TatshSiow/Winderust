@@ -250,45 +250,50 @@ fn watchdog_settings_persist_optional_durations_and_reject_invalid_rules() {
 }
 
 #[test]
-fn by_running_app_keeps_flat_selectors_on_both_power_profiles() {
-    let path = Path::new("by-running-app.toml");
-    let mut settings = Settings::default();
-    settings.by_running_app.rules.push(
-        toml::from_str("executable_path = 'game.exe'\npower_plan_guid = 'gaming-guid'").unwrap(),
-    );
-    settings.battery_profile_mut().by_running_app.rules =
-        vec![
-            toml::from_str("executable_name = 'Game Tool.exe'\npower_plan_guid = 'gaming-guid'")
-                .unwrap(),
-        ];
+fn process_power_plan_rules_keep_flat_selectors_on_both_power_profiles() {
+    let path = Path::new("power-plan-rules.toml");
+    let path_rule = "executable_path = 'C:/Apps/game.exe'\npower_plan_guid = 'gaming-guid'";
+    let name_rule = "executable_name = 'Game Tool.exe'\npower_plan_guid = 'gaming-guid'";
+    for mode in ["By Focus", "By Running App"] {
+        let mut settings = Settings::default();
+        if mode == "By Focus" {
+            settings.by_focus.rules = vec![toml::from_str(path_rule).unwrap()];
+            settings.battery_profile_mut().by_focus.rules =
+                vec![toml::from_str(name_rule).unwrap()];
+        } else {
+            settings.by_running_app.rules = vec![toml::from_str(path_rule).unwrap()];
+            settings.battery_profile_mut().by_running_app.rules =
+                vec![toml::from_str(name_rule).unwrap()];
+        }
 
-    let raw = toml::to_string(&settings).unwrap();
-    assert!(raw.contains("executable_path = \"game.exe\""));
-    assert!(raw.contains("executable_name = \"Game Tool.exe\""));
-    assert_eq!(parse_toml_settings(path, &raw).unwrap(), settings);
+        let raw = toml::to_string(&settings).unwrap();
+        assert!(raw.contains("executable_path = \"C:/Apps/game.exe\""));
+        assert!(raw.contains("executable_name = \"Game Tool.exe\""));
+        assert_eq!(parse_toml_settings(path, &raw).unwrap(), settings);
 
-    for (changed, expected_error) in [
-        (
-            raw.replace(
-                "executable_name = \"Game Tool.exe\"",
-                "executable_name = \"Game Tool.exe\"\nexecutable_path = \"game.exe\"",
+        for (changed, expected_error) in [
+            (
+                raw.replace(
+                    "executable_name = \"Game Tool.exe\"",
+                    "executable_name = \"Game Tool.exe\"\nexecutable_path = \"C:/Apps/game.exe\"",
+                ),
+                "exactly one executable path or executable name".to_owned(),
             ),
-            "exactly one executable path or executable name",
-        ),
-        (
-            raw.replace("executable_name = \"Game Tool.exe\"\n", ""),
-            "exactly one executable path or executable name",
-        ),
-        (
-            raw.replace(
-                "executable_name = \"Game Tool.exe\"",
-                "executable_name = \"*.exe\"",
+            (
+                raw.replace("executable_name = \"Game Tool.exe\"\n", ""),
+                "exactly one executable path or executable name".to_owned(),
             ),
-            "By Running App requires an exact executable filename",
-        ),
-    ] {
-        let error = parse_toml_settings(path, &changed).unwrap_err();
-        assert!(error.contains(expected_error), "{error}");
+            (
+                raw.replace(
+                    "executable_name = \"Game Tool.exe\"",
+                    "executable_name = \"*.exe\"",
+                ),
+                format!("{mode} requires an exact executable filename"),
+            ),
+        ] {
+            let error = parse_toml_settings(path, &changed).unwrap_err();
+            assert!(error.contains(&expected_error), "{error}");
+        }
     }
 }
 
@@ -940,13 +945,17 @@ fn toml_round_trip_preserves_settings() {
                 ByFocusRule {
                     enabled: true,
                     name: "Game plan".to_owned(),
-                    executable_path: "game.exe".to_owned(),
+                    selector: crate::config::ExecutableSelector::ExactPath {
+                        executable_path: "game.exe".to_owned(),
+                    },
                     power_plan_guid: Some("gaming-guid".to_owned()),
                 },
                 ByFocusRule {
                     enabled: false,
                     name: "Backup plan".to_owned(),
-                    executable_path: "backup\\tool.exe".to_owned(),
+                    selector: crate::config::ExecutableSelector::ExactPath {
+                        executable_path: "backup\\tool.exe".to_owned(),
+                    },
                     power_plan_guid: Some("backup-guid".to_owned()),
                 },
             ],

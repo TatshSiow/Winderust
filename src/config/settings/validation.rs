@@ -16,10 +16,20 @@ impl Settings {
         for profile in self.profiles() {
             profile.app_suspension.validate()?;
             profile.sleep_prevention.validate()?;
-            for rule in &profile.by_running_app.rules {
-                if let ExecutableSelector::ExactName { executable_name } = &rule.selector {
+            let focus = profile
+                .by_focus
+                .rules
+                .iter()
+                .map(|rule| ("By Focus", &rule.selector));
+            let running = profile
+                .by_running_app
+                .rules
+                .iter()
+                .map(|rule| ("By Running App", &rule.selector));
+            for (mode, selector) in focus.chain(running) {
+                if let ExecutableSelector::ExactName { executable_name } = selector {
                     if !is_valid_executable_name(executable_name) {
-                        return Err("By Running App requires an exact executable filename.".into());
+                        return Err(format!("{mode} requires an exact executable filename."));
                     }
                 }
             }

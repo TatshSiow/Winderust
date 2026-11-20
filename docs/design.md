@@ -184,12 +184,13 @@ hover/press; background shading supplies feedback.
 - The Power Plan Control side panel's Status tab shows the active Windows plan,
   the current automation decision, and lower-priority modes that also selected
   a plan in the same pass. The current-plan card stays compact.
-- By Running App defaults to matching an executable path. Executable name rules
-  opt in to matching the same filename across paths. Preview matches lists the
-  processes each rule covers, same-name copies outside path rules, and processes
-  with unavailable details. It reports the first eligible rule and its selected
-  power plan using the current editor values. Power Plan Control continues to
-  decide the active Windows plan. Process List edits individual path rules.
+- By Focus and By Running App default to matching an executable path. Executable
+  name rules match the same filename across paths. By Focus evaluates the app with
+  input focus. Process List edits individual path rules.
+- In By Running App, Preview matches lists the processes each rule covers,
+  same-name copies outside path rules, and processes with unavailable details.
+  It reports the first eligible rule and its selected power plan using the
+  current editor values. Power Plan Control decides the active Windows plan.
 - CPU Sets (Soft) and Processor Affinity (Hard) share that rail with compact Status and Presets
   tabs, alongside Info in the shared docked panel.
 - Instance Balancing lives under CPU Control and shares one configuration across
