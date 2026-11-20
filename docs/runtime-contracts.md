@@ -219,9 +219,11 @@ Read the relevant section before changing feature policy, ownership, restoration
   resource's sustained interval. Collection gaps, complete app-instance
   replacement, shared-setting or rule changes, and disable clear stale sustained
   timers. Membership changes keep the app incident while any exact instance
-  survives. New members require a fresh CPU baseline, and a missing member's
-  value breaks that resource's sustained interval. Power-source changes leave
-  Watchdog rules and incident state unchanged.
+  survives. Within a matched group, unavailable protection or resource data
+  breaks the affected sustained intervals. Already-fired responses stay latched
+  while fresh observations confirm an exact member survives. New or unsampled
+  members require a fresh CPU baseline. Power-source changes leave Watchdog rules
+  and incident state unchanged.
 - `RuntimeCore` executes automatic termination through the existing `ProcessTerminationController`, preserving exact identity, protected-process and helper exclusions, current cross-session policy, and Windows access checks. Termination batches all captured matching process identities through the existing preflight, records partial failures, and deduplicates successful targets by PID and creation time across simultaneous CPU/memory events. It has no baseline, recovery entry, or restore path. Failures remain visible in Action Log and status.
 - Restart uses `src/control/process_restart.rs` and `src/platform/windows/process_restart.rs`: validate every captured exact instance, require a non-service app in Winderust's Windows session, reject mixed Windows logons, and create one suspended replacement with the oldest captured instance as its explicit parent before stopping anything. Windows inherits that parent's token, affinity, priority, and job; never substitute Winderust's administrator context. Before stopping originals, require a distinct replacement primary token and copy the original token object's DACL and mandatory label to it; creation from an elevated caller otherwise gives the new token object the caller's security. Failure cancels only the suspended replacement. Use the token user's environment, the executable's parent directory, and no previous arguments. Stop every captured instance, wait at most two seconds total for exact handles to signal, then resume the prepared primary thread once. Failed preflight stops nothing; partial termination or wait failure cancels the suspended replacement and reports the stopped count. Simultaneous CPU/memory restarts deduplicate by captured PID/creation-time set, including failures. Restart events run before simultaneous termination events; completed stops are shared across both actions. Restart is irreversible and has no recovery/restore path.
 - Watchdog starts a 60-second cooldown per exact executable path when a Restart

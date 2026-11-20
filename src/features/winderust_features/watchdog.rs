@@ -91,14 +91,21 @@ struct ResourceState {
     critical: ThresholdState,
 }
 
+impl ResourceState {
+    fn interrupt(&mut self) {
+        self.warning.since = None;
+        self.critical.since = None;
+    }
+}
+
 type ProcessIdentity = (u32, u64);
 type GroupKey<'a> = (Option<ProcessIdentity>, &'a Path);
 type StateKey = (usize, Option<ProcessIdentity>, PathBuf);
 
 #[derive(Default)]
 struct AppState {
-    cpu: BTreeMap<ProcessIdentity, ProcessCpuSample>,
-    last_sample: Option<Instant>,
+    members: BTreeMap<ProcessIdentity, Option<ProcessCpuSample>>,
+    last_observed: Option<Instant>,
     resources: [ResourceState; 2],
 }
 
@@ -252,29 +259,30 @@ impl WatchdogManager {
             });
         for (key, rule, group) in groups {
             let mut matched = Vec::new();
+            let mut members = BTreeMap::new();
             let mut complete = true;
             for process in group {
-                if process.is_critical != Some(false) || process.id == std::process::id() {
+                if process.is_critical == Some(true) || process.id == std::process::id() {
                     snapshot.skipped_processes += 1;
                     continue;
                 }
-                let Some(sample) = samples
-                    .get(&process.id)
-                    .filter(|sample| Some(sample.creation_time) == process.creation_time)
-                else {
+                let sample = samples.get(&process.id).filter(|sample| {
+                    process.is_critical == Some(false)
+                        && Some(sample.creation_time) == process.creation_time
+                });
+                if let Some(creation_time) = process.creation_time {
+                    members.insert((process.id, creation_time), sample.map(|sample| sample.cpu));
+                }
+                let Some(sample) = sample else {
                     complete = false;
                     snapshot.skipped_processes += 1;
                     continue;
                 };
                 matched.push((process, sample));
             }
-            if !complete {
-                snapshot.skipped_processes += matched.len();
+            if members.is_empty() {
                 continue;
             }
-            let Some((first, _)) = matched.first() else {
-                continue;
-            };
             let mut state = self
                 .states
                 .remove(&key)
@@ -291,15 +299,26 @@ impl WatchdogManager {
                 })
                 .unwrap_or_default();
             if state
-                .last_sample
+                .last_observed
                 .is_some_and(|last| now.saturating_duration_since(last) > Duration::from_secs(3))
-                || !matched.iter().any(|(process, sample)| {
-                    state.cpu.contains_key(&(process.id, sample.creation_time))
-                })
+                || !members
+                    .keys()
+                    .any(|identity| state.members.contains_key(identity))
             {
                 // A restarted app cannot inherit the previous app's sustained interval.
                 state = AppState::default();
             }
+            // Catalog identity preserves the incident when a member's CPU baseline is unavailable.
+            let previous_members = std::mem::replace(&mut state.members, members);
+            state.last_observed = Some(now);
+            let Some((first, _)) = matched.first().filter(|_| complete) else {
+                for thresholds in &mut state.resources {
+                    thresholds.interrupt();
+                }
+                snapshot.skipped_processes += matched.len();
+                states.insert(key, state);
+                continue;
+            };
             snapshot.monitored_processes += matched.len();
             let delay =
                 Duration::from_secs(rule.sustained_seconds.unwrap_or(settings.sustained_seconds));
@@ -322,7 +341,10 @@ impl WatchdogManager {
                 let value = matched.iter().try_fold(0.0, |total, (process, sample)| {
                     metric_value(
                         metric,
-                        state.cpu.get(&(process.id, sample.creation_time)).copied(),
+                        previous_members
+                            .get(&(process.id, sample.creation_time))
+                            .copied()
+                            .flatten(),
                         sample,
                         total_memory,
                     )
@@ -403,16 +425,10 @@ impl WatchdogManager {
                     }
                     alerting |= thresholds.warning.fired || thresholds.critical.fired;
                 } else {
-                    thresholds.warning.since = None;
-                    thresholds.critical.since = None;
+                    thresholds.interrupt();
                     skipped = true;
                 }
             }
-            state.cpu = matched
-                .iter()
-                .map(|(process, sample)| ((process.id, sample.creation_time), sample.cpu))
-                .collect();
-            state.last_sample = Some(now);
             snapshot.alerting_processes += if alerting { matched.len() } else { 0 };
             snapshot.skipped_processes += if skipped { matched.len() } else { 0 };
             states.insert(key, state);
@@ -1178,6 +1194,67 @@ mod tests {
                     .evaluate(&settings, &processes, &samples, Some(1000), now)
                     .1;
                 assert_eq!(events.len(), usize::from(second == 4));
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_criticality_breaks_the_combined_low_usage_interval() {
+        let mut settings = settings();
+        let monitor = &mut settings.rules[0].memory;
+        monitor.comparison = WatchdogComparison::AtOrBelow;
+        monitor.warning.threshold = 30;
+        monitor.critical.threshold = 20;
+        let mut processes = [process(), process()];
+        processes[1].id += 1;
+        let mut manager = WatchdogManager::default();
+        let start = Instant::now();
+        for second in 0..5 {
+            processes[1].is_critical = (second != 1).then_some(false);
+            let now = start + Duration::from_secs(second);
+            let samples = processes
+                .iter()
+                .flat_map(|process| sample(process, now, Some(100)))
+                .collect();
+            let (snapshot, events) =
+                manager.evaluate(&settings, &processes, &samples, Some(1000), now);
+            if second == 1 {
+                assert_eq!(snapshot.skipped_processes, 2);
+            }
+            assert_eq!(events.len(), usize::from(second == 4));
+        }
+    }
+
+    #[test]
+    fn missing_samples_preserve_fired_incidents_for_observed_exact_identities() {
+        for scope in [WatchdogScope::Combined, WatchdogScope::PerInstance] {
+            let mut settings = settings();
+            let rule = &mut settings.rules[0];
+            rule.scope = scope;
+            if scope == WatchdogScope::Combined {
+                rule.memory.critical.action = WatchdogAction::Terminate;
+            }
+            let mut manager = WatchdogManager::default();
+            let mut process = process();
+            let start = Instant::now();
+            for second in 0..10 {
+                if second == 7 {
+                    process.creation_time = Some(20);
+                }
+                let now = start + Duration::from_secs(second);
+                let samples = if second == 3 {
+                    BTreeMap::new()
+                } else {
+                    sample(&process, now, Some(950))
+                };
+                let (_, events) = manager.evaluate(
+                    &settings,
+                    std::slice::from_ref(&process),
+                    &samples,
+                    Some(1000),
+                    now,
+                );
+                assert_eq!(events.len(), usize::from(matches!(second, 2 | 9)));
             }
         }
     }
