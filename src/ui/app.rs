@@ -815,6 +815,14 @@ impl WinderustApp {
             _ if review_open => Some(Message::PowerTuning(
                 advanced_power_plan_tuning::Message::CancelApply,
             )),
+            Page::ByRunningApp if self.running_app_plans.preview_open() => {
+                Some(Message::ProcessPowerPlans(
+                    process_power_plans::Kind::RunningApp,
+                    process_power_plans::Message::Preview(
+                        process_power_plans::PreviewMessage::Close,
+                    ),
+                ))
+            }
             Page::Watchdog if self.watchdog.has_pending_editor() => {
                 Some(Message::Watchdog(watchdog::Message::CancelRule))
             }
@@ -1607,6 +1615,15 @@ impl WinderustApp {
                     process_power_plans::Kind::RunningApp => Page::ByRunningApp,
                 });
             }
+            Message::ProcessPowerPlans(kind, process_power_plans::Message::Preview(message)) => {
+                if kind == process_power_plans::Kind::RunningApp && self.page == Page::ByRunningApp
+                {
+                    return self
+                        .running_app_plans
+                        .update_preview(&self.settings, message)
+                        .map(move |message| Message::ProcessPowerPlans(kind, message));
+                }
+            }
             Message::ProcessPowerPlans(kind, message) => {
                 let editor = match kind {
                     process_power_plans::Kind::Focus => &mut self.focus_plans,
@@ -1798,6 +1815,7 @@ impl WinderustApp {
             Message::Page(page) => {
                 self.preferences.dismiss_picker();
                 self.time_rules.dismiss_picker();
+                self.running_app_plans.close_preview();
                 self.preferences.hotkey_capture = None;
                 self.navigation_history.visit(page);
                 self.side_panel_tab = SidePanelTab::for_page(page)[0];
@@ -2648,6 +2666,14 @@ impl WinderustApp {
                 ]),
             ]
             .into();
+        }
+        if let Some(preview) = self.running_app_plans.preview_modal(&self.power_plans) {
+            return centered_modal(
+                content,
+                preview.map(|message| {
+                    Message::ProcessPowerPlans(process_power_plans::Kind::RunningApp, message)
+                }),
+            );
         }
         if self.page == Page::ProcessList && self.processes.context_open() {
             iced::widget::stack![

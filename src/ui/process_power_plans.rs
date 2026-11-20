@@ -1,3 +1,7 @@
+mod preview;
+
+pub(super) use preview::PreviewMessage;
+
 use super::widgets::{self, checkbox};
 use crate::ui::scrolling::scrollable;
 use crate::{config::Settings, power::PowerPlan, ui::process_rules::*};
@@ -20,14 +24,40 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     Plan(usize, Option<String>),
     Remove(usize),
+    Preview(PreviewMessage),
 }
 
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
+    preview: preview::Preview,
 }
 
 impl Editor {
+    pub(super) fn update_preview(
+        &mut self,
+        settings: &Settings,
+        message: PreviewMessage,
+    ) -> iced::Task<Message> {
+        self.preview
+            .update(&settings.by_running_app, message)
+            .map(Message::Preview)
+    }
+
+    pub(super) fn preview_open(&self) -> bool {
+        self.preview.is_open()
+    }
+
+    pub(super) fn close_preview(&mut self) {
+        self.preview.close();
+    }
+
+    pub(super) fn preview_modal<'a>(&'a self, plans: &[PowerPlan]) -> Option<Element<'a, Message>> {
+        self.preview
+            .view(plans)
+            .map(|modal| modal.map(Message::Preview))
+    }
+
     pub(super) fn update(
         &mut self,
         kind: Kind,
@@ -35,6 +65,7 @@ impl Editor {
         plans: &[PowerPlan],
         message: Message,
     ) {
+        self.close_preview();
         // Both pages have the same rule editor, but keep their distinct typed settings and policies.
         macro_rules! update_rules {
             ($field:ident, $can_add:ident, $new_rule:ident) => {{
@@ -43,6 +74,7 @@ impl Editor {
                     Message::Enabled(value) => settings.enabled = value,
                     Message::Path(path) => self.path = path,
                     Message::Browse => {}
+                    Message::Preview(_) => unreachable!("preview messages do not edit rules"),
                     Message::Add => {
                         if $can_add(settings, &self.path) {
                             settings.rules.push($new_rule(
@@ -163,9 +195,21 @@ impl Editor {
                     80,
                     true,
                 ));
-                body = body
-                    .push(widgets::setting_title("common.rules"))
-                    .push(rules_body);
+                let heading: Element<'a, Message> = if kind == Kind::RunningApp {
+                    widgets::setting_row(
+                        "common.rules",
+                        widgets::action_button(t!("by_running_app.preview").to_string())
+                            .style(widgets::secondary_button)
+                            .on_press_maybe(
+                                (!settings.rules.is_empty())
+                                    .then_some(Message::Preview(PreviewMessage::Load)),
+                            ),
+                    )
+                    .into()
+                } else {
+                    widgets::setting_title("common.rules")
+                };
+                body = body.push(heading).push(rules_body);
                 scrollable(body).height(Fill).into()
             }};
         }
