@@ -101,6 +101,36 @@ struct PresetEditor {
     invalid_percentages: InvalidPercentages,
 }
 
+impl PresetEditor {
+    fn has_inverted_range(&self) -> bool {
+        self.values.processor.performance_max < self.values.processor.performance_min
+    }
+
+    fn can_save(&self, presets: &[AdvancedPowerPlanTuningPreset], index: Option<usize>) -> bool {
+        valid_name(presets, index, &self.name)
+            && !self.invalid_percentages.any()
+            && !self.has_inverted_range()
+    }
+
+    fn feedback(&self, field: Field) -> Option<iced::widget::Text<'static>> {
+        self.invalid_percentages.feedback(field).or_else(|| {
+            (matches!(field, Field::Maximum)
+                && self.invalid_percentages.0[Field::Minimum as usize].is_none()
+                && self.has_inverted_range())
+            .then(|| {
+                text(
+                    t!(
+                        "processor_power.invalid_preset_processor_max",
+                        minimum = self.values.processor.performance_min
+                    )
+                    .to_string(),
+                )
+                .style(text::danger)
+            })
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApplyOrigin {
     Page,
@@ -663,7 +693,7 @@ impl Editor {
             Message::SavePreset => {
                 if let Some(p) = &self.preset {
                     if let PresetTarget::Custom(index) = p.target {
-                        if valid_name(presets, index, &p.name) && !p.invalid_percentages.any() {
+                        if p.can_save(presets, index) {
                             let value = AdvancedPowerPlanTuningPreset {
                                 name: p.name.trim().to_string(),
                                 values: p.values.normalized(),
@@ -991,7 +1021,7 @@ impl Editor {
                     ),
                 )]
                 .spacing(design::space::SMALL)
-                .extend(p.invalid_percentages.feedback(field).map(Element::from))
+                .extend(p.feedback(field).map(Element::from))
                 .into(),
             );
         }
@@ -1052,10 +1082,7 @@ impl Editor {
             footer = footer.push(
                 action_button(t!("common.save").to_string())
                     .style(widgets::primary_button)
-                    .on_press_maybe(
-                        (valid_name(presets, index, &p.name) && !p.invalid_percentages.any())
-                            .then_some(Message::SavePreset),
-                    ),
+                    .on_press_maybe(p.can_save(presets, index).then_some(Message::SavePreset)),
             );
         }
         Some(widgets::modal_frame(
@@ -1505,7 +1532,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_preset_percentage_refuses_save_without_changing_the_page_draft() {
+    fn invalid_preset_values_refuse_save_without_changing_the_page_draft() {
         let mut editor = Editor::default();
         let mut presets = vec![];
         editor.update(
@@ -1523,13 +1550,38 @@ mod tests {
         editor.update(&mut presets, &[], Message::SavePreset);
         assert!(presets.is_empty());
         assert!(editor.preset.is_some());
+        for (field, value) in [
+            (Field::Boost, "80"),
+            (Field::Minimum, "25"),
+            (Field::Maximum, "10"),
+        ] {
+            editor.update(
+                &mut presets,
+                &[],
+                Message::PresetValueText(field, value.into()),
+            );
+        }
+        editor.update(&mut presets, &[], Message::SavePreset);
+        assert!(presets.is_empty());
+        assert_eq!(
+            editor
+                .preset
+                .as_ref()
+                .unwrap()
+                .values
+                .processor
+                .performance_max,
+            10
+        );
         editor.update(
             &mut presets,
             &[],
-            Message::PresetValueText(Field::Boost, "80".into()),
+            Message::PresetValueText(Field::Minimum, "10".into()),
         );
         editor.update(&mut presets, &[], Message::SavePreset);
         assert_eq!(presets[0].values.processor.boost_policy, 80);
+        assert_eq!(presets[0].values.processor.performance_min, 10);
+        assert_eq!(presets[0].values.processor.performance_max, 10);
         assert!(
             editor.has_invalid_inputs(),
             "preset Save must leave the page draft alone"

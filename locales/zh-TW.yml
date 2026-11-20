@@ -450,6 +450,7 @@ settings:
 
 processor_power:
   invalid_percentage: "請輸入 0 到 100 的整數百分比。"
+  invalid_preset_processor_max: "處理器最大值不得低於 %{minimum}%。"
   scheduling_policy: "長時間執行緒排程原則"
   scheduling_policy_help: "混合架構處理器上長時間執行緒的處理器偏好。「自動」由 Windows 依系統設定與服務品質（QoS）決定。"
   short_scheduling_policy: "短時間執行緒排程原則"
