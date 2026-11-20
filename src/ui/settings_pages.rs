@@ -19,7 +19,7 @@ pub(super) struct Editor {
     notify_on_update: bool,
     pub(super) latest: Option<String>,
     pub(super) download: Option<String>,
-    pub(super) update_error: Option<String>,
+    update_failed: bool,
     pub(super) show_update: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +82,7 @@ pub(super) enum Message {
     Channel(UpdateChannel),
     Check,
     CheckStartup,
-    Checked(UpdateChannel, Result<(String, Option<String>), String>),
+    Checked(UpdateChannel, Result<(String, Option<String>), ()>),
     Open(String),
     Export,
     Import,
@@ -117,9 +117,12 @@ impl Editor {
         self.hotkey_capture = None;
         self.color = None;
         self.failure_threshold = None;
+    }
+
+    pub(super) fn clear_update_result(&mut self) {
         self.latest = None;
         self.download = None;
-        self.update_error = None;
+        self.update_failed = false;
         self.show_update = false;
     }
 
@@ -129,15 +132,15 @@ impl Editor {
         }
         self.checking = true;
         self.notify_on_update = automatic;
-        self.update_error = None;
+        self.update_failed = false;
         true
     }
 
     fn update_status(&self) -> std::borrow::Cow<'_, str> {
         if self.checking {
             t!("about.checking")
-        } else if let Some(error) = &self.update_error {
-            error.as_str().into()
+        } else if self.update_failed {
+            t!("about.update_check_failed")
         } else if self.download.is_some() {
             t!("about.update_available")
         } else if self.latest.is_some() {
@@ -188,9 +191,9 @@ impl Editor {
                         self.latest = Some(version);
                         self.show_update = self.notify_on_update && url.is_some();
                         self.download = url;
-                        self.update_error = None;
+                        self.update_failed = false;
                     }
-                    Err(error) => self.update_error = Some(error),
+                    Err(()) => self.update_failed = true,
                 }
             }
             _ => unreachable!("Only UI preference messages belong in update_ui"),
@@ -319,11 +322,10 @@ impl Editor {
                 self.failure_threshold = Some(value);
             }
             Message::Channel(value) => {
-                s.general.update_channel = value;
-                self.latest = None;
-                self.download = None;
-                self.update_error = None;
-                self.show_update = false;
+                if s.general.update_channel != value {
+                    s.general.update_channel = value;
+                    self.clear_update_result();
+                }
             }
             Message::Check | Message::CheckStartup => {}
             Message::Checked(..) | Message::DismissUpdate | Message::ToggleAccent => {
@@ -1222,11 +1224,8 @@ mod tests {
         assert!(!editor.show_update);
         assert!(editor.begin_check(false));
         assert_eq!(editor.update_status(), t!("about.checking"));
-        editor.update_ui(
-            channel,
-            Message::Checked(channel, Err("Test failure".into())),
-        );
-        assert_eq!(editor.update_status(), "Test failure");
+        editor.update_ui(channel, Message::Checked(channel, Err(())));
+        assert_eq!(editor.update_status(), t!("about.update_check_failed"));
         assert!(editor.download.is_some());
         assert!(editor.begin_check(false));
         assert_eq!(editor.update_status(), t!("about.checking"));
@@ -1388,21 +1387,24 @@ mod tests {
         assert!(!editor.has_invalid_inputs());
     }
     #[test]
-    fn resetting_drafts_preserves_in_flight_update_check() {
+    fn resetting_drafts_preserves_update_check_state() {
         let mut e = Editor {
             color: Some("#123456".into()),
             checking: true,
             notify_on_update: true,
             latest: Some("1.0.0".into()),
             download: Some("https://example.com".into()),
-            update_error: Some("error".into()),
+            update_failed: true,
             show_update: true,
             ..Editor::default()
         };
         e.reset_drafts();
         assert!(e.checking && e.notify_on_update);
-        assert!(e.color.is_none() && e.latest.is_none() && e.download.is_none());
-        assert!(e.update_error.is_none() && !e.show_update);
+        assert!(e.color.is_none());
+        assert_eq!(e.latest.as_deref(), Some("1.0.0"));
+        assert_eq!(e.download.as_deref(), Some("https://example.com"));
+        assert!(e.update_failed);
+        assert!(e.show_update);
     }
 
     #[test]
@@ -1473,6 +1475,9 @@ mod tests {
                 Ok(("1.0".into(), Some("https://example.com".into()))),
             ),
         );
+        assert!(e.show_update);
+        e.update(&mut s, Message::Channel(channel));
+        assert_eq!(e.latest.as_deref(), Some("1.0"));
         assert!(e.show_update);
         assert!(e.begin_check(true));
         let other = if channel == UpdateChannel::Stable {

@@ -21,7 +21,7 @@ use rust_i18n::t;
 
 use crate::application::SettingsEditor;
 use crate::automation::{RuntimeCommandError, RuntimeHandle, RuntimeStatusSnapshot};
-use crate::config::PowerSourceProfile;
+use crate::config::{PowerSourceProfile, UpdateChannel};
 use crate::control::power_plan::ManualPowerPlanError;
 use crate::ui::Page;
 use crate::SingleInstanceRestoreEvent;
@@ -1187,18 +1187,15 @@ impl WinderustApp {
                 return tasks::run(move || {
                     crate::update_checker::check(channel)
                         .map(|r| (r.latest_version, r.available_update.map(|u| u.url)))
-                        .map_err(|error| {
-                            crate::backend::diagnostics::error(&format!(
-                                "Update check failed: {error}"
-                            ));
-                            t!("about.update_check_failed").to_string()
-                        })
+                        .map_err(|error| error.to_string())
                 })
-                .map(move |r| {
-                    Message::Preferences(settings_pages::Message::Checked(
-                        channel,
-                        r.and_then(|r| r),
-                    ))
+                .map(move |result| {
+                    let result = result.and_then(|result| result).map_err(|error| {
+                        crate::backend::diagnostics::error(&format!(
+                            "Update check failed: {error}"
+                        ));
+                    });
+                    Message::Preferences(settings_pages::Message::Checked(channel, result))
                 });
             }
             Message::Preferences(
@@ -2186,13 +2183,12 @@ impl WinderustApp {
             }
             Message::Cancel => {
                 self.power_plan_control.selected_guid = None;
+                let previous_channel = self.settings.global().general.update_channel;
                 self.settings.cancel();
                 if self.power_tuning.dirty {
                     self.power_tuning.refresh(&self.power_plans);
                 }
-                self.reset_editors();
-                rust_i18n::set_locale(self.settings.global().general.language.locale());
-                self.publish_settings();
+                self.settings_replaced(previous_channel);
                 self.closing = false;
             }
             Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
@@ -2236,19 +2232,18 @@ impl WinderustApp {
             Message::SettingsFileChosen(mode, path) => {
                 if let Some(path) = path {
                     match mode {
-                        FileDialogMode::Open => match self.settings.import_toml_from(&path) {
-                            Ok(outcome) => {
-                                self.reset_editors();
-                                if let Some(error) = outcome.startup_registration_error() {
-                                    self.error_message = error.to_string();
+                        FileDialogMode::Open => {
+                            let previous_channel = self.settings.global().general.update_channel;
+                            match self.settings.import_toml_from(&path) {
+                                Ok(outcome) => {
+                                    if let Some(error) = outcome.startup_registration_error() {
+                                        self.error_message = error.to_string();
+                                    }
+                                    self.settings_replaced(previous_channel);
                                 }
-                                rust_i18n::set_locale(
-                                    self.settings.global().general.language.locale(),
-                                );
-                                self.publish_settings();
+                                Err(error) => self.error_message = error.to_string(),
                             }
-                            Err(error) => self.error_message = error.to_string(),
-                        },
+                        }
                         FileDialogMode::Save => {
                             if let Err(error) = self.settings.export_toml_to(&path) {
                                 self.error_message = error.to_string();
@@ -2440,6 +2435,17 @@ impl WinderustApp {
         self.reset_editors();
         true
     }
+
+    fn settings_replaced(&mut self, previous_channel: UpdateChannel) {
+        self.reset_editors();
+        let general = &self.settings.global().general;
+        if general.update_channel != previous_channel {
+            self.preferences.clear_update_result();
+        }
+        rust_i18n::set_locale(general.language.locale());
+        self.publish_settings();
+    }
+
     fn reset_editors(&mut self) {
         self.preferences.reset_drafts();
         self.power_tuning.discard_editor();
@@ -4273,10 +4279,7 @@ mod tests {
         let mut settings = crate::config::Settings::default();
         let channel = settings.general.update_channel;
         assert!(editor.begin_check(false));
-        let completed = Message::Preferences(settings_pages::Message::Checked(
-            channel,
-            Err("fixture".into()),
-        ));
+        let completed = Message::Preferences(settings_pages::Message::Checked(channel, Err(())));
         assert!(completed.allowed_during_exit());
         if let Message::Preferences(message) = completed {
             editor.update(&mut settings, message);

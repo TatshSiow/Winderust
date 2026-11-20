@@ -308,8 +308,8 @@ hover/press; background shading supplies feedback.
 - About shows the author name without inspiration or license prose. Its external-link
   buttons use GitHub and Discord marks, a book for Documentation, and scales for
   License, with icon and label centered within the button. The Updates card retains
-  its controls and version rows,
-  with update status immediately below Update channel.
+  its controls and version rows, with update status immediately below Update channel.
+  The result stays visible until another check or a change to the update channel.
 - Accent palettes wrap to the available width. Time and color pickers use the
   shared application surface, border, accent colors, and labeled Cancel / OK
   actions. By Time keeps editable `HH:MM` fields alongside a 24-hour analog picker.
