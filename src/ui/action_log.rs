@@ -201,8 +201,11 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
         size: iced::Size,
     ) -> Element<'a, Message> {
-        let entries_filtered = action_log_filtered_entries(entries, &self.level, &self.feature);
-        let groups = group_entries(&entries_filtered);
+        let groups = group_entries(action_log_filtered_entries(
+            entries,
+            &self.level,
+            &self.feature,
+        ));
         let count = groups.len();
         let range = visible_log_range(count, self.offset.get(), size.height);
         let header = row![
@@ -341,9 +344,11 @@ impl Editor {
     }
 }
 // Group matching actions throughout each automation pass, newest groups first.
-fn group_entries<'a>(entries: &[&'a ActionLogEntry]) -> Vec<Vec<&'a ActionLogEntry>> {
+fn group_entries<'a>(
+    entries: impl IntoIterator<Item = &'a ActionLogEntry>,
+) -> Vec<Vec<&'a ActionLogEntry>> {
     let mut groups: Vec<Vec<&ActionLogEntry>> = Vec::new();
-    for &entry in entries {
+    for entry in entries {
         if let Some(group) = groups
             .iter_mut()
             .rev()
@@ -519,18 +524,14 @@ pub(super) fn action_log_result_text(result: ActionLogResult) -> &'static str {
     }
 }
 
-pub(super) fn action_log_filtered_entries<'a>(
+fn action_log_filtered_entries<'a>(
     entries: &'a [ActionLogEntry],
-    level_filter: &[ActionLogLevel],
-    feature_filter: &[ActionLogFeature],
-) -> Vec<&'a ActionLogEntry> {
-    entries
-        .iter()
-        .rev()
-        .filter(|entry| {
-            level_filter.contains(&entry.result.level()) && feature_filter.contains(&entry.feature)
-        })
-        .collect()
+    level_filter: &'a [ActionLogLevel],
+    feature_filter: &'a [ActionLogFeature],
+) -> impl Iterator<Item = &'a ActionLogEntry> {
+    entries.iter().rev().filter(move |entry| {
+        level_filter.contains(&entry.result.level()) && feature_filter.contains(&entry.feature)
+    })
 }
 
 #[cfg(test)]
@@ -695,7 +696,9 @@ mod tests {
             (ActionLogLevel::Warning, vec![ActionLogResult::Skipped]),
             (ActionLogLevel::Error, vec![ActionLogResult::Failed]),
         ] {
-            let filtered = action_log_filtered_entries(&entries, &[level], &FEATURES);
+            let levels = [level];
+            let filtered: Vec<_> =
+                action_log_filtered_entries(&entries, &levels, &FEATURES).collect();
             assert_eq!(
                 filtered
                     .iter()
@@ -703,7 +706,7 @@ mod tests {
                     .collect::<Vec<_>>(),
                 expected
             );
-            assert_eq!(group_entries(&filtered).len(), expected.len());
+            assert_eq!(group_entries(filtered).len(), expected.len());
         }
         let csv = action_log_entries_to_csv(&entries);
         let mut reader = csv::Reader::from_reader(csv.as_bytes());
@@ -797,7 +800,7 @@ mod tests {
         let entries = log.entries();
         let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
         assert_eq!(
-            group_entries(&filtered)
+            group_entries(filtered)
                 .iter()
                 .map(Vec::len)
                 .collect::<Vec<_>>(),
@@ -824,7 +827,7 @@ mod tests {
         let entries = log.entries();
         let filtered = action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
         assert_eq!(
-            group_entries(&filtered)
+            group_entries(filtered)
                 .iter()
                 .map(Vec::len)
                 .collect::<Vec<_>>(),
@@ -840,7 +843,7 @@ mod tests {
                 2 => other.result = ActionLogResult::Restored,
                 _ => other.process_id = entries[0].process_id,
             }
-            assert_eq!(group_entries(&[&entries[0], &other]).len(), 2);
+            assert_eq!(group_entries([&entries[0], &other]).len(), 2);
         }
     }
 
@@ -869,7 +872,7 @@ mod tests {
                 let entries = log.entries();
                 let filtered =
                     action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES);
-                let groups = group_entries(&filtered);
+                let groups = group_entries(filtered);
                 assert_eq!(groups.len(), 2, "{feature:?} {result:?}");
                 assert_eq!(groups[0].len(), 3);
                 assert_eq!(groups[1].len(), 3);
@@ -932,32 +935,43 @@ mod tests {
                 &entries,
                 &[ActionLogLevel::Error],
                 &[ActionLogFeature::CpuLimiter]
-            )[0]
-            .sequence,
-            2
+            )
+            .next()
+            .map(|entry| entry.sequence),
+            Some(2)
         );
         assert_eq!(
-            action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES)[0].sequence,
-            2
+            action_log_filtered_entries(&entries, &ActionLogLevel::ALL, &FEATURES)
+                .next()
+                .map(|entry| entry.sequence),
+            Some(2)
         );
         let mut editor = Editor::default();
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature).len(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature).count(),
             2
         );
         editor.update(Message::AllLevels(false));
-        assert!(action_log_filtered_entries(&entries, &editor.level, &editor.feature).is_empty());
+        assert!(
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature)
+                .next()
+                .is_none()
+        );
         editor.update(Message::Level(ActionLogLevel::Information, true));
         editor.update(Message::Level(ActionLogLevel::Error, true));
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature).len(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature).count(),
             2
         );
         editor.update(Message::AllFeatures(false));
-        assert!(action_log_filtered_entries(&entries, &editor.level, &editor.feature).is_empty());
+        assert!(
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature)
+                .next()
+                .is_none()
+        );
         editor.update(Message::Feature(ActionLogFeature::CpuLimiter, true));
         assert_eq!(
-            action_log_filtered_entries(&entries, &editor.level, &editor.feature).len(),
+            action_log_filtered_entries(&entries, &editor.level, &editor.feature).count(),
             2
         );
         editor.update(Message::AllLevels(true));
