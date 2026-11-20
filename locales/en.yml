@@ -720,6 +720,7 @@ app_suspension:
   intro_3: "Use it only for apps that are safe to pause in the background."
   enable: "Enable app suspension"
   background_delay: "Background Suspension Delay"
+  invalid_delay: "%{setting} must be a whole number from 1 to %{maximum} seconds."
   temporary_resume: "Temporary resume fallback"
   resume_every: "Resume every"
   resume_duration: "Resume duration"

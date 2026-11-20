@@ -2157,16 +2157,21 @@ impl WinderustApp {
             Message::Save if self.preferences.has_invalid_inputs() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
-            Message::Save if self.power_tuning.dirty => {
-                match self.power_tuning.review_apply(
-                    &self.power_plans,
-                    advanced_power_plan_tuning::ApplyOrigin::Save,
-                ) {
-                    Ok(()) => self.error_message.clear(),
-                    Err(error) => self.error_message = error,
+            Message::Save => {
+                if let Some(delay) = self.suspension.invalid_delay() {
+                    self.error_message = delay.error_message();
+                } else if self.power_tuning.dirty {
+                    match self.power_tuning.review_apply(
+                        &self.power_plans,
+                        advanced_power_plan_tuning::ApplyOrigin::Save,
+                    ) {
+                        Ok(()) => self.error_message.clear(),
+                        Err(error) => self.error_message = error,
+                    }
+                } else {
+                    return self.save_settings();
                 }
             }
-            Message::Save => return self.save_settings(),
             Message::Cancel => {
                 self.power_plan_control.selected_guid = None;
                 self.settings.cancel();
@@ -2327,6 +2332,7 @@ impl WinderustApp {
             || self.watchdog.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
             || self.power_tuning.has_invalid_inputs()
+            || self.suspension.invalid_delay().is_some()
             || self.timer.has_invalid_inputs()
             || self.preferences.has_invalid_inputs()
             || self.adaptive.validation_error().is_some()

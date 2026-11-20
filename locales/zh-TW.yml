@@ -722,6 +722,7 @@ app_suspension:
   intro_3: "請只對適合在背景暫停的應用程式使用此功能。"
   enable: "啟用應用程式暫停"
   background_delay: "背景暫停延遲"
+  invalid_delay: "%{setting}必須是 1 到 %{maximum} 秒之間的整數。"
   temporary_resume: "暫時繼續備援"
   resume_every: "每隔多久繼續"
   resume_duration: "繼續時間"

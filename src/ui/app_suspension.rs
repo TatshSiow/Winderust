@@ -9,18 +9,55 @@ use crate::ui::scrolling::scrollable;
 use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+use std::collections::BTreeMap;
+
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
     expanded: [bool; 3],
+    delay_drafts: BTreeMap<Delay, String>,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Delay {
     Background,
     ThawInterval,
     ThawDuration,
     Audio,
     Network,
+}
+impl Delay {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Background => "app_suspension.background_delay",
+            Self::ThawInterval => "app_suspension.resume_every",
+            Self::ThawDuration => "app_suspension.resume_duration",
+            Self::Audio => "app_suspension.suspend_after_audio",
+            Self::Network => "app_suspension.network_suspension_delay",
+        }
+    }
+
+    fn maximum(self) -> u64 {
+        match self {
+            Self::Background | Self::ThawInterval => AppSuspensionSettings::MAX_DELAY_SECONDS,
+            _ => AppSuspensionSettings::MAX_WAKE_DURATION_SECONDS,
+        }
+    }
+
+    fn parse(self, value: &str) -> Option<u64> {
+        value
+            .parse()
+            .ok()
+            .filter(|value| (1..=self.maximum()).contains(value))
+    }
+
+    pub(super) fn error_message(self) -> String {
+        t!(
+            "app_suspension.invalid_delay",
+            setting = t!(self.label()),
+            maximum = self.maximum()
+        )
+        .to_string()
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -42,6 +79,12 @@ pub(super) enum Message {
     Remove(usize),
 }
 impl Editor {
+    pub(super) fn invalid_delay(&self) -> Option<Delay> {
+        self.delay_drafts
+            .iter()
+            .find_map(|(&field, value)| field.parse(value).is_none().then_some(field))
+    }
+
     pub(super) fn update(
         &mut self,
         s: &mut AppSuspensionSettings,
@@ -61,24 +104,17 @@ impl Editor {
                 s.suspendable_apps.push(new_app_suspension_rule(&self.path));
                 self.path.clear();
             }
-            Message::Delay(field, v) => {
-                let max = match field {
-                    Delay::Background | Delay::ThawInterval => {
-                        AppSuspensionSettings::MAX_DELAY_SECONDS
-                    }
-                    _ => AppSuspensionSettings::MAX_WAKE_DURATION_SECONDS,
-                };
-                if let Ok(v) = v.parse::<u64>() {
-                    if (1..=max).contains(&v) {
-                        *match field {
-                            Delay::Background => &mut s.background_delay_seconds,
-                            Delay::ThawInterval => &mut s.temporary_thaw_interval_seconds,
-                            Delay::ThawDuration => &mut s.temporary_thaw_duration_seconds,
-                            Delay::Audio => &mut s.audio_wake_duration_seconds,
-                            Delay::Network => &mut s.network_wake_duration_seconds,
-                        } = v;
-                    }
+            Message::Delay(field, value) => {
+                if let Some(seconds) = field.parse(&value) {
+                    *match field {
+                        Delay::Background => &mut s.background_delay_seconds,
+                        Delay::ThawInterval => &mut s.temporary_thaw_interval_seconds,
+                        Delay::ThawDuration => &mut s.temporary_thaw_duration_seconds,
+                        Delay::Audio => &mut s.audio_wake_duration_seconds,
+                        Delay::Network => &mut s.network_wake_duration_seconds,
+                    } = seconds;
                 }
+                self.delay_drafts.insert(field, value);
             }
             Message::Thaw(v) => s.temporary_thaw_enabled = v,
             Message::Audio(v) => s.audio_wake_enabled = v,
@@ -173,11 +209,7 @@ impl Editor {
                     super::widgets::switch(s.enabled, Some(Message::Enabled))
                 )
                 .into(),
-                delay_row(
-                    Delay::Background,
-                    "app_suspension.background_delay",
-                    s.background_delay_seconds,
-                ),
+                self.delay_row(Delay::Background, s.background_delay_seconds),
             ])),
         ]
         .spacing(super::widgets::CARD_GAP);
@@ -188,16 +220,8 @@ impl Editor {
                 s.temporary_thaw_enabled,
                 Message::Thaw as fn(bool) -> Message,
                 vec![
-                    (
-                        Delay::ThawInterval,
-                        "app_suspension.resume_every",
-                        s.temporary_thaw_interval_seconds,
-                    ),
-                    (
-                        Delay::ThawDuration,
-                        "app_suspension.resume_duration",
-                        s.temporary_thaw_duration_seconds,
-                    ),
+                    (Delay::ThawInterval, s.temporary_thaw_interval_seconds),
+                    (Delay::ThawDuration, s.temporary_thaw_duration_seconds),
                 ],
             ),
             (
@@ -205,27 +229,19 @@ impl Editor {
                 "app_suspension.audio_detection",
                 s.audio_wake_enabled,
                 Message::Audio,
-                vec![(
-                    Delay::Audio,
-                    "app_suspension.suspend_after_audio",
-                    s.audio_wake_duration_seconds,
-                )],
+                vec![(Delay::Audio, s.audio_wake_duration_seconds)],
             ),
             (
                 2,
                 "app_suspension.network_detection",
                 s.network_wake_enabled,
                 Message::Network,
-                vec![(
-                    Delay::Network,
-                    "app_suspension.network_suspension_delay",
-                    s.network_wake_duration_seconds,
-                )],
+                vec![(Delay::Network, s.network_wake_duration_seconds)],
             ),
         ] {
             let controls = super::widgets::settings_rows(
                 rows.into_iter()
-                    .map(|(field, label, value)| delay_row(field, label, value)),
+                    .map(|(field, value)| self.delay_row(field, value)),
             );
             body = body.push(super::widgets::setting_group(
                 key.to_string(),
@@ -356,23 +372,27 @@ impl Editor {
         }
         scrollable(body).height(Fill).into()
     }
-}
-fn delay_row(field: Delay, label: &str, value: u64) -> Element<'static, Message> {
-    let max = match field {
-        Delay::Background | Delay::ThawInterval => 86400,
-        _ => 3600,
-    };
-    super::widgets::setting_row_with_unit(
-        label,
-        "s",
-        super::widgets::stepper(
-            &value.to_string(),
-            1..=max,
-            1,
-            Some(move |v| Message::Delay(field, v)),
-        ),
-    )
-    .into()
+
+    fn delay_row(&self, field: Delay, seconds: u64) -> Element<'static, Message> {
+        let formatted;
+        let value = if let Some(draft) = self.delay_drafts.get(&field) {
+            draft
+        } else {
+            formatted = seconds.to_string();
+            &formatted
+        };
+        super::widgets::setting_row_with_unit(
+            field.label(),
+            "s",
+            super::widgets::stepper(
+                value,
+                1..=field.maximum(),
+                1,
+                Some(move |v| Message::Delay(field, v)),
+            ),
+        )
+        .into()
+    }
 }
 
 fn indicator(s: &AppSuspensionSnapshot, p: &str, unavailable: bool) -> String {
@@ -415,6 +435,43 @@ impl std::fmt::Display for Unit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_delays_keep_independent_text_and_bounds() {
+        let mut editor = Editor::default();
+        let mut settings = AppSuspensionSettings::default();
+        let status = AppSuspensionSnapshot::default();
+        for (field, input) in [(Delay::Background, ""), (Delay::ThawDuration, "3601")] {
+            editor.update(
+                &mut settings,
+                &status,
+                &[],
+                Message::Delay(field, input.into()),
+            );
+        }
+        assert_eq!(editor.invalid_delay(), Some(Delay::Background));
+        assert_eq!(editor.delay_drafts[&Delay::Background], "");
+        assert!(settings.validate().is_ok());
+
+        editor.update(
+            &mut settings,
+            &status,
+            &[],
+            Message::Delay(Delay::Background, "86400".into()),
+        );
+        assert_eq!(editor.invalid_delay(), Some(Delay::ThawDuration));
+        assert_eq!(settings.background_delay_seconds, 86_400);
+
+        editor.update(
+            &mut settings,
+            &status,
+            &[],
+            Message::Delay(Delay::ThawDuration, "3600".into()),
+        );
+        assert_eq!(editor.invalid_delay(), None);
+        assert_eq!(settings.temporary_thaw_duration_seconds, 3600);
+    }
+
     #[test]
     fn unavailable_targets_cannot_be_added_or_frozen_but_can_thaw() {
         let mut e = Editor::default();
