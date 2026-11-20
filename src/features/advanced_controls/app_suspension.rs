@@ -203,6 +203,7 @@ enum TemporaryThawReason {
 
 const USER_INTENT_THAW_SECONDS: u64 = 10;
 const MAX_SUSPENSION_DURATION_SECONDS: u64 = 3_600;
+const RULE_NO_LONGER_MATCHES: &str = "process no longer matches an App Suspension rule";
 
 fn bounded_suspension_duration(seconds: u64) -> Duration {
     Duration::from_secs(seconds.min(MAX_SUSPENSION_DURATION_SECONDS))
@@ -484,20 +485,26 @@ impl AppSuspensionManager {
         }
 
         let Some(foreground_process_id) = foreground_process_id else {
-            return self.pause_without_clearing(
+            return self.pause_for_unknown_observations(
+                controller,
+                settings,
                 AppSuspensionStatus::ForegroundUnknown,
                 failed_actions,
                 None,
+                action_log,
             );
         };
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            return self.pause_without_clearing(
+            return self.pause_for_unknown_observations(
+                controller,
+                settings,
                 AppSuspensionStatus::SessionUnknown,
                 failed_actions,
                 None,
+                action_log,
             );
         };
 
@@ -505,10 +512,13 @@ impl AppSuspensionManager {
             Ok(processes) => processes,
             Err(err) => {
                 failed_actions += 1;
-                return self.pause_without_clearing(
+                return self.pause_for_unknown_observations(
+                    controller,
+                    settings,
                     AppSuspensionStatus::Error(err.clone()),
                     failed_actions,
                     Some(err),
+                    action_log,
                 );
             }
         };
@@ -603,12 +613,8 @@ impl AppSuspensionManager {
         }
         self.action_failure_suppression
             .retain_keys(&active_action_failure_keys);
-        failed_actions += self.release_non_targets(
-            controller,
-            &target_ids,
-            action_log,
-            "process no longer matches an App Suspension rule",
-        );
+        failed_actions +=
+            self.release_non_targets(controller, &target_ids, action_log, RULE_NO_LONGER_MATCHES);
         self.tracked
             .retain(|path, _process| active_target_paths.contains(path));
         self.temporary_thawed
@@ -1000,14 +1006,31 @@ impl AppSuspensionManager {
         failed
     }
 
-    fn pause_without_clearing(
+    fn pause_for_unknown_observations(
         &mut self,
+        controller: &mut SuspensionController,
+        settings: &AppSuspensionSettings,
         status: AppSuspensionStatus,
-        failed_actions: usize,
+        mut failed_actions: usize,
         last_error: Option<String>,
+        action_log: &mut ActionLog,
     ) -> AppSuspensionSnapshot {
         self.tracked.clear();
         self.network_snapshot.clear();
+        let process_ids_without_rules = self
+            .suspended
+            .iter()
+            .filter_map(|(&process_id, process)| {
+                (!process.manual && !settings.suspendable_app_enabled_for(&process.executable_path))
+                    .then_some(process_id)
+            })
+            .collect::<Vec<_>>();
+        failed_actions += self.release_processes(
+            controller,
+            &process_ids_without_rules,
+            action_log,
+            RULE_NO_LONGER_MATCHES,
+        );
         let mut snapshot = self.snapshot(
             true,
             self.job_freeze_unsupported,
@@ -2887,22 +2910,19 @@ mod tests {
     }
 
     #[test]
-    fn foreground_unknown_pauses_without_releasing_suspended_processes() {
+    fn foreground_unknown_releases_expired_rule_freezes_and_preserves_other_freezes() {
         let mut manager = AppSuspensionManager::default();
         let mut controller = SuspensionController::default();
         let mut log = ActionLog::new(8);
         let settings = AppSuspensionSettings {
             enabled: true,
-            suspendable_apps: vec![crate::config::AppSuspensionRule {
-                enabled: true,
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
-                network_wake_enabled: false,
-                audio_wake_enabled: false,
-                network_download_threshold_bytes: 0,
-                network_download_threshold_unit: Default::default(),
-                network_upload_threshold_bytes: 0,
-                network_upload_threshold_unit: Default::default(),
-            }],
+            suspendable_apps: vec![
+                suspension_rule(r"C:\Apps\chat.exe"),
+                crate::config::AppSuspensionRule {
+                    enabled: false,
+                    ..suspension_rule(r"C:\Apps\disabled.exe")
+                },
+            ],
             ..Default::default()
         };
         let now = Instant::now();
@@ -2912,17 +2932,25 @@ mod tests {
                 background_since: now,
             },
         );
-        insert_inert(&mut controller, 7, "chat.exe", r"C:\Apps\chat.exe", true);
-        manager.suspended.insert(
-            7,
-            SuspendedProcess {
-                process_name: "chat.exe".to_owned(),
-                executable_path: r"C:\Apps\chat.exe".to_owned(),
-                creation_time: 8,
-                suspended_since: now,
-                manual: false,
-            },
-        );
+        for (process_id, name, manual) in [
+            (7, "chat.exe", false),
+            (8, "disabled.exe", false),
+            (9, "removed.exe", false),
+            (10, "manual.exe", true),
+        ] {
+            let path = format!(r"C:\Apps\{name}");
+            insert_inert(&mut controller, process_id, name, &path, true);
+            manager.suspended.insert(
+                process_id,
+                SuspendedProcess {
+                    process_name: name.to_owned(),
+                    executable_path: path,
+                    creation_time: u64::from(process_id) + 1,
+                    suspended_since: now,
+                    manual,
+                },
+            );
+        }
 
         let mut observations = CycleObservations::default();
         let status = manager.update(
@@ -2943,11 +2971,20 @@ mod tests {
         );
         assert!(status.status_unknown);
         assert_eq!(status.grace_apps, 0);
-        assert_eq!(status.suspended_processes, 1);
-        assert_eq!(status.suspended_apps, vec![r"C:\Apps\chat.exe".to_owned()]);
+        assert_eq!(status.failed_actions, 0);
+        assert_eq!(status.suspended_process_ids, vec![7, 10]);
         assert!(manager.tracked.is_empty());
-        assert!(manager.suspended.contains_key(&7));
-        assert!(controller.contains_process(7));
+        assert_eq!(
+            controller.managed_process_ids().collect::<Vec<_>>(),
+            vec![7, 10]
+        );
+        let entries = log.entries();
+        assert_eq!(entries.len(), 2);
+        for (entry, process_id) in entries.iter().zip([8, 9]) {
+            assert_eq!(entry.process_id, Some(process_id));
+            assert_eq!(entry.result, ActionLogResult::Restored);
+            assert_eq!(entry.reason, RULE_NO_LONGER_MATCHES);
+        }
     }
 
     #[test]
