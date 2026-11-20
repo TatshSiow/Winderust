@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
 
 use crate::{control::memory_trim::MemoryTrimPlatform, foreground::ProcessInfo};
 
@@ -24,6 +24,17 @@ fn cpu_sample(cpu_time_100ns: u64, sampled_at: Instant) -> ProcessCpuSample {
 struct BatchTestPlatform {
     sampled_at: Instant,
     fail_before_pid: u32,
+    working_set_samples: VecDeque<u64>,
+}
+
+impl BatchTestPlatform {
+    fn new(sampled_at: Instant, fail_before_pid: u32) -> Self {
+        Self {
+            sampled_at,
+            fail_before_pid,
+            working_set_samples: VecDeque::new(),
+        }
+    }
 }
 
 impl MemoryTrimPlatform for BatchTestPlatform {
@@ -38,7 +49,7 @@ impl MemoryTrimPlatform for BatchTestPlatform {
     }
 
     fn working_set_bytes(&mut self, _process: &Self::Process) -> Result<u64, ProcessControlError> {
-        Ok(MB)
+        Ok(self.working_set_samples.pop_front().unwrap_or(MB))
     }
 
     fn cpu_sample(
@@ -116,10 +127,10 @@ fn automatic_trim_defers_after_failed_attempts_and_rechecks_pressure() {
             manager,
             &processes,
             MemoryTrimMode::Automatic,
-            BatchTestPlatform {
-                sampled_at: start + Duration::from_secs(elapsed_seconds),
-                fail_before_pid: processes[limit].id,
-            },
+            BatchTestPlatform::new(
+                start + Duration::from_secs(elapsed_seconds),
+                processes[limit].id,
+            ),
             pressure,
         )
     };
@@ -162,10 +173,10 @@ fn sibling_success_and_pressure_gaps_preserve_trim_failures() {
             manager,
             &processes,
             MemoryTrimMode::Automatic,
-            BatchTestPlatform {
-                sampled_at: start + Duration::from_secs(elapsed_seconds),
-                fail_before_pid: processes[1].id,
-            },
+            BatchTestPlatform::new(
+                start + Duration::from_secs(elapsed_seconds),
+                processes[1].id,
+            ),
             pressure,
         )
     };
@@ -207,10 +218,7 @@ fn temporary_loss_of_process_metadata_does_not_rearm_memory_trim() {
             manager,
             processes,
             MemoryTrimMode::Automatic,
-            BatchTestPlatform {
-                sampled_at: start + Duration::from_secs(elapsed_seconds),
-                fail_before_pid: 0,
-            },
+            BatchTestPlatform::new(start + Duration::from_secs(elapsed_seconds), 0),
             90,
         )
     };
@@ -250,10 +258,7 @@ fn exact_automatic_budget_does_not_defer_and_manual_trim_is_uncapped() {
             &mut manager,
             &processes[..limit],
             MemoryTrimMode::Automatic,
-            BatchTestPlatform {
-                sampled_at: start + Duration::from_secs(elapsed_seconds),
-                fail_before_pid: 0,
-            },
+            BatchTestPlatform::new(start + Duration::from_secs(elapsed_seconds), 0),
             90,
         );
         assert_eq!(snapshot.trimmed_processes, expected_trimmed);
@@ -264,14 +269,46 @@ fn exact_automatic_budget_does_not_defer_and_manual_trim_is_uncapped() {
         &mut manager,
         &processes,
         MemoryTrimMode::Manual,
-        BatchTestPlatform {
-            sampled_at: start,
-            fail_before_pid: 0,
-        },
+        BatchTestPlatform::new(start, 0),
         70,
     );
     assert_eq!(manual.trimmed_processes, limit + 1);
     assert!(!manual.has_deferred_candidates);
+}
+
+#[test]
+fn both_trim_modes_wait_after_working_set_falls_below_minimum() {
+    let processes = batch_processes(1);
+    let process_id = processes[0].id;
+    let start = Instant::now();
+    for mode in [MemoryTrimMode::Automatic, MemoryTrimMode::Manual] {
+        let mut manager = MemoryTrimManager::default();
+        run_batch_pass(
+            &mut manager,
+            &processes,
+            MemoryTrimMode::Automatic,
+            BatchTestPlatform::new(start, 0),
+            90,
+        );
+        let snapshot = run_batch_pass(
+            &mut manager,
+            &processes,
+            mode,
+            BatchTestPlatform {
+                working_set_samples: VecDeque::from([MB, MB - 1]),
+                ..BatchTestPlatform::new(start + Duration::from_secs(1), u32::MAX)
+            },
+            90,
+        );
+
+        assert_eq!(snapshot.candidate_processes, 0);
+        assert_eq!(snapshot.trimmed_processes, 0);
+        assert_eq!(snapshot.failed_processes, 0);
+        let tracked = &manager.tracked[&process_id];
+        assert!(tracked.previous_cpu_time.is_none());
+        assert!(tracked.idle_since.is_none());
+        assert!(!tracked.trimmed_while_idle);
+    }
 }
 
 #[test]
@@ -342,10 +379,7 @@ fn successful_trim_clears_failures_after_deferred_sibling_is_attempted() {
         &mut manager,
         &processes[limit..],
         MemoryTrimMode::Manual,
-        BatchTestPlatform {
-            sampled_at: start,
-            fail_before_pid: processes[limit].id + 1,
-        },
+        BatchTestPlatform::new(start, processes[limit].id + 1),
         70,
     );
     assert_eq!(failed.failed_processes, 1);
@@ -356,10 +390,7 @@ fn successful_trim_clears_failures_after_deferred_sibling_is_attempted() {
             manager,
             &processes,
             MemoryTrimMode::Automatic,
-            BatchTestPlatform {
-                sampled_at: start + Duration::from_secs(elapsed_seconds),
-                fail_before_pid: 0,
-            },
+            BatchTestPlatform::new(start + Duration::from_secs(elapsed_seconds), 0),
             90,
         )
     };

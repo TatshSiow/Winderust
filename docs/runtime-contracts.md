@@ -379,6 +379,9 @@ Read the relevant section before changing feature policy, ownership, restoration
   below the size threshold break idle qualification without rearming a process
   already trimmed during that idle episode. Observed activity or a new exact
   process identity may rearm it; explicitly disabling automation clears tracking.
+- The controller checks the working-set threshold on the verified process handle
+  immediately before either automatic or manual trimming. A working set below
+  the minimum returns to waiting and clears idle qualification.
 - An automatic pass attempts up to four trims, counting failures toward the
   limit. If eligible processes remain, the worker schedules another pass in
   three seconds. Each pass checks current pressure and eligibility, and starts

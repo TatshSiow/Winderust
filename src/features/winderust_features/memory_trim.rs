@@ -14,7 +14,7 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::MemoryTrimSettings,
     control::{
-        memory_trim::{MemoryTrimController, MemoryTrimPlatform},
+        memory_trim::{MemoryTrimController, MemoryTrimOutcome, MemoryTrimPlatform},
         process::{ProcessControlError, ProcessControlTarget},
     },
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
@@ -489,9 +489,17 @@ impl MemoryTrimManager {
         }
 
         let Some(remaining_attempts) = remaining_attempts else {
-            let outcome = controller.trim(target, allow_cross_session_process_control)?;
+            let MemoryTrimOutcome::Trimmed {
+                working_set_reduction_bytes,
+            } = controller.trim(target, allow_cross_session_process_control, threshold_bytes)?
+            else {
+                if let Some(state) = self.tracked.get_mut(&process_id) {
+                    state.break_idle_interval();
+                }
+                return Ok(ProcessUpdate::Waiting);
+            };
             return Ok(ProcessUpdate::Trimmed {
-                working_set_reduction_bytes: outcome.working_set_reduction_bytes,
+                working_set_reduction_bytes,
             });
         };
 
@@ -528,10 +536,16 @@ impl MemoryTrimManager {
         }
         *remaining_attempts -= 1;
         self.last_automatic_trim_pid = process_id;
-        let outcome = controller.trim(target, allow_cross_session_process_control)?;
+        let MemoryTrimOutcome::Trimmed {
+            working_set_reduction_bytes,
+        } = controller.trim(target, allow_cross_session_process_control, threshold_bytes)?
+        else {
+            state.break_idle_interval();
+            return Ok(ProcessUpdate::Waiting);
+        };
         state.trimmed_while_idle = true;
         Ok(ProcessUpdate::Trimmed {
-            working_set_reduction_bytes: outcome.working_set_reduction_bytes,
+            working_set_reduction_bytes,
         })
     }
 
