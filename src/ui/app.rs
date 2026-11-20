@@ -2145,6 +2145,9 @@ impl WinderustApp {
             Message::Save if self.cpu_limiter.has_invalid_inputs() => {
                 self.error_message = t!("cpu_limiter.invalid_limit").to_string();
             }
+            Message::Save if self.power_tuning.has_invalid_inputs() => {
+                self.error_message = t!("processor_power.invalid_percentage").to_string();
+            }
             Message::Save if !self.time_rules.valid() || !self.cpu_rules.valid() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
@@ -2255,6 +2258,11 @@ impl WinderustApp {
     }
 
     fn save_settings(&mut self) -> Task<Message> {
+        if self.power_tuning.has_invalid_inputs() {
+            self.power_tuning.cancel_apply_review();
+            self.error_message = t!("processor_power.invalid_percentage").to_string();
+            return Task::none();
+        }
         if self.power_tuning.dirty && self.power_tuning.selected_plan(&self.power_plans).is_none() {
             self.power_tuning.cancel_apply_review();
             self.error_message = t!("common.selected_plan_unavailable").to_string();
@@ -2320,6 +2328,7 @@ impl WinderustApp {
             || self.settings.validate_instance_balancing().is_err()
             || self.watchdog.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
+            || self.power_tuning.has_invalid_inputs()
             || self.timer.has_invalid_inputs()
             || self.preferences.has_invalid_inputs()
             || self.adaptive.validation_error().is_some()

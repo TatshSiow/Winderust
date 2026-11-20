@@ -445,6 +445,7 @@ settings:
   import_settings: "Import settings (.toml)"
 
 processor_power:
+  invalid_percentage: "Enter a whole percentage from 0 to 100."
   scheduling_policy: "Long-running thread policy"
   scheduling_policy_help: "Processor preference for long-running threads on hybrid CPUs. Automatic lets Windows choose based on system configuration and QoS."
   short_scheduling_policy: "Short-running thread policy"

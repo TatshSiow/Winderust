@@ -26,6 +26,7 @@ pub(super) struct Editor {
     target: Option<String>,
     readback: Option<AdvancedPowerPlanTuningReadback>,
     values: Option<AdvancedPowerPlanTuningSourceValues>,
+    invalid_percentages: [InvalidPercentages; 2],
     personality: Option<PowerPlanPersonality>,
     pub(super) dirty: bool,
     pub(super) status: String,
@@ -56,6 +57,33 @@ pub(super) enum Field {
     Maximum,
     Boost,
 }
+
+#[derive(Default)]
+struct InvalidPercentages([Option<String>; 4]);
+
+impl InvalidPercentages {
+    fn edit(&mut self, field: Field, raw: String) -> Option<u32> {
+        let value = raw.parse::<u32>().ok().filter(|value| *value <= 100);
+        self.0[field as usize] = value.is_none().then_some(raw);
+        value
+    }
+
+    fn text(&self, field: Field, value: u32) -> String {
+        self.0[field as usize]
+            .clone()
+            .unwrap_or_else(|| value.to_string())
+    }
+
+    fn any(&self) -> bool {
+        self.0.iter().any(Option::is_some)
+    }
+
+    fn feedback(&self, field: Field) -> Option<iced::widget::Text<'static>> {
+        self.0[field as usize]
+            .as_ref()
+            .map(|_| text(t!("processor_power.invalid_percentage").to_string()).style(text::danger))
+    }
+}
 #[derive(Debug, Clone, Copy)]
 pub(super) enum SchedulingField {
     LongRunning,
@@ -70,6 +98,7 @@ struct PresetEditor {
     target: PresetTarget,
     name: String,
     values: AdvancedPowerPlanTuningValues,
+    invalid_percentages: InvalidPercentages,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +190,6 @@ pub(super) enum Message {
     Load(Source, PresetChoice),
     OpenPreset(PresetTarget),
     PresetName(String),
-    PresetValue(Field, u32),
     PresetValueText(Field, String),
     PresetBoost(ProcessorBoostMode),
     PresetScheduling(SchedulingField, Option<ProcessorSchedulingPolicy>),
@@ -198,10 +226,15 @@ impl Editor {
     pub(super) fn discard_editor(&mut self) {
         self.preset = None;
         self.cancel_apply_review();
+        self.invalid_percentages = Default::default();
+    }
+
+    pub(super) fn has_invalid_inputs(&self) -> bool {
+        self.invalid_percentages.iter().any(InvalidPercentages::any)
     }
 
     pub(super) fn ensure_plan(&mut self, plans: &[PowerPlan]) {
-        if self.dirty {
+        if self.dirty || self.has_invalid_inputs() {
             return;
         }
         if self.selected_plan(plans).is_none() {
@@ -229,6 +262,7 @@ impl Editor {
 
     pub(super) fn refresh(&mut self, plans: &[PowerPlan]) {
         self.dirty = false;
+        self.invalid_percentages = Default::default();
         if self.selected_plan(plans).is_some() {
             self.read_selected_plan();
         } else {
@@ -265,6 +299,7 @@ impl Editor {
     }
 
     fn set_readback(&mut self, readback: Option<AdvancedPowerPlanTuningReadback>) {
+        self.invalid_percentages = Default::default();
         self.readback = readback;
         self.values = readback.map(AdvancedPowerPlanTuningReadback::writable);
     }
@@ -274,6 +309,9 @@ impl Editor {
         plans: &[PowerPlan],
         origin: ApplyOrigin,
     ) -> Result<(), String> {
+        if self.has_invalid_inputs() {
+            return Err(t!("processor_power.invalid_percentage").to_string());
+        }
         if self.review.is_some() || !self.dirty {
             return Ok(());
         }
@@ -316,7 +354,7 @@ impl Editor {
         &self,
         plans: &'a [PowerPlan],
     ) -> Option<(&'a PowerPlan, RestorePoint)> {
-        if self.dirty || self.review.is_some() {
+        if self.dirty || self.has_invalid_inputs() || self.review.is_some() {
             return None;
         }
         let plan = self.selected_plan(plans)?;
@@ -374,6 +412,11 @@ impl Editor {
     }
 
     pub(super) fn confirm_apply(&mut self, plans: &[PowerPlan]) -> bool {
+        if self.has_invalid_inputs() {
+            self.cancel_apply_review();
+            self.status = t!("processor_power.invalid_percentage").to_string();
+            return false;
+        }
         let Some(review) = self.review.take() else {
             return false;
         };
@@ -472,7 +515,7 @@ impl Editor {
                 {
                     return;
                 }
-                if self.dirty {
+                if self.dirty || self.has_invalid_inputs() {
                     self.status = t!("processor_power.save_before_changing_plan").to_string();
                 } else if let Some(plan) =
                     tuning_plans(plans).find(|plan| plan.guid.eq_ignore_ascii_case(&guid))
@@ -497,14 +540,17 @@ impl Editor {
             Message::CancelApply => self.cancel_apply_review(),
             Message::Value(source, field, value) => {
                 if let Some(values) = self.values.as_mut() {
+                    self.invalid_percentages[source as usize].0[field as usize] = None;
                     set_field(source_values(values, source), field, value);
                     self.dirty = true;
                 }
             }
             Message::ValueText(source, field, value) => {
-                if let Ok(v) = value.parse::<u32>() {
-                    if v <= 100 {
-                        self.update(presets, plans, Message::Value(source, field, v));
+                if self.values.is_some() {
+                    if let Some(value) =
+                        self.invalid_percentages[source as usize].edit(field, value)
+                    {
+                        self.update(presets, plans, Message::Value(source, field, value));
                     }
                 }
             }
@@ -520,6 +566,7 @@ impl Editor {
             }
             Message::Load(source, choice) => {
                 if let Some(values) = self.values.as_mut() {
+                    self.invalid_percentages[source as usize] = Default::default();
                     let current = source_values(values, source);
                     let preset = choice.1.normalized();
                     *current = with_supported_settings(
@@ -572,6 +619,7 @@ impl Editor {
                     target,
                     name,
                     values,
+                    invalid_percentages: Default::default(),
                 });
             }
             Message::PresetName(v) => {
@@ -583,19 +631,14 @@ impl Editor {
                     p.name = v;
                 }
             }
-            Message::PresetValue(field, v) => {
+            Message::PresetValueText(field, raw) => {
                 if let Some(p) = self
                     .preset
                     .as_mut()
                     .filter(|p| matches!(p.target, PresetTarget::Custom(_)))
                 {
-                    set_field(&mut p.values, field, v);
-                }
-            }
-            Message::PresetValueText(field, v) => {
-                if let Ok(v) = v.parse::<u32>() {
-                    if v <= 100 {
-                        self.update(presets, plans, Message::PresetValue(field, v));
+                    if let Some(value) = p.invalid_percentages.edit(field, raw) {
+                        set_field(&mut p.values, field, value);
                     }
                 }
             }
@@ -620,7 +663,7 @@ impl Editor {
             Message::SavePreset => {
                 if let Some(p) = &self.preset {
                     if let PresetTarget::Custom(index) = p.target {
-                        if valid_name(presets, index, &p.name) {
+                        if valid_name(presets, index, &p.name) && !p.invalid_percentages.any() {
                             let value = AdvancedPowerPlanTuningPreset {
                                 name: p.name.trim().to_string(),
                                 values: p.values.normalized(),
@@ -737,12 +780,12 @@ impl Editor {
                 let mut controls = Vec::new();
                 for (field, label, value) in fields(values.processor) {
                     controls.push(
-                        row![
+                        column![row![
                             text(super::widgets::label_with_unit(&t!(label), "%")).width(Fill),
                             slider(0..=100, value, move |v| Message::Value(source, field, v))
                                 .width(180),
                             super::widgets::stepper(
-                                &value.to_string(),
+                                &self.invalid_percentages[source as usize].text(field, value),
                                 0..=100,
                                 1,
                                 Some(move |v| Message::ValueText(source, field, v))
@@ -750,7 +793,13 @@ impl Editor {
                         ]
                         .spacing(design::space::SMALL)
                         .height(46)
-                        .align_y(iced::Center)
+                        .align_y(iced::Center)]
+                        .spacing(design::space::SMALL)
+                        .extend(
+                            self.invalid_percentages[source as usize]
+                                .feedback(field)
+                                .map(Element::from),
+                        )
                         .into(),
                     );
                 }
@@ -806,8 +855,11 @@ impl Editor {
             action_button(t!("settings.apply").to_string())
                 .style(super::widgets::primary_button)
                 .on_press_maybe(
-                    (self.values.is_some() && self.dirty && self.selected_plan(plans).is_some())
-                        .then_some(Message::ReviewApply)
+                    (self.values.is_some()
+                        && self.dirty
+                        && !self.has_invalid_inputs()
+                        && self.selected_plan(plans).is_some())
+                    .then_some(Message::ReviewApply)
                 )
         ]
         .spacing(design::space::SMALL)
@@ -928,16 +980,18 @@ impl Editor {
         let mut values = Vec::new();
         for (field, label, value) in fields(p.values.processor) {
             values.push(
-                widgets::setting_row_with_unit(
+                column![widgets::setting_row_with_unit(
                     label,
                     "%",
                     widgets::stepper(
-                        &value.to_string(),
+                        &p.invalid_percentages.text(field, value),
                         0..=100,
                         1,
                         editable.then_some(move |v| Message::PresetValueText(field, v)),
                     ),
-                )
+                )]
+                .spacing(design::space::SMALL)
+                .extend(p.invalid_percentages.feedback(field).map(Element::from))
                 .into(),
             );
         }
@@ -999,7 +1053,8 @@ impl Editor {
                 action_button(t!("common.save").to_string())
                     .style(widgets::primary_button)
                     .on_press_maybe(
-                        valid_name(presets, index, &p.name).then_some(Message::SavePreset),
+                        (valid_name(presets, index, &p.name) && !p.invalid_percentages.any())
+                            .then_some(Message::SavePreset),
                     ),
             );
         }
@@ -1370,6 +1425,116 @@ fn mode_label(mode: EffectivePowerMode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_percentages_block_review_and_confirmation_until_resolved_or_reset() {
+        let values = AdvancedPowerPlanTuningValues::for_preset(ProcessorPowerPreset::Balanced);
+        let current: AdvancedPowerPlanTuningReadback =
+            AdvancedPowerPlanTuningSourceValues::same(values).into();
+        let mut editor = Editor {
+            target: Some("missing-plan".into()),
+            readback: Some(current),
+            values: Some(current.writable()),
+            ..Default::default()
+        };
+        let mut presets = vec![];
+        editor.update(
+            &mut presets,
+            &[],
+            Message::ValueText(Source::Ac, Field::Parking, "".into()),
+        );
+        editor.update(
+            &mut presets,
+            &[],
+            Message::ValueText(Source::Battery, Field::Boost, "101".into()),
+        );
+        editor.ensure_plan(&[]);
+        assert!(
+            editor.has_invalid_inputs(),
+            "navigation must preserve the draft"
+        );
+        assert!(!editor.dirty);
+        assert_eq!(editor.values, Some(current.writable()));
+        assert_eq!(editor.invalid_percentages[0].text(Field::Parking, 100), "");
+        let error = t!("processor_power.invalid_percentage").to_string();
+        assert_eq!(
+            editor.review_apply(&[], ApplyOrigin::Save),
+            Err(error.clone())
+        );
+        editor.review = Some(ApplyReview {
+            guid: "missing-plan".into(),
+            name: "Fixture".into(),
+            current,
+            requested: current.writable(),
+            origin: ApplyOrigin::Save,
+        });
+        assert!(!editor.confirm_apply(&[]));
+        assert!(editor.review.is_none());
+        assert_eq!(editor.status, error);
+        editor.update(
+            &mut presets,
+            &[],
+            Message::Value(Source::Ac, Field::Parking, 0),
+        );
+        assert!(!editor.invalid_percentages[0].any());
+        assert!(editor.invalid_percentages[1].any());
+        editor.update(
+            &mut presets,
+            &[],
+            Message::Load(Source::Battery, PresetChoice("Balanced".into(), values)),
+        );
+        assert!(!editor.has_invalid_inputs());
+        let invalidate = |editor: &mut Editor| {
+            editor.update(
+                &mut vec![],
+                &[],
+                Message::ValueText(Source::Ac, Field::Parking, "".into()),
+            );
+        };
+        invalidate(&mut editor);
+        editor.discard_editor();
+        assert!(!editor.has_invalid_inputs());
+        invalidate(&mut editor);
+        editor.set_readback(Some(current));
+        assert!(!editor.has_invalid_inputs());
+        invalidate(&mut editor);
+        editor.refresh(&[]);
+        assert!(!editor.has_invalid_inputs());
+        assert!(editor.values.is_none());
+        assert!(editor.target.is_none());
+    }
+
+    #[test]
+    fn invalid_preset_percentage_refuses_save_without_changing_the_page_draft() {
+        let mut editor = Editor::default();
+        let mut presets = vec![];
+        editor.update(
+            &mut presets,
+            &[],
+            Message::OpenPreset(PresetTarget::Custom(None)),
+        );
+        editor.update(&mut presets, &[], Message::PresetName("Fixture".into()));
+        editor.invalid_percentages[0].edit(Field::Parking, "".into());
+        editor.update(
+            &mut presets,
+            &[],
+            Message::PresetValueText(Field::Boost, "".into()),
+        );
+        editor.update(&mut presets, &[], Message::SavePreset);
+        assert!(presets.is_empty());
+        assert!(editor.preset.is_some());
+        editor.update(
+            &mut presets,
+            &[],
+            Message::PresetValueText(Field::Boost, "80".into()),
+        );
+        editor.update(&mut presets, &[], Message::SavePreset);
+        assert_eq!(presets[0].values.processor.boost_policy, 80);
+        assert!(
+            editor.has_invalid_inputs(),
+            "preset Save must leave the page draft alone"
+        );
+    }
 
     #[test]
     fn readback_details_include_requested_values_and_exact_restore_differences() {
@@ -1944,7 +2109,11 @@ mod tests {
             &[],
             Message::OpenPreset(PresetTarget::BuiltIn(ProcessorPowerPreset::Balanced)),
         );
-        e.update(&mut presets, &[], Message::PresetValue(Field::Parking, 99));
+        e.update(
+            &mut presets,
+            &[],
+            Message::PresetValueText(Field::Parking, "99".into()),
+        );
         assert_eq!(e.preset.as_ref().unwrap().values, balanced);
     }
 }
