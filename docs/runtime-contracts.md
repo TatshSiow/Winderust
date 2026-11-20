@@ -332,13 +332,15 @@ Read the relevant section before changing feature policy, ownership, restoration
   Adaptive Engine writes its configured boost modes.
 - Advanced Power Plan Tuning captures the target plan's GUID, live values, and
   normalized draft in the review. The same review gates page Apply and any save
-  that includes tuning edits. A fresh read must match the reviewed values before
-  the staged write starts, including boost mode and scheduling availability and
-  raw unknown indices for each power source. Selection, confirmation, and the
+  that includes tuning edits. A fresh read must match the draft's original
+  readback before review and match the reviewed values before the staged write.
+  These checks include boost mode and scheduling availability and raw unknown
+  indices for each power source. Selection, confirmation, and the
   Windows write preflight exclude the temporary Winderust Adaptive plan. Apply
   and Restore skip missing, unreadable, and unknown boost modes and scheduling
   policies.
-  A stale review or failed preflight read preserves the draft and requires a new
+  A stale review or failed preflight read preserves the draft. After a plan
+  value changes externally, Refresh values reloads the plan for a new edit and
   review. Readback verifies the outcome. Each mismatch identifies the power
   source, setting, requested value, and actual value. When a write stage fails,
   the report includes the stage error and any differences from a successful readback.

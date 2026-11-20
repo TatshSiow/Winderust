@@ -287,13 +287,20 @@ impl Editor {
             .service
             .read_values(guid)
             .map_err(|error| error.to_string())?;
-        self.review = Some(ApplyReview {
+        self.begin_apply_review(ApplyReview {
             guid: guid.clone(),
             name: plan.name.clone(),
             current,
             requested: ApplyReview::request(current, values),
             origin,
-        });
+        })
+    }
+
+    fn begin_apply_review(&mut self, review: ApplyReview) -> Result<(), String> {
+        if self.readback != Some(review.current) {
+            return Err(t!("processor_power.review_refresh_required").to_string());
+        }
+        self.review = Some(review);
         Ok(())
     }
 
@@ -401,7 +408,7 @@ impl Editor {
                         self.set_readback(self.service.read_values(&review.guid).ok());
                         t!("processor_power.restore_values_changed").to_string()
                     } else {
-                        t!("processor_power.review_stale").to_string()
+                        t!("processor_power.review_refresh_required").to_string()
                     };
                     return false;
                 }
@@ -1444,6 +1451,67 @@ mod tests {
                 "processor_power.boost_mode",
                 "processor_power.short_scheduling_policy"
             ]
+        );
+    }
+
+    #[test]
+    fn stale_plan_readback_blocks_review_and_preserves_the_battery_draft() {
+        let mut baseline: AdvancedPowerPlanTuningReadback =
+            AdvancedPowerPlanTuningSourceValues::same(AdvancedPowerPlanTuningValues::for_preset(
+                ProcessorPowerPreset::Balanced,
+            ))
+            .into();
+        baseline.ac.scheduling_policy = PowerSettingReadback::Unknown(10);
+        let mut draft = baseline.writable();
+        draft.battery.processor.boost_policy = 35;
+        let mut editor = Editor {
+            target: Some("plan".into()),
+            readback: Some(baseline),
+            values: Some(draft),
+            dirty: true,
+            ..Default::default()
+        };
+        let review = |current, origin| ApplyReview {
+            guid: "plan".into(),
+            name: "Balanced".into(),
+            current,
+            requested: ApplyReview::request(current, draft),
+            origin,
+        };
+        let mut changed_percentage = baseline;
+        changed_percentage.ac.processor.core_parking_min = 75;
+        let mut changed_unknown_policy = baseline;
+        changed_unknown_policy.ac.scheduling_policy = PowerSettingReadback::Unknown(11);
+        assert_eq!(baseline.writable(), changed_unknown_policy.writable());
+        for (current, origin) in [
+            (changed_percentage, ApplyOrigin::Page),
+            (changed_unknown_policy, ApplyOrigin::Save),
+        ] {
+            assert_eq!(
+                editor
+                    .begin_apply_review(review(current, origin))
+                    .unwrap_err(),
+                t!("processor_power.review_refresh_required")
+            );
+            assert!(editor.review.is_none());
+            assert!(editor.dirty);
+            assert_eq!(editor.readback, Some(baseline));
+            assert_eq!(editor.values, Some(draft));
+            assert_eq!(editor.target.as_deref(), Some("plan"));
+        }
+
+        editor
+            .begin_apply_review(review(baseline, ApplyOrigin::Save))
+            .unwrap();
+        let review = editor.review.unwrap();
+        assert_eq!(review.origin, ApplyOrigin::Save);
+        assert!(review.changes(Source::Ac).next().is_none());
+        assert_eq!(
+            review
+                .changes(Source::Battery)
+                .map(|(label, _, _)| label)
+                .collect::<Vec<_>>(),
+            ["processor_power.boost_policy"]
         );
     }
 
